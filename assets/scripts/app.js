@@ -1,5 +1,5 @@
 const CACHE_TTL_MS = 90_000; 
-const MAX_CARDS = 20;
+const MAX_CARDS = 21;
 const MEME_REGEX = /(bonk|wif|dog|inu|pepe|cat|meme|ponk|ponke|samo|pipi|bodi|boden|beer|mog|pop|paws|purry|purr|kitty|kit|meow|woof|hamster|frog|toad|snek|sponge|bob|smurf|dino|monke|monkey|ape|corgi|floki|elon|keem|pump|dump|poo|poop|turd|goat|degen|baby|wife|husband|shib|shiba|giga|sigma|skib|rizz|reno)/i;
 const RANK_WEIGHTS = { volume:0.35, liquidity:0.25, momentum:0.20, activity:0.20 };
 const BUY_RULES = { score:0.65, liq:50_000, vol24:100_000, change1h:0 };
@@ -179,8 +179,8 @@ function bestPerToken(pairs, {relax=false}={}) {
 
     const info = p.info || {};
     const website = Array.isArray(info.websites) && info.websites.length ? info.websites[0].url : null;
-  const socials = Array.isArray(info.socials) ? info.socials : [];
-  const logoURI = info.imageUrl || null;
+    const socials = Array.isArray(info.socials) ? info.socials : [];
+    const logoURI = info.imageUrl || null;
 
     const vol24 = nz(p.volume?.h24 ?? p.volume24h);
     const liq   = nz(p.liquidity?.usd ?? p.liquidityUsd);
@@ -220,16 +220,17 @@ function bestPerToken(pairs, {relax=false}={}) {
 function scoreAndRecommend(rows){
   for (const r of rows){
     const vol24 = nz(r.volume.h24), liq = nz(r.liquidityUsd), fdv = nz(r.fdv);
-    const ch1 = nz(r.change.h1), ch6 = nz(r.change.h6), ch24 = nz(r.change.h24);
+    const ch1 = nz(r.change.h1), ch6 = nz(r.change.h6), ch24 = nz(r.change.h24), ch5 = nz(r.change.m5);
     const tx = nz(r.txns.h24);
 
     const nVol = normLog(vol24,6);
     const nLiq = normLog(liq,6);
-    const mom  = clamp((ch1+ch6+ch24)/100, -1, 1);
+    const momRaw  = clamp((ch1+ch6+ch24)/100, -1, 1);
+    const nMom  = momRaw>0 ? momRaw : momRaw*0.5; 
     const nAct = normLog(tx,4);
 
     let score = RANK_WEIGHTS.volume*nVol + RANK_WEIGHTS.liquidity*nLiq
-              + RANK_WEIGHTS.momentum*(mom>0?mom:mom*0.5) + RANK_WEIGHTS.activity*nAct;
+              + RANK_WEIGHTS.momentum*nMom + RANK_WEIGHTS.activity*nAct;
 
     let penaltyApplied = false;
     if (liq>0 && fdv/Math.max(liq,1) > FDV_LIQ_PENALTY.ratio) { score -= FDV_LIQ_PENALTY.penalty; penaltyApplied=true; }
@@ -251,10 +252,14 @@ function scoreAndRecommend(rows){
       if (liq<25_000) why.push('Thin liquidity');
       if (vol24<50_000) why.push('Low trading activity');
     }
+
     r.score=score; r.recommendation=rec; r.why=why;
+    r._norm = { nVol, nLiq, nMom: clamp((nMom+1)/2,0,1), nAct }; // normalize mom to 0..1 for bars
+    r._chg  = [ch5, ch1, ch6, ch24]; // for sparkline
   }
   return rows.sort((a,b)=> b.score-a.score || b.volume.h24-a.volume.h24);
 }
+
 
 const elCards = document.getElementById('cards');
 const elMeta  = document.getElementById('meta');
@@ -284,34 +289,87 @@ function renderSkeleton(n=8){
   }
 }
 
+function sparklineSVG(changes, {w=120, h=32}={}){
+  const vals = (changes||[]).map(v => Number.isFinite(v)? v : 0);
+  const n = vals.length || 1;
+  const min = Math.min(0, ...vals), max = Math.max(0, ...vals);
+  const span = (max - min) || 1;
+  const xStep = w / (n - 1 || 1);
+  const y = v => h - ((v - min) / span) * h;
+
+  let d = '';
+  for (let i=0;i<n;i++){
+    const X = i * xStep;
+    const Y = y(vals[i]);
+    d += (i===0?`M${X},${Y}`:` L${X},${Y}`);
+  }
+  const midY = y(0);
+  return `
+<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+  <path d="M0 ${midY} H ${w}" stroke="rgba(123,215,255,.25)" stroke-width="1" fill="none"/>
+  <path d="${d}" stroke="var(--neon,#7bd7ff)" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`;
+}
+
+function barsHTML(norm){
+  const toPct = v => Math.round(clamp(v,0,1)*100);
+  const vol = toPct(norm?.nVol ?? 0), liq = toPct(norm?.nLiq ?? 0), mom = toPct(norm?.nMom ?? 0), act = toPct(norm?.nAct ?? 0);
+  return `
+  <div class="bars" title="V: ${vol}% · L: ${liq}% · M: ${mom}% · A: ${act}%">
+    <div class="bar" data-k="volume"><i style="height:${vol}%"></i><label>V</label></div>
+    <div class="bar" data-k="liquidity"><i style="height:${liq}%"></i><label>L</label></div>
+    <div class="bar" data-k="momentum"><i style="height:${mom}%"></i><label>M</label></div>
+    <div class="bar" data-k="activity"><i style="height:${act}%"></i><label>A</label></div>
+  </div>`;
+}
+
+function pctChipsHTML(changes){
+  const labels = ['5m','1h','6h'];
+  const arr = Array.isArray(changes) ? changes : [];
+  const spans = labels.map((lab, i) => {
+    const v = +arr[i];
+    if (!Number.isFinite(v)) {
+      return `<span class="pct flat" title="${lab} change unavailable">—</span>`;
+    }
+    const cls = v > 0 ? 'up' : v < 0 ? 'down' : 'flat';
+    return `<span class="pct ${cls}" title="${lab} change">${pct(v)}</span>`;
+  });
+  return `<div class="pctrow">${spans.join('')}</div>`;
+}
+
+
 function coinCard(it){
   const logo = it.logoURI || FALLBACK_LOGO(it.symbol);
   const website = normalizeWebsite(it.website) || EXPLORER(it.mint);
   const buyUrl = JUP_SWAP(it.mint);
 
-const links = (Array.isArray(it.socials) ? it.socials : [])
-  .map(normalizeSocial)
-  .filter(Boolean)
-  .reduce((acc, s) => { if(!acc.some(x=>x.href===s.href)) acc.push(s); return acc; }, [])
-  .slice(0, 6);
+  const links = (Array.isArray(it.socials) ? it.socials : [])
+    .map(normalizeSocial)
+    .filter(Boolean)
+    .reduce((acc, s) => { if(!acc.some(x=>x.href===s.href)) acc.push(s); return acc; }, [])
+    .slice(0, 6);
 
-let socialsHtml = links.map(s =>
-  `<a class="iconbtn" href="${s.href}" target="_blank" rel="noopener nofollow"
-      aria-label="${s.platform}" data-tooltip="${s.platform}">
-      ${iconFor(s.platform)}
-   </a>`
-).join('');
+  let socialsHtml = links.map(s =>
+    `<a class="iconbtn" href="${s.href}" target="_blank" rel="noopener nofollow"
+        aria-label="${s.platform}" data-tooltip="${s.platform}">
+        ${iconFor(s.platform)}
+     </a>`
+  ).join('');
 
-if (!links.length) {
-  const xUrl = xSearchUrl(it.symbol, it.name, it.mint);
-  socialsHtml =
-    `<a class="iconbtn" href="${xUrl}" target="_blank" rel="noopener nofollow"
-        aria-label="Search on X" data-tooltip="Search ${it.symbol ? '$'+it.symbol.toUpperCase() : 'on X'}">
-        ${iconFor('x')}
-     </a>`;
-}
+  if (!links.length) {
+    const xUrl = xSearchUrl(it.symbol, it.name, it.mint);
+    socialsHtml =
+      `<a class="iconbtn" href="${xUrl}" target="_blank" rel="noopener nofollow"
+          aria-label="Search on X" data-tooltip="Search ${it.symbol ? '$'+it.symbol.toUpperCase() : 'on X'}">
+          ${iconFor('x')}
+       </a>`;
+  }
 
-
+  const micro = `
+    <div class="micro">
+      ${pctChipsHTML(it._chg)}
+      ${sparklineSVG(it._chg)}
+    </div>`;
 
   return `
 <article class="card" data-hay="${(it.symbol||'')+' '+(it.name||'')+' '+it.mint}">
@@ -335,13 +393,15 @@ if (!links.length) {
 
   ${socialsHtml ? `<div class="actions">${socialsHtml}</div>` : ''}
 
-
   <div class="actions">
-    <a class="btn" href="${buyUrl}" target="_blank" rel="noopener">Swap</a>
+    <a class="btn swapCoin" href="${buyUrl}" target="_blank" rel="noopener">Swap</a>
     <a class="btn" href="${website}" target="_blank" rel="noopener">Website</a>
   </div>
+
+  ${micro}
 </article>`;
 }
+
 
 function fmtUsd(x){
   const v = nz(x);
@@ -517,11 +577,23 @@ function adCard(ad){
 
       <div class="adactions">
         <div class="adtag" title="Sponsored">SPONSORED</div>
-        <a class="adbtn primary" href="${buyUrl}" target="_blank" rel="noopener"><span class="ademoji">💱</span> ${cta}</a>
+        <a class="adbtn primary" href="${buyUrl}" target="_blank" rel="noopener"><span class="ademoji">🔄</span> ${cta}</a>
         <a class="adbtn" href="${website}" target="_blank" rel="noopener"><span class="ademoji">🌐</span> Website</a>
       </div>
     </div>
   </section>`;
+}
+
+const elLoader = document.getElementById('loader');
+
+function showLoading() {
+  if (elLoader) elLoader.hidden = false;
+  document.documentElement.style.overflow = 'hidden';
+}
+
+function hideLoading() {
+  if (elLoader) elLoader.hidden = true;
+  document.documentElement.style.overflow = '';
 }
 
 async function pipeline({force=false}={}) {
@@ -533,38 +605,46 @@ async function pipeline({force=false}={}) {
     return;
   }
 
+  showLoading();
   renderSkeleton(8);
   elMeta.textContent = `Fetching…`;
 
-  const adsPromise = loadAds();
-
-  const [trend, searches] = await Promise.all([
-  fetchTrending(),
-  fetchSearches()
-  ]);
-
-  const merged = [...trend, ...searches];
-  let tokens = bestPerToken(merged, {relax}); 
-  tokens = await enrichMissingInfo(tokens); 
-  const scored = scoreAndRecommend(tokens);
-
   try {
-    const ads = await adsPromise;
-    CURRENT_AD = pickAd(ads);
-  } catch {
-    CURRENT_AD = null;
+    const adsPromise = loadAds();
+
+    const [trend, searches] = await Promise.all([
+      fetchTrending(),
+      fetchSearches()
+    ]);
+
+    const merged = [...trend, ...searches];
+    let tokens = bestPerToken(merged, {relax});
+    tokens = await enrichMissingInfo(tokens);
+    const scored = scoreAndRecommend(tokens);
+
+    try {
+      const ads = await adsPromise;
+      CURRENT_AD = pickAd(ads);
+    } catch {
+      CURRENT_AD = null;
+    }
+
+    const payload = {
+      generatedAt: ts(),
+      items: scored,
+      _ts: Date.now()
+    };
+    writeCache(payload);
+
+    elMeta.textContent = `Generated: ${payload.generatedAt}`;
+    render(scored);
+  } catch (err) {
+    console.error('pipeline failed', err);
+    elCards.innerHTML = `<div class="small">Couldn't load data. Check your connection or try Refresh.</div>`;
+    elMeta.textContent = '';
+  } finally {
+    hideLoading();
   }
-
-
-  const payload = {
-    generatedAt: ts(),
-    items: scored,
-    _ts: Date.now()
-  };
-  writeCache(payload);
-
-  elMeta.textContent = `Generated: ${payload.generatedAt}`;
-  render(scored);
 }
 
 elSort.addEventListener('change', ()=>render(readCache()?.items||[]));

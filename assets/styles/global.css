@@ -17,7 +17,56 @@ html,body{margin:0;background: radial-gradient(1200px 600px at 20% -10%, rgba(26
                     var(--bg);
 color:var(--text); font-family: 'Exo', system-ui, -apple-system, Segoe UI, Roboto, sans-serif}
 a{color:var(--neon2);text-decoration:none}
-a:hover{text-decoration:underline}
+a:hover{text-decoration:none; filter:brightness(1.1)}
+
+.sr-only {
+  position:absolute !important; width:1px; height:1px; padding:0; margin:-1px; 
+  overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0;
+}
+
+.loader-overlay[hidden] { display: none !important; }
+.loader-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  display: grid; place-items: center;
+  background: color-mix(in oklab, var(--bg, #0b111d) 85%, transparent);
+  backdrop-filter: blur(2px);
+}
+
+.loader-wrap {
+  display: grid; place-items: center; gap: 14px;
+  padding: 18px 22px; border-radius: 16px;
+  background: var(--card, #0f1729);
+  box-shadow: 0 10px 30px rgba(0,0,0,.45), inset 0 0 0 1px rgba(122,222,255,.1);
+}
+
+.spinner { width: 56px; height: 56px; display: block; }
+.spinner .ring {
+  fill: none;
+  stroke: rgba(122,222,255,.15);
+  stroke-width: 6;
+}
+.spinner .arc {
+  fill: none;
+  stroke: var(--neon, #7bd7ff);
+  stroke-width: 6;
+  stroke-linecap: round;
+  stroke-dasharray: 110;
+  stroke-dashoffset: 80;
+  transform-origin: 50% 50%;
+  animation: spin 1s linear infinite, dash 1.5s ease-in-out infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes dash {
+  0%   { stroke-dashoffset: 100; }
+  50%  { stroke-dashoffset: 40;  }
+  100% { stroke-dashoffset: 100; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner .arc { animation: none; }
+}
+
 .header{
   position:sticky; top:0; backdrop-filter: blur(8px);
   background: linear-gradient(180deg, rgba(13,19,32,.9), rgba(13,19,32,.6) 70%, transparent);
@@ -125,8 +174,9 @@ input[type="checkbox"]:disabled{
   z-index:0;
   background: linear-gradient(180deg, rgba(15,22,37,.95), rgba(15,22,37,.8));
   border:1px solid rgba(122,222,255,.16);
-  border-radius:16px; padding:14px 14px 12px;
-  overflow:hidden; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+  border-radius:16px;
+  padding:14px 14px 12px;
+  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
 }
 .card::before{
   pointer-events:none; 
@@ -170,6 +220,11 @@ input[type="checkbox"]:disabled{
 .tagline{color:var(--muted); font-size:.88rem; margin:6px 0 10px}
 
 .actions{display:flex; gap:10px; align-items:center; flex-wrap:wrap;justify-content: flex-end;}
+
+.swapCoin{
+  border: 2px solid cyan !important;
+}
+
 .btn{
   display:inline-flex; align-items:center; gap:8px; padding:9px 12px; border-radius:12px; font-weight:600; letter-spacing:.2px;
   background: linear-gradient(90deg, rgba(26,255,213,.15), rgba(123,241,255,.15));
@@ -206,7 +261,7 @@ input[type="checkbox"]:disabled{
   bottom:-28px;
   left:50%;
   transform:translateX(-50%);
-  background:rgba(13,19,32,.95);
+  background:rgba(0, 0, 0, 0.95);
   border:1px solid rgba(122,222,255,.25);
   padding:3px 6px;
   border-radius:6px;
@@ -215,8 +270,71 @@ input[type="checkbox"]:disabled{
   white-space:nowrap;
 }
 
+.card .micro {
+  display: flex;
+  flex-direction: column;
+  align-items: center !important;
+  position: absolute; 
+  left: 10px; 
+  bottom: 8px;
+  gap: 8px; 
+  align-items: end;
+}
+.micro .spark {
+  width: 120px; height: 32px; display: block; opacity: .9;
+  filter: drop-shadow(0 0 0.25rem rgba(123,215,255,.15));
+}
+.micro .bars {
+  display: grid; grid-auto-flow: column; gap: 4px;
+}
+.micro .bar {
+  width: 5px; height: 28px; border-radius: 3px;
+  background: linear-gradient(to top, rgba(123,215,255,.2), rgba(123,215,255,.35));
+  overflow: hidden; position: relative;
+}
+.micro .bar > i {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  background: var(--neon, #7bd7ff);
+  height: 0%;
+}
+.micro .bar[data-k="momentum"]  { background: linear-gradient(to top, rgba(255,180,80,.18), rgba(255,180,80,.35)); }
+.micro .bar[data-k="activity"]  { background: linear-gradient(to top, rgba(180,255,160,.18), rgba(180,255,160,.35)); }
+.micro label {
+  position:absolute; left:0; right:0; bottom:-14px; font-size:10px; text-align:center; color:#9acfee90;
+}
+
+.card .actions:last-child { margin-bottom: 50px; }
+
+.micro .pctrow {
+  display: flex; gap: 6px; align-items: center;
+  margin-bottom: 4px;
+}
+.micro .pct {
+  font-size: 11px; line-height: 1;
+  padding: 4px 6px; border-radius: 999px;
+  border: 1px solid transparent;
+  background: rgba(148,163,184,.10); 
+  color: #cbd5e1;                   
+  letter-spacing: .1px;
+  user-select: none;
+}
+.micro .pct.up {
+  color: var(--green, #19c37d);
+  background: color-mix(in oklab, var(--green, #19c37d) 16%, transparent);
+  border-color: color-mix(in oklab, var(--green, #19c37d) 30%, transparent);
+}
+.micro .pct.down {
+  color: var(--red, #ff5b5b);
+  background: color-mix(in oklab, var(--red, #ff5b5b) 16%, transparent);
+  border-color: color-mix(in oklab, var(--red, #ff5b5b) 30%, transparent);
+}
+.micro .pct.flat {
+  color: #9fb9c9;
+  background: rgba(123,215,255,.08);
+  border-color: rgba(123,215,255,.18);
+}
+
 .adcard{
-  /* add in rotatting border */
   --ring: 2px;       
   --glow: 36px;      
   --wedge: 16deg;    
@@ -322,7 +440,7 @@ input[type="checkbox"]:disabled{
 
 footer {
     display: flex;
-    flex-direction: row;
+    flex-direction: column;
     justify-content: center;
     align-items: center;
     color:var(--muted);

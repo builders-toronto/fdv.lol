@@ -20,9 +20,18 @@
 <link rel="stylesheet" href="assets/styles/global.css" />
 </head>
 <body>
+<div id="loader" class="loader-overlay" aria-live="polite" aria-busy="true" hidden>
+  <div class="loader-wrap">
+    <span class="sr-only">Loading…</span>
+    <svg class="spinner" viewBox="0 0 50 50" role="img" aria-label="Loading">
+      <circle class="ring" cx="25" cy="25" r="22" />
+      <circle class="arc"  cx="25" cy="25" r="22" />
+    </svg>
+  </div>
+</div>
 <header class="header">
   <div class="container">
-    <h1>⚡ FDV Radar</h1>
+    <h1>⚡ FDV lol</h1>
     <div id="meta" class="sub">Loading…</div>
     <div class="controls">
       <select id="sort">
@@ -45,7 +54,7 @@
 <main class="container grid">
   <div id="cards" class="cards"></div>
   <footer>
-    Cached in your browser for 90s. Not financial advice.
+    <p>Cached in your browser for 90s. Not financial advice.</p><p><a href="https://github.com/builders-toronto/fdv.lol" target="_blank" rel="noopener">Source code</a></p><p><span class="joinCta">Join us</span>: <a href="https://t.me/fdvlol" target="_blank" rel="noopener">Telegram</a> or <a href="https://x.com/lfbuilders" target="_blank" rel="noopener">X</a><br/></p>
   </footer>
 </main>
 <script src="assets/scripts/app.js"></script>
