@@ -25,26 +25,25 @@ async function getJSON(url, {timeout=8000}={}) {
   } finally { clearTimeout(id); }
 }
 
-async function fetchTrending() {
-  try {
-    const data = await getJSON('https://api.dexscreener.com/latest/dex/trending');
-    return Array.isArray(data?.pairs) ? data.pairs.filter(p=>p.chainId==='solana') : [];
-  } catch { return []; }
-}
+async function fetchTrending(){ return []; }
 
 async function fetchSearches() {
-  const terms = ['solana pepe','solana dog','solana wif','solana bonk','solana cat','solana frog','solana shib','solana meme','solana snek','solana bob'];
+  const terms = [
+    'solana pepe','solana dog','solana wif','solana bonk','solana cat',
+    'solana frog','solana shib','solana meme','solana snek','solana bob',
+    'solana new','solana trending','solana pump', 'solana dump', 'solana inu',
+    'solana elon', 'solana floki', 'solana corgi', 'solana monke', 'solana ape',
+    'solana dino', 'solana purr', 'solana purry', 'solana kitty', 'solana paws',
+    'solana toad', 'solana hamster', 'solana doge', 'solana shiba', 'solana giga',
+    'solana sigma', 'solana baby', 'solana wife', 'solana husband', 'solana reno'
+  ];
   const urls = terms.map(t=>`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(t)}`);
-  const results = await Promise.allSettled(urls.map(u=>getJSON(u).then(x=>x?.pairs||[])));
+  const results = await Promise.allSettled(urls.map(u => getJSON(u).then(x => x?.pairs || [])));
   const out=[]; const seen=new Set();
-  for (const r of results) {
-    if (r.status!=='fulfilled') continue;
-    for (const p of r.value) {
-      if (p.chainId!=='solana') continue;
-      const id = p.pairAddress || p.url || JSON.stringify([p.baseToken?.address,p.quoteToken?.address,p.dexId]);
-      if (seen.has(id)) continue; seen.add(id);
-      out.push(p);
-    }
+  for (const r of results) if (r.status==='fulfilled') for (const p of r.value) {
+    if (p.chainId!=='solana') continue;
+    const id = p.pairAddress || p.url || `${p.baseToken?.address}:${p.dexId}`;
+    if (!seen.has(id)) { seen.add(id); out.push(p); }
   }
   return out;
 }
@@ -529,7 +528,7 @@ async function pipeline({force=false}={}) {
   const relax = elRelax.checked;
   const cached = !force && readCache();
   if (cached) {
-    elMeta.textContent = `Showing cached ${cached.items.length} • Generated: ${cached.generatedAt} • cache ${Math.round((CACHE_TTL_MS-(Date.now()-cached._ts))/1000)}s left`;
+    elMeta.textContent = `Generated: ${cached.generatedAt}`;
     render(cached.items);
     return;
   }
@@ -564,7 +563,7 @@ async function pipeline({force=false}={}) {
   };
   writeCache(payload);
 
-  elMeta.textContent = `Loaded ${scored.length} • Generated: ${payload.generatedAt} • cached 90s`;
+  elMeta.textContent = `Generated: ${payload.generatedAt}`;
   render(scored);
 }
 

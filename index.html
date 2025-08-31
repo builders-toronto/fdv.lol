@@ -22,7 +22,7 @@
 <body>
 <header class="header">
   <div class="container">
-    <h1>⚡ FDV Radar - UltraLite</h1>
+    <h1>⚡ FDV Radar</h1>
     <div id="meta" class="sub">Loading…</div>
     <div class="controls">
       <select id="sort">
@@ -31,8 +31,13 @@
         <option value="liquidity">Sort: Liquidity</option>
         <option value="change24">Sort: 24h Change</option>
       </select>
-      <button id="refresh" class="btn">Refresh</button>
-      <label class="small"><input type="checkbox" id="relax" /> relax filter</label>
+      <div class="innerControls">
+        <button id="refresh" class="btn">Refresh</button>
+        <div class="relaxControl">
+            relax filter
+            <input type="checkbox" id="relax" disabled/>
+        </div>
+      </div>
     </div>
   </div>
 </header>
