@@ -1,11 +1,6 @@
 import { initRouter } from './src/engine/router.js';
 import { showHome, showProfile } from './src/engine/components.js';
-import { profileCss } from './src/ui/profile.js';
 import { elSort, elRefresh, elRelax } from './src/ui/render.js';
-
-const style = document.createElement('style');
-style.textContent = profileCss;
-document.head.appendChild(style);
 
 const router = initRouter({
     onHome: () => {
