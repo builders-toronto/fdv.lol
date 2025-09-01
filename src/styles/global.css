@@ -342,6 +342,7 @@ input[type="checkbox"]:disabled{
 
   position:relative; z-index:0; grid-column: 1 / -1;
   border-radius:18px; padding:16px;
+  margin-top: 25px;
   background: var(--panel);
   overflow:hidden;
   border: none;           

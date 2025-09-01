@@ -18,4 +18,11 @@ export const pct=(x)=> (x==null||isNaN(x))? '—' : `${x>0?'+':''}${x.toFixed(2)
 export const shortAddr=(m)=>m.slice(0,4)+'…'+m.slice(-4);
 export const ts=()=>new Date().toISOString();
 
+export const GISCUS = {
+  repo:        (window.GISCUS_REPO        || "builders-toronto/fdv.lol"),
+  repoId:      (window.GISCUS_REPO_ID     || "R_kgDOPnY0_Q"),
+  category:    (window.GISCUS_CATEGORY    || "Show and tell"),
+  categoryId:  (window.GISCUS_CATEGORY_ID || "DIC_kwDOPnY0_c4Cu2mD"),
+  theme:       (window.GISCUS_THEME       || "dark"),
+};
 

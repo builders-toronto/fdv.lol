@@ -1,6 +1,8 @@
 import { FALLBACK_LOGO } from "../config/env.js";
 import { fetchTokenInfo } from "../data/dexscreener.js";
 import { normalizeSocial, iconFor } from "../data/socials.js";
+import { mountGiscus } from "./chat.js";
+import { loadAds, pickAd, adCard } from "../ads/load.js";
 
 const elApp = document.getElementById("app");
 const elHeader = document.querySelector(".header");
@@ -13,6 +15,11 @@ const fmtNum   = (x) => (Number.isFinite(x) ? nfInt.format(x) : "—");
 const fmtPct   = (x) => (Number.isFinite(x) ? (x > 0 ? `+${x.toFixed(2)}%` : `${x.toFixed(2)}%`) : "—");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const escAttr = (s) => esc(s).replace(/"/g, "&quot;");
+
+const style = document.createElement('link');
+style.rel = 'stylesheet';
+style.href = '/src/styles/profile.css';
+document.head.appendChild(style);
 
 function debounce(fn, ms=120){
   let t; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), ms); };
@@ -36,6 +43,66 @@ const cssReco = (reco) => {
   const r = (reco || "watch").toLowerCase();
   return r === "buy" ? "buy" : r === "avoid" ? "avoid" : "watch";
 };
+
+const STAT_DEF = [
+  { key: "price",    label: "Price (USD)",      short: "Price",   fmt: (t) => Number.isFinite(t.priceUsd) ? `$${t.priceUsd.toFixed(6)}` : "—" },
+  { key: "liq",      label: "Liquidity",        short: "Liq",     fmt: (t) => fmtMoney(t.liquidityUsd) },
+  { key: "fdv",      label: "FDV",              short: "FDV",     fmt: (t) => fmtMoney(t.fdv ?? t.marketCap) },
+  { key: "liqfdv",   label: "Liq / FDV",        short: "L/F",     fmt: (t) => Number.isFinite(t.liqToFdvPct) ? `${t.liqToFdvPct.toFixed(2)}%` : "—" },
+  { key: "v24",      label: "24h Volume",       short: "Vol24",   fmt: (t) => fmtMoney(t.v24hTotal) },
+  { key: "vliqr",    label: "Vol/Liq 24h",      short: "V/L 24h", fmt: (t) => Number.isFinite(t.volToLiq24h) ? `${t.volToLiq24h.toFixed(2)}×` : "—" },
+  { key: "d5m",      label: "Δ 5m",             short: "Δ5m",     html: (t) => pill(t.change5m) },
+  { key: "d1h",      label: "Δ 1h",             short: "Δ1h",     html: (t) => pill(t.change1h) },
+  { key: "d6h",      label: "Δ 6h",             short: "Δ6h",     html: (t) => pill(t.change6h) },
+  { key: "d24h",     label: "Δ 24h",            short: "Δ24h",    html: (t) => pill(t.change24h) },
+  { key: "age",      label: "Age",              short: "Age",     fmt: (t) => relTime(t.ageMs) },
+  { key: "bs24",     label: "24h Buys/Sells",   short: "B/S 24",  fmt: (t) => `${fmtNum(t.tx24h?.buys)} / ${fmtNum(t.tx24h?.sells)}` },
+  { key: "buyratio", label: "Buy Ratio 24h",    short: "Buy%",    fmt: (t) => Number.isFinite(t.buySell24h) ? `${(t.buySell24h * 100).toFixed(1)}% buys` : "—" },
+];
+
+function buildStatsGrid(container) {
+  if (!container) return;
+  const frag = document.createDocumentFragment();
+  for (const s of STAT_DEF) {
+    const card = document.createElement('div');
+    card.className = 'stat';
+    card.setAttribute('data-stat', s.key);
+    card.setAttribute('data-short', s.short || s.label);
+    card.innerHTML = `
+      <div class="k">${esc(s.label)}</div>
+      <div class="v sk" aria-live="polite" aria-atomic="true">—</div>
+    `;
+    frag.appendChild(card);
+  }
+  container.replaceChildren(frag);
+}
+
+function setupStatsCollapse(gridEl) {
+  const grid = gridEl || document.querySelector('.profile__stats');
+  if (!grid) return;
+
+  const stats = grid.querySelectorAll('.stat');
+  if (stats.length <= 4) return; 
+
+  grid.classList.add('is-collapsed');
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn profile__stats-toggle';
+  btn.setAttribute('aria-expanded', 'false');
+  if (!grid.id) grid.id = 'profile-stats';
+  btn.setAttribute('aria-controls', grid.id);
+  btn.innerHTML = 'Show all stats <i aria-hidden="true" class="caret"></i>';
+  const toggle = () => {
+    const collapsed = grid.classList.toggle('is-collapsed');
+    const expanded = !collapsed;
+    btn.setAttribute('aria-expanded', String(expanded));
+    btn.innerHTML = (expanded ? 'Hide extra stats' : 'Show all stats') + ' <i aria-hidden="true" class="caret"></i>';
+  };
+  btn.addEventListener('click', toggle);
+  btn.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+  grid.after(btn);
+}
 
 function renderBarChart(mount, vals=[], { height=72, pad=4, max=null, labels=[] } = {}) {
   if (!mount) return;
@@ -76,20 +143,29 @@ function errorNotice(msg) {
   if (!elApp) return;
   elApp.innerHTML = `
     <div class="wrap">
-      <div class="small">Error: ${esc(msg)} <a data-link href="/">Go home</a></div>
+      <div class="small">Error: ${esc(msg)} <a data-link href="/">Home</a></div>
     </div>
   `;
 }
 
+let CURRENT_AD = null;
+
 export async function renderProfileView(input, { onBack } = {}) {
+  const adsPromise = loadAds();
+  try {
+    const ads = await adsPromise;
+    CURRENT_AD = pickAd(ads);
+  } catch {
+    CURRENT_AD = null;
+  }
+  const adHtml = CURRENT_AD ? adCard(CURRENT_AD) : '';
   if (elHeader) elHeader.style.display = "none";
   if (!elApp) return;
   const mint = typeof input === "string" ? input : input?.mint;
   if (!mint) {
-    elApp.innerHTML = `<div class="wrap"><div class="small">Token not found. <a data-link href="/">Go home</a></div></div>`;
+    elApp.innerHTML = `<div class="wrap"><div class="small">Token not found. <a data-link href="/">Home</a></div></div>`;
     return;
   }
-
   // Shell
   const shortMint = `${mint.slice(0,6)}…${mint.slice(-6)}`;
   elApp.innerHTML = `
@@ -105,22 +181,16 @@ export async function renderProfileView(input, { onBack } = {}) {
         </div>
         <div class="profile__links" id="profileLinks"></div>
       </div>
-      <hr />
+      <div class="divider"></div>
       <div class="profile__navigation">
-        <a class="btn buy-btn disabled" id="btnTradeTop" target="_blank" rel="noopener">Trade on Dexscreener</a>
+        <a class="btn buy-btn disabled" id="btnTradeTop" target="_blank" rel="noopener">Dexscreener</a>
         <div class="actions">
           <button class="btn btn-ghost" id="btnCopyMint" title="Copy mint">Copy</button>
-          <button class="btn" id="btnBack">← Back</button>
+          <button class="btn" id="btnBack">Back</button>
         </div>
     </div>
 
-      <div class="profile__stats">
-        ${[
-          "Price (USD)","Price (SOL)","Liquidity","FDV","Liq / FDV","24h Volume","Vol/Liq 24h",
-          "Δ 5m","Δ 1h","Δ 6h","Δ 24h","Age","24h Buys/Sells","Buy Ratio 24h"
-        ].map(k => `<div class="stat"><div class="k">${k}</div><div class="v sk">—</div></div>`).join("")}
-      </div>
-
+      <div class="profile__stats" id="statsGrid"></div>
       <div class="profile__grid">
         <div class="profile__card">
           <div class="label">Momentum (Δ%)</div>
@@ -144,14 +214,26 @@ export async function renderProfileView(input, { onBack } = {}) {
            </div>
         </div>
       </div>
+      ${adHtml}
+      <div id="chatMount" class="chatbox"></div>
     </div>
   `;
+
+  buildStatsGrid(document.getElementById('statsGrid'));
+  setupStatsCollapse(document.getElementById('statsGrid'));
 
   document.getElementById("btnBack")?.addEventListener("click", () => {
     if (onBack) onBack(); else if (history.length > 1) history.back(); else window.location.href="/";
   });
   document.getElementById("btnCopyMint")?.addEventListener("click", () =>
-    navigator.clipboard.writeText(mint).catch(()=>{})
+    navigator.clipboard.writeText("https://fdv.lol/token/" + mint).catch(()=>{})
+    . then(() => {
+      const btn = document.getElementById("btnCopyMint");
+      if (!btn) return;
+      const orig = btn.textContent;
+      btn.textContent = "Copied!";
+      setTimeout(() => { btn.textContent = orig; }, 1500);
+    })
   );
 
   if (window.sparklineSVG && Array.isArray(input?.changes)) {
@@ -187,20 +269,21 @@ export async function renderProfileView(input, { onBack } = {}) {
     }
   }
 
-  setStat(0, fmtMoney(t.priceUsd));
-  setStat(1, Number.isFinite(t.priceNative) ? `${t.priceNative} SOL` : "—");
-  setStat(2, fmtMoney(t.liquidityUsd));
-  setStat(3, fmtMoney(t.fdv ?? t.marketCap));
-  setStat(4, Number.isFinite(t.liqToFdvPct) ? `${t.liqToFdvPct.toFixed(2)}%` : "—");
-  setStat(5, fmtMoney(t.v24hTotal));
-  setStat(6, Number.isFinite(t.volToLiq24h) ? `${t.volToLiq24h.toFixed(2)}×` : "—");
-  setStatHtml(7, pill(t.change5m));
-  setStatHtml(8, pill(t.change1h));
-  setStatHtml(9, pill(t.change6h));
-  setStatHtml(10, pill(t.change24h));
-  setStat(11, relTime(t.ageMs));
-  setStat(12, `${fmtNum(t.tx24h.buys)} / ${fmtNum(t.tx24h.sells)}`);
-  setStat(13, Number.isFinite(t.buySell24h) ? `${(t.buySell24h*100).toFixed(1)}% buys` : "—");
+  const PRICE_USD = Number.isFinite(t.priceUsd) ? `$${t.priceUsd.toFixed(6)}` : "—";
+
+  setStat(0, PRICE_USD);
+  setStat(1, fmtMoney(t.liquidityUsd));
+  setStat(2, fmtMoney(t.fdv ?? t.marketCap));
+  setStat(3, Number.isFinite(t.liqToFdvPct) ? `${t.liqToFdvPct.toFixed(2)}%` : "—");
+  setStat(4, fmtMoney(t.v24hTotal));
+  setStat(5, Number.isFinite(t.volToLiq24h) ? `${t.volToLiq24h.toFixed(2)}×` : "—");
+  setStatHtml(6, pill(t.change5m));
+  setStatHtml(7, pill(t.change1h));
+  setStatHtml(8, pill(t.change6h));
+  setStatHtml(9, pill(t.change24h));
+  setStat(10, relTime(t.ageMs));
+  setStat(11, `${fmtNum(t.tx24h.buys)} / ${fmtNum(t.tx24h.sells)}`);
+  setStat(12, Number.isFinite(t.buySell24h) ? `${(t.buySell24h*100).toFixed(1)}% buys` : "—");
 
   const mom = [t.change5m, t.change1h, t.change6h, t.change24h].map(x => Number.isFinite(x) ? Math.max(0, x) : 0);
   const momBox = document.getElementById("momBars");
@@ -232,7 +315,7 @@ export async function renderProfileView(input, { onBack } = {}) {
       body.innerHTML = rows;
     }
   }
-
+  mountGiscus({ mint });
   renderLinks(t.socials);
 }
 
@@ -265,115 +348,3 @@ function renderLinks(t) {
     if (wrap) wrap.innerHTML = html;
   
 }
-
-export const profileCss = `
-.profile { 
-    padding: 16px;
-    /* center in middle of screen if short */
-    min-height: calc(100vh - 32px - 48px - 48px); 
-    box-sizing: border-box;
-    display: flex;
-    flex-direction: column;
-    max-width: 960px;
-    margin: 0 auto;
-}
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace }
-
-hr { border-top:1px solid rgba(7, 196, 7, 0.08); margin:12px 0 }
-
-.chartbox { padding: 4px 0 }
-.chartbox .bars { width: 100%; height: auto; display: block }
-
-.table-scroll { 
-  overflow: auto;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior: contain;       
-}
-.table-scroll .pairs { 
-  min-width: 560px;                    
-  width: 100%;
-  display: block;
-  height: 130px;
-  overflow: auto;
-}
-
-.table-scroll--xy { 
-  max-height: 48vh;                   
-  border-radius: 12px;
-  box-shadow: inset 0 0 0 1px rgba(122,222,255,.08);
-}
-
-/* Sticky header inside the scroller */
-.table-scroll thead th {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  background: var(--card);
-  /* Optional: make it pop */
-  backdrop-filter: saturate(120%) blur(6px);
-  /* subtle divider below header */
-  box-shadow: 0 1px 0 0 rgba(122,222,255,.12);
-}
-
-.pairs tbody tr:hover td { background: rgba(123,241,255,.04); }
-
-@media (max-width: 720px) {
-  .table-scroll--xy { max-height: 56vh; } /* a bit taller on phones */
-  .pairs th, .pairs td { padding: 10px 8px; }
-}
-
-.table-scroll::-webkit-scrollbar { height: 8px; width: 10px; }
-.table-scroll::-webkit-scrollbar-track { background: var(--panel); }
-.table-scroll::-webkit-scrollbar-thumb { background: rgba(122,222,255,.18); border-radius: 4px; }
-.table-scroll::-webkit-scrollbar-thumb:hover { background: rgba(122,222,255,.28); }
-
-.profile__hero { display:grid; grid-template-columns: 92px 1fr auto; gap:12px; align-items:center; margin-bottom: 12px }
-.profile__hero .media { width:92px; height:92px; border-radius:18px; background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02)); overflow:hidden; display:flex; align-items:center; justify-content:center }
-.profile__hero img.logo, .profile__hero .logo { width:84px; height:84px; border-radius:14px; background: rgba(255,255,255,.04) }
-.profile__hero .title { font-weight:800; font-size:20px }
-.profile__hero .row { display:flex; gap:8px; margin-top:6px }
-.profile__hero .actions { display:flex; gap:8px; align-items:center }
-.profile__navigation { display:flex;flex-direction: row;justify-content: space-between;align-items: flex-end;margin-bottom: 12px }
-.buy-btn { background: var(--buy); color:#06140b; font-weight:800; border:1px solid rgba(0,0,0,.25) }
-.buy-btn.disabled { opacity:.5; pointer-events:none }
-
-.profile__stats { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap:8px; margin: 8px 0 14px }
-.stat { background: var(--card); border:1px solid rgba(122,222,255,.10); padding:10px; border-radius:12px }
-.stat .k { font-size:12px; color: var(--muted); margin-bottom:4px }
-.stat .v { font-size:16px; font-weight:700; min-height:1em }
-.stat .v.sk { color: transparent; background: linear-gradient(90deg, rgba(255,255,255,.06), rgba(255,255,255,.14), rgba(255,255,255,.06)); background-size:200% 100%; animation: sh 1.2s linear infinite; border-radius:6px }
-
-.profile__grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(300px,1fr)); gap:12px }
-.profile__card { background: var(--card); border:1px solid rgba(122,222,255,.10); padding:12px; border-radius:14px }
-.chartbox { padding:4px 0 }
-svg.bars rect { fill: rgba(123,241,255,.8) }
-
-.label { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color: var(--muted); margin-bottom:8px }
-.reasons { margin:0; padding-left:18px; line-height:1.5 }
-.reasons li { margin:4px 0 }
-
-.pairs { width:100%; border-collapse: collapse; font-size:14px }
-.pairs th, .pairs td { padding:8px 6px; border-bottom:1px dashed rgba(122,222,255,.08) }
-.pairs th { text-align:left; color: var(--muted); font-weight:600 }
-.pairs td:last-child { text-align:right }
-
-.badge { display:inline-block; padding:5px 10px; border-radius:999px; font-weight:800; font-size:12px; color:#111 }
-.badge.buy   { background: var(--buy) }
-.badge.watch { background: var(--watch) }
-.badge.avoid { background: var(--avoid) }
-
-.pill { display:inline-block; font-weight:700; font-size:12px; padding:3px 8px; border-radius:999px; border:1px solid rgba(122,222,255,.18) }
-.pill.up { background: rgba(26,255,122,.12) }
-.pill.down { background: rgba(255,77,109,.12) }
-.pill.neutral { background: rgba(123,241,255,.10) }
-
-.link { color: var(--neon2); text-decoration:none; border-bottom:1px dotted rgba(123,241,255,.3); padding-bottom:1px }
-.link:hover { border-bottom-style:solid }
-
-.btn { background: var(--panel); border:1px solid rgba(122,222,255,.2); padding:6px 10px; border-radius:10px; color: var(--text); cursor:pointer }
-.btn-ghost { background: transparent }
-
-.axis { margin-top:4px; font-size:12px; color: var(--muted) }
-
-@keyframes sh { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
-`;
