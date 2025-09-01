@@ -84,6 +84,7 @@ export function iconFor(platform){
     case 'docs':
       return svg(`<path ${stroke} d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12V8l-4-6z"/><path ${stroke} d="M14 2v6h6"/>`);
     case 'website':
+      return svg(`<circle ${stroke} cx="12" cy="12" r="10"/><path ${stroke} d="M2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20"/>`);
     default:
       return svg(`<path ${stroke} d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z"/><path ${stroke} d="M3.6 9h16.8M3.6 15h16.8M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/>`);
   }

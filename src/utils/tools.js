@@ -1,6 +1,14 @@
-import { MEME_REGEX, CACHE_KEY } from '../config/env.js';
+import { MEME_REGEX, CACHE_KEY, nz } from '../config/env.js';
 
 const elLoader = document.getElementById('loader');
+
+export function fmtUsd(x){
+  const v = nz(x);
+  if (v>=1e9) return '$'+(v/1e9).toFixed(2)+'B';
+  if (v>=1e6) return '$'+(v/1e6).toFixed(2)+'M';
+  if (v>=1e3) return '$'+(v/1e3).toFixed(2)+'k';
+  return '$'+v.toFixed(2);
+}
 
 export async function getJSON(url, {timeout=8000}={}) {
   const ctrl = new AbortController();

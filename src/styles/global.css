@@ -91,12 +91,12 @@ select:focus, input:focus{border-color: var(--neon)}
 }
 
 .relaxControl{
-  display: flex;
-  align-items: center;
+  display: none;
+  /* align-items: center;
   margin-left: 5px;
   gap: 6px;
   font-size: .9rem;
-  color: var(--muted);
+  color: var(--muted); */
 }
 
 input[type="checkbox"]{
@@ -146,7 +146,8 @@ input[type="checkbox"]:checked::after{
 }
 
 input[type="checkbox"]:disabled{
-  opacity:.5; cursor:not-allowed;
+  opacity:.5; 
+  cursor:not-allowed;
 }
 
 @media (prefers-reduced-motion: reduce){
@@ -161,6 +162,7 @@ input[type="checkbox"]:disabled{
     linear-gradient(135deg, rgba(26,255,213,.08), rgba(123,241,255,.08));
   border:1px solid rgba(122,222,255,.15);
   border-radius:18px; padding:18px; margin-top:16px;
+  padding: 20px;
   box-shadow: 0 10px 35px rgba(0,0,0,.35), inset 0 0 0 1px rgba(26,255,213,.05);
 }
 
@@ -182,10 +184,10 @@ input[type="checkbox"]:disabled{
   pointer-events:none; 
   z-index: 0;
   content:""; position:absolute; inset:-2px; border-radius:18px;
-  background: conic-gradient(from 180deg at 50% 50%, rgba(26,255,213,.16), rgba(123,241,255,.16), transparent 40% 100%);
+  /* background: conic-gradient(from 180deg at 50% 50%, rgba(26,255,213,.16), rgba(123,241,255,.16), transparent 40% 100%); */
   filter: blur(18px); opacity:.0; transition: .25s opacity;
 }
-.card:hover{ transform: translateY(-3px); border-color: rgba(26,255,213,.35); box-shadow: 0 10px 30px rgba(26,255,213,.08)}
+.card:hover{ border-color: rgba(26,255,213,.35); box-shadow: 0 10px 30px rgba(26,255,213,.08)}
 .card:hover::before{opacity:.6}
 
 .card a {
@@ -245,6 +247,7 @@ input[type="checkbox"]:disabled{
   border:1px solid rgba(122,222,255,.22);
   background:rgba(123,241,255,.06); color:var(--text);
   transition:transform .12s ease, filter .12s ease, border-color .12s ease;
+  margin-right: 6px;
   margin-bottom: 10px;
 }
 .iconbtn:hover {

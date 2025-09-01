@@ -17,3 +17,5 @@ export const normLog=(v,div=6)=>clamp(Math.log10(Math.max(v,1)+1)/div,0,1);
 export const pct=(x)=> (x==null||isNaN(x))? '—' : `${x>0?'+':''}${x.toFixed(2)}%`;
 export const shortAddr=(m)=>m.slice(0,4)+'…'+m.slice(-4);
 export const ts=()=>new Date().toISOString();
+
+

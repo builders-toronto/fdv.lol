@@ -1,6 +1,6 @@
 import { ADS_CACHE_KEY, ADS_CACHE_MS, JUP_SWAP, EXPLORER, FALLBACK_LOGO, shortAddr } from "../config/env.js";
 import { getJSON } from "../utils/tools.js";
-import { normalizeSocial, iconFor } from "../servicecs/socials.js";
+import { normalizeSocial, iconFor } from "../data/socials.js";
 import { normalizeWebsite } from "../utils/normalize.js";
 
 function readInlineAds(){

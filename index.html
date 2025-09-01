@@ -9,15 +9,14 @@
     <meta name="keywords" content="solana, memecoin, bonk, wif, dog, inu, pepe, cat, meme, ponk, samo, purry, purr, kitty, meow, woof, frog, snek, toad, bob, dino, monke, monkey, ape, corgi, floki, elon" />
     <meta property="og:title" content="FDV Memecoin Radar - UltraLite" />
     <meta property="og:description" content="Blazing-fast client-side SOL memecoin radar with explainable BUY/WATCH/AVOID." />
-    <meta property="og:image" content="assets/images/fdv.lol.png" />
+    <meta property="og:image" content="/src/assets/images/fdv.lol.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta property="og:type" content="website" />
-
-    <link rel="icon" type="image/png" href="assets/images/icons/fdv.lol.ico" />
+    <link rel="icon" type="image/png" href="/src/assets/images/icons/fdv.lol.ico" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="src/styles/global.css" />
+    <link rel="stylesheet" href="/src/styles/global.css" />
   </head>
   <body>
   <div id="loader" class="loader-overlay" aria-live="polite" aria-busy="true" hidden>
@@ -51,12 +50,12 @@
     </div>
   </header>
 
-  <main class="container grid">
+  <main id="app" class="container grid">
     <div id="cards" class="cards"></div>
-    <footer>
-      <p>Cached in your browser for 90s. Not financial advice.</p><p><a href="https://github.com/builders-toronto/fdv.lol" target="_blank" rel="noopener">Source code</a></p><p><span class="joinCta">Join us</span>: <a href="https://t.me/fdvlol" target="_blank" rel="noopener">Telegram</a> or <a href="https://x.com/lfbuilders" target="_blank" rel="noopener">X</a><br/></p>
-    </footer>
   </main>
-  <script type="module" src="app.js"></script>
+  <footer>
+    <p>Cached in your browser for 90s. Not financial advice.</p><p><a href="https://github.com/builders-toronto/fdv.lol" target="_blank" rel="noopener">Source code</a></p><p><span class="joinCta">Join us</span>: <a href="https://t.me/fdvlol" target="_blank" rel="noopener">Telegram</a> or <a href="https://x.com/lfbuilders" target="_blank" rel="noopener">X</a><br/></p>
+  </footer>
+  <script type="module" src="/main.js"></script>
   </body>
 </html>
