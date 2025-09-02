@@ -26,3 +26,13 @@ export const GISCUS = {
   theme:       (window.GISCUS_THEME       || "dark"),
 };
 
+export const MEME_KEYWORDS = [
+    'pepe','dog','wif','bonk','cat',
+    'frog','shib','meme','snek','bob',
+    'new','trending','pump','dump','inu',
+    'elon','floki','corgi','monke','ape',
+    'dino','purr','purry','kitty','paws',
+    'toad','hamster','doge','shiba','giga',
+    'sigma','baby','wife','husband','reno',
+];
+

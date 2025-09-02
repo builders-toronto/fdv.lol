@@ -104,31 +104,75 @@ function setupStatsCollapse(gridEl) {
   grid.after(btn);
 }
 
-function renderBarChart(mount, vals=[], { height=72, pad=4, max=null, labels=[] } = {}) {
+function setupExtraMetricsToggle(cardEl) {
+  const card = cardEl || document.querySelector('.profile__card__extra_metrics');
+  if (!card) return;
+
+  const label = card.querySelector('.label') || (() => {
+    const l = document.createElement('div');
+    l.className = 'label';
+    l.textContent = 'Pairs';
+    card.prepend(l);
+    return l;
+  })();
+
+  const content = card.querySelector('.table-scroll');
+  if (!content) return;
+
+  let expanded = false;
+  content.style.display = 'none';
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn btn-ghost extra-metrics-toggle';
+  btn.setAttribute('aria-expanded', 'false');
+  btn.setAttribute('aria-controls', 'pairsBody');
+  btn.innerHTML = 'Show pairs';
+
+  const header = document.createElement('div');
+  header.style.display = 'flex';
+  header.style.justifyContent = 'space-between';
+  header.style.alignItems = 'center';
+  header.append(label);
+  header.append(btn);
+  card.prepend(header);
+
+  const toggle = () => {
+    expanded = !expanded;
+    content.style.display = expanded ? '' : 'none';
+    btn.setAttribute('aria-expanded', String(expanded));
+    btn.innerHTML = (expanded ? 'Hide pairs' : 'Show pairs');
+  };
+
+  btn.addEventListener('click', toggle);
+  btn.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+}
+
+
+function renderBarChart(mount, vals = [], { height = 72, pad = 4, max = null, labels = [] } = {}) {
   if (!mount) return;
   const draw = () => {
     const w = Math.max(220, Math.floor(mount.clientWidth || mount.parentElement?.clientWidth || 320));
     const h = height;
-    const v = vals.map(x => Math.max(0, Number(x)||0));
-    const M = (typeof max === "number" && max>0) ? max : Math.max(1, ...v);
-    const bw = (w - pad*2) / (v.length || 1);
+    const v = vals.map(x => Math.max(0, Number(x) || 0));
+    const M = (typeof max === "number" && max > 0) ? max : Math.max(1, ...v);
+    const bw = (w - pad * 2) / (v.length || 1);
 
-    const bars = v.map((x,i) => {
-      const bh = (x/M) * (h - pad*2);
-      const x0 = pad + i*bw, y0 = h - pad - bh;
-      return `<rect x="${x0.toFixed(2)}" y="${y0.toFixed(2)}" width="${Math.max(1,bw-3).toFixed(2)}" height="${Math.max(1,bh).toFixed(2)}" rx="2" ry="2"/>`;
+    const bars = v.map((x, i) => {
+      const bh = (x / M) * (h - pad * 2);
+      const x0 = pad + i * bw, y0 = h - pad - bh;
+      return `<rect x="${x0.toFixed(2)}" y="${y0.toFixed(2)}" width="${Math.max(1, bw - 3).toFixed(2)}" height="${Math.max(1, bh).toFixed(2)}" rx="2" ry="2"/>`;
     }).join("");
-
     const axis = labels.length
-      ? `<div class="axis">${labels.map(esc).join(" &nbsp; ")}</div>`
+      ? `<div class="axis" style="--n:${labels.length};--pad:${pad}px;">${
+          labels.map(l => `<div class="axis__tick">${esc(l)}</div>`).join("")
+        }</div>`
       : "";
 
     mount.innerHTML = `
-      <svg class="bars" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"></svg>
+      <svg class="bars" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">${bars}</svg>
       ${axis}
     `;
-    const svg = mount.querySelector("svg");
-    svg.innerHTML = bars;
   };
 
   draw();
@@ -201,9 +245,9 @@ export async function renderProfileView(input, { onBack } = {}) {
           <div class="label">Volume (m5 / h1 / h6 / h24)</div>
           <div id="volBars" class="chartbox"></div>
         </div>
-
-        <div class="profile__card">
-          <div class="label">Pairs</div>
+      </div>
+        <div class="profile__card__extra_metrics">
+          <div class="label"></div>
           <div class="table-scroll">
             <table class="pairs">
                 <thead><tr><th>DEX</th><th>Price</th><th>Liq</th><th>Vol 24h</th><th>Δ1h</th><th>Δ24h</th><th></th></tr></thead>
@@ -213,7 +257,6 @@ export async function renderProfileView(input, { onBack } = {}) {
             </table>
            </div>
         </div>
-      </div>
       ${adHtml}
       <div id="chatMount" class="chatbox"></div>
     </div>
@@ -221,9 +264,11 @@ export async function renderProfileView(input, { onBack } = {}) {
 
   buildStatsGrid(document.getElementById('statsGrid'));
   setupStatsCollapse(document.getElementById('statsGrid'));
+  setupExtraMetricsToggle(document.querySelector('.profile__card__extra_metrics')); 
 
   document.getElementById("btnBack")?.addEventListener("click", () => {
-    if (onBack) onBack(); else if (history.length > 1) history.back(); else window.location.href="/";
+    //if (onBack) onBack(); else if (history.length > 1) history.back(); else window.location.href="/"; //TODO: fix back
+    window.location.href="/";
   });
   document.getElementById("btnCopyMint")?.addEventListener("click", () =>
     navigator.clipboard.writeText("https://fdv.lol/token/" + mint).catch(()=>{})

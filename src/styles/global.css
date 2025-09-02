@@ -24,7 +24,7 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
   overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0;
 }
 
-.loader-overlay[hidden] { display: none !important; }
+.loader-overlay[hidden] { display: grid; }
 .loader-overlay {
   position: fixed; inset: 0; z-index: 9999;
   display: grid; place-items: center;
