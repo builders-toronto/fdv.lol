@@ -4,6 +4,7 @@ import { adCard } from '../ads/load.js';
 
 export const elCards = document.getElementById('cards');
 export const elMeta  = document.getElementById('meta');
+export const elMetaBase = document.getElementById('metaBase');
 export const elQ     = document.getElementById('q');
 export const elSort  = document.getElementById('sort');
 export const elRefresh = document.getElementById('refresh');

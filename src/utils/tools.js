@@ -34,7 +34,7 @@ export function hideLoading() {
   document.documentElement.style.overflow = '';
 }
 
-export function readCache(){
+export function readCache(){ //broken
   try{
     const raw = localStorage.getItem(CACHE_KEY);
     if (!raw) return null;

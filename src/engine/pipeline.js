@@ -2,7 +2,7 @@ import { ts, MEME_KEYWORDS } from '../config/env.js';
 import { fetchDexscreener, streamDexscreener } from '../data/dexscreener.js'; 
 import { fetchTrending } from '../data/solana.js';
 import { bestPerToken, scoreAndRecommend } from '../core/calculate.js';
-import { renderSkeleton, elRelax, elMeta, elCards  } from '../ui/render.js';
+import { renderSkeleton, elRelax, elMeta, elMetaBase, elCards  } from '../ui/render.js';
 import { readCache, writeCache } from '../utils/tools.js';
 import { enrichMissingInfo } from '../utils/normalize.js';
 import { loadAds, pickAd } from '../ads/load.js';
@@ -22,7 +22,7 @@ export async function pipeline({force=false, stream=true, timeboxMs=10_000} = {}
   const relax = elRelax.checked;
   const cached = !force && readCache();
   if (!stream && cached) {
-    elMeta.textContent = `Generated: ${cached.generatedAt}`;
+    elMetaBase.textContent = `Generated: ${cached.generatedAt}`;
     return cached.items;
   }
 
@@ -71,6 +71,7 @@ export async function pipeline({force=false, stream=true, timeboxMs=10_000} = {}
       elMeta.textContent = `Stream error: ${merged.length}`;
     } finally {
       elMeta.textContent = `Update complete.`;
+      elMetaBase.textContent = `Generated: ${Date.now()}`;
     }
   }, 300);
 
