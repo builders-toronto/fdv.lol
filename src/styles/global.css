@@ -161,7 +161,7 @@ input[type="checkbox"]:disabled{
     linear-gradient(to bottom, var(--grid) 1px, transparent 1px) 0 0/ 32px 32px,
     linear-gradient(135deg, rgba(26,255,213,.08), rgba(123,241,255,.08));
   border:1px solid rgba(122,222,255,.15);
-  border-radius:18px; padding:18px; margin-top:16px;
+  /* border-radius:18px; padding:18px; margin-top:16px; it looks better squared on mobile */
   padding: 20px;
   box-shadow: 0 10px 35px rgba(0,0,0,.35), inset 0 0 0 1px rgba(26,255,213,.05);
 }
