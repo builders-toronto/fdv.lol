@@ -1,6 +1,8 @@
 import { MEME_KEYWORDS } from '../config/env.js'
 import { getJSON } from '../utils/tools.js';
 
+// TODO: be nicer to dexscreener
+
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function jitter(ms) { return Math.floor(ms * (0.5 + Math.random())); }
 
@@ -16,25 +18,35 @@ const BASE_BACKOFF_MS  = 600;
 export async function* streamDexscreener({
   keywords = MEME_KEYWORDS,
   prefix = 'solana ',
-  maxConcurrent = MAX_CONCURRENT,
-  spacingMs = START_SPACING_MS,
+  maxConcurrent = 2,       
+  spacingMs = 150,          
+  windowSize = 40,          
+  windowOffset = 0,         
+  requestBudget = 60,       
   signal,
   mapResult,
 } = {}) {
-  const terms = keywords.map(k => `${prefix}${k}`).sort(() => Math.random() - 0.5);
-  const seen = new Set(); 
+  const raw = keywords.map(k => `${prefix}${k}`);
+  const start = windowOffset % raw.length;
+  const terms = raw.slice(start, start + windowSize);
+  if (terms.length < windowSize) terms.push(...raw.slice(0, windowSize - terms.length));
+
+  const seen = new Set();
+  let budgetLeft = Math.max(1, requestBudget);
 
   let cursor = 0;
-  let active = 0;
+  const running = new Set();
 
   const step = async () => {
     const myIdx = cursor++;
-    if (myIdx >= terms.length) return null; 
+    if (myIdx >= terms.length) return null;
+    if (budgetLeft <= 0) return null;
 
     if (spacingMs && myIdx > 0) await sleep(spacingMs);
 
     const term = terms[myIdx];
     const url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(term)}`;
+    budgetLeft -= 1;
 
     try {
       const json = await fetchDS(url, { signal });
@@ -48,20 +60,18 @@ export async function* streamDexscreener({
         fresh.push(mapResult ? mapResult(p) : p);
       }
       return { term, pairs, newPairs: fresh };
-    } catch (_) {
+    } catch {
       return { term, pairs: [], newPairs: [] };
     }
   };
 
-  const running = new Set();
-  while (cursor < terms.length || running.size) {
-    while (running.size < Math.min(maxConcurrent, terms.length - cursor)) {
+  while ((cursor < terms.length || running.size) && budgetLeft > 0) {
+    while (running.size < Math.min(maxConcurrent, terms.length - cursor) && budgetLeft > 0) {
       const p = step();
       if (!p) break;
       const task = p.then(res => ({ res })).catch(err => ({ err })).finally(() => running.delete(task));
       running.add(task);
     }
-
     if (running.size) {
       const settled = await Promise.race([...running]);
       const { res } = settled;
@@ -70,44 +80,99 @@ export async function* streamDexscreener({
   }
 }
 
-async function fetchDS(url) {
-  const cached = _cache.get(url);
-  if (cached && (Date.now() - cached.t) < CACHE_TTL_MS) {
-    return cached.data;
+class RateLimiter {
+  constructor({ rps = 0.8, burst = 3, minRps = 0.2, maxRps = 1.5 } = {}) {
+    this.capacity = burst;
+    this.tokens = burst;
+    this.rps = rps;
+    this.minRps = minRps;
+    this.maxRps = maxRps;
+    this.lastRefill = Date.now();
+    this.cooldownUntil = 0;
   }
+  _refill() {
+    const now = Date.now();
+    const elapsed = (now - this.lastRefill) / 1000;
+    this.lastRefill = now;
+    this.tokens = Math.min(this.capacity, this.tokens + elapsed * this.rps);
+  }
+  async removeToken() {
+    while (true) {
+      this._refill();
+
+      const now = Date.now();
+      if (now < this.cooldownUntil) {
+        await sleep(this.cooldownUntil - now);
+        continue;
+      }
+
+      if (this.tokens >= 1) {
+        this.tokens -= 1;
+        return;
+      }
+      const waitMs = Math.max(5, (1 - this.tokens) / this.rps * 1000);
+      await sleep(waitMs);
+    }
+  }
+  on429(retryAfterMs = 0) {
+    this.rps = Math.max(this.minRps, this.rps * 0.65);
+    this.cooldownUntil = Math.max(this.cooldownUntil, Date.now() + Math.max(800, retryAfterMs));
+  }
+  onSuccess() {
+    this.rps = Math.min(this.maxRps, this.rps * 1.05);
+  }
+}
+
+const limiter = new RateLimiter({
+  rps: 0.8,     
+  burst: 3,     
+  minRps: 0.25, 
+  maxRps: 1.2,  
+});
+
+async function fetchDS(url, { signal } = {}) {
+  const cached = _cache.get(url);
+  if (cached && (Date.now() - cached.t) < CACHE_TTL_MS) return cached.data;
 
   let attempt = 0;
   while (true) {
     attempt++;
 
+    await limiter.removeToken();
+
     const ac = new AbortController();
     const to = setTimeout(() => ac.abort(new Error('timeout')), REQUEST_TIMEOUT);
+    const linkAbort = () => signal?.aborted && ac.abort(signal.reason);
+    if (signal) {
+      if (signal.aborted) ac.abort(signal.reason);
+      else signal.addEventListener('abort', linkAbort, { once: true });
+    }
 
     try {
       const data = await getJSON(url, { signal: ac.signal, headers: { accept: 'application/json' } });
       clearTimeout(to);
       _cache.set(url, { t: Date.now(), data });
+      limiter.onSuccess();
       return data;
     } catch (err) {
       clearTimeout(to);
 
       const isAbort = err?.name === 'AbortError' || /timeout/i.test(String(err?.message || ''));
-
       const status = err?.status ?? (/\b(\d{3})\b/.exec(String(err?.message))?.[1] | 0);
-
       const retryable = isAbort || status === 429 || (status >= 500 && status < 600);
+
       if (!retryable || attempt > MAX_RETRIES) {
         throw err;
       }
-
-      let retryAfterMs = 0;
+      let raMs = 0;
       const retryAfter = err?.headers?.get?.('Retry-After');
       if (retryAfter) {
         const n = Number(retryAfter);
-        retryAfterMs = Number.isFinite(n) ? n * 1000 : 0;
+        raMs = Number.isFinite(n) ? n * 1000 : 0;
       }
+      limiter.on429(raMs);
 
-      const backoff = retryAfterMs || jitter(BASE_BACKOFF_MS * Math.pow(2, attempt - 1));
+      const backoff = raMs || jitter(BASE_BACKOFF_MS * Math.pow(2, attempt - 1));
       await sleep(backoff);
     }
   }
@@ -187,8 +252,7 @@ export async function fetchDexscreener() {
 
 export async function fetchTokenInfo(mint) {
   const url = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(mint)}`;
-
-  // use the same robust fetch wrapper
+  // change fetch wrapper for version re
   let json;
   try {
     json = await fetchDS(url);
