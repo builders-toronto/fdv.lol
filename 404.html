@@ -1,10 +1,60 @@
 <!doctype html>
-<meta charset="utf-8">
-<script>
-  (function () {
-    var p = location.pathname;
-    if (p.startsWith('/assets/') || /\.[a-z0-9]+$/i.test(p)) return;
-    sessionStorage.setItem('spa:path', p + location.search + location.hash);
-    location.replace('/');
-  })();
-</script>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Profile Page | fdv.lol</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="FDV.lol - Token Profile" />
+  <meta property="og:description" content="View token price, liquidity, momentum, pairs and more on Solana." />
+  <meta property="og:image" content="https://fdv.lol/src/assets/fdv.lol.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="FDV.lol — Token Profile" />
+  <meta name="twitter:description" content="View token price, liquidity, momentum, pairs and more on Solana." />
+  <meta name="twitter:image" content="https://fdv.lol/src/assets/fdv.lol.png" />
+  <link rel="icon" type="image/png" href="https://fdv.lol/src/assets/images/icons/fdv.lol.ico" />
+  <link id="canonical-link" rel="canonical" href="/" />
+
+  <style>
+    :root { color-scheme: dark light; }
+    html,body { height: 100%; margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    body { display: grid; place-items: center; background: #071117; color: #cfe8f1; }
+    .wrap { text-align: center; padding: 24px; max-width: 640px; }
+    .muted { opacity: .7; }
+    a { color: #7aedff; text-decoration: none; border-bottom: 1px dotted rgba(122,222,255,.5); }
+    a:hover { border-bottom-style: solid; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Loading…</h1>
+    <p class="muted">If you're not redirected automatically, <a id="fallbackLink" href="/">click here</a>.</p>
+  </div>
+
+  <noscript>
+    <div class="wrap">
+      <p>JavaScript is required. Open the <a href="/">home page</a> and navigate to the token again.</p>
+    </div>
+  </noscript>
+
+  <script>
+    (function () {
+      var p = location.pathname;
+      if (p.startsWith('/assets/') || /\.[a-z0-9]+$/i.test(p)) return;
+      var hashRoute = '#' + p + (location.search || '') + (location.hash || '');
+      var canonical = '/' + (hashRoute || '');
+      document.getElementById('canonical-link').setAttribute('href', canonical);
+      document.getElementById('fallbackLink').setAttribute('href', canonical);
+      try { sessionStorage.setItem('spa:path', p + location.search + location.hash); } catch (_) {}
+      var ua = (navigator.userAgent || '').toLowerCase();
+      var isBot = /(bot|crawl|spider|slackbot|discord|twitterbot|facebookexternalhit|linkedinbot|embedly|whatsapp|telegram|vkshare|pinterest|redditbot|preview)/i.test(ua);
+
+      if (!isBot) {
+        location.replace('/' + hashRoute);
+      }
+    })();
+  </script>
+</body>
+</html>
