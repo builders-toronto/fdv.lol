@@ -1,1 +1,4 @@
-rawr
+User-agent: *
+Allow: /
+
+Sitemap: https://fdv.lol/sitemap.xml
