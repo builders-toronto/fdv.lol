@@ -62,15 +62,15 @@ export async function pipeline({force=false, stream=true, timeboxMs=10_000} = {}
         onUpdate({ items: finalCached.items, ad: CURRENT_AD });
       }
 
-      elMeta.textContent = `Updating… ${merged.length} pairs`;
+      elMeta.textContent = `Scanning.. ${merged.length} pairs`;
       lastRenderedCount = merged.length;
 
-      elMeta.textContent = `Updating… ${merged.length} pairs`;
+      elMeta.textContent = `Scanning... ${merged.length} pairs`;
       lastRenderedCount = merged.length;
     } catch (e) {
       elMeta.textContent = `Stream error: ${merged.length}`;
     } finally {
-      elMeta.textContent = `Update complete.`;
+      elMeta.textContent = `Scanning.`;
       elMetaBase.textContent = `Generated: ${Date.now()}`;
     }
   }, 300);
