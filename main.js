@@ -1,6 +1,7 @@
 import { initRouter } from './src/router/switch.js';
 import { showHome, showProfile } from './src/router/home.js';
 import { elSort, elRefresh, elRelax } from './src/ui/render.js';
+import './src/ui/legal.js';
 
 const router = initRouter({
     onHome: () => {
