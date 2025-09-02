@@ -4,6 +4,8 @@ import { normalizeSocial, iconFor } from "../data/socials.js";
 import { mountGiscus } from "./chat.js";
 import { loadAds, pickAd, adCard } from "../ads/load.js";
 
+//TODO: refactor
+
 const elApp = document.getElementById("app");
 const elHeader = document.querySelector(".header");
 

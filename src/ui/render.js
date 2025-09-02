@@ -9,26 +9,38 @@ export const elSort  = document.getElementById('sort');
 export const elRefresh = document.getElementById('refresh');
 export const elRelax = document.getElementById('relax');
 
-export function render(items, adPick) {
-  const sort = elSort.value;
-  items = [...items];
-  items.sort((a,b)=>{
-    if (sort==='volume') return b.volume.h24 - a.volume.h24;
-    if (sort==='liquidity') return b.liquidityUsd - a.liquidityUsd;
-    if (sort==='change24') return b.change.h24 - a.change.h24;
-    return b.score - a.score;
+let _latestItems = [];
+let _latestAd = null;
+
+function sortItems(items, sortKey) {
+  const arr = [...items];
+  arr.sort((a, b) => {
+    if (sortKey === 'volume')    return (b.volume?.h24 || 0)     - (a.volume?.h24 || 0);
+    if (sortKey === 'liquidity') return (b.liquidityUsd || 0)    - (a.liquidityUsd || 0);
+    if (sortKey === 'change24')  return (b.change?.h24 || 0)     - (a.change?.h24 || 0);
+    return (b.score || 0)        - (a.score || 0); 
   });
+  return arr;
+}
 
-  items = items.slice(0, MAX_CARDS);
+function doRender() {
+  const sort = elSort?.value || 'score';
+  let items = sortItems(_latestItems, sort).slice(0, MAX_CARDS);
 
-  if (!items.length){
+  if (!items.length) {
     elCards.innerHTML = `<div class="small">No matches. Try “relax filter”, different sort, or refresh.</div>`;
     return;
   }
-  elCards.innerHTML = items.map(coinCard).join('');
 
-  const adHtml = adPick ? adCard(adPick) : '';
-  elCards.innerHTML = adHtml + items.map(coinCard).join('');
+  const adHtml = _latestAd ? adCard(_latestAd) : '';
+  const cardsHtml = items.map(coinCard).join('');
+  elCards.innerHTML = adHtml + cardsHtml;
+}
+
+export function render(items, adPick) {
+  _latestItems = Array.isArray(items) ? items : [];
+  _latestAd = adPick || null;
+  doRender();
 }
 
 export function renderSkeleton(n=8){
@@ -51,3 +63,5 @@ export function renderSkeleton(n=8){
     elCards.appendChild(d);
   }
 }
+
+elSort?.addEventListener('change', doRender);

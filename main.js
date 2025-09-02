@@ -1,5 +1,5 @@
-import { initRouter } from './src/engine/router.js';
-import { showHome, showProfile } from './src/engine/components.js';
+import { initRouter } from './src/router/switch.js';
+import { showHome, showProfile } from './src/router/home.js';
 import { elSort, elRefresh, elRelax } from './src/ui/render.js';
 
 const router = initRouter({

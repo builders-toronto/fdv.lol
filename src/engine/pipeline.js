@@ -1,4 +1,4 @@
-import { ts } from '../config/env.js';
+import { ts, MEME_KEYWORDS } from '../config/env.js';
 import { fetchDexscreener, streamDexscreener } from '../data/dexscreener.js'; 
 import { fetchTrending } from '../data/solana.js';
 import { bestPerToken, scoreAndRecommend } from '../core/calculate.js';
@@ -58,10 +58,19 @@ export async function pipeline({force=false, stream=true, timeboxMs=10_000} = {}
         _ts: Date.now(),
       };
 
+      if (typeof onUpdate === 'function') {
+        onUpdate({ items: finalCached.items, ad: CURRENT_AD });
+      }
+
+      elMeta.textContent = `Updating… ${merged.length} pairs`;
+      lastRenderedCount = merged.length;
+
       elMeta.textContent = `Updating… ${merged.length} pairs`;
       lastRenderedCount = merged.length;
     } catch (e) {
-      console.warn('stream flush error', e);
+      elMeta.textContent = `Stream error: ${merged.length}`;
+    } finally {
+      elMeta.textContent = `Update complete.`;
     }
   }, 300);
 
@@ -81,14 +90,24 @@ export async function pipeline({force=false, stream=true, timeboxMs=10_000} = {}
       const payload = { generatedAt: ts(), items: scored, _ts: Date.now() };
       writeCache(payload);
       elMeta.textContent = `Generated: ${payload.generatedAt}`;
+      if (typeof onUpdate === 'function') onUpdate({ items: scored, ad: CURRENT_AD });
       return { items: scored, ad: CURRENT_AD };
     }
 
     const startTs = Date.now();
 
-    const streamer = (async () => {
-      for await (const { newPairs } of streamDexscreener({ signal: ac.signal })) {
+    let windowOffset = (pipeline._offset || 0) % MEME_KEYWORDS.length;
+    pipeline._offset = windowOffset + 40; 
 
+    const streamer = (async () => {
+      for await (const { term, newPairs } of streamDexscreener({
+        signal: ac.signal,
+        windowSize: 40,
+        windowOffset,
+        requestBudget: 60,
+        maxConcurrent: 2,
+        spacingMs: 150,
+      })) {
         let pushed = 0;
         for (const p of newPairs) {
           const id = p.pairAddress || p.url || `${p.baseToken?.address}:${p.dexId}`;
@@ -97,7 +116,8 @@ export async function pipeline({force=false, stream=true, timeboxMs=10_000} = {}
           allPairs.push(p);
           pushed++;
         }
-        if (pushed > 0) flush(); 
+        if (pushed > 0) flush();
+        elMeta.textContent = `Searching… ${seenPairs.size} pairs • term: ${term}`;
       }
     })();
 
@@ -123,10 +143,10 @@ export async function pipeline({force=false, stream=true, timeboxMs=10_000} = {}
       await flush();
     }
     if (finalCached) writeCache(finalCached);
-    elMeta.textContent = `Generated: ${finalCached?.generatedAt || ts()}`;
-
-    return { items: finalCached?.items || [], ad: CURRENT_AD };
-  } catch (err) {
+      elMeta.textContent = `Generated: ${finalCached?.generatedAt || ts()}`;
+if (typeof onUpdate === 'function') onUpdate({ items: finalCached?.items || [], ad: CURRENT_AD });
+      return { items: finalCached?.items || [], ad: CURRENT_AD };
+    } catch (err) {
     if (ac.signal.aborted) {
       elMeta.textContent = `Stopped.`;
       return { items: finalCached?.items || [], ad: CURRENT_AD };
