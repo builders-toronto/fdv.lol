@@ -1,0 +1,35 @@
+name: Build OG Share Pages
+
+on:
+  workflow_dispatch:       
+  schedule:
+    - cron: "*/30 * * * *" 
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Generate OG pages
+        env:
+          SITE_ORIGIN: https://fdv.lol/
+          REFRESH_HOURS: 12
+          MAX_PER_RUN: 150
+          REQUEST_DELAY_MS: 120
+        run: node tools/static/generate_og_pages.mjs
+      - name: Commit changes 
+        run: |
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add token tools/static/built.json
+            git commit -m "chore: regenerate OG profile pages"
+            git push
+          else
+            echo "No changes to commit."
+          fi
