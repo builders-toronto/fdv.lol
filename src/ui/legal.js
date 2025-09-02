@@ -2,10 +2,11 @@
   const CSS = `
   /* ——— Modal shell ——— */
   .legal-modal__wrap{position:fixed;inset:0;display:grid;place-items:center;pointer-events:none;z-index:1001}
-  .legal-modal{width:min(960px,92vw);max-height:min(86vh,760px);background:var(--card,#0b1b22);border-radius:16px;box-shadow:0 10px 40px rgba(0,0,0,.45),inset 0 0 0 1px rgba(122,222,255,.08);transform:translateY(10px) scale(.98);opacity:0;transition:transform .18s ease,opacity .18s ease;display:flex;flex-direction:column;pointer-events:auto;overflow:hidden}
-  .legal-modal.is-open + .legal-modal__backdrop,
-  .legal-modal.is-open{opacity:1}
-  .legal-modal.is-open{transform:translateY(0) scale(1)}
+  .legal-modal{z-index:1002;width:min(960px,92vw);max-height:min(86vh,760px);background:var(--card,#0b1b22);border-radius:16px;box-shadow:0 10px 40px rgba(0,0,0,.45),inset 0 0 0 1px rgba(122,222,255,.08);transform:translateY(10px) scale(.98);opacity:0;transition:transform .18s ease,opacity .18s ease;display:flex;flex-direction:column;pointer-events:none;overflow:hidden}
+  .legal-modal.is-open{transform:translateY(0) scale(1);opacity:1;pointer-events:auto}
+  .legal-modal__backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);opacity:0;transition:opacity .18s ease;pointer-events:none;z-index:1000}
+  .legal-modal.is-open + .legal-modal__backdrop{opacity:1;pointer-events:auto}
+
   .legal-modal__header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid rgba(122,222,255,.10);background:linear-gradient(to bottom, rgba(255,255,255,.02), rgba(255,255,255,0))}
   .legal-modal__title{font-weight:600;font-size:16px}
   .legal-modal__close{appearance:none;border:0;background:transparent;color:var(--muted,#a9e7f2);padding:6px 10px;border-radius:10px;cursor:pointer}
@@ -66,9 +67,14 @@
     <p>We are not responsible for trading outcomes, lost funds, or third-party actions.</p>
   `;
 
-  const style = document.createElement('style');
-  style.textContent = CSS;
-  document.head.appendChild(style);
+  if (!document.getElementById('legal-modal-style')) {
+    const style = document.createElement('style');
+    style.id = 'legal-modal-style';
+    style.textContent = CSS;
+    document.head.appendChild(style);
+  }
+
+  if (document.querySelector('.legal-modal__wrap')) return;
 
   const wrap = document.createElement('div');
   wrap.className = 'legal-modal__wrap';
@@ -92,47 +98,19 @@
     <div class="legal-modal__backdrop"></div>
   `;
   document.body.appendChild(wrap);
-  const modal = wrap.querySelector('.legal-modal');
+
+  const modal    = wrap.querySelector('.legal-modal');
   const backdrop = wrap.querySelector('.legal-modal__backdrop');
   const btnClose = wrap.querySelector('.legal-modal__close');
-  const tabs = Array.from(wrap.querySelectorAll('.legal-tab'));
+  const tabs     = Array.from(wrap.querySelectorAll('.legal-tab'));
+
+  const panels = {
+    privacy: wrap.querySelector('#legal-privacy'),
+    tos:     wrap.querySelector('#legal-tos'),
+    agree:   wrap.querySelector('#legal-agree'),
+  };
 
   let lastFocused = null;
-  function openModal(defaultTabId = 'tab-privacy') {
-    lastFocused = document.activeElement;
-    modal.classList.add('is-open');
-    backdrop.style.pointerEvents = 'auto';
-    modal.setAttribute('aria-hidden', 'false');
-    backdrop.style.opacity = '1';
-    // default tab
-    const btn = wrap.querySelector(`#${defaultTabId}`) || tabs[0];
-    selectTab(btn);
-    // focus
-    btn.focus({ preventScroll: true });
-    document.addEventListener('keydown', onKey);
-  }
-  function closeModal() {
-    modal.classList.remove('is-open');
-    backdrop.style.pointerEvents = 'none';
-    modal.setAttribute('aria-hidden', 'true');
-    backdrop.style.opacity = '0';
-    document.removeEventListener('keydown', onKey);
-    if (lastFocused && lastFocused.focus) lastFocused.focus();
-  }
-  function onKey(e) {
-    if (e.key === 'Escape') { e.preventDefault(); closeModal(); }
-    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-      e.preventDefault();
-      const idx = tabs.indexOf(document.activeElement);
-      if (idx >= 0) {
-        const dir = e.key === 'ArrowRight' ? 1 : -1;
-        const next = tabs[(idx + dir + tabs.length) % tabs.length];
-        next.focus();
-        selectTab(next);
-      }
-    }
-  }
-  btnClose.addEventListener('click', closeModal);
 
   function selectTab(btn) {
     tabs.forEach(t => t.setAttribute('aria-selected', String(t === btn)));
@@ -141,10 +119,45 @@
       'tab-tos': panels.tos,
       'tab-agreement': panels.agree
     };
-    Object.values(map).forEach(p => p.setAttribute('aria-hidden','true'));
+    Object.values(map).forEach(p => p && p.setAttribute('aria-hidden','true'));
     const panel = map[btn.id];
     if (panel) panel.setAttribute('aria-hidden','false');
   }
+
+  function onKey(e) {
+    if (e.key === 'Escape') { e.preventDefault(); closeModal(); }
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+      const idx = tabs.indexOf(document.activeElement);
+      if (idx >= 0) {
+        e.preventDefault();
+        const dir = e.key === 'ArrowRight' ? 1 : -1;
+        const next = tabs[(idx + dir + tabs.length) % tabs.length];
+        next.focus();
+        selectTab(next);
+      }
+    }
+  }
+
+  function openModal(defaultTabId = 'tab-privacy') {
+    lastFocused = document.activeElement;
+    modal.classList.add('is-open');
+    modal.setAttribute('aria-hidden', 'false');
+    const btn = wrap.querySelector('#' + defaultTabId) || tabs[0];
+    selectTab(btn);
+    btn && btn.focus({ preventScroll: true });
+    document.addEventListener('keydown', onKey);
+  }
+
+  function closeModal() {
+    modal.classList.remove('is-open');
+    modal.setAttribute('aria-hidden', 'true');
+    document.removeEventListener('keydown', onKey);
+    if (lastFocused && lastFocused.focus) lastFocused.focus();
+  }
+
+  btnClose.addEventListener('click', closeModal);
+  backdrop.addEventListener('click', closeModal);
+
   tabs.forEach(t => {
     t.addEventListener('click', () => selectTab(t));
     t.addEventListener('keydown', (e) => {
@@ -154,11 +167,11 @@
 
   function addTrigger() {
     const footer = document.querySelector('footer');
-    if (!footer) return;
+    const container = footer || document.body;
     const span = document.createElement('span');
     span.className = 'legal-trigger';
     span.innerHTML = `<button class="btn btn-ghost" type="button">Legal</button>`;
-    footer.appendChild(span);
+    container.appendChild(span);
     span.querySelector('button').addEventListener('click', () => openModal());
   }
   if (document.readyState === 'loading') {
@@ -167,16 +180,10 @@
     addTrigger();
   }
 
-    const panels = {
-    privacy: wrap.querySelector('#legal-privacy'),
-    tos:     wrap.querySelector('#legal-tos'),
-    agree:   wrap.querySelector('#legal-agree'),
-    };
-
   window.fdvlol = window.fdvlol || {};
   window.fdvlol.openLegal = (tab='privacy') => {
     const id = tab === 'tos' ? 'tab-tos' : tab === 'agreement' ? 'tab-agreement' : 'tab-privacy';
     openModal(id);
   };
 })();
- 
+
