@@ -81,7 +81,7 @@ export function scoreAndRecommend(rows){
 
     let rec='AVOID', why=['Weak composite score'];
     if (score>=BUY_RULES.score && liq>=BUY_RULES.liq && vol24>=BUY_RULES.vol24 && ch1>BUY_RULES.change1h) {
-      rec='BUY'; why=['Strong composite score'];
+      rec='GOOD'; why=['Strong composite score'];
       if (ch1>0) why.push('Positive 1h momentum');
       if (ch24>0) why.push('Up over 24h');
       if (liq>0) why.push('Healthy liquidity');
