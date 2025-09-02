@@ -30,7 +30,7 @@ export function showLoading() {
 }
 
 export function hideLoading() {
-  if (elLoader) elLoader.hidden = true;
+  if (elLoader) elLoader.style.display = 'none';
   document.documentElement.style.overflow = '';
 }
 
