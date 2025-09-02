@@ -295,9 +295,7 @@ export async function renderProfileView(input, { onBack } = {}) {
     if (t.error) return errorNotice(t.error);
   } catch (e) {
     console.warn("fetchTokenInfo failed:", e);
-    const body = document.getElementById("pairsBody");
-    if (body) body.innerHTML = `<tr><td colspan="7" class="muted small">Couldn't load pair data.</td></tr>`;
-    return;
+    window.location.href="/";
   }
 
   const logo = t.imageUrl || FALLBACK_LOGO(t.symbol);
