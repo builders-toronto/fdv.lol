@@ -7,8 +7,6 @@ import { promisify } from 'util';
 
 const execFileP = promisify(execFile);
 
-/* ----------------------------- helpers: io/img ----------------------------- */
-
 async function downloadToFile(url, destPath) {
   const res = await fetch(url, { redirect: 'follow' });
   if (!res.ok) throw new Error(`download ${res.status}`);
@@ -71,14 +69,11 @@ async function makeOgImage(
   const lineH = fonts.valueSize + fonts.lineGap;
 
   const args = [
-    // bg
     '-size', `${canvas.w}x${canvas.h}`, `canvas:${canvas.bg}`,
-    // rounded panel
     '-fill', colors.panel,
     '-draw', `roundrectangle ${px},${py} ${panelX2},${panelY2} ${panel.r},${panel.r}`
   ];
 
-  // logo (keeps aspect, only downscale; no stretching)
   args.push(
     '(',
       inputPath + '[0]',
@@ -90,7 +85,6 @@ async function makeOgImage(
     '-compose', 'over', '-composite'
   );
 
-  // title (center)
   args.push(
     '(',
       '-background', 'none',
@@ -105,12 +99,9 @@ async function makeOgImage(
     `-geometry`, `+0+${py + panel.padY}`,
     '-composite'
   );
-
-  // metrics rows (left label, right value bold)
   metrics.forEach(([label, value], idx) => {
     const y = metricsTop + idx * lineH;
 
-    // label (left)
     args.push(
       '(',
         '-background', 'none',
@@ -126,7 +117,6 @@ async function makeOgImage(
       '-composite'
     );
 
-    // value (right, bold)
     const valueBoxW = panel.w - panel.padX * 2 - fonts.labelW;
     args.push(
       '(',
@@ -144,14 +134,11 @@ async function makeOgImage(
     );
   });
 
-  // finalize
   args.push('-colorspace','sRGB','-strip','-quality','88', outputPath);
 
   await execFileP(bin, args);
   return outputPath;
 }
-
-/* ---------------------------------- utils --------------------------------- */
 
 function fmtMoney(n){
   const v = Number(n);
@@ -175,6 +162,9 @@ const BUILT_FILE  = path.join(STATIC_DIR, 'built.json');
 const SITE_ORIGIN = (process.env.SITE_ORIGIN || 'https://fdv.lol').replace(/\/+$/,'');
 if (!SITE_ORIGIN) { console.error('SITE_ORIGIN env var is brokens'); process.exit(1); }
 
+const SITEMAP_FILE = path.join(PAGES_ROOT, 'sitemap.xml');
+const ROBOTS_FILE  = path.join(PAGES_ROOT, 'robots.txt');
+
 const REFRESH_HOURS     = Number(process.env.REFRESH_HOURS || 12);
 const MAX_PER_RUN       = Number(process.env.MAX_PER_RUN   || 150);
 const REQUEST_DELAY_MS  = Number(process.env.REQUEST_DELAY_MS || 120);
@@ -185,12 +175,11 @@ const ensureDir = (p) => fs.mkdirSync(p, { recursive: true });
 const fileExists = (p) => { try { return fs.existsSync(p) && fs.statSync(p).isFile(); } catch { return false; } };
 const loadJsonSafe = (f, fb) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return fb; } };
 
-/* ---------------------------- dexscreener fetch ---------------------------- */
 
 async function fetchDexToken(mint) {
   const url = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(mint)}`;
   const res = await fetch(url, { headers: { accept: 'application/json' } });
-  if (!res.ok) return null; // treat as not listed
+  if (!res.ok) return null; 
   return res.json();
 }
 
@@ -199,8 +188,6 @@ function pickBestPair(json) {
   if (!list.length) return null;
   return list.slice().sort((a,b) => (a?.liquidity?.usd||0) - (b?.liquidity?.usd||0)).pop();
 }
-
-/* ------------------------------- static HTML ------------------------------ */
 
 function profileHtml({ title, description, primaryImage, secondaryImage, canonical }) {
   const extraOg = secondaryImage && secondaryImage !== primaryImage
@@ -236,6 +223,63 @@ function profileHtml({ title, description, primaryImage, secondaryImage, canonic
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/src/styles/global.css" />
+
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "${esc(title)}",
+      "url": "${esc(canonical)}",
+      "description": "${esc(description)}",
+      "keywords": [
+        "solana",
+        "memecoin",
+        "bonk",
+        "wif",
+        "dog",
+        "inu",
+        "pepe",
+        "cat",
+        "meme",
+        "ponk",
+        "samo",
+        "purry",
+        "purr",
+        "kitty",
+        "meow",
+        "woof",
+        "frog",
+        "snek",
+        "toad",
+        "bob",
+        "dino",
+        "monke",
+        "monkey",
+        "ape",
+        "corgi",
+        "floki",
+        "elon"
+      ],
+      "publisher": {
+        "@type": "Organization",
+        "name": "builders-toronto",
+        "url": "https://github.com/builders-toronto/fdv.lol",
+        "logo": {
+          "@type": "ImageObject",
+          "url": "https://fdv.lol/src/assets/images/fdv.lol.png"
+        },
+        "sameAs": [
+          "https://t.me/fdvlol",
+          "https://github.com/builders-toronto/fdv.lol"
+        ]
+      },
+      "potentialAction": {
+        "@type": "SearchAction",
+        "target": "https://fdv.lol/token/{search_term_string}",
+        "query-input": "required name=search_term_string"
+      }
+    }
+    </script>
   </head>
   <body>
     <div id="loader" class="loader-overlay" aria-live="polite" aria-busy="true" hidden>
@@ -285,10 +329,7 @@ function profileHtml({ title, description, primaryImage, secondaryImage, canonic
 </html>`;
 }
 
-/* ----------------------------- page generation ---------------------------- */
-
 async function buildOne(mint) {
-  // Don’t write anything unless listed on Dexscreener
   const json = await fetchDexToken(mint);
   if (!json) return null;
 
@@ -296,7 +337,6 @@ async function buildOne(mint) {
   const best = pickBestPair(json);
   if (!best || !list.length) return null;
 
-  // Now that we know it’s listed, compute fields
   const bannerFallback = `${SITE_ORIGIN}/src/assets/images/fdv.lol.png`;
   let tokenImageUrl = best?.info?.imageUrl || null;
 
@@ -341,7 +381,6 @@ async function buildOne(mint) {
     ['📊 Vol24h', vol24]
   ];
 
-  // Attempt token image → normalized OG
   if (tokenImageUrl) {
     try {
       const extGuess   = (/\.(jpe?g|png|webp|gif|svg)(\?.*)?$/i.exec(tokenImageUrl)?.[1] || 'img').toLowerCase();
@@ -350,7 +389,7 @@ async function buildOne(mint) {
       await makeOgImage(rawWithExt, ogPath, { titleText: `${symbol} • ${name}`, metrics });
       primaryOgUrl = `${SITE_ORIGIN}/token/${encodeURIComponent(mint)}/og.jpg`;
     } catch {
-      // fallback remains
+      // falllinnngggg
     }
   }
 
@@ -366,11 +405,6 @@ async function buildOne(mint) {
   return path.join(outDir, 'index.html');
 }
 
-/* ------------------------------- sitemap bits ------------------------------ */
-
-const SITEMAP_FILE = path.join(PAGES_ROOT, 'sitemap.xml');
-const ROBOTS_FILE  = path.join(PAGES_ROOT, 'robots.txt');
-
 function isoDate(ts = Date.now()) {
   return new Date(ts).toISOString();
 }
@@ -383,35 +417,64 @@ function listBuiltTokenDirs(rootDir) {
     .filter(name => fileExists(path.join(rootDir, name, 'index.html')));
 }
 
+function readExistingSitemapMap(filePath) {
+  const map = {};
+  try {
+    if (!fs.existsSync(filePath)) return map;
+    const xml = fs.readFileSync(filePath, 'utf8');
+    const re = /<url>[\s\S]*?<loc>\s*([^<]+?)\s*<\/loc>[\s\S]*?<lastmod>\s*([^<]+?)\s*<\/lastmod>[\s\S]*?<\/url>/g;
+    let m;
+    while ((m = re.exec(xml))) {
+      map[m[1]] = m[2];
+    }
+  } catch {}
+  return map;
+}
+
+function xmlEquals(a, b) {
+  const norm = s => s.replace(/\s+/g, ' ').trim();
+  return norm(a) === norm(b);
+}
+
 function writeSitemap({ base, tokenDir, extraPaths = ['/', '/token/'], lastmodMap = {} }) {
   const tokens = listBuiltTokenDirs(tokenDir);
   const urls = [];
+  const existing = readExistingSitemapMap(SITEMAP_FILE);
 
   for (const p of extraPaths) {
     const loc = (p.startsWith('http') ? p : `${base}${p.startsWith('/') ? '' : '/'}${p}`);
-    urls.push({ loc, lastmod: isoDate() });
-  }
-
-  for (const mint of tokens) {
-    const loc = `${base}/token/${encodeURIComponent(mint)}/`;
-    const lastmod = lastmodMap[loc] || lastmodMap[mint] || isoDate();
+    const lastmod = lastmodMap[loc] || existing[loc] || existing[loc?.replace(/\/+$/, '')] || null;
     urls.push({ loc, lastmod });
   }
+  for (const mint of tokens) {
+    const loc = `${base}/token/${encodeURIComponent(mint)}/`;
+    const lastmod = lastmodMap[loc] || lastmodMap[mint] || existing[loc] || null;
+    urls.push({ loc, lastmod });
+  }
+  urls.sort((a, b) => a.loc.localeCompare(b.loc));
 
   const xml =
 `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${urls.map(u => `  <url>
     <loc>${u.loc}</loc>
-    <lastmod>${u.lastmod}</lastmod>
-    <changefreq>hourly</changefreq>
+    <lastmod>${u.lastmod || new Date(0).toISOString()}</lastmod>
+    <changefreq>${u.loc.includes('/token/') ? 'hourly' : 'daily'}</changefreq>
     <priority>${u.loc.includes('/token/') ? '0.6' : '0.8'}</priority>
   </url>`).join('\n')}
 </urlset>
 `;
 
+  try {
+    if (fs.existsSync(SITEMAP_FILE)) {
+      const prev = fs.readFileSync(SITEMAP_FILE, 'utf8');
+      if (xmlEquals(prev, xml)) return SITEMAP_FILE; 
+    }
+  } catch {}
+
   fs.writeFileSync(SITEMAP_FILE, xml, 'utf8');
 
+  // robots.txt: only append the Sitemap line if missing
   try {
     let robots = fs.existsSync(ROBOTS_FILE) ? fs.readFileSync(ROBOTS_FILE, 'utf8') : '';
     const line = `Sitemap: ${base}/sitemap.xml`;
@@ -423,8 +486,6 @@ ${urls.map(u => `  <url>
 
   return SITEMAP_FILE;
 }
-
-/* ---------------------------------- main ---------------------------------- */
 
 async function main() {
   ensureDir(OUT_DIR);
@@ -467,7 +528,6 @@ async function main() {
         built[mint] = Date.now();
         ok++;
       } else {
-        // not listed or fetch failed → skip
         skip++;
       }
     } catch (e) {
@@ -482,10 +542,17 @@ async function main() {
   console.log(`Done. OK=${ok} SKIP=${skip} FAIL=${fail}. Output → /token/<mint>/index.html`);
 
   const lastmodMap = {};
+  let latestTs = 0;
   for (const mint of Object.keys(built)) {
-    lastmodMap[mint] = new Date(built[mint]).toISOString();
-    lastmodMap[`${SITE_ORIGIN}/token/${encodeURIComponent(mint)}/`] = lastmodMap[mint];
+    const tsIso = new Date(built[mint]).toISOString();
+    lastmodMap[mint] = tsIso;
+    lastmodMap[`${SITE_ORIGIN}/token/${encodeURIComponent(mint)}/`] = tsIso;
+    if (built[mint] > latestTs) latestTs = built[mint];
   }
+  if (latestTs) {
+    lastmodMap[`${SITE_ORIGIN}/`] = new Date(latestTs).toISOString();
+  }
+
   const sitemapPath = writeSitemap({
     base: SITE_ORIGIN,
     tokenDir: OUT_DIR,
