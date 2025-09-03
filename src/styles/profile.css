@@ -400,8 +400,8 @@ svg.bars rect { fill: rgba(123,241,255,.8) }
 }
 .reco__why li { margin: 4px 0; }
 
-.reco[data-reco="good"]  { border-color: rgba(26,255,122,.25); }
-.reco[data-reco="watch"] { border-color: rgba(123,241,255,.18); }
+.reco[data-reco="good"]  { border-color: #1aff7a; }
+.reco[data-reco="watch"] { border-color: #ffb200; }
 .reco[data-reco="avoid"] { border-color: rgba(255,77,109,.25); }
 
 
@@ -415,9 +415,9 @@ svg.bars rect { fill: rgba(123,241,255,.8) }
 .pairs td:last-child { text-align:right }
 
 .badge { display:inline-block; padding:5px 10px; border-radius:999px; font-weight:800; font-size:12px; }
-.badge.buy   { background: var(--buy) }
-.badge.watch { background: var(--watch) }
-.badge.avoid { background: var(--avoid) }
+.badge.good   { background: #000; border: 1px solid var(--good); color: var(--good); }
+.badge.watch { background: #000; border: 1px solid var(--watch); color: var(--watch); }
+.badge.avoid { background: #000; border: 1px solid var(--avoid); color: var(--avoid); }
 
 .pill { display:inline-block; font-weight:700; font-size:12px; padding:3px 8px; border-radius:999px; border:1px solid rgba(122,222,255,.18) }
 .pill.up { background: rgba(26,255,122,.12) }
