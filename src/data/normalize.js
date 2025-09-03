@@ -1,4 +1,4 @@
-import { getJSON } from './tools.js';
+import { getJSON } from '../utils/tools.js';
 
 export function normalizeWebsite(u){
   if(!u) return null;

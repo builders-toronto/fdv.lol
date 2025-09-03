@@ -1,6 +1,6 @@
-import { MAX_CARDS } from '../config/env.js';
+import { MAX_CARDS } from '../../config/env.js';
 import { coinCard } from './cards.js';
-import { adCard } from '../ads/load.js';
+import { adCard } from '../../ads/load.js';
 
 export const elCards = document.getElementById('cards');
 export const elMeta  = document.getElementById('meta');

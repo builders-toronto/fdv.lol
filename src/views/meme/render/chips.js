@@ -1,4 +1,4 @@
-import { pct } from '../config/env.js';
+import { pct } from '../../../config/env.js';
 
 export function pctChipsHTML(changes){
   const labels = ['5m','1h','6h'];

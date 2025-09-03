@@ -1,4 +1,4 @@
-import { clamp } from '../config/env.js';
+import { clamp } from '../../config/env.js';
 
 export function barsHTML(norm){
   const toPct = v => Math.round(clamp(v,0,1)*100);
