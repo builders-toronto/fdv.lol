@@ -1,5 +1,6 @@
 (function () {
   const CSS = `
+  .legalBtn { cursor:pointer; }
   /* ——— Modal shell ——— */
   .legal-modal__wrap{position:fixed;inset:0;display:grid;place-items:center;pointer-events:none;z-index:1001}
   .legal-modal{z-index:1002;width:min(960px,92vw);max-height:min(86vh,760px);background:var(--card,#0b1b22);border-radius:16px;box-shadow:0 10px 40px rgba(0,0,0,.45),inset 0 0 0 1px rgba(122,222,255,.08);transform:translateY(10px) scale(.98);opacity:0;transition:transform .18s ease,opacity .18s ease;display:flex;flex-direction:column;pointer-events:none;overflow:hidden}
@@ -166,13 +167,12 @@
   });
 
   function addTrigger() {
-    const footer = document.querySelector('footer');
-    const container = footer || document.body;
+    const important = document.querySelector('.important');
     const span = document.createElement('span');
     span.className = 'legal-trigger';
-    span.innerHTML = `<button class="btn btn-ghost" type="button">Legal</button>`;
-    container.appendChild(span);
-    span.querySelector('button').addEventListener('click', () => openModal());
+    span.innerHTML = `<a class="legalBtn">Legal</a>`;
+    important.appendChild(span);
+    span.querySelector('a').addEventListener('click', () => openModal());
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', addTrigger);
