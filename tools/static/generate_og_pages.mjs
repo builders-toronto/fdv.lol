@@ -417,18 +417,31 @@ function listBuiltTokenDirs(rootDir) {
     .filter(name => fileExists(path.join(rootDir, name, 'index.html')));
 }
 
-function readExistingSitemapMap(filePath) {
-  const map = {};
+function readExistingSitemap(filePath) {
+  const entries = [];                
+  const byLoc   = Object.create(null); 
   try {
-    if (!fs.existsSync(filePath)) return map;
+    if (!fs.existsSync(filePath)) return { entries, byLoc };
     const xml = fs.readFileSync(filePath, 'utf8');
-    const re = /<url>[\s\S]*?<loc>\s*([^<]+?)\s*<\/loc>[\s\S]*?<lastmod>\s*([^<]+?)\s*<\/lastmod>[\s\S]*?<\/url>/g;
+    const urlRe = /<url>([\s\S]*?)<\/url>/g;
     let m;
-    while ((m = re.exec(xml))) {
-      map[m[1]] = m[2];
+    while ((m = urlRe.exec(xml))) {
+      const block = m[1];
+      const get = (tag) => {
+        const r = new RegExp(`<${tag}>\\s*([^<]+?)\\s*<\\/${tag}>`);
+        return (r.exec(block) || [,''])[1] || null;
+      };
+      const loc        = get('loc');
+      if (!loc) continue;
+      const lastmod    = get('lastmod');
+      const changefreq = get('changefreq');
+      const priority   = get('priority');
+      const entry = { loc, lastmod, changefreq, priority };
+      entries.push(entry);
+      byLoc[loc] = entry;
     }
   } catch {}
-  return map;
+  return { entries, byLoc };
 }
 
 function xmlEquals(a, b) {
@@ -438,43 +451,62 @@ function xmlEquals(a, b) {
 
 function writeSitemap({ base, tokenDir, extraPaths = ['/', '/token/'], lastmodMap = {} }) {
   const tokens = listBuiltTokenDirs(tokenDir);
-  const urls = [];
-  const existing = readExistingSitemapMap(SITEMAP_FILE);
+  const existing = readExistingSitemap(SITEMAP_FILE);
+
+  const wanted = new Map(); 
+
+  const defaultFor = (loc) => ({
+    changefreq: 'hourly',
+    priority: loc.includes('/token/') ? '0.6' : '0.8',
+  });
 
   for (const p of extraPaths) {
     const loc = (p.startsWith('http') ? p : `${base}${p.startsWith('/') ? '' : '/'}${p}`);
-    const lastmod = lastmodMap[loc] || existing[loc] || existing[loc?.replace(/\/+$/, '')] || null;
-    urls.push({ loc, lastmod });
+    const prev = existing.byLoc[loc] || {};
+    const { changefreq, priority } = prev.changefreq || prev.priority ? prev : defaultFor(loc);
+    const lastmod = lastmodMap[loc] || prev.lastmod || null;
+    wanted.set(loc, { loc, lastmod, changefreq: prev.changefreq || changefreq, priority: prev.priority || priority });
   }
+
   for (const mint of tokens) {
     const loc = `${base}/token/${encodeURIComponent(mint)}/`;
-    const lastmod = lastmodMap[loc] || lastmodMap[mint] || existing[loc] || null;
-    urls.push({ loc, lastmod });
+    const prev = existing.byLoc[loc] || {};
+    const { changefreq, priority } = prev.changefreq || prev.priority ? prev : defaultFor(loc);
+    const lm = lastmodMap[loc] || lastmodMap[mint] || prev.lastmod || null;
+    wanted.set(loc, { loc, lastmod: lm, changefreq: prev.changefreq || changefreq, priority: prev.priority || priority });
   }
-  urls.sort((a, b) => a.loc.localeCompare(b.loc));
+
+  const inWanted = (loc) => wanted.has(loc);
+  const ordered = [];
+  for (const e of existing.entries) {
+    if (inWanted(e.loc)) ordered.push(wanted.get(e.loc));
+  }
+  const newOnes = [...wanted.values()].filter(e => !existing.byLoc[e.loc])
+    .sort((a, b) => a.loc.localeCompare(b.loc));
+  ordered.push(...newOnes);
 
   const xml =
 `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${urls.map(u => `  <url>
+${ordered.map(u => `  <url>
     <loc>${u.loc}</loc>
     <lastmod>${u.lastmod || new Date(0).toISOString()}</lastmod>
-    <changefreq>${u.loc.includes('/token/') ? 'hourly' : 'daily'}</changefreq>
-    <priority>${u.loc.includes('/token/') ? '0.6' : '0.8'}</priority>
+    <changefreq>${u.changefreq}</changefreq>
+    <priority>${u.priority}</priority>
   </url>`).join('\n')}
 </urlset>
 `;
 
+  // Only write if changed
   try {
     if (fs.existsSync(SITEMAP_FILE)) {
       const prev = fs.readFileSync(SITEMAP_FILE, 'utf8');
-      if (xmlEquals(prev, xml)) return SITEMAP_FILE; 
+      if (xmlEquals(prev, xml)) return SITEMAP_FILE; // no-op
     }
   } catch {}
 
   fs.writeFileSync(SITEMAP_FILE, xml, 'utf8');
 
-  // robots.txt: only append the Sitemap line if missing
   try {
     let robots = fs.existsSync(ROBOTS_FILE) ? fs.readFileSync(ROBOTS_FILE, 'utf8') : '';
     const line = `Sitemap: ${base}/sitemap.xml`;
