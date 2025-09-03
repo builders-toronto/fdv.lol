@@ -1,15 +1,12 @@
-token/*
-!token/.gitkeep
+/token/*
 
-token/*/raw/
-token/*/*.tmp
-token/*/*.part
-token/*/*.partial
-token/*/*.download
+!/token/**/
 
-token/*/og.jpg
+!/token/**/index.html
+!/token/**/og.jpg
 
-tools/static/built.json
+!/sitemap.xml
+!/robots.txt
 
 .DS_Store
 Thumbs.db
