@@ -2,9 +2,9 @@ import { ts, MEME_KEYWORDS } from '../config/env.js';
 import { fetchDexscreener, streamDexscreener } from '../data/dexscreener.js'; 
 import { fetchTrending } from '../data/solana.js';
 import { bestPerToken, scoreAndRecommend } from '../core/calculate.js';
-import { renderSkeleton, elRelax, elMeta, elMetaBase, elCards  } from '../ui/render.js';
+import { renderSkeleton, elRelax, elMeta, elMetaBase, elCards  } from '../views/meme/page.js';
 import { readCache, writeCache } from '../utils/tools.js';
-import { enrichMissingInfo } from '../utils/normalize.js';
+import { enrichMissingInfo } from '../data/normalize.js';
 import { loadAds, pickAd } from '../ads/load.js';
 
 let CURRENT_AD = null;

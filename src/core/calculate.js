@@ -61,7 +61,6 @@ export function bestPerToken(pairs, {relax=false}={}) {
 }
 
 export function scoreAndRecommendOne(r) {
-  // -------- 1) Normalize inputs from multiple shapes (list vs profile) -------
   const N = (x, d = 0) => Number.isFinite(+x) ? +x : d;
   const pick = (...cands) => cands.find(v => Number.isFinite(+v));
 
@@ -109,8 +108,6 @@ export function scoreAndRecommendOne(r) {
     change: { ...(r?.change||{}), m5: ch5, h1: ch1, h6: ch6, h24: ch24 },
     fdv, liquidityUsd: liq,
   };
-
-  // -------- 2) Normalized features ------------------------------------------
   // Volume: turnover-based (friendlier across caps)
   const turnover = volToLiq24h;                // e.g., 0.57×
   const nVol = clamp((turnover - 0.2) / (1.5 - 0.2), 0, 1);
@@ -129,7 +126,6 @@ export function scoreAndRecommendOne(r) {
   const A_LOW = 30, A_HIGH = 200;
   const nAct = clamp((txPerM - A_LOW) / (A_HIGH - A_LOW), 0, 1);
 
-  // -------- 3) Score ---------------------------------------------------------
   let score =
       RANK_WEIGHTS.volume    * nVol +
       RANK_WEIGHTS.liquidity * nLiq +
@@ -143,7 +139,6 @@ export function scoreAndRecommendOne(r) {
   }
   score = clamp(score, 0, 1);
 
-  // -------- 4) Recommendation + Why -----------------------------------------
   const BUY_SCORE = Number.isFinite(BUY_RULES?.score) ? BUY_RULES.score : null;
 
   let rec = 'AVOID';
@@ -178,7 +173,6 @@ export function scoreAndRecommendOne(r) {
     }
   }
 
-  // -------- 5) Output (for UI bars) -----------------------------------------
   out.score = score;
   out.recommendation = rec;
   out.why = why;

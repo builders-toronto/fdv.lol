@@ -1,9 +1,9 @@
-import { sparklineSVG } from '../core/sparkline.js';
-import { pctChipsHTML } from '../core/chips.js';
-import { EXPLORER, FALLBACK_LOGO, JUP_SWAP, shortAddr } from '../config/env.js';
-import { normalizeSocial, iconFor, xSearchUrl } from '../data/socials.js';
-import { normalizeWebsite } from '../utils/normalize.js';
-import { fmtUsd } from '../utils/tools.js';
+import { sparklineSVG } from './render/sparkline.js';
+import { pctChipsHTML } from './render/chips.js';
+import { EXPLORER, FALLBACK_LOGO, JUP_SWAP, shortAddr } from '../../config/env.js';
+import { normalizeSocial, iconFor, xSearchUrl } from '../../data/socials.js';
+import { normalizeWebsite } from '../../data/normalize.js';
+import { fmtUsd } from '../../utils/tools.js';
 
 export function coinCard(it){
   const logo = it.logoURI || FALLBACK_LOGO(it.symbol);

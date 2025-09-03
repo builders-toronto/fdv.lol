@@ -1,4 +1,4 @@
-import { GISCUS } from "../config/env.js";
+import { GISCUS } from "../../config/env.js";
 
 const GISCUS_ORIGIN = "https://giscus.app";
 

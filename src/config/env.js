@@ -1,5 +1,3 @@
-// config/env.js (or your config file)
-
 // 0) Generic accessors --------------------------------------------------------
 const has = (o, k) => o && Object.prototype.hasOwnProperty.call(o, k);
 
@@ -21,17 +19,14 @@ try {
 function getEnv(keys, fallback) {
   const list = Array.isArray(keys) ? keys : [keys];
   for (const k of list) {
-    // URL param (lowercase or exact)
     if (has(URLQ, k) || has(URLQ, String(k).toLowerCase())) {
       return URLQ[k] ?? URLQ[String(k).toLowerCase()];
     }
-    // ENV objects (exact)
     if (has(ENV, k)) return ENV[k];
   }
   return fallback;
 }
 
-// 1) Coercers -----------------------------------------------------------------
 export const toNum = (v, fallback = 0) => {
   if (v == null) return fallback;
   if (typeof v === 'string') v = v.replace(/[%_,\s]/g, ''); // "50%", "50_000" -> "50000"
@@ -39,14 +34,12 @@ export const toNum = (v, fallback = 0) => {
   return Number.isFinite(num) ? num : fallback;
 };
 
-// 2) Public config ------------------------------------------------------------
 export const CACHE_TTL_MS = 90_000;
 export const CACHE_KEY = 'sol-meme-ultralite-cache-v1';
 export const MAX_CARDS = 21;
 export const MEME_REGEX = /(bonk|wif|dog|inu|pepe|cat|meme|ponk|ponke|samo|pipi|bodi|boden|beer|mog|pop|paws|purry|purr|kitty|kit|meow|woof|hamster|frog|toad|snek|sponge|bob|smurf|dino|monke|monkey|ape|corgi|floki|elon|keem|pump|dump|poo|poop|turd|goat|degen|baby|wife|husband|shib|shiba|giga|sigma|skib|rizz|reno)/i;
 export const RANK_WEIGHTS = { volume:0.35, liquidity:0.25, momentum:0.20, activity:0.20 };
 
-// 3) Rules (robust env lookups) ----------------------------------------------
 const BUY_LIQ        = getEnv(['VITE_BUY_LIQ','BUY_LIQ','FDV_BUY_LIQ','liq'],        2500);
 const BUY_VOL24      = getEnv(['VITE_BUY_VOL24','BUY_VOL24','FDV_BUY_VOL24','vol24'], 50000);
 const BUY_CHANGE_1H  = getEnv(['VITE_BUY_CHANGE1H','BUY_CHANGE1H','change1h'],       0);
@@ -61,8 +54,6 @@ export const BUY_RULES = {
 export const FDV_LIQ_PENALTY = {
   ratio: Math.max(1, toNum(FDV_LIQ_RATIO, 50)), // 50 => need ≥ 2% liq/fdv
 };
-
-// 4) Other exports ------------------------------------------------------------
 export const JUP_SWAP   = (mint)=>`https://jup.ag/tokens/${encodeURIComponent(mint)}`;
 export const EXPLORER   = (addr)=>`https://explorer.solana.com/address/${addr}`;
 export const FALLBACK_LOGO = (sym)=>"data:image/svg+xml;utf8,"+encodeURIComponent(
@@ -92,16 +83,10 @@ export const GISCUS = {
 
 export const MEME_KEYWORDS = [
   'pepe','dog','wif','bonk','reno',
-  // 'frog','shib','meme','snek','bob',
-  // 'new','trending','pump','dump','inu',
-  // 'elon','floki','corgi','monke','ape',
-  // 'dino','purr','purry','kitty','paws',
-  // 'toad','hamster','doge','shiba','giga',
-  // 'sigma','baby','wife','husband','reno',
+  'frog','shib','meme','snek','bob',
+  'new','trending','pump','dump','inu',
+  'elon','floki','corgi','monke','ape',
+  'dino','purr','purry','kitty','paws',
+  'toad','hamster','doge','shiba','giga',
+  'sigma','baby','wife','husband','reno',
 ];
-
-// 5) Optional: quick debug
-if (typeof window !== 'undefined' && !window.__ENV_DEBUG_PRINTED__) {
-  window.__ENV_DEBUG_PRINTED__ = true;
-  console.debug('[ENV] BUY_RULES', BUY_RULES, 'FDV_LIQ_PENALTY', FDV_LIQ_PENALTY);
-}

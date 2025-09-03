@@ -1,28 +1,165 @@
 import { MEME_KEYWORDS } from '../config/env.js'
 import { getJSON } from '../utils/tools.js';
+import { swrFetch } from '../engine/fetcher.js';
 
 // TODO: be nicer to dexscreener
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function jitter(ms) { return Math.floor(ms * (0.5 + Math.random())); }
 
-const _cache = new Map();
+const MAX_CONCURRENT   = 4;
+const START_SPACING_MS = 200;
+const REQUEST_TIMEOUT  = 10_000;
+const MAX_RETRIES      = 4;
+const BASE_BACKOFF_MS  = 600;
 
-const MAX_CONCURRENT  = 4;          
-const START_SPACING_MS = 200;       
-const CACHE_TTL_MS     = 2 * 60_000;
-const REQUEST_TIMEOUT  = 10_000;    
-const MAX_RETRIES      = 4;        
-const BASE_BACKOFF_MS  = 600;       
+const FETCH_TTL_MS_SEARCH = 2 * 60_000;  
+const FETCH_TTL_MS_TOKEN  = 10 * 60_000;  
+
+const CACHE_VERSION = 'v1';
+
+class RateLimiter {
+  constructor({ rps = 0.8, burst = 3, minRps = 0.2, maxRps = 1.5 } = {}) {
+    this.capacity = burst;
+    this.tokens = burst;
+    this.rps = rps;
+    this.minRps = minRps;
+    this.maxRps = maxRps;
+    this.lastRefill = Date.now();
+    this.cooldownUntil = 0;
+  }
+  _refill() {
+    const now = Date.now();
+    const elapsed = (now - this.lastRefill) / 1000;
+    this.lastRefill = now;
+    this.tokens = Math.min(this.capacity, this.tokens + elapsed * this.rps);
+  }
+  async removeToken() {
+    while (true) {
+      this._refill();
+      const now = Date.now();
+      if (now < this.cooldownUntil) {
+        await sleep(this.cooldownUntil - now);
+        continue;
+      }
+      if (this.tokens >= 1) {
+        this.tokens -= 1;
+        return;
+      }
+      const waitMs = Math.max(5, (1 - this.tokens) / this.rps * 1000);
+      await sleep(waitMs);
+    }
+  }
+  on429(retryAfterMs = 0) {
+    this.rps = Math.max(this.minRps, this.rps * 0.65);
+    this.cooldownUntil = Math.max(this.cooldownUntil, Date.now() + Math.max(800, retryAfterMs));
+  }
+  onSuccess() {
+    this.rps = Math.min(this.maxRps, this.rps * 1.05);
+  }
+}
+
+const limiter = new RateLimiter({
+  rps: 0.8,
+  burst: 3,
+  minRps: 0.25,
+  maxRps: 1.2,
+});
+
+async function fetchWithRetries(url, { signal } = {}) {
+  let attempt = 0;
+
+  while (true) {
+    attempt++;
+
+    await limiter.removeToken();
+
+    const ac = new AbortController();
+    const to = setTimeout(() => ac.abort(new Error('timeout')), REQUEST_TIMEOUT);
+
+    const linkAbort = () => ac.abort(signal.reason);
+    if (signal) {
+      if (signal.aborted) ac.abort(signal.reason);
+      else signal.addEventListener('abort', linkAbort, { once: true });
+    }
+
+    try {
+      const data = await getJSON(url, { signal: ac.signal, headers: { accept: 'application/json' } });
+      clearTimeout(to);
+      limiter.onSuccess();
+      return data;
+    } catch (err) {
+      clearTimeout(to);
+
+      const isAbort = err?.name === 'AbortError' || /timeout/i.test(String(err?.message || ''));
+      const status = err?.status ?? (/\b(\d{3})\b/.exec(String(err?.message))?.[1] | 0);
+      const retryable = isAbort || status === 429 || (status >= 500 && status < 600);
+
+      if (!retryable || attempt > MAX_RETRIES) {
+        throw err;
+      }
+
+      let raMs = 0;
+      const retryAfter = err?.headers?.get?.('Retry-After');
+      if (retryAfter) {
+        const n = Number(retryAfter);
+        raMs = Number.isFinite(n) ? n * 1000 : 0;
+      }
+      limiter.on429(raMs);
+
+      const backoff = raMs || jitter(BASE_BACKOFF_MS * Math.pow(2, attempt - 1));
+      await sleep(backoff);
+    }
+  }
+}
+
+async function fetchDS(url, { signal, ttl } = {}) {
+  const key = `${CACHE_VERSION}|dex:${url}`;
+  return swrFetch(key, () => fetchWithRetries(url, { signal }), { ttl });
+}
+
+async function mapWithLimit(items, limit, fn, { spacingMs = 0 } = {}) {
+  const results = new Array(items.length);
+  let i = 0;
+  let active = 0;
+  let resolveAll;
+  const done = new Promise(r => (resolveAll = r));
+
+  const next = async () => {
+    if (i >= items.length) {
+      if (active === 0) resolveAll();
+      return;
+    }
+    const idx = i++; active++;
+
+    if (spacingMs && idx > 0) await sleep(spacingMs);
+    try {
+      results[idx] = await fn(items[idx], idx);
+    } finally {
+      active--;
+      next();
+    }
+  };
+
+  const starters = Math.min(limit, items.length);
+  for (let k = 0; k < starters; k++) next();
+  await done;
+  return results;
+}
+
+function asNum(x) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : null;
+}
 
 export async function* streamDexscreener({
   keywords = MEME_KEYWORDS,
   prefix = 'solana ',
-  maxConcurrent = 2,       
-  spacingMs = 150,          
-  windowSize = 40,          
-  windowOffset = 0,         
-  requestBudget = 60,       
+  maxConcurrent = 2,
+  spacingMs = 150,
+  windowSize = 40,
+  windowOffset = 0,
+  requestBudget = 60,
   signal,
   mapResult,
 } = {}) {
@@ -49,7 +186,7 @@ export async function* streamDexscreener({
     budgetLeft -= 1;
 
     try {
-      const json = await fetchDS(url, { signal });
+      const json = await fetchDS(url, { signal, ttl: FETCH_TTL_MS_SEARCH });
       const pairs = Array.isArray(json?.pairs) ? json.pairs : [];
       const fresh = [];
       for (const p of pairs) {
@@ -80,141 +217,10 @@ export async function* streamDexscreener({
   }
 }
 
-class RateLimiter {
-  constructor({ rps = 0.8, burst = 3, minRps = 0.2, maxRps = 1.5 } = {}) {
-    this.capacity = burst;
-    this.tokens = burst;
-    this.rps = rps;
-    this.minRps = minRps;
-    this.maxRps = maxRps;
-    this.lastRefill = Date.now();
-    this.cooldownUntil = 0;
-  }
-  _refill() {
-    const now = Date.now();
-    const elapsed = (now - this.lastRefill) / 1000;
-    this.lastRefill = now;
-    this.tokens = Math.min(this.capacity, this.tokens + elapsed * this.rps);
-  }
-  async removeToken() {
-    while (true) {
-      this._refill();
-
-      const now = Date.now();
-      if (now < this.cooldownUntil) {
-        await sleep(this.cooldownUntil - now);
-        continue;
-      }
-
-      if (this.tokens >= 1) {
-        this.tokens -= 1;
-        return;
-      }
-      const waitMs = Math.max(5, (1 - this.tokens) / this.rps * 1000);
-      await sleep(waitMs);
-    }
-  }
-  on429(retryAfterMs = 0) {
-    this.rps = Math.max(this.minRps, this.rps * 0.65);
-    this.cooldownUntil = Math.max(this.cooldownUntil, Date.now() + Math.max(800, retryAfterMs));
-  }
-  onSuccess() {
-    this.rps = Math.min(this.maxRps, this.rps * 1.05);
-  }
-}
-
-const limiter = new RateLimiter({
-  rps: 0.8,     
-  burst: 3,     
-  minRps: 0.25, 
-  maxRps: 1.2,  
-});
-
-async function fetchDS(url, { signal } = {}) {
-  const cached = _cache.get(url);
-  if (cached && (Date.now() - cached.t) < CACHE_TTL_MS) return cached.data;
-
-  let attempt = 0;
-  while (true) {
-    attempt++;
-
-    await limiter.removeToken();
-
-    const ac = new AbortController();
-    const to = setTimeout(() => ac.abort(new Error('timeout')), REQUEST_TIMEOUT);
-    const linkAbort = () => signal?.aborted && ac.abort(signal.reason);
-    if (signal) {
-      if (signal.aborted) ac.abort(signal.reason);
-      else signal.addEventListener('abort', linkAbort, { once: true });
-    }
-
-    try {
-      const data = await getJSON(url, { signal: ac.signal, headers: { accept: 'application/json' } });
-      clearTimeout(to);
-      _cache.set(url, { t: Date.now(), data });
-      limiter.onSuccess();
-      return data;
-    } catch (err) {
-      clearTimeout(to);
-
-      const isAbort = err?.name === 'AbortError' || /timeout/i.test(String(err?.message || ''));
-      const status = err?.status ?? (/\b(\d{3})\b/.exec(String(err?.message))?.[1] | 0);
-      const retryable = isAbort || status === 429 || (status >= 500 && status < 600);
-
-      if (!retryable || attempt > MAX_RETRIES) {
-        throw err;
-      }
-      let raMs = 0;
-      const retryAfter = err?.headers?.get?.('Retry-After');
-      if (retryAfter) {
-        const n = Number(retryAfter);
-        raMs = Number.isFinite(n) ? n * 1000 : 0;
-      }
-      limiter.on429(raMs);
-
-      const backoff = raMs || jitter(BASE_BACKOFF_MS * Math.pow(2, attempt - 1));
-      await sleep(backoff);
-    }
-  }
-}
-
-async function mapWithLimit(items, limit, fn, { spacingMs = 0 } = {}) {
-  const results = new Array(items.length);
-  let i = 0;
-  let active = 0;
-  let resolveAll;
-  const done = new Promise(r => resolveAll = r);
-
-  const next = async () => {
-    if (i >= items.length) {
-      if (active === 0) resolveAll();
-      return;
-    }
-    const idx = i++; active++;
-
-    if (spacingMs && idx > 0) await sleep(spacingMs);
-    try {
-      results[idx] = await fn(items[idx], idx);
-    } finally {
-      active--;
-      next();
-    }
-  };
-
-  const starters = Math.min(limit, items.length);
-  for (let k = 0; k < starters; k++) next();
-  await done;
-  return results;
-}
-
-function asNum(x) {
-  const n = Number(x);
-  return Number.isFinite(n) ? n : null;
-}
-
 export async function fetchDexscreener() {
-  const terms = MEME_KEYWORDS.map(k => `solana ${k}`)
-  .sort(() => Math.random() - 0.5);
+  const terms = MEME_KEYWORDS
+    .map(k => `solana ${k}`)
+    .sort(() => Math.random() - 0.5);
 
   const urls = terms.map(
     t => `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(t)}`
@@ -225,17 +231,15 @@ export async function fetchDexscreener() {
     MAX_CONCURRENT,
     async (u) => {
       try {
-        const json = await fetchDS(u);
+        const json = await fetchDS(u, { ttl: FETCH_TTL_MS_SEARCH });
         return Array.isArray(json?.pairs) ? json.pairs : [];
       } catch (e) {
-
-
-
         return [];
       }
     },
     { spacingMs: START_SPACING_MS }
   );
+
   const out = [];
   const seen = new Set();
   for (const arr of results) {
@@ -252,10 +256,9 @@ export async function fetchDexscreener() {
 
 export async function fetchTokenInfo(mint) {
   const url = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(mint)}`;
-  // change fetch wrapper for version re
   let json;
   try {
-    json = await fetchDS(url);
+    json = await fetchDS(url, { ttl: FETCH_TTL_MS_TOKEN });
   } catch (e) {
     if (e?.status === 429) return { error: 'Rate limited.' };
     throw new Error(`dexscreener ${e?.status || e?.message || 'error'}`);

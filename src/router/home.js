@@ -1,6 +1,6 @@
 import { pipeline } from '../engine/pipeline.js';
-import { renderProfileView } from '../ui/profile.js';
-import { render } from '../ui/render.js';
+import { renderProfileView } from "../views/profile/page.js";
+import { render } from '../views/meme/page.js';
 import { hideLoading } from '../utils/tools.js';
 
 export async function showHome({ force = false } = {}) {
