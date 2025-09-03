@@ -319,9 +319,7 @@ function profileHtml({ title, description, primaryImage, secondaryImage, canonic
       <div id="cards" class="cards"></div>
     </main>
     <footer>
-      <p>Cached in your browser for 90s. Not financial advice.</p>
-      <p><a href="https://github.com/builders-toronto/fdv.lol" target="_blank" rel="noopener">Source code</a></p>
-      <p><span class="joinCta">Join us</span> on <a href="https://t.me/fdvlol" target="_blank" rel="noopener">Telegram</a></p>
+      <p>Cached in your browser for 90s. Not financial advice.</p><p class="important"><a href="https://github.com/builders-toronto/fdv.lol" target="_blank" rel="noopener">Source</a></p><p><span class="joinCta">Join us</span> on <a href="https://t.me/fdvlol" target="_blank" rel="noopener">Telegram</a></p>
     </footer>
     <script>window.__BOOT_PROFILE_CANONICAL__=${JSON.stringify(canonical)};</script>
     <script type="module" src="/main.js"></script>
