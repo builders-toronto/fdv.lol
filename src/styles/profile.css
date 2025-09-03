@@ -263,9 +263,147 @@
 .stat .v { font-size:16px; font-weight:700; min-height:1em }
 .stat .v.sk { color: transparent; background: linear-gradient(90deg, rgba(255,255,255,.06), rgba(255,255,255,.14), rgba(255,255,255,.06)); background-size:200% 100%; animation: sh 1.2s linear infinite; border-radius:6px }
 
+.stat .k {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.stat .k .k__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stat .k .status {
+  min-width: 1.2em;
+  text-align: right;
+  opacity: .95;
+  filter: drop-shadow(0 0 0 rgba(0,0,0,0)); 
+}
+
+.stat .k .status.ok   { color: #1aff7a; }  
+.stat .k .status.warn { color: #ff4d6d; }
+
+@media (max-width: 520px) {
+  .profile__stats .stat::before {}
+}
+
+
 .profile__grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(300px,1fr)); gap:12px }
 .profile__card { background: var(--card); border:1px solid rgba(122,222,255,.10); padding:12px; border-radius:14px }
 svg.bars rect { fill: rgba(123,241,255,.8) }
+
+.reco {
+  background: var(--card);
+  border: 1px solid rgba(122,222,255,.10);
+  border-radius: 14px;
+  padding: 12px;
+  margin-top: 10px;
+}
+
+.reco__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.reco__score {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.reco__score__label { color: var(--muted); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
+.reco__score__val   { font-weight: 800; font-size: 18px; }
+
+.reco__bars {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin-top: 6px;
+  margin-bottom: 8px;
+}
+@media (min-width: 720px) {
+  .reco__bars {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.reco__row {
+  display: grid;
+  grid-template-columns: 9rem 1fr 3.5rem;
+  align-items: center;
+  gap: 8px;
+}
+.reco__row__label {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.reco__row__val {
+  text-align: right;
+  font-weight: 700;
+}
+
+.reco__bar {
+  position: relative;
+  height: 10px;
+  background: rgba(123,241,255,.08);
+  border: 1px solid rgba(123,241,255,.12);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.reco__bar__fill {
+  height: 100%;
+  background: linear-gradient(90deg, rgba(26,255,213,.65), rgba(123,241,255,.85));
+  box-shadow: 0 0 10px rgba(26,255,213,.25) inset;
+  width: 0%;
+  transition: width .25s ease;
+}
+
+.reco__kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+  margin: 6px 0 8px;
+}
+.reco__kpi {
+  background: rgba(255,255,255,.02);
+  border: 1px dashed rgba(123,241,255,.12);
+  border-radius: 10px;
+  padding: 8px;
+}
+.reco__kpi__k { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.reco__kpi__v { font-weight: 700; }
+
+.chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid rgba(123,241,255,.18);
+}
+.chip.good { background: rgba(26,255,122,.12); }
+.chip.bad  { background: rgba(255,77,109,.12); }
+.chip.neutral { background: rgba(123,241,255,.10); }
+
+.reco__whywrap { margin-top: 6px; }
+.reco__why {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.5;
+}
+.reco__why li { margin: 4px 0; }
+
+.reco[data-reco="good"]  { border-color: rgba(26,255,122,.25); }
+.reco[data-reco="watch"] { border-color: rgba(123,241,255,.18); }
+.reco[data-reco="avoid"] { border-color: rgba(255,77,109,.25); }
+
 
 .label { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color: var(--muted); margin-bottom:8px }
 .reasons { margin:0; padding-left:18px; line-height:1.5 }
@@ -276,7 +414,7 @@ svg.bars rect { fill: rgba(123,241,255,.8) }
 .pairs th { text-align:left; color: var(--muted); font-weight:600 }
 .pairs td:last-child { text-align:right }
 
-.badge { display:inline-block; padding:5px 10px; border-radius:999px; font-weight:800; font-size:12px; color:#111 }
+.badge { display:inline-block; padding:5px 10px; border-radius:999px; font-weight:800; font-size:12px; }
 .badge.buy   { background: var(--buy) }
 .badge.watch { background: var(--watch) }
 .badge.avoid { background: var(--avoid) }
