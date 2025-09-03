@@ -236,7 +236,7 @@ input[type="checkbox"]:disabled{
 .btn.buy{border-color: rgba(26,255,122,.45); box-shadow: inset 0 0 0 1px rgba(26,255,122,.2)}
 .btn.info{opacity:.9}
 .rec{margin-left:auto; font-weight:700; font-size:.9rem; padding:6px 10px; border-radius:10px; border:1px solid; }
-.rec.GOOD  { color: var(--buy);   border-color: rgba(26,255,122,.45); background: rgba(26,255,122,.08)}
+.rec.GOOD  { color: var(--good);   border-color: rgba(26,255,122,.45); background: rgba(26,255,122,.08)}
 .rec.WATCH{ color: var(--watch); border-color: rgba(255,209,102,.45); background: rgba(255,209,102,.08)}
 .rec.AVOID{ color: var(--avoid); border-color: rgba(255,77,109,.45);  background: rgba(255,77,109,.08)}
 
