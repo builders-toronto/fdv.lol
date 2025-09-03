@@ -1,18 +1,28 @@
 name: Build OG Share Pages
 
 on:
-  workflow_dispatch:       
+  workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *" 
+    - cron: "*/30 * * * *"
+
+concurrency:
+  group: build-og-share-pages
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions: { contents: write }
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+        with:
+          node-version: 20
 
       - name: Install ImageMagick
         run: |
@@ -27,14 +37,42 @@ jobs:
           REQUEST_DELAY_MS: 120
         run: node tools/static/generate_og_pages.mjs
 
-      - name: Commit changes (if any)
+      - name: Commit changes 
+        shell: bash
         run: |
-          if [[ -n "$(git status --porcelain)" ]]; then
-            git config user.name  "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add token tools/static/built.json
-            git commit -m "chore: normalize OG images per token (1200x630) and rebuild pages"
-            git push
-          else
-            echo "No changes to commit."
+          set -euo pipefail
+
+          # List changed paths
+          CHANGES=$(git status --porcelain | awk '{print $2}' || true)
+
+          # Allowlist of generated files/paths
+          ALLOW_RE='^(sitemap\.xml|robots\.txt|tools/static/built\.json|token/[^/]+/(index\.html|og\.jpg)|token/[^/]+/raw/.*)$'
+
+          # Filter for allowed changes
+          ALLOWED=$(echo "$CHANGES" | grep -E "$ALLOW_RE" || true)
+          DISALLOWED=$(echo "$CHANGES" | grep -Ev "$ALLOW_RE" || true)
+
+          if [[ -n "$DISALLOWED" ]]; then
+            echo "Unexpected changes detected:"
+            echo "$DISALLOWED"
+            exit 1
           fi
+
+          if [[ -z "$ALLOWED" ]]; then
+            echo "No generated-file changes to commit."
+            exit 0
+          fi
+
+          echo "$ALLOWED" | xargs -r git add
+
+          if git diff --cached --quiet; then
+            echo "Nothing new to commit after staging."
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git commit -m "chore: update sitemap & token pages"
+          git pull --rebase
+          git push
