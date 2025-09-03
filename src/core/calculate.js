@@ -74,11 +74,19 @@ export function scoreAndRecommendOne(r) {
 
   const tx   = nz(out.txns?.h24);
 
-  const nVol = normLog(vol24, 6);
+
+  // Prefer turnover-based volume; comment this out if you like the raw log scale
+  const turnover = nz(vol24 / Math.max(liq, 1));
+  const nVol = clamp((turnover - 0.2) / (1.5 - 0.2), 0, 1);
   const nLiq = normLog(liq,   6);
   const momRaw = clamp((ch1 + ch6 + ch24) / 100, -1, 1);
   const nMom = momRaw > 0 ? momRaw : momRaw * 0.5; 
-  const nAct = normLog(tx, 4);
+
+  // FDV-relative activity: transactions per $1M FDV
+  const fdvM   = Math.max(1, fdv / 1e6);
+  const txPerM = tx / fdvM;
+  const A_LOW = 30, A_HIGH = 200;
+  const nAct = clamp((txPerM - A_LOW) / (A_HIGH - A_LOW), 0, 1);
 
   let score =
       RANK_WEIGHTS.volume    * nVol +
@@ -88,7 +96,8 @@ export function scoreAndRecommendOne(r) {
 
   let penaltyApplied = false;
   if (liq > 0 && fdv / Math.max(liq, 1) > FDV_LIQ_PENALTY.ratio) {
-    score -= FDV_LIQ_PENALTY.penalty;
+    // If you have a penalty weight, subtract it; else apply a soft scale
+    score -= (FDV_LIQ_PENALTY.penalty ?? 0.10);
     penaltyApplied = true;
   }
   score = clamp(score, 0, 1);
@@ -97,7 +106,7 @@ export function scoreAndRecommendOne(r) {
   let why = ['Weak composite score'];
 
   if (
-    score >= BUY_RULES.score &&
+    (BUY_RULES.score == null || score >= BUY_RULES.score) &&
     liq   >= BUY_RULES.liq   &&
     vol24 >= BUY_RULES.vol24 &&
     ch1   >  BUY_RULES.change1h
@@ -116,7 +125,12 @@ export function scoreAndRecommendOne(r) {
   } else {
     if (ch24 < 0)      why.push('Down over 24h');
     if (liq  < 25_000) why.push('Thin liquidity');
-    if (vol24 < 50_000)why.push('Low trading activity');
+
+        if (tx < 500 && turnover < 0.25) {
+          why.push('Low trading activity');
+        } else if (tx < 1500) {
+          why.push('Subpar trading activity');
+        }
   }
 
   out.score = score;
