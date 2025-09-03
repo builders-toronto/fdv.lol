@@ -37,14 +37,21 @@
   const PRIVACY_HTML = `
     <h2>Privacy Policy</h2>
     <p>We do not run servers that store your browsing data. The app fetches public on-chain/market data directly in your browser. Basic, anonymized telemetry may be measured via static hosting (e.g., GitHub Pages/CDN logs). Do not share secrets.</p>
+
     <h3>Data Sources</h3>
     <ul>
       <li>Public market APIs (e.g., price/liquidity/volume)</li>
       <li>Static site hosting logs (aggregate)</li>
+      <li><em>Development-only (opt-in):</em> Microsoft Clarity (heatmaps/session replays) and an in-page click heatmap, used strictly to debug UX during development. These are disabled by default and never run in production unless explicitly enabled.</li>
     </ul>
+
     <h3>Cookies/Storage</h3>
     <p>We may use localStorage/sessionStorage for caching UI preferences and response data to improve speed.</p>
+
+    <h3>Development-only telemetry</h3>
+    <p>Clarity and the in-page heatmap are used only during development to improve UX.</p>
   `;
+
 
   const TOS_HTML = `
     <h2>Terms of Service</h2>
