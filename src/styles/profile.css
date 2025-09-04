@@ -118,7 +118,7 @@
 .profile__hero .row { display:flex; gap:8px; margin-top:6px }
 .profile__hero .actions { display:flex; gap:8px; align-items:center }
 .profile__navigation { display:flex;flex-direction: row;justify-content: space-between;align-items: flex-end;margin-bottom: 12px }
-.buy-btn { background: #1165a3; color:#06140b; font-weight:800; border:1px solid rgba(0,0,0,.25) }
+.buy-btn { background: #000000;color: #6ec1ff;font-weight: 800;border: 1px solid #1165a3; }
 .buy-btn.disabled { opacity:.5; pointer-events:none }
 
 .profile__stats { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap:8px; margin: 8px 0 14px }

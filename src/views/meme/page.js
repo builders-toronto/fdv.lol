@@ -3,6 +3,7 @@ import { coinCard } from './cards.js';
 import { adCard } from '../../ads/load.js';
 import { sparklineSVG } from './render/sparkline.js';
 import { pctChipsHTML } from './render/chips.js';
+import { searchTokensGlobal } from '../../data/dexscreener.js';
 
 export const elCards    = document.getElementById('cards');
 export const elMeta     = document.getElementById('meta');
@@ -12,6 +13,187 @@ export const elSort     = document.getElementById('sort');
 export const elRefresh  = document.getElementById('refresh');
 export const elRelax    = document.getElementById('relax');
 export const elStream   = document.getElementById('stream');
+
+const elSearchWrap = document.getElementById('searchWrap');
+const elQResults   = document.getElementById('qResults');
+
+const debounce = (fn, ms = 120) => {
+  let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+};
+
+// Loose base58-ish check to allow direct navigation on mint-like input
+function looksLikeMint(s) {
+  if (!s) return false;
+  const x = s.trim();
+  if (x.length < 30 || x.length > 48) return false; // Solana ~32–44
+  return /^[1-9A-HJ-NP-Za-km-z]+$/.test(x); // base58 (no 0,O,I,l)
+}
+
+function tokenHref(mint) {
+  return `/token/${encodeURIComponent(mint)}`;
+}
+
+// Build one suggestion row (<a>)
+function suggestionRow(it, isActive = false, badgeText = '') {
+  const a = document.createElement('a');
+  a.className = 'row' + (isActive ? ' is-active' : '');
+  a.href = tokenHref(it.mint);
+  a.setAttribute('data-mint', it.mint);
+  a.innerHTML = `
+    <div class="sym">${it.symbol || '—'}</div>
+    <div class="name">${it.name || ''}<div class="mint">${it.mint}</div></div>
+    <div class="badge">${badgeText || 'View'}</div>
+  `;
+  return a;
+}
+
+let _searchCtl = null;
+let _currentSuggestions = [];
+let _activeIndex = -1;
+
+// Query ordering / staleness guards
+let _qEpoch = 0;              
+let _appliedEpoch = 0;         
+let _currentQuery = '';        
+const _cacheByQuery = new Map(); 
+
+// Render suggestions from an array (no network)
+function renderSuggestionsList(list) {
+  _currentSuggestions = list || [];
+  elQResults.innerHTML = '';
+  if (!_currentSuggestions.length) {
+    elQResults.innerHTML = `<div class="empty">No matches. Try a full mint address.</div>`;
+    elQResults.hidden = false;
+    _activeIndex = -1;
+    return;
+  }
+  _currentSuggestions.forEach((tok, i) => {
+    const badge = tok._direct ? 'Open' : (tok.dexId ? tok.dexId : 'View');
+    const row = suggestionRow(
+      { mint: tok.mint, symbol: tok.symbol, name: tok.name },
+      i === _activeIndex,
+      badge
+    );
+    row.addEventListener('mousedown', (ev) => {
+      ev.preventDefault();
+      window.location.href = row.href;
+    });
+    elQResults.appendChild(row);
+  });
+  elQResults.hidden = false;
+}
+
+// Render from cache for a given query 
+function renderFromCache(query) {
+  const key = (query || '').trim().toLowerCase();
+  if (!key) {
+    elQResults.innerHTML = '';
+    elQResults.hidden = true;
+    _activeIndex = -1;
+    return;
+  }
+  const cached = _cacheByQuery.get(key);
+  if (cached) {
+    renderSuggestionsList(cached);
+  } else {
+    // no-op
+  }
+}
+
+// Abortable global fetch
+async function fetchGlobalSuggestions(q) {
+  if (_searchCtl) _searchCtl.abort();
+  _searchCtl = new AbortController();
+  const { signal } = _searchCtl;
+
+  try {
+    const results = await searchTokensGlobal(q, { signal, limit: 12 });
+    if (signal.aborted) return [];
+    return results || [];
+  } catch (e) {
+    if (e?.name === 'AbortError') return [];
+    return [];
+  }
+}
+
+// Main update (fetch + render) respecting epoch ordering
+async function updateSuggestions(q, epoch) {
+  if (!elQResults) return;
+
+  const raw = (q || '');
+  const s = raw.trim();
+  const key = s.toLowerCase();
+
+  // If user cleared input, clear UI only if this epoch is still current
+  if (!s) {
+    if (epoch === _qEpoch) {
+      _currentQuery = '';
+      _appliedEpoch = epoch;
+      elQResults.innerHTML = '';
+      elQResults.hidden = true;
+      _activeIndex = -1;
+    }
+    return;
+  }
+
+  // Prepend direct mint row if it looks like a mint
+  const headRows = looksLikeMint(s) ? [{ _direct: true, mint: s, symbol: '', name: 'Go to token' }] : [];
+
+  // Fetch (ordered)
+  const global = await fetchGlobalSuggestions(s);
+
+  // If a newer epoch exists, drop this result
+  if (epoch !== _qEpoch) return;
+
+  // Merge rows
+  const merged = [
+    ...headRows,
+    ...global.map(t => ({
+      mint: t.mint,
+      symbol: t.symbol,
+      name: t.name,
+      dexId: t.dexId,
+      priceUsd: t.priceUsd,
+      liquidityUsd: t.bestLiq,
+      imageUrl: t.imageUrl,
+    })),
+  ];
+
+  // Cache only if we actually searched this query key
+  _cacheByQuery.set(key, merged);
+
+  _currentQuery = key;
+  _appliedEpoch = epoch;
+  renderSuggestionsList(merged);
+}
+
+// Keyboard nav
+function moveActive(delta) {
+  if (!elQResults || elQResults.hidden) return;
+  const n = _currentSuggestions.length;
+  if (!n) return;
+  _activeIndex = (_activeIndex + delta + n) % n;
+
+  const rows = Array.from(elQResults.querySelectorAll('.row'));
+  rows.forEach((r, i) => r.classList.toggle('is-active', i === _activeIndex));
+  rows[_activeIndex]?.scrollIntoView({ block: 'nearest' });
+}
+
+function activateSelection() {
+  if (!elQResults || elQResults.hidden) return;
+  const rows = Array.from(elQResults.querySelectorAll('.row'));
+  const elActive = (_activeIndex >= 0 && rows[_activeIndex]) ? rows[_activeIndex] : rows[0];
+  if (elActive) window.location.href = elActive.href;
+}
+
+function syncSuggestionsAfterPaint() {
+  if (elQ && elQ.value && elQ.value.trim()) {
+    renderFromCache(elQ.value);
+  } else if (elQResults) {
+    elQResults.hidden = true;
+    _activeIndex = -1;
+  }
+}
 
 let _latestItems = [];
 let _latestAd = null;
@@ -46,13 +228,12 @@ function renderAdTop() {
     (_latestAd?.title ? String(_latestAd.title) : null) ||
     JSON.stringify(_latestAd);
 
-  if (_adRenderedKey === key) return; // no churn if unchanged
-
+  if (_adRenderedKey === key) return; // prevent churn
   elAdTop.innerHTML = adCard(_latestAd);
   _adRenderedKey = key;
 }
 
-const SETTLE_MS = 7500; 
+const SETTLE_MS = 7500;
 let _settleTimer = null;
 let _needsPaint  = false;
 
@@ -339,6 +520,8 @@ function paintNow() {
   const ranked0  = sortItems(filtered, sortKey).slice(0, MAX_CARDS);
   const ranked   = applyLeaderHysteresis(ranked0);
   patchKeyedGridAnimated(elCards, ranked, x => x.mint || x.id);
+
+  try { syncSuggestionsAfterPaint(); } catch {}
 }
 
 export function renderSkeleton(n = 0) {
@@ -367,7 +550,55 @@ elSort?.addEventListener('change', () => {
   _needsPaint = true;
   if (!_settleTimer) render(_latestItems, _latestAd);
 });
-elQ?.addEventListener('input', () => {
+
+const debouncedRun = debounce((value, epoch) => updateSuggestions(value, epoch), 120);
+elQ?.addEventListener('input', (e) => {
+  const raw = e.currentTarget.value || '';
+  document.getElementById('searchWrap')?.setAttribute('data-hastext', raw ? '1' : '0');
+  const trimmed = raw.trim();
+  _qEpoch += 1;
+  const myEpoch = _qEpoch;
+
+  debouncedRun(trimmed, myEpoch);
+
   _needsPaint = true;
   if (!_settleTimer) render(_latestItems, _latestAd);
+});
+
+document.getElementById('searchWrap')?.setAttribute('data-loading','1');
+
+document.getElementById('searchWrap')?.setAttribute('data-loading','0');
+
+document.getElementById('qClear')?.addEventListener('click', () => {
+  elQ.value = '';
+  document.getElementById('searchWrap')?.setAttribute('data-hastext','0');
+  // hide dropdown
+  const r = document.getElementById('qResults');
+  if (r){ r.hidden = true; r.innerHTML = ''; }
+  elQ.focus();
+});
+
+elQ?.addEventListener('keydown', (e) => {
+  if (!elQResults) return;
+  if (e.key === 'ArrowDown') { e.preventDefault(); moveActive(+1); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); moveActive(-1); }
+  else if (e.key === 'Enter') {
+    const raw = (elQ.value || '').trim();
+    if (elQResults.hidden && looksLikeMint(raw)) {
+      window.location.href = tokenHref(raw);
+      return;
+    }
+    if (!elQResults.hidden) { e.preventDefault(); activateSelection(); }
+  } else if (e.key === 'Escape') {
+    elQResults.hidden = true;
+    _activeIndex = -1;
+  }
+});
+
+elQ?.addEventListener('blur', () => {
+  setTimeout(() => { if (elQResults) elQResults.hidden = true; }, 120);
+});
+
+elSearchWrap?.addEventListener('mouseenter', () => {
+  if (elQ && elQ.value && elQ.value.trim()) elQResults.hidden = false;
 });

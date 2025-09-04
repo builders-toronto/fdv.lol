@@ -345,3 +345,69 @@ export async function fetchTokenInfo(mint) {
 
   return model;
 }
+
+export async function searchTokensGlobal(query, { signal, limit = 12 } = {}) {
+  const q = String(query || '').trim();
+  if (!q) return [];
+
+  const url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(q)}`;
+
+  let json;
+  try {
+    json = await fetchDS(url, { signal, ttl: FETCH_TTL_MS_SEARCH });
+  } catch (e) {
+    if (e?.name === 'AbortError') return [];
+    return [];
+  }
+
+  const pairs = Array.isArray(json?.pairs) ? json.pairs : [];
+  if (!pairs.length) return [];
+
+  const byMint = new Map();
+  for (const p of pairs) {
+    if (p?.chainId !== 'solana') continue;
+    const base = p?.baseToken || {};
+    const mint = base.address;
+    if (!mint) continue;
+
+    const liq = Number(p?.liquidity?.usd || 0);
+    const prev = byMint.get(mint);
+    if (!prev || liq > prev.bestLiq) {
+      byMint.set(mint, {
+        mint,
+        symbol: base.symbol || '',
+        name: base.name || '',
+        bestLiq: liq,
+        priceUsd: Number.isFinite(Number(p?.priceUsd)) ? Number(p.priceUsd) : null,
+        change24h: Number.isFinite(Number(p?.priceChange?.h24)) ? Number(p.priceChange.h24) : null,
+        dexId: p?.dexId || '',
+        url: p?.url || '',
+        imageUrl: p?.info?.imageUrl,  
+      });
+    }
+  }
+
+  const s = q.toLowerCase();
+  const scored = [...byMint.values()].map(t => {
+    let score = t.bestLiq ? Math.log10(t.bestLiq + 10) : 0;
+    const sym = (t.symbol || '').toLowerCase();
+    const nam = (t.name || '').toLowerCase();
+    const mnt = (t.mint || '').toLowerCase();
+
+    if (sym === s) score += 20;
+    if (nam === s) score += 18;
+    if (mnt === s) score += 22;
+
+    if (sym.startsWith(s)) score += 12;
+    if (nam.startsWith(s)) score += 10;
+
+    if (sym.includes(s)) score += 6;
+    if (nam.includes(s)) score += 4;
+    if (mnt.includes(s)) score += 3;
+
+    return { ...t, _score: score };
+  });
+
+  scored.sort((a,b) => b._score - a._score);
+  return scored.slice(0, limit);
+}
