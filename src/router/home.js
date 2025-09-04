@@ -23,8 +23,8 @@ function wireHeaderControls() {
   if (!$streamBtn) {
     if (!WIRED) {
       document.addEventListener('DOMContentLoaded', () => {
-        WIRED = false;         // allow another attempt
-        wireHeaderControls();  // re-run once DOM is ready
+        WIRED = false;
+        wireHeaderControls();
       }, { once: true });
     }
     return;
@@ -46,11 +46,11 @@ async function runHome({ force = false } = {}) {
   const pipe = await pipeline({
     force,
     stream: STREAM_ON,
-    onUpdate: ({ items, ad }) => {
-      render(items, ad);
+    onUpdate: ({ items, ad, marquee }) => {
+      render(items, ad, marquee);  
     }
   });
-  render(pipe.items, pipe.ad);
+  render(pipe.items, pipe.ad, pipe.marquee); 
 }
 
 export async function showHome({ force = false } = {}) {

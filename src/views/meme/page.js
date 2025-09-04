@@ -7,7 +7,7 @@ import { searchTokensGlobal } from '../../data/dexscreener.js';
 
 export const elCards    = document.getElementById('cards');
 export const elMeta     = document.getElementById('meta');
-export const elMetaBase = document.getElementById('metaBase');
+export const elMetaBase = document.getElementById('metaBaseSpan');
 export const elQ        = document.getElementById('q');
 export const elSort     = document.getElementById('sort');
 export const elRefresh  = document.getElementById('refresh');
@@ -17,11 +17,30 @@ export const elStream   = document.getElementById('stream');
 const elSearchWrap = document.getElementById('searchWrap');
 const elQResults   = document.getElementById('qResults');
 
+const pageSpinnerEl = document.querySelector('.spinner');
+
+function syncPageSpinner() {
+  if (!elCards || !pageSpinnerEl) return;
+  const hasCards = elCards.children.length > 0;
+  pageSpinnerEl.hidden = hasCards;         
+  pageSpinnerEl.setAttribute('aria-hidden', hasCards ? 'true' : 'false');
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', syncPageSpinner, { once: true });
+} else {
+  syncPageSpinner();
+}
+
+const mo = new MutationObserver(syncPageSpinner);
+if (elCards) {
+  mo.observe(elCards, { childList: true });
+}
+
 const debounce = (fn, ms = 120) => {
   let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 };
 
-// Loose base58-ish check to allow direct navigation on mint-like input
 function looksLikeMint(s) {
   if (!s) return false;
   const x = s.trim();
@@ -33,7 +52,6 @@ function tokenHref(mint) {
   return `/token/${encodeURIComponent(mint)}`;
 }
 
-// Build one suggestion row (<a>)
 function suggestionRow(it, isActive = false, badgeText = '') {
   const a = document.createElement('a');
   a.className = 'row' + (isActive ? ' is-active' : '');
@@ -51,13 +69,11 @@ let _searchCtl = null;
 let _currentSuggestions = [];
 let _activeIndex = -1;
 
-// Query ordering / staleness guards
-let _qEpoch = 0;              
-let _appliedEpoch = 0;         
-let _currentQuery = '';        
-const _cacheByQuery = new Map(); 
+let _qEpoch = 0;
+let _appliedEpoch = 0;
+let _currentQuery = '';
+const _cacheByQuery = new Map();
 
-// Render suggestions from an array (no network)
 function renderSuggestionsList(list) {
   _currentSuggestions = list || [];
   elQResults.innerHTML = '';
@@ -82,8 +98,6 @@ function renderSuggestionsList(list) {
   });
   elQResults.hidden = false;
 }
-
-// Render from cache for a given query 
 function renderFromCache(query) {
   const key = (query || '').trim().toLowerCase();
   if (!key) {
@@ -100,7 +114,6 @@ function renderFromCache(query) {
   }
 }
 
-// Abortable global fetch
 async function fetchGlobalSuggestions(q) {
   if (_searchCtl) _searchCtl.abort();
   _searchCtl = new AbortController();
@@ -116,7 +129,6 @@ async function fetchGlobalSuggestions(q) {
   }
 }
 
-// Main update (fetch + render) respecting epoch ordering
 async function updateSuggestions(q, epoch) {
   if (!elQResults) return;
 
@@ -124,7 +136,6 @@ async function updateSuggestions(q, epoch) {
   const s = raw.trim();
   const key = s.toLowerCase();
 
-  // If user cleared input, clear UI only if this epoch is still current
   if (!s) {
     if (epoch === _qEpoch) {
       _currentQuery = '';
@@ -136,16 +147,11 @@ async function updateSuggestions(q, epoch) {
     return;
   }
 
-  // Prepend direct mint row if it looks like a mint
   const headRows = looksLikeMint(s) ? [{ _direct: true, mint: s, symbol: '', name: 'Go to token' }] : [];
-
-  // Fetch (ordered)
   const global = await fetchGlobalSuggestions(s);
 
-  // If a newer epoch exists, drop this result
   if (epoch !== _qEpoch) return;
 
-  // Merge rows
   const merged = [
     ...headRows,
     ...global.map(t => ({
@@ -159,7 +165,6 @@ async function updateSuggestions(q, epoch) {
     })),
   ];
 
-  // Cache only if we actually searched this query key
   _cacheByQuery.set(key, merged);
 
   _currentQuery = key;
@@ -197,18 +202,19 @@ function syncSuggestionsAfterPaint() {
 
 let _latestItems = [];
 let _latestAd = null;
+let _latestMarquee = null;
 
 let elAdTop = null;
 let _adRenderedKey = null;
 
 function ensureAdSlot() {
   if (elAdTop) return elAdTop;
-  if (elCards && elCards.parentElement) {
+  if (elSearchWrap && elSearchWrap.parentElement) {
     elAdTop = document.getElementById('adTop') || document.createElement('div');
     elAdTop.id = 'adTop';
     elAdTop.style.marginBottom = '16px';
     if (!elAdTop.parentElement) {
-      elCards.parentElement.insertBefore(elAdTop, elCards);
+      // elSearchWrap.parentElement.insertBefore(elAdTop, elSearchWrap);
     }
   }
   return elAdTop;
@@ -231,6 +237,122 @@ function renderAdTop() {
   if (_adRenderedKey === key) return; // prevent churn
   elAdTop.innerHTML = adCard(_latestAd);
   _adRenderedKey = key;
+}
+
+let elMarqueeWrap = null;
+let _marqueeRenderedKey = null;
+
+function ensureMarqueeSlot() {
+  if (elMarqueeWrap) return elMarqueeWrap;
+  const parent = elCards?.parentElement;
+  if (!parent) return null;
+
+  elMarqueeWrap = document.getElementById('marqueeWrap') || document.createElement('div');
+  elMarqueeWrap.id = 'marqueeWrap';
+  elMarqueeWrap.className = 'marquee-wrap';
+  elMarqueeWrap.style.margin = '8px 0 16px 0';
+
+  if (!elMarqueeWrap.parentElement) parent.insertBefore(elMarqueeWrap, elCards);
+  if (!document.getElementById('marqueeInlineStyles')) {
+    const css = document.createElement('style');
+    css.id = 'marqueeInlineStyles';
+    css.textContent = `
+      .marquee-wrap { overflow: hidden; }
+      .mq-row { display:flex; align-items:center; gap:10px; margin:6px 0; }
+      .mq-label { flex:0 0 auto; font-size:12px; font-weight:700; padding:4px 8px; border-radius:999px; background:#111; color:#fff; letter-spacing:.4px; text-transform:uppercase; }
+      .mq-strip { display:flex; gap:14px; overflow:hidden; mask-image: linear-gradient(to right, transparent 0, #000 40px, #000 calc(100% - 40px), transparent 100%); }
+      .mq-item { display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; background:rgba(255,255,255,.06); color:inherit; text-decoration:none; white-space:nowrap; }
+      .mq-item:hover { background:rgba(255,255,255,.12); }
+      .mq-logo { width:18px; height:18px; border-radius:50%; object-fit:cover; background:#222; }
+      .mq-sym { font-weight:700; font-size:12px; }
+      .mq-name { opacity:.8; font-size:12px; }
+      .mq-price { opacity:.8; font-size:12px; }
+      .mq-gap { width:24px; flex:0 0 auto; }
+      .mq-strip-inner { display:flex; gap:14px; }
+    `;
+    document.head.appendChild(css);
+  }
+  return elMarqueeWrap;
+}
+
+function mqItemHTML(t) {
+  const mint = t.mint || '';
+  const sym  = t.symbol || '';
+  const name = t.name || '';
+  const logo = t.imageUrl || t.logoURI || '';
+  const p    = t.priceUsd;
+  const priceTxt = (p == null) ? '' :
+    (p >= 1 ? `$${p.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+            : `$${p.toFixed(6)}`);
+  return `
+    <a class="mq-item" href="${tokenHref(mint)}" title="${name}">
+      <img class="mq-logo" src="${logo}" alt="" />
+      <span class="mq-sym">${sym || '—'}</span>
+      <span class="mq-name">${name || ''}</span>
+      ${priceTxt ? `<span class="mq-price">${priceTxt}</span>` : ''}
+    </a>
+  `;
+}
+
+function marqueeRowHTML(list, label) {
+  if (!Array.isArray(list) || list.length === 0) return '';
+  const inner = list.map(mqItemHTML).join('<span class="mq-gap"></span>');
+  // duplicate for seamless loop
+  return `
+    <div class="mq-row" data-label="${label}">
+      <div class="mq-label">${label}</div>
+      <div class="mq-strip">
+        <div class="mq-strip-inner">${inner}</div>
+        <div class="mq-strip-inner">${inner}</div>
+      </div>
+    </div>
+  `;
+}
+
+function startAutoScroll(container) {
+  const strips = Array.from(container.querySelectorAll('.mq-strip'));
+  for (const strip of strips) {
+    if (strip._af) continue;
+    let paused = false;
+    const speed = 0.4; // px per frame
+    const step = () => {
+      if (!paused) {
+        strip.scrollLeft += speed;
+        // loop
+        if (strip.scrollLeft >= strip.scrollWidth / 2) {
+          strip.scrollLeft = 0;
+        }
+      }
+      strip._af = requestAnimationFrame(step);
+    };
+    strip.addEventListener('mouseenter', () => { paused = true; });
+    strip.addEventListener('mouseleave', () => { paused = false; });
+    strip._af = requestAnimationFrame(step);
+  }
+}
+
+function renderMarquee(marquee) {
+  if (!marquee) {
+    if (elMarqueeWrap) elMarqueeWrap.innerHTML = '';
+    return;
+  }
+  ensureMarqueeSlot();
+  if (!elMarqueeWrap) return;
+
+  const key = JSON.stringify({
+    t: (marquee.trending || []).map(x => x.mint).slice(0, 40),
+    n: (marquee.new || []).map(x => x.mint).slice(0, 40),
+  });
+
+  if (_marqueeRenderedKey === key) return;
+
+  const tRow = marqueeRowHTML(marquee.trending || [], 'Trending');
+  const nRow = marqueeRowHTML(marquee.new || [], 'New');
+  const html = `${tRow}${nRow}`;
+  elMarqueeWrap.innerHTML = html;
+
+  startAutoScroll(elMarqueeWrap);
+  _marqueeRenderedKey = key;
 }
 
 const SETTLE_MS = 7500;
@@ -303,7 +425,6 @@ function applyLeaderHysteresis(ranked) {
     return ranked;
   }
 
-  // keep current leader in slot 1 temporarily
   const forced = ranked.slice();
   const [leader] = forced.splice(leaderIdx, 1);
   forced.unshift(leader);
@@ -336,7 +457,7 @@ function updateCardDOM(el, it) {
   if (recEl) {
     const next = it.recommendation || '';
     if (recEl.textContent !== next) recEl.textContent = next;
-    recEl.classList.remove('GOOD','WATCH','AVOID');
+    recEl.classList.remove('GOOD','WATCH','AVOID','NEUTRAL','CONSIDER');
     if (next) recEl.classList.add(next);
   }
 
@@ -494,12 +615,13 @@ function patchKeyedGridAnimated(container, nextItems, keyFn = x => x.mint || x.i
     if (Math.abs(window.scrollY - prevY) > 2) window.scrollTo({ top: prevY });
   });
 }
-
-export function render(items, adPick) {
+export function render(items, adPick, marquee) {
   _latestItems = Array.isArray(items) ? items : [];
   _latestAd = adPick || null;
+  _latestMarquee = marquee || null;
 
   renderAdTop();
+  renderMarquee(_latestMarquee);
 
   _needsPaint = true;
   if (_settleTimer) return;
@@ -548,7 +670,7 @@ export function renderSkeleton(n = 0) {
 
 elSort?.addEventListener('change', () => {
   _needsPaint = true;
-  if (!_settleTimer) render(_latestItems, _latestAd);
+  if (!_settleTimer) render(_latestItems, _latestAd, _latestMarquee);
 });
 
 const debouncedRun = debounce((value, epoch) => updateSuggestions(value, epoch), 120);
@@ -562,17 +684,15 @@ elQ?.addEventListener('input', (e) => {
   debouncedRun(trimmed, myEpoch);
 
   _needsPaint = true;
-  if (!_settleTimer) render(_latestItems, _latestAd);
+  if (!_settleTimer) render(_latestItems, _latestAd, _latestMarquee);
 });
 
 document.getElementById('searchWrap')?.setAttribute('data-loading','1');
-
 document.getElementById('searchWrap')?.setAttribute('data-loading','0');
 
 document.getElementById('qClear')?.addEventListener('click', () => {
   elQ.value = '';
   document.getElementById('searchWrap')?.setAttribute('data-hastext','0');
-  // hide dropdown
   const r = document.getElementById('qResults');
   if (r){ r.hidden = true; r.innerHTML = ''; }
   elQ.focus();
