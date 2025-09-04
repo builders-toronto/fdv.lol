@@ -91,7 +91,7 @@ export function adCard(ad){
 
       <div class="adactions">
         <div class="adtag" title="Sponsored">SPONSORED</div>
-        <a class="adbtn primary" href="${buyUrl}" target="_blank" rel="noopener"><span class="ademoji">🔥</span> ${cta}</a>
+        <a class="adbtn primary" href="${buyUrl}" target="_blank" rel="noopener"><span class="ademoji">🔥</span>${cta}</a>
       </div>
     </div>
   </section>`;

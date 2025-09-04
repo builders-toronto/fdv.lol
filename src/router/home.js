@@ -3,19 +3,64 @@ import { renderProfileView } from "../views/profile/page.js";
 import { render } from '../views/meme/page.js';
 import { hideLoading } from '../utils/tools.js';
 
-export async function showHome({ force = false } = {}) {
-  try {
-    const pipe = await pipeline({
-      force,
-      stream: true,
-      onUpdate: ({ items, ad }) => {
-        render(items, ad);         
-      }
-    });
-    render(pipe.items, pipe.ad);     
-  } finally {
-    hideLoading();
+let HOME_INTERVAL = null;
+let STREAM_ON = true;   
+let WIRED = false;
+
+let $streamBtn = null;
+
+function syncHeaderButtons() {
+  if ($streamBtn) {
+    $streamBtn.setAttribute('aria-pressed', String(STREAM_ON));
+    $streamBtn.textContent = STREAM_ON ? 'Stream: On' : 'Stream: Off';
   }
+}
+
+function wireHeaderControls() {
+  if (WIRED && $streamBtn) return;
+  $streamBtn = document.getElementById('stream');
+
+  if (!$streamBtn) {
+    if (!WIRED) {
+      document.addEventListener('DOMContentLoaded', () => {
+        WIRED = false;         // allow another attempt
+        wireHeaderControls();  // re-run once DOM is ready
+      }, { once: true });
+    }
+    return;
+  }
+
+  if (!WIRED) {
+    WIRED = true;
+    $streamBtn.addEventListener('click', () => {
+      STREAM_ON = !STREAM_ON;
+      syncHeaderButtons();
+      runHome({ force: true }).catch(console.warn);
+    });
+  }
+
+  syncHeaderButtons();
+}
+
+async function runHome({ force = false } = {}) {
+  const pipe = await pipeline({
+    force,
+    stream: STREAM_ON,
+    onUpdate: ({ items, ad }) => {
+      render(items, ad);
+    }
+  });
+  render(pipe.items, pipe.ad);
+}
+
+export async function showHome({ force = false } = {}) {
+  hideLoading();
+  wireHeaderControls();
+  if (HOME_INTERVAL) { clearInterval(HOME_INTERVAL); HOME_INTERVAL = null; }
+  runHome({ force }).catch(console.warn);
+  HOME_INTERVAL = setInterval(() => {
+    runHome({ force: false }).catch(console.warn);
+  }, 10_000);
 }
 
 export async function showProfile({ mint }) {

@@ -2,7 +2,7 @@ import { ts, MEME_KEYWORDS } from '../config/env.js';
 import { fetchDexscreener, streamDexscreener } from '../data/dexscreener.js'; 
 import { fetchTrending } from '../data/solana.js';
 import { bestPerToken, scoreAndRecommend } from '../core/calculate.js';
-import { renderSkeleton, elRelax, elMeta, elMetaBase, elCards  } from '../views/meme/page.js';
+import { elRelax, elMeta, elMetaBase, elCards } from '../views/meme/page.js';
 import { readCache, writeCache } from '../utils/tools.js';
 import { enrichMissingInfo } from '../data/normalize.js';
 import { loadAds, pickAd } from '../ads/load.js';
@@ -14,7 +14,8 @@ function debounce(fn, ms=200){
   let t; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), ms); };
 }
 
-export async function pipeline({force=false, stream=true, timeboxMs=10_000} = {}) {
+export async function pipeline({force=false, stream=true, timeboxMs=10_000, onUpdate} = {}) {
+  onUpdate = typeof onUpdate === 'function' ? onUpdate : () => {};
   if (CURRENT_RUN?.abort) { try { CURRENT_RUN.abort(); } catch {} }
   const ac = new AbortController();
   CURRENT_RUN = ac;
@@ -26,8 +27,8 @@ export async function pipeline({force=false, stream=true, timeboxMs=10_000} = {}
     return cached.items;
   }
 
-  renderSkeleton(8);
-  elMeta.textContent = `Fetching…`;
+  // no blocking skeleton; set a tiny status line
+  elMetaBase.textContent = `Scanning…`;
 
   const adsPromise = loadAds().catch(()=>null);
   const trendingPromise = fetchTrending().catch(()=>[]); 
@@ -58,22 +59,17 @@ export async function pipeline({force=false, stream=true, timeboxMs=10_000} = {}
         _ts: Date.now(),
       };
 
-      if (typeof onUpdate === 'function') {
-        onUpdate({ items: finalCached.items, ad: CURRENT_AD });
-      }
+      onUpdate({ items: finalCached.items, ad: CURRENT_AD });
 
-      elMeta.textContent = `Scanning.. ${merged.length} pairs`;
+      elMetaBase.textContent = `Scanning.. ${merged.length} pairs`;
       lastRenderedCount = merged.length;
 
-      elMeta.textContent = `Scanning... ${merged.length} pairs`;
+      elMetaBase.textContent = `Scanning… ${merged.length} pairs`;
       lastRenderedCount = merged.length;
     } catch (e) {
-      elMeta.textContent = `Stream error: ${merged.length}`;
-    } finally {
-      elMeta.textContent = `Scanning.`;
-      elMetaBase.textContent = `Generated: ${Date.now()}`;
-    }
-  }, 300);
+      elMetaBase.textContent = `Stream error`;
+    } 
+  }, 100);
 
   try {
     if (!stream) {
@@ -91,7 +87,7 @@ export async function pipeline({force=false, stream=true, timeboxMs=10_000} = {}
       const payload = { generatedAt: ts(), items: scored, _ts: Date.now() };
       writeCache(payload);
       elMeta.textContent = `Generated: ${payload.generatedAt}`;
-      if (typeof onUpdate === 'function') onUpdate({ items: scored, ad: CURRENT_AD });
+      onUpdate({ items: scored, ad: CURRENT_AD });
       return { items: scored, ad: CURRENT_AD };
     }
 
@@ -127,14 +123,8 @@ export async function pipeline({force=false, stream=true, timeboxMs=10_000} = {}
       timebox = new Promise(resolve => setTimeout(resolve, timeboxMs)).then(() => ac.abort('timebox'));
     }
 
-
-
-
-
-
     await Promise.race([streamer, timebox].filter(Boolean));
 
-  
     await new Promise(r => setTimeout(r, 10));
     await flush();
 
@@ -144,10 +134,10 @@ export async function pipeline({force=false, stream=true, timeboxMs=10_000} = {}
       await flush();
     }
     if (finalCached) writeCache(finalCached);
-      elMeta.textContent = `Generated: ${finalCached?.generatedAt || ts()}`;
-if (typeof onUpdate === 'function') onUpdate({ items: finalCached?.items || [], ad: CURRENT_AD });
-      return { items: finalCached?.items || [], ad: CURRENT_AD };
-    } catch (err) {
+    elMeta.textContent = `Generated: ${finalCached?.generatedAt || ts()}`;
+    onUpdate({ items: finalCached?.items || [], ad: CURRENT_AD });
+    return { items: finalCached?.items || [], ad: CURRENT_AD };
+  } catch (err) {
     if (ac.signal.aborted) {
       elMeta.textContent = `Stopped.`;
       return { items: finalCached?.items || [], ad: CURRENT_AD };

@@ -1,7 +1,7 @@
 import { FALLBACK_LOGO, BUY_RULES, FDV_LIQ_PENALTY } from "../../config/env.js";
 import { fetchTokenInfo } from "../../data/dexscreener.js";
 import { scoreAndRecommendOne } from "../../core/calculate.js";
-import { mountGiscus } from "../meme/chat.js";            // moved import path if needed
+import { mountGiscus } from "../meme/chat.js";            
 
 import sanitizeToken from "./sanitizeToken.js";
 import renderShell from "./render/shell.js";
@@ -47,6 +47,7 @@ export async function renderProfileView(input, { onBack } = {}) {
   buildStatsGrid(gridEl);
   wireStatsResizeAutoShortLabels(gridEl);
   setupStatsCollapse(gridEl);
+  const statsCollapseBtn = document.querySelector('.profile__stats-toggle');
   setupExtraMetricsToggle(document.querySelector('.profile__card__extra_metrics'));
 
   wireNavigation({ onBack });
@@ -140,8 +141,8 @@ export async function renderProfileView(input, { onBack } = {}) {
     badgeWrap.innerHTML = `<span class="badge ${cssReco(scored.recommendation)}">${scored.recommendation}</span>`;
   }
 
-  // Recommendation panel (fixes "checks is not defined" by passing it explicitly)
-  mountRecommendationPanel(gridEl, {
+  // Recommendation panel 
+  mountRecommendationPanel(statsCollapseBtn, {
     scored,
     token: t,
     checks: { LIQFDV_OK, VLIQR_OK, BUYR_OK }
