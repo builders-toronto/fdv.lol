@@ -121,10 +121,15 @@
   </header>
 
   <main id="app" class="container grid">
+    <div id="searchWrap" class="search-wrap">
+      <input id="q" class="search-input" type="search" placeholder="Search token: name, symbol, or mint…"
+            autocomplete="off" spellcheck="false" />
+      <div id="qResults" class="search-results" hidden></div>
+    </div>
     <div id="cards" class="cards"></div>
   </main>
   <footer>
-    <p>Cached in your browser for 90s. Not financial advice.</p><p class="important"><a href="https://github.com/builders-toronto/fdv.lol" target="_blank" rel="noopener">Source</a></p><p><span class="joinCta">Join us</span> on <a href="https://t.me/fdvlol" target="_blank" rel="noopener">Telegram</a></p>
+    <p>Pipeline Trending Meme Feed. Not financial advice.</p><p class="important"><a href="https://github.com/builders-toronto/fdv.lol" target="_blank" rel="noopener">Source</a></p><p><span class="joinCta">Join us</span> on <a href="https://t.me/fdvlol" target="_blank" rel="noopener">Telegram</a></p>
   </footer>
   <script type="module" src="/main.js"></script>
   </body>
