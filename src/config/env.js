@@ -54,7 +54,12 @@ export const BUY_RULES = {
 export const FDV_LIQ_PENALTY = {
   ratio: Math.max(1, toNum(FDV_LIQ_RATIO, 50)), // 50 => need ≥ 2% liq/fdv
 };
+export const BIRDEYE_API_KEY = "";
+
+export const SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com";
+
 export const JUP_SWAP   = (mint)=>`https://jup.ag/tokens/${encodeURIComponent(mint)}`;
+export const JUP_LIST_TTL_MS = 60 * 60 * 1000;
 export const EXPLORER   = (addr)=>`https://explorer.solana.com/address/${addr}`;
 export const FALLBACK_LOGO = (sym)=>"data:image/svg+xml;utf8,"+encodeURIComponent(
   `<svg xmlns='http://www.w3.org/2000/svg' width='38' height='38'>

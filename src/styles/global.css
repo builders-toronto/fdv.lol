@@ -12,10 +12,17 @@
   --grid: rgba(122, 222, 255, .06);
 }
 *{box-sizing:border-box}
-html,body{margin:0;background: radial-gradient(1200px 600px at 20% -10%, rgba(26,255,213,.08), transparent),
+html,body{
+  margin:0;
+  background: radial-gradient(1200px 600px at 20% -10%, rgba(26,255,213,.08), transparent),
                     radial-gradient(900px 500px at 80% 110%, rgba(123,241,255,.07), transparent),
                     var(--bg);
-color:var(--text); font-family: 'Exo', system-ui, -apple-system, Segoe UI, Roboto, sans-serif}
+  /* background: black; */
+  color:var(--text);
+  font-family: 'Exo', system-ui, -apple-system, Segoe UI, Roboto, sans-serif
+
+}
+
 a{color:var(--neon2);text-decoration:none}
 a:hover{text-decoration:none; filter:brightness(1.1)}
 
@@ -39,7 +46,7 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
   box-shadow: 0 10px 30px rgba(0,0,0,.45), inset 0 0 0 1px rgba(122,222,255,.1);
 }
 
-.spinner { width: 56px; height: 56px; display: block; }
+.spinner { width: 20px; height: 56px; display: block; }
 .spinner .ring {
   fill: none;
   stroke: rgba(122,222,255,.15);
@@ -56,6 +63,8 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
   animation: spin 1s linear infinite, dash 1.5s ease-in-out infinite;
 }
 
+.spinner[hidden] { display: none; }
+
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes dash {
   0%   { stroke-dashoffset: 100; }
@@ -65,6 +74,17 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
 
 @media (prefers-reduced-motion: reduce) {
   .spinner .arc { animation: none; }
+}
+
+#metaBase {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+}
+
+#metaBase span {
+  margin-left: 5px;
 }
 
 .header{
@@ -506,9 +526,10 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
   --edge: rgba(122,222,255,.18);
 
   position: relative;
-  display: grid;
-  grid-template-columns: 34px 1fr 34px; /* ico | input | clear */
-  align-items: center;
+    display: flex;
+    flex-direction: row;
+    justify-content: flex-end;
+    align-items: center;
   gap: 8px;
 
   width: 100%;
@@ -526,9 +547,7 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
   box-shadow: 0 10px 28px rgba(0,0,0,.35), inset 0 0 0 1px rgba(26,255,213,.05);
   backdrop-filter: blur(6px);
   transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
-
-
-  z-index: 1200;
+  z-index: 999;
 }
 
 .controls .search-wrap{
@@ -544,11 +563,23 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
     0 0 0 3px rgba(26,255,213,.12);
 }
 
-.search-ico{
+.search-ico {
   grid-column: 1 / 2;
   color: var(--muted);
   opacity: .9;
-  justify-self: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.search-ico svg {
+  width: 18px;
+  height: 18px;
+  stroke: var(--muted);
+}
+
+.search-wrap:focus-within .search-ico svg {
+  stroke: var(--neon);
+  filter: drop-shadow(0 0 4px var(--neon));
 }
 
 .search-input{
@@ -559,7 +590,7 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
   border: 0;
   background: transparent;
   color: var(--text);
-  font-size: 0.98rem;
+  /* font-size: 0.98rem; */
   outline: none;
 }
 .search-input::placeholder{ color: color-mix(in oklab, var(--muted) 75%, transparent); }
@@ -653,7 +684,7 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 
 @media (max-width: 640px){
   .search-wrap{
-    grid-template-columns: 28px 1fr 28px;
+    grid-template-columns: 5px 1fr 10px;
     border-radius: 12px;
   }
   .search-results{ border-radius: 12px; }

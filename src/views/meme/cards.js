@@ -52,6 +52,7 @@ export function coinCard(it){
           ${iconFor('x')}
        </a>`;
   }
+
   const micro = `
     <div class="micro" data-micro>
       ${pctChipsHTML(it._chg)}
