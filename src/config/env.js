@@ -88,5 +88,5 @@ export const MEME_KEYWORDS = [
   'elon','floki','corgi','monke','ape',
   'dino','purr','purry','kitty','paws',
   'toad','hamster','doge','shiba','giga',
-  'sigma','baby','wife','husband','reno',
+  'sigma','baby','wife','husband',
 ];

@@ -301,6 +301,7 @@ svg.bars rect { fill: rgba(123,241,255,.8) }
   border-radius: 14px;
   padding: 12px;
   margin-top: 10px;
+  margin-bottom: 10px;
 }
 
 .reco__header {
