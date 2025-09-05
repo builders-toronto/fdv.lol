@@ -5,10 +5,12 @@ import {
 } from '../data/feeds.js';
 import { fetchTrending } from '../data/solana.js';
 import { scoreAndRecommend } from '../core/calculate.js';
-import { elRelax, elMeta, elMetaBase } from '../views/meme/page.js';
+import { elRelax, elMeta, elMetaBase, elTimeDerived } from '../views/meme/page.js';
 import { readCache, writeCache } from '../utils/tools.js';
 import { enrichMissingInfo } from '../data/normalize.js';
 import { loadAds, pickAd } from '../ads/load.js';
+
+//TODO: it takes a minute to load because I dont have the time to fix this right meow
 
 const num = (x, d = 0) => {
   const n = Number(x);
@@ -68,6 +70,7 @@ class MarqueeStore {
     }
     return changed;
   }
+  // TODO: adjust by timestamp
   addNewFromGrid(rows = []) {
     let changed = false;
     for (const r of rows) {
@@ -289,7 +292,7 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
   // Non-stream 
   const cached = !force && readCache();
   if (!stream && cached?.items?.length) {
-    elMetaBase.textContent = `Generated: ${cached.generatedAt}`;
+    elTimeDerived.textContent = `Generated: ${cached.generatedAt}`;
     const byScore = [...cached.items].sort((a,b) => (b.score || 0) - (a.score || 0));
     const marqueeFromCache = {
       trending: byScore.slice(0, 40).map(t => ({
@@ -387,7 +390,7 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
     lastScored = scored;
     feedMarqueeFromGrid({ useScore: true, feedNew: true });
     pushUpdate(lastScored);
-    elMetaBase.textContent = `Generated: ${ts()}`;
+    elTimeDerived.textContent = `Generated: ${ts()}`;
 
     firstResolved = true;
     resolveFirst({ items: lastScored, marquee: marquee.payload(), ad: CURRENT_AD });
@@ -462,11 +465,11 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
           lastScored = scored;
           feedMarqueeFromGrid({ useScore: true, feedNew: true });
           pushUpdate(lastScored);
-          elMetaBase.textContent = `Updated: ${ts()} • ${store.size()} tokens • Marquee: ${marquee.trending.length + marquee.new.length}`;
+          elMetaBase.textContent = `Updated: ${store.size()} tokens • Marquee: ${marquee.trending.length + marquee.new.length}`;
         });
       }
 
-      elMeta.textContent =
+      elTimeDerived.textContent =
         `Searching… grid:${store.size()} • marquee:${marquee.trending.length + marquee.new.length} • ${evt.source}${evt.term ? ` • term: ${evt.term}` : ''}`;
 
       if (ac.signal.aborted) break;
