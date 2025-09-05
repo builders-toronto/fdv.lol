@@ -13,6 +13,7 @@
 }
 *{box-sizing:border-box}
 html,body{
+  height: 100vh;
   margin:0;
   background: radial-gradient(1200px 600px at 20% -10%, rgba(26,255,213,.08), transparent),
                     radial-gradient(900px 500px at 80% 110%, rgba(123,241,255,.07), transparent),
@@ -85,6 +86,12 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
 
 #metaBase span {
   margin-left: 5px;
+  font-size: 1rem;;
+}
+
+#stimeDerived {
+  font-size: 0.6em;
+  padding: 5px;
 }
 
 .header{

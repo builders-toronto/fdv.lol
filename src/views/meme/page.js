@@ -13,6 +13,7 @@ export const elSort     = document.getElementById('sort');
 export const elRefresh  = document.getElementById('refresh');
 export const elRelax    = document.getElementById('relax');
 export const elStream   = document.getElementById('stream');
+export const elTimeDerived = document.getElementById('stimeDerived');
 
 const elSearchWrap = document.getElementById('searchWrap');
 const elQResults   = document.getElementById('qResults');
