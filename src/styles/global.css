@@ -321,7 +321,7 @@ input[type="checkbox"]:disabled{
 .iconrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .iconbtn{
   display:inline-flex;align-items:center;justify-content:center;
-  width:32px;height:32px;border-radius:10px;
+  width:20px;height:20px;border-radius:10px;
   border:1px solid rgba(122,222,255,.22);
   background:rgba(123,241,255,.06); color:var(--text);
   transition:transform .12s ease, filter .12s ease, border-color .12s ease;
@@ -429,14 +429,7 @@ input[type="checkbox"]:disabled{
 .adcard::before{
   content:""; position:absolute; inset:0; border-radius:18px;
   padding: var(--ring);
-  background: linear-gradient(90deg, rgba(26,255,213,.55), rgba(123,241,255,.55));
   pointer-events:none;
-  -webkit-mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-          mask-composite: exclude;
-
 }
 
 .adrow{
@@ -485,7 +478,7 @@ input[type="checkbox"]:disabled{
 .adbtn:active{transform:translateY(1px)}
 .adbtn.primary{ border-color: rgba(26,255,122,.55); box-shadow: inset 0 0 0 1px rgba(26,255,122,.25) }
 
-.adicons{ height:25px; display:flex; gap:8px; align-items:center }
+/* .adicons{ height:25px; display:flex; gap:8px; align-items:center } */
 
 @media (max-width: 640px){
   .adcard{
@@ -706,3 +699,103 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 .searchbar{flex:1; min-width:240px; display:flex; align-items:center; gap:8px}
 .searchbar input{width:100%}
 .small{font-size:.78rem;color:var(--muted)}
+
+.adcard{
+  --ring: 1.5px;
+  --glow: 24px;
+  --wedge: 16deg;
+  --speed: 7s;
+
+  padding: 12px;              /* was 16px */
+  border-radius: 14px;        /* was 18px */
+  border: 0.4px solid orange;
+}
+.adrow{
+  grid-template-columns: 56px 1fr auto; /* was 64px */
+  gap: 12px;                             /* was 14px */
+}
+.adlogo{
+  width: 56px; height: 56px; border-radius: 12px; /* was 64/14 */
+  animation: bob 3.6s ease-in-out infinite;       /* softer */
+}
+.adtitle .sym{ font-size: 1.02rem; }              /* slightly smaller */
+.adtitle .mint a{ font-size: .82rem; opacity: .9; }
+
+/* Clamp long ad copy */
+.adtagline{
+  margin-top: 4px;
+  font-size: .92rem;
+  line-height: 1.2;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;        /* keep concise */
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Buttons a bit tighter */
+.adbtn{
+  padding: 8px 12px;            /* was 10px 14px */
+  border-radius: 10px;          /* was 12px */
+  font-weight: 700;
+}
+.adicons{ height: 22px; gap: 6px; }
+
+/* Compact attribute for even smaller variant (optional: set data-compact="1" on .adcard) */
+.adcard[data-compact="1"]{
+  --ring: 1px; --glow: 18px;
+  padding: 10px;
+  border-radius: 12px;
+}
+.adcard[data-compact="1"] .adrow{
+  grid-template-columns: 48px 1fr auto;
+  gap: 10px;
+}
+.adcard[data-compact="1"] .adlogo{ width: 48px; height: 48px; border-radius: 10px }
+.adcard[data-compact="1"] .adtagline{ -webkit-line-clamp: 1; font-size: .9rem; }
+.adcard[data-compact="1"] .adbtn{ padding: 7px 10px; }
+
+/* Tablet: auto-compact */
+@media (max-width: 900px){
+  .adcard{
+    --ring: 1.2px; --glow: 20px;
+    padding: 10px;
+    border-radius: 12px;
+  }
+  .adrow{
+    grid-template-columns: 48px 1fr auto;
+    gap: 10px;
+  }
+  .adlogo{ width: 48px; height: 48px; border-radius: 10px }
+  .adtitle .sym{ font-size: 1rem }
+  .adtitle .mint a{ font-size: .78rem }
+  .adbtn{ padding: 7px 10px; }
+  .adicons{ height: 20px; gap: 6px; }
+}
+
+/* Phone: two-column, concise, full-width CTA */
+@media (max-width: 640px){
+  .adcard{
+    --ring: 1px; --glow: 18px;
+    padding: 10px;
+  }
+  .adrow{
+    grid-template-columns: 44px 1fr;
+    grid-auto-rows: auto;
+    gap: 8px;
+  }
+  .adlogo{ width: 44px; height: 44px; border-radius: 10px }
+  .adtitle{ justify-content: space-between; gap: 6px; margin-top: 4px }
+  .adtagline{ -webkit-line-clamp: 2; font-size: .88rem }
+  .adactions{ grid-column: 1 / -1; justify-content: stretch }
+  .adbtn{ flex: 1; justify-content: center; padding: 10px 12px; }
+  .adicons{ display: none; } /* keep footprint minimal on small screens */
+}
+
+/* Small phones: ultra-compact */
+@media (max-width: 400px){
+  .adrow{ grid-template-columns: 40px 1fr; gap: 8px }
+  .adlogo{ width: 40px; height: 40px; border-radius: 9px }
+  .adtitle .mint{ display: none; } /* hide secondary line only on tiny widths */
+  .adtag{ transform: scale(.9); transform-origin: right center; }
+  .adbtn{ padding: 9px 10px; }
+}

@@ -18,25 +18,47 @@ export const elTimeDerived = document.getElementById('stimeDerived');
 const elSearchWrap = document.getElementById('searchWrap');
 const elQResults   = document.getElementById('qResults');
 
-const pageSpinnerEl = document.querySelector('.spinner');
+const pageSpinnerEl = document.querySelector('.spinner') && document.querySelector('.loader');
 
-function syncPageSpinner() {
-  if (!elCards || !pageSpinnerEl) return;
-  const hasCards = elCards.children.length > 0;
-  pageSpinnerEl.hidden = hasCards;         
-  pageSpinnerEl.setAttribute('aria-hidden', hasCards ? 'true' : 'false');
+// Status helper: update meta text and spinner labels
+export function setLoadingStatus(msg = '') {
+  try {
+    if (elMetaBase && typeof msg === 'string') elMetaBase.textContent = msg;
+    if (pageSpinnerEl) {
+      pageSpinnerEl.setAttribute('aria-label', msg || 'Loading…');
+      pageSpinnerEl.setAttribute('title', msg || 'Loading…');
+    }
+  } catch {}
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', syncPageSpinner, { once: true });
-} else {
+// Spinner should hide only when we have actual results
+function syncPageSpinner() {
+  if (!elCards || !pageSpinnerEl) return;
+  const hasResults = elCards.getAttribute('data-has-results') === '1';
+  pageSpinnerEl.hidden = !!hasResults;
+  pageSpinnerEl.setAttribute('aria-hidden', hasResults ? 'true' : 'false');
+}
+
+function updateResultsState(hasResults) {
+  if (!elCards) return;
+  elCards.setAttribute('data-has-results', hasResults ? '1' : '0');
   syncPageSpinner();
 }
 
-const mo = new MutationObserver(syncPageSpinner);
-if (elCards) {
-  mo.observe(elCards, { childList: true });
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    // initial state: no results yet
+    updateResultsState(false);
+    setLoadingStatus('Collecting instant Solana pairs…');
+  }, { once: true });
+} else {
+  updateResultsState(false);
+  setLoadingStatus('Collecting instant Solana pairs…');
 }
+
+// Observe #cards for children changes (optional), still call sync to be safe
+const mo = new MutationObserver(syncPageSpinner);
+if (elCards) mo.observe(elCards, { childList: true });
 
 const debounce = (fn, ms = 120) => {
   let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
@@ -215,7 +237,7 @@ function ensureAdSlot() {
     elAdTop.id = 'adTop';
     elAdTop.style.marginBottom = '16px';
     if (!elAdTop.parentElement) {
-      // elSearchWrap.parentElement.insertBefore(elAdTop, elSearchWrap);
+      elSearchWrap.parentElement.insertBefore(elAdTop, elSearchWrap);
     }
   }
   return elAdTop;
@@ -381,7 +403,7 @@ function filterByQuery(items, q) {
   );
 }
 
-const HYSTERESIS_MS = 9000;
+const HYSTERESIS_MS = 2000;
 let currentLeaderId = null;
 let challengerId = null;
 let challengerSince = 0;
@@ -642,12 +664,35 @@ function paintNow() {
   const filtered = filterByQuery(_latestItems, elQ?.value || '');
   const ranked0  = sortItems(filtered, sortKey).slice(0, MAX_CARDS);
   const ranked   = applyLeaderHysteresis(ranked0);
+
+  // Drive spinner by actual result presence
+  const hasResults = ranked.length > 0;
+  updateResultsState(hasResults);
+
+  // Provide constructive updates while loading
+  if (!hasResults) {
+    // Hint rotates based on time so it doesn’t look stuck
+    const t = Date.now() % 9000;
+    const hint = t < 3000
+      ? 'Collecting instant Solana pairs…'
+      : t < 6000
+      ? 'Hydrating top tokens (volume, txns)…'
+      : 'Scoring and ranking measured coins…';
+    setLoadingStatus(hint);
+  } else {
+    setLoadingStatus(''); // pipeline will keep meta updated
+  }
+
   patchKeyedGridAnimated(elCards, ranked, x => x.mint || x.id);
 
   try { syncSuggestionsAfterPaint(); } catch {}
 }
 
 export function renderSkeleton(n = 0) {
+  // Skeleton should not dismiss the spinner
+  updateResultsState(false);
+  setLoadingStatus('Preparing view…');
+
   if (!n) return;
   elCards.innerHTML = '';
   for (let i = 0; i < n; i++) {

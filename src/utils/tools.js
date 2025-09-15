@@ -47,3 +47,13 @@ export function readCache(){ //broken
 export function writeCache(payload){
   try{ localStorage.setItem(CACHE_KEY, JSON.stringify({ts:Date.now(), payload})) }catch{}
 }
+
+export async function fetchJsonNoThrow(url, { signal, headers } = {}) {
+  try {
+    const res = await fetch(url, { signal, headers });
+    if (!res.ok) return { ok: false, status: res.status, json: null };
+    return { ok: true, status: res.status, json: await res.json() };
+  } catch {
+    return { ok: false, status: 0, json: null };
+  }
+}

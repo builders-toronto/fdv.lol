@@ -5,7 +5,7 @@ import { normalizeSocial, iconFor, xSearchUrl } from '../../data/socials.js';
 import { normalizeWebsite } from '../../data/normalize.js';
 import { fmtUsd } from '../../utils/tools.js';
 
-export function coinCard(it){
+export function coinCard(it) {
   const logo = it.logoURI || FALLBACK_LOGO(it.symbol);
   const website = normalizeWebsite(it.website) || EXPLORER(it.mint);
   const buyUrl = JUP_SWAP(it.mint);

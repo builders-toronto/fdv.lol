@@ -4,7 +4,7 @@ import {
   JUP_LIST_TTL_MS,
   SOLANA_RPC_URL,            
 } from '../config/env.js';
-import { getJSON } from '../utils/tools.js';
+import { getJSON, fetchJsonNoThrow } from '../utils/tools.js';
 import { swrFetch } from '../engine/fetcher.js';
 import {
   searchTokensGlobal as dsSearch,
@@ -306,15 +306,6 @@ async function provSolanaRPCSearch(query, { signal } = {}) {
   } catch {
     health.onFailure(name);
     return [];
-  }
-}
-async function fetchJsonNoThrow(url, { signal, headers } = {}) {
-  try {
-    const res = await fetch(url, { signal, headers });
-    if (!res.ok) return { ok: false, status: res.status, json: null };
-    return { ok: true, status: res.status, json: await res.json() };
-  } catch {
-    return { ok: false, status: 0, json: null };
   }
 }
 
@@ -626,9 +617,6 @@ export async function fetchTokenInfoMulti(mint, { signal } = {}) {
   throw new Error('No token info available from any provider');
 }
 
-
-
-
 export function getFeedHealth() {
   const snap = {};
   for (const [name, s] of health.state.entries()) {
@@ -791,3 +779,130 @@ export async function* streamFeeds({
     yield res; 
   }
 }
+
+// Instant collector: quote pools + boosted tokens → normalized hits
+const SOL_CHAIN = 'solana';
+const MINT_SOL  = 'So11111111111111111111111111111111111111112';
+const MINT_USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+async function dsPairsByToken(tokenAddress, { signal } = {}) {
+  const url = `https://api.dexscreener.com/token-pairs/v1/${SOL_CHAIN}/${encodeURIComponent(tokenAddress)}`;
+  const resp = await withTimeout(sig => fetchJsonNoThrow(url, { signal: sig }), 8_000, signal);
+  return Array.isArray(resp?.json) ? resp.json : [];
+}
+
+async function dsPairsByTokensBatch(tokenAddressesCsv, { signal } = {}) {
+  const url = `https://api.dexscreener.com/tokens/v1/${SOL_CHAIN}/${encodeURIComponent(tokenAddressesCsv)}`;
+  const resp = await withTimeout(sig => fetchJsonNoThrow(url, { signal: sig }), 8_000, signal);
+  return Array.isArray(resp?.json) ? resp.json : [];
+}
+
+async function dsBoostLists({ signal } = {}) {
+  const [latest, top] = await Promise.allSettled([
+    withTimeout(sig => fetchJsonNoThrow('https://api.dexscreener.com/token-boosts/latest/v1', { signal: sig }), 8_000, signal),
+    withTimeout(sig => fetchJsonNoThrow('https://api.dexscreener.com/token-boosts/top/v1',    { signal: sig }), 8_000, signal),
+  ]);
+  const arr = []
+    .concat(latest.status === 'fulfilled' ? (latest.value?.json || []) : [])
+    .concat(top.status === 'fulfilled'    ? (top.value?.json    || []) : []);
+  return arr.filter(x => (x?.chainId || '').toLowerCase() === SOL_CHAIN);
+}
+
+function normalizePairsToHits(pairs, { sourceTag = 'ds-quote', quoteMints = [MINT_USDC, MINT_SOL] } = {}) {
+  const Q = new Set(quoteMints);
+  const hits = [];
+
+  for (const p of pairs || []) {
+    const b = p?.baseToken || {};
+    const q = p?.quoteToken || {};
+    let mint = b.address;
+    let symbol = b.symbol || '';
+    let name = b.name || '';
+
+    // Prefer the non-quote side as the candidate token
+    if (Q.has(b.address)) {
+      mint = q.address;
+      symbol = q.symbol || '';
+      name = q.name || '';
+    } else if (Q.has(q.address)) {
+      mint = b.address;
+      symbol = b.symbol || '';
+      name = b.name || '';
+    }
+
+    if (!mint) continue;
+
+    hits.push({
+      mint,
+      symbol,
+      name,
+      imageUrl: p?.info?.imageUrl || '',
+      priceUsd: asNum(p?.priceUsd),
+      bestLiq: asNum(p?.liquidity?.usd),
+      dexId: p?.dexId || '',
+      url: p?.url || '',
+      sources: [sourceTag],
+    });
+  }
+  return hits;
+}
+
+export async function collectInstantSolana({
+  signal,
+  quoteMints = [MINT_USDC, MINT_SOL],
+  maxBoostedTokens = 60,
+  limit = 220,
+} = {}) {
+  const bag = new Map();
+
+  // 1) Quote pools: get pairs for each quote mint (USDC, SOL by default)
+  try {
+    const results = await Promise.allSettled(
+      quoteMints.map(q => dsPairsByToken(q, { signal }))
+    );
+    for (const r of results) {
+      const pairs = r.status === 'fulfilled' ? (r.value || []) : [];
+      const hits = normalizePairsToHits(pairs, { sourceTag: 'ds-quote', quoteMints });
+      for (const h of hits) {
+        const prev = bag.get(h.mint);
+        bag.set(h.mint, prev ? dedupeMerge(prev, h) : h);
+      }
+    }
+  } catch {
+    // ignore quote pool errors
+  }
+
+  // 2) Boosted tokens: fetch lists, resolve pairs via tokens/v1 in chunks
+  try {
+    const boosts = await dsBoostLists({ signal });
+    const tokens = Array.from(new Set(boosts.map(b => b.tokenAddress))).slice(0, maxBoostedTokens);
+
+    for (let i = 0; i < tokens.length; i += 30) {
+      const chunk = tokens.slice(i, i + 30).join(',');
+      try {
+        const pairs = await dsPairsByTokensBatch(chunk, { signal });
+        const hits = normalizePairsToHits(pairs, { sourceTag: 'ds-boosted', quoteMints });
+        for (const h of hits) {
+          const prev = bag.get(h.mint);
+          bag.set(h.mint, prev ? dedupeMerge(prev, h) : h);
+        }
+      } catch {
+        // continue next chunk
+      }
+    }
+  } catch {
+    // ignore boosted errors
+  }
+
+  // 3) Rank and cap
+  const out = [...bag.values()];
+  out.forEach(r => r._score = scoreBasic(r, ''));
+  out.sort((a, b) =>
+    (asNum(b.bestLiq) || 0) - (asNum(a.bestLiq) || 0) ||
+    b._score - a._score ||
+    String(a.mint).localeCompare(String(b.mint))
+  );
+
+  return out.slice(0, limit);
+}
+
