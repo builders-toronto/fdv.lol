@@ -76,7 +76,7 @@ export function adCard(ad){
   const buyUrl = AD_JUP_URL(ad.mint);
 
   return `
-  <section class="adcard" role="complementary" aria-label="Sponsored">
+  <section class="adcard" role="complementary" aria-label="Sponsored" data-compact="1">
     <div class="adrow">
       <div class="adlogo"><img src="${logo}" alt=""></div>
 
@@ -84,13 +84,14 @@ export function adCard(ad){
         <div class="adtitle">
           <div class="sym">${title}</div>
           <div class="mint"><a href="${EXPLORER(ad.mint)}" target="_blank" rel="noopener">Mint: ${shortAddr(ad.mint)}</a></div>
-          ${icons}
+          
         </div>
         ${ad.tagline ? `<div class="adtagline">${ad.tagline}</div>` : ''}
       </div>
-
       <div class="adactions">
+        ${icons}
         <div class="adtag" title="Sponsored">SPONSORED</div>
+        
         <a class="adbtn primary" href="${buyUrl}" target="_blank" rel="noopener"><span class="ademoji">🔥</span>${cta}</a>
       </div>
     </div>

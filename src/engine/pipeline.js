@@ -1,11 +1,11 @@
 import { ts, MEME_KEYWORDS } from '../config/env.js';
 import {
-  streamFeeds,           
-  fetchTokenInfoMulti,    
+  streamFeeds,
+  fetchTokenInfoMulti,
+  collectInstantSolana,          
 } from '../data/feeds.js';
-import { fetchTrending } from '../data/solana.js';
 import { scoreAndRecommend } from '../core/calculate.js';
-import { elRelax, elMeta, elMetaBase, elTimeDerived } from '../views/meme/page.js';
+import { elMetaBase, elTimeDerived } from '../views/meme/page.js'; // removed elRelax, elMeta
 import { readCache, writeCache } from '../utils/tools.js';
 import { enrichMissingInfo } from '../data/normalize.js';
 import { loadAds, pickAd } from '../ads/load.js';
@@ -18,12 +18,14 @@ const num = (x, d = 0) => {
 };
 const clamp0 = (x) => (Number.isFinite(x) && x > 0 ? x : 0);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (fn) => setTimeout(fn, 16);
+const safeText = (el, s) => { try { if (el) el.textContent = s; } catch {} };
 
 let _rafPending = false;
 function rafFlush(fn) {
   if (_rafPending) return;
   _rafPending = true;
-  requestAnimationFrame(() => { _rafPending = false; fn(); });
+  raf(() => { _rafPending = false; fn(); });
 }
 
 // Always push a **sorted** array to the DOM.
@@ -95,8 +97,8 @@ class MarqueeStore {
 
 class TokenStore {
   constructor() {
-    this.byMint = new Map();          
-    this.sources = new Map();        
+    this.byMint = new Map();
+    this.sources = new Map();
   }
   size() { return this.byMint.size; }
 
@@ -104,33 +106,25 @@ class TokenStore {
     let t = this.byMint.get(mint);
     if (!t) {
       t = {
-        // identity
         mint, symbol: '', name: '', logoURI: '',
-        // price/liquidity/cap
         priceUsd: null, priceNative: null,
         liquidityUsd: null, liquidityBase: null, liquidityQuote: null,
         fdv: null, marketCap: null,
-        // change / volume / txns (UI shapes)
         change: { m5: 0, h1: 0, h6: 0, h24: 0 },
-        volume: { h24: 0 },
-        txns:   { m5: 0, h1: 0, h6: 0, h24: 0 },
-        // routing
+        volume: { h24: null },       
+        txns:   { m5: null, h1: null, h6: null, h24: null }, 
         dex: '', pairUrl: '',
         website: null, socials: [],
-        // extras
         boostsActive: 0,
         ageMs: null,
         pairs: [],
         decimals: null, supply: null,
-        // derived
         liqToFdvPct: null, volToLiq24h: null, buySell24h: null,
-        // ui helpers
         _chg: [0,0,0,0],
         _norm: { nAct: 0, nLiq: 0, nMom: 0, nVol: 0 },
-        // ranking
         score: 0, recommendation: 'MEASURING', why: [],
-        // arrival
         _arrivedAt: Date.now(),
+        _hydrated: false,            
       };
       this.byMint.set(mint, t);
       this.sources.set(mint, new Set());
@@ -153,7 +147,8 @@ class TokenStore {
 
     // quick numerics (only if missing to avoid flapping)
     if (hit.priceUsd != null && t.priceUsd == null) t.priceUsd = num(hit.priceUsd, null);
-    if (hit.bestLiq  != null && t.liquidityUsd == null) t.liquidityUsd = num(hit.bestLiq, null);
+    const liq = hit.bestLiq ?? hit.liquidityUsd ?? hit.liquidity ?? null;
+    if (liq != null && t.liquidityUsd == null) t.liquidityUsd = num(liq, null);
 
     // routing hint
     if (hit.dexId && !t.dex) t.dex = String(hit.dexId || '');
@@ -204,15 +199,15 @@ class TokenStore {
     if (v24 != null) t.volume.h24 = v24;
 
     // txns (sum to counts)
-    const tx24 = info.tx24h || { buys: 0, sells: 0 };
-    const tx6  = info.tx6h  || { buys: 0, sells: 0 };
-    const tx1  = info.tx1h  || { buys: 0, sells: 0 };
-    const tx5  = info.tx5m  || { buys: 0, sells: 0 };
+    const tx24 = info.tx24h || { buys: null, sells: null };
+    const tx6  = info.tx6h  || { buys: null, sells: null };
+    const tx1  = info.tx1h  || { buys: null, sells: null };
+    const tx5  = info.tx5m  || { buys: null, sells: null };
     t.txns = {
-      m5:  (tx5.buys  + tx5.sells)  | 0,
-      h1:  (tx1.buys  + tx1.sells)  | 0,
-      h6:  (tx6.buys  + tx6.sells)  | 0,
-      h24: (tx24.buys + tx24.sells) | 0,
+      m5:  tx5.buys  == null || tx5.sells  == null ? null : (tx5.buys  + tx5.sells)  | 0,
+      h1:  tx1.buys  == null || tx1.sells  == null ? null : (tx1.buys  + tx1.sells)  | 0,
+      h6:  tx6.buys  == null || tx6.sells  == null ? null : (tx6.buys  + tx6.sells)  | 0,
+      h24: tx24.buys == null || tx24.sells == null ? null : (tx24.buys + tx24.sells) | 0,
     };
 
     // routing headline
@@ -239,6 +234,13 @@ class TokenStore {
     // provenance
     if (info._source) srcs.add(info._source);
 
+    const coreReady =
+      Number.isFinite(num(t.priceUsd, NaN)) &&
+      Number.isFinite(num(t.liquidityUsd, NaN)) &&
+      Number.isFinite(num(t.volume.h24, NaN)) &&
+      Number.isFinite(num(t.txns.h24, NaN));
+    if (coreReady) t._hydrated = true;
+
     return true;
   }
 
@@ -255,17 +257,41 @@ class TokenStore {
         h6:  num(t.change.h6,  0),
         h24: num(t.change.h24, 0),
       },
-      volume: { h24: num(t.volume.h24, 0) },
+      // CHANGED: keep nulls if unknown to avoid accidental measuring
+      volume: { h24: t.volume.h24 == null ? null : num(t.volume.h24, null) },
       txns:   {
-        m5:  clamp0(t.txns.m5),
-        h1:  clamp0(t.txns.h1),
-        h6:  clamp0(t.txns.h6),
-        h24: clamp0(t.txns.h24),
+        m5:  t.txns.m5  == null ? null : clamp0(t.txns.m5),
+        h1:  t.txns.h1  == null ? null : clamp0(t.txns.h1),
+        h6:  t.txns.h6  == null ? null : clamp0(t.txns.h6),
+        h24: t.txns.h24 == null ? null : clamp0(t.txns.h24),
       },
       _chg: [ num(t._chg[0],0), num(t._chg[1],0), num(t._chg[2],0), num(t._chg[3],0) ],
       _norm: t._norm || { nAct: 0, nLiq: 0, nMom: 0, nVol: 0 },
     }));
   }
+}
+
+function hasRequiredStats(t) {
+  return t?._hydrated === true &&
+         Number(t.priceUsd) > 0 &&
+         Number(t.liquidityUsd) > 0 &&
+         Number(t.volume?.h24) > 0 &&
+         Number(t.txns?.h24) > 0;
+}
+
+function isMeasured(t) {
+  return hasRequiredStats(t) && Number.isFinite(t?.score);
+}
+function filterMeasured(arr = []) {
+  return arr.filter(isMeasured);
+}
+
+function pushUpdate(items) {
+  const measured = filterMeasured(items);
+  if (!measured.length) return;
+  try {
+    onUpdate({ items: measured, ad: CURRENT_AD, marquee: marquee.payload() });
+  } catch {}
 }
 
 function fastScore(t) {
@@ -287,22 +313,7 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
   const ac = new AbortController();
   CURRENT_RUN = ac;
 
-  const relax = !!elRelax?.checked;
-
-  // Non-stream 
-  const cached = !force && readCache();
-  if (!stream && cached?.items?.length) {
-    elTimeDerived.textContent = `Generated: ${cached.generatedAt}`;
-    const byScore = [...cached.items].sort((a,b) => (b.score || 0) - (a.score || 0));
-    const marqueeFromCache = {
-      trending: byScore.slice(0, 40).map(t => ({
-        mint: t.mint, symbol: t.symbol, name: t.name, logoURI: t.logoURI, priceUsd: t.priceUsd, tag: 'Trending'
-      })),
-      new: [],
-    };
-    return { items: cached.items, ad: CURRENT_AD, marquee: marqueeFromCache };
-  }
-  elMetaBase.textContent = `Loading…`;
+  const relax = false;
 
   // ads 
   const adsPromise = loadAds().catch(() => null).then(ads => {
@@ -311,8 +322,34 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
   });
 
   // Stores
-  const store = new TokenStore();          
-  const marquee = new MarqueeStore({ maxPerBucket: 64 }); 
+  const store = new TokenStore();
+  const marquee = new MarqueeStore({ maxPerBucket: 64 });
+
+  const pushUpdate = (items) => {
+    const measured = filterMeasured(items);
+    if (!measured.length) return;
+    try {
+      onUpdate({ items: measured, ad: CURRENT_AD, marquee: marquee.payload() });
+    } catch {}
+  };
+  function feedMarqueeFromGrid({ useScore = false, feedNew = false, trendingCount = 40, newCount = 24 } = {}) {
+    const grid = sortedGrid({ useScore, store });
+    const eligible = grid.filter(hasRequiredStats);
+    if (eligible.length) marquee.addTrendingFromGrid(eligible.slice(0, trendingCount));
+    if (feedNew) {
+      const newest = eligible
+        .slice() // already filtered
+        .sort((a, b) => {
+          const aa = a.ageMs ?? (Date.now() - (a._arrivedAt || 0));
+          const bb = b.ageMs ?? (Date.now() - (b._arrivedAt || 0));
+          return aa - bb;
+        })
+        .slice(0, newCount);
+      marquee.addNewFromGrid(newest);
+    }
+  }
+
+  feedMarqueeFromGrid({ useScore: false, feedNew: true });
 
   const FIRST_TARGET = 36;
   const FIRST_TIMEOUT_MS = 260;
@@ -320,38 +357,89 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
   let resolveFirst;
   const firstReturn = new Promise(r => (resolveFirst = r));
 
+  try {
+    const cached = !force && readCache();
+    if (cached?.items?.length) {
+      const measuredCached = filterMeasured(cached.items);
+      if (measuredCached.length) {
+        if (CURRENT_AD === null) {
+          try { const ads = await loadAds(); CURRENT_AD = ads ? pickAd(ads) : null; } catch {}
+        }
+        safeText(elTimeDerived, `Generated: ${cached.generatedAt || ts()}`);
+        const byScore = [...measuredCached].sort((a,b) => (b.score || 0) - (a.score || 0));
+        const marqueeFromCache = {
+          trending: byScore.slice(0, 40).map(t => ({
+            mint: t.mint, symbol: t.symbol, name: t.name, logoURI: t.logoURI, priceUsd: t.priceUsd, tag: 'Trending'
+          })),
+          new: [],
+        };
+        onUpdate({ items: measuredCached, ad: CURRENT_AD, marquee: marqueeFromCache });
+        if (!firstResolved) {
+          firstResolved = true;
+          resolveFirst({ items: measuredCached, ad: CURRENT_AD, marquee: marqueeFromCache });
+        }
+      }
+    }
+  } catch {}
 
+  (async function primeInstant() {
+    try {
+      if (ac.signal.aborted) return;
 
+      const hits = await collectInstantSolana({ signal: ac.signal });
+      if (!hits?.length) return;
 
+      // Seed store with normalized hits
+      for (const h of hits) store.mergeSearchHit(h);
+
+      // Hydrate a small top set to get volume/txns/liquidity (ensures _hydrated)
+      const topMints = hits.slice(0, 48).map(h => h.mint);
+      await Promise.all(topMints.map(m =>
+        fetchTokenInfoMulti(m, { signal: ac.signal })
+          .then(info => store.mergeDeepInfo(info))
+          .catch(() => {})
+      ));
+
+      // Optionally enrich remaining details (websites/socials)
+      let items = store.toArray();
+      items = await enrichMissingInfo(items);
+
+      // Only score complete tokens
+      const ready = items.filter(hasRequiredStats);
+      if (!ready.length) return;
+
+      let scored = scoreAndRecommend(ready);
+      scored.sort((a,b) => (b.score || 0) - (a.score || 0) ||
+                           (b._arrivedAt || 0) - (a._arrivedAt || 0) ||
+                           String(a.mint).localeCompare(String(b.mint)));
+      lastScored = scored;
+
+      const measured = scored.filter(isMeasured);
+      if (!measured.length) return;
+
+      marquee.addTrendingFromGrid(measured.slice(0, 40));
+      marquee.addNewFromGrid(measured.slice(0, 24));
+
+      writeCache({ generatedAt: ts(), items: measured, _ts: Date.now() });
+      pushUpdate(measured);
+      safeText(elMetaBase, `Generated`);
+      safeText(elTimeDerived, `Generated: ${ts()}`);
+
+      if (!firstResolved) {
+        firstResolved = true;
+        resolveFirst({ items: measured, marquee: marquee.payload(), ad: CURRENT_AD });
+      }
+    } catch {}
+  })();
 
   let lastScored = null;
-
-  function pushUpdate(items) {
-    onUpdate({ items, marquee: marquee.payload(), ad: CURRENT_AD });
-  }
-
-  function feedMarqueeFromGrid({ useScore = false, feedNew = true } = {}) {
-    const arr = store.toArray();
-    const ranked = useScore
-      ? [...arr].sort((a,b) => (b.score || 0) - (a.score || 0))
-      : [...arr].sort((a,b) => fastScore(b) - fastScore(a));
-    const topTrending = ranked.slice(0, 40);
-    marquee.addTrendingFromGrid(topTrending);
-
-    if (feedNew) {
-      const newest = [...arr]
-        .sort((a,b) => (b._arrivedAt || 0) - (a._arrivedAt || 0))
-        .slice(0, 40);
-      marquee.addNewFromGrid(newest);
-    }
-  }
 
   function renderNow() {
     if (firstResolved) return;
     const items = sortedGrid({ useScore: false, store });
     feedMarqueeFromGrid({ useScore: false, feedNew: true });
-    pushUpdate(items);
-    elMetaBase.textContent = `Scanning… ${store.size()} tokens • Marquee: ${marquee.trending.length + marquee.new.length}`;
+    // No early push; we only emit measured tokens after scoring
+    safeText(elMetaBase, `Scanning… ${store.size()} tokens • Marquee: ${marquee.trending.length + marquee.new.length}`);
   }
   const scheduleRender = () => rafFlush(renderNow);
 
@@ -381,6 +469,7 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
 
     items = store.toArray();
     items = await enrichMissingInfo(items);
+    items = items.filter(hasRequiredStats); // only score complete tokens
     let scored = scoreAndRecommend(items);
 
     scored.sort((a,b) => (b.score || 0) - (a.score || 0) ||
@@ -388,150 +477,138 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
                          String(a.mint).localeCompare(String(b.mint)));
 
     lastScored = scored;
-    feedMarqueeFromGrid({ useScore: true, feedNew: true });
-    pushUpdate(lastScored);
-    elTimeDerived.textContent = `Generated: ${ts()}`;
 
-    firstResolved = true;
-    resolveFirst({ items: lastScored, marquee: marquee.payload(), ad: CURRENT_AD });
+    feedMarqueeFromGrid({ useScore: true, feedNew: true });
+
+    const measured = filterMeasured(lastScored);
+    if (measured.length) {
+      pushUpdate(measured);
+      safeText(elTimeDerived, `Generated`);
+      firstResolved = true;
+      resolveFirst({ items: measured, marquee: marquee.payload(), ad: CURRENT_AD });
+    }
   }
 
   setTimeout(() => { if (!firstResolved) resolveFirstNow(); }, FIRST_TIMEOUT_MS);
 
-  fetchTrending().catch(()=>[]).then(list => {
-    if (ac.signal.aborted || !list?.length) return;
-
-    let changedGrid = false;
-    for (const r of list) changedGrid = store.mergeSearchHit(r) || changedGrid;
-
-    if (!firstResolved) {
-      if (changedGrid) {
-        scheduleRender();
-        feedMarqueeFromGrid({ useScore: false, feedNew: true });
-        pushUpdate(sortedGrid({ useScore: false, store }));
-      }
-      if (store.size() >= FIRST_TARGET) resolveFirstNow();
-    } else if (changedGrid) {
-      feedMarqueeFromGrid({ useScore: !!lastScored, feedNew: true });
-      pushUpdate(lastScored ?? sortedGrid({ useScore: false, store }));
-    }
-  });
-
-  (async () => {
-    let windowOffset = (pipeline._offset || 0) % MEME_KEYWORDS.length;
+  // Safe keywords and offset handling
+  const KW = Array.isArray(MEME_KEYWORDS) && MEME_KEYWORDS.length ? MEME_KEYWORDS : [];
+  let windowOffset = 0;
+  if (KW.length) {
+    windowOffset = (pipeline._offset || 0) % KW.length;
     pipeline._offset = windowOffset + 40;
+  }
 
-    for await (const evt of streamFeeds({
-      signal: ac.signal,
-      keywords: MEME_KEYWORDS,
-      windowSize: 40,
-      windowOffset,
-      requestBudget: 60,
-      maxConcurrent: 2,
-      spacingMs: 120,
-      limitPerQuery: 8,
-      deadlineMs: 850,
-      includeGeckoSeeds: false, 
-    })) {
-      const batch = evt?.newItems || [];
-      let changedGrid = false;
+  if (stream && KW.length) {
+    (async () => {
+      for await (const evt of streamFeeds({
+        signal: ac.signal,
+        keywords: KW,
+        windowSize: 40,
+        windowOffset,
+        requestBudget: 60,
+        maxConcurrent: 2,
+        spacingMs: 120,
+        limitPerQuery: 8,
+        deadlineMs: 850,
+        includeGeckoSeeds: false, 
+      })) {
+        const batch = evt?.newItems || [];
+        let changedGrid = false;
 
-      for (const r of batch) changedGrid = store.mergeSearchHit(r) || changedGrid;
+        for (const r of batch) changedGrid = store.mergeSearchHit(r) || changedGrid;
 
-      if (!firstResolved) {
-        if (changedGrid) {
-          scheduleRender();
-          feedMarqueeFromGrid({ useScore: false, feedNew: true });
-          pushUpdate(sortedGrid({ useScore: false, store }));
+        if (!firstResolved) {
+          if (changedGrid) {
+            scheduleRender();
+            feedMarqueeFromGrid({ useScore: false, feedNew: true });
+            // No early push; we only push after scoring
+          }
+          if (store.size() >= FIRST_TARGET) resolveFirstNow();
+        } else {
+          schedulePostFirstRecompute(async () => {
+            const newcomers = batch.slice(0, 6);
+            await Promise.all(newcomers.map(r =>
+              fetchTokenInfoMulti(r.mint, { signal: ac.signal })
+                .then(info => store.mergeDeepInfo(info))
+                .catch(() => {})
+            ));
+
+            let items = store.toArray();
+            items = await enrichMissingInfo(items);
+            items = items.filter(hasRequiredStats); // only score complete tokens
+            let scored = scoreAndRecommend(items);
+            scored.sort((a,b) => (b.score || 0) - (a.score || 0) ||
+                                 (b._arrivedAt || 0) - (a._arrivedAt || 0) ||
+                                 String(a.mint).localeCompare(String(b.mint)));
+
+            lastScored = scored;
+            feedMarqueeFromGrid({ useScore: true, feedNew: true });
+            pushUpdate(lastScored);
+            safeText(elMetaBase, `Updated: ${store.size()} tokens • Marquee: ${marquee.trending.length + marquee.new.length}`);
+          });
         }
-        if (store.size() >= FIRST_TARGET) resolveFirstNow();
-      } else {
-        // small hydration for newcomers; then scored recompute
-        schedulePostFirstRecompute(async () => {
-          const newcomers = batch.slice(0, 6);
-          await Promise.all(newcomers.map(r =>
-            fetchTokenInfoMulti(r.mint, { signal: ac.signal })
-              .then(info => store.mergeDeepInfo(info))
-              .catch(() => {})
-          ));
 
-          let items = store.toArray();
-          items = await enrichMissingInfo(items);
-          let scored = scoreAndRecommend(items);
-          scored.sort((a,b) => (b.score || 0) - (a.score || 0) ||
-                               (b._arrivedAt || 0) - (a._arrivedAt || 0) ||
-                               String(a.mint).localeCompare(String(b.mint)));
+        safeText(
+          elTimeDerived,
+          `Searching… grid:${store.size()} • marquee:${marquee.trending.length + marquee.new.length} • ${evt.source}${evt.term ? ` • term: ${evt.term}` : ''}`
+        );
 
-          lastScored = scored;
-          feedMarqueeFromGrid({ useScore: true, feedNew: true });
-          pushUpdate(lastScored);
-          elMetaBase.textContent = `Updated: ${store.size()} tokens • Marquee: ${marquee.trending.length + marquee.new.length}`;
-        });
+        if (ac.signal.aborted) break;
       }
-
-      elTimeDerived.textContent =
-        `Searching… grid:${store.size()} • marquee:${marquee.trending.length + marquee.new.length} • ${evt.source}${evt.term ? ` • term: ${evt.term}` : ''}`;
-
-      if (ac.signal.aborted) break;
-    }
-  })();
+    })();
+  }
 
   let _busy = false;
-  const ticker = setInterval(async () => {
-    if (_busy || ac.signal.aborted) return;
-    _busy = true;
-    try {
-      let items = store.toArray();
-      items.sort((a,b) =>
-        (b.liquidityUsd||0) - (a.liquidityUsd||0) ||
-        fastScore(b) - fastScore(a)
-      );
-      const top = items.slice(0, Math.min(32, items.length));
-      await Promise.all(top.map(t =>
-        fetchTokenInfoMulti(t.mint, { signal: ac.signal })
-          .then(info => store.mergeDeepInfo(info))
-          .catch(() => {})
-      ));
+  let ticker;
+  if (stream) {
+    ticker = setInterval(async () => {
+      if (_busy || ac.signal.aborted) return;
+      _busy = true;
+      try {
+        let items = store.toArray();
+        items.sort((a,b) =>
+          (b.liquidityUsd||0) - (a.liquidityUsd||0) ||
+          fastScore(b) - fastScore(a)
+        );
+        const top = items.slice(0, Math.min(32, items.length));
+        await Promise.all(top.map(t =>
+           fetchTokenInfoMulti(t.mint, { signal: ac.signal })
+             .then(info => store.mergeDeepInfo(info))
+             .catch(() => {})
+        ));
 
-      items = store.toArray();
-      items = await enrichMissingInfo(items);
-      let scored = scoreAndRecommend(items);
-      scored.sort((a,b) => (b.score || 0) - (a.score || 0) ||
+        items = store.toArray();
+        items = await enrichMissingInfo(items);
+        items = items.filter(hasRequiredStats); // only score complete tokens
+        let scored = scoreAndRecommend(items);
+        scored.sort((a,b) => (b.score || 0) - (a.score || 0) ||
                            (b._arrivedAt || 0) - (a._arrivedAt || 0) ||
                            String(a.mint).localeCompare(String(b.mint)));
 
-      lastScored = scored;
-      feedMarqueeFromGrid({ useScore: true, feedNew: true });
+        lastScored = scored;
 
-      const payload = { generatedAt: ts(), items: scored, _ts: Date.now() };
-      writeCache(payload);
-
-      pushUpdate(lastScored);
-      elMetaBase.textContent = `Generated: ${payload.generatedAt}`;
-    } catch {
-      // ignore; retry next tick
-    } finally {
+        const measured = filterMeasured(scored);
+        if (measured.length) {
+          pushUpdate(measured);
+          safeText(elMetaBase, `Updated`);
+        }
+      } catch {}
       _busy = false;
-    }
-  }, 2000);
-
-  let timebox;
-  if (stream && timeboxMs > 0) {
-    timebox = sleep(timeboxMs).then(() => ac.abort('timebox'));
+    }, 8_000);
   }
 
-  if (CURRENT_AD === null) {
-    try { const ads = await adsPromise; CURRENT_AD = ads ? pickAd(ads) : null; } catch {}
+  if (!firstResolved) {
+    setTimeout(() => {
+      if (!firstResolved) resolveFirstNow();
+    }, FIRST_TIMEOUT_MS * 2);
+    setTimeout(() => {
+      if (!firstResolved) {
+        firstResolved = true;
+        resolveFirst({ items: [], ad: CURRENT_AD, marquee: marquee.payload() });
+      }
+    }, FIRST_TIMEOUT_MS * 3);
   }
 
-  const first = await firstReturn;
-
-  if (timebox) { timebox.catch(()=>{}); }
-  ac.signal.addEventListener('abort', () => clearInterval(ticker), { once: true });
-
-  return first;
+  return firstReturn;
 }
-
-window.addEventListener('unhandledrejection', (e) => {
-  console.warn('unhandled rejection in pipeline', e?.reason || e);
-});

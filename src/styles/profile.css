@@ -438,3 +438,33 @@ svg.bars rect { fill: rgba(123,241,255,.8) }
 .giscus {
     margin-top: 24px;
 }
+
+.profile__hero__actions{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.profile__hero .btn--static{
+  border: 1px solid rgba(122,222,255,.25);
+  background: rgba(26,255,213,.08);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 8px 12px;
+  transition: transform .15s ease, filter .15s ease, background .15s ease;
+}
+.profile__hero .btn--static:hover{
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+}
+
+@media (max-width: 640px){
+  .profile__hero__actions .btn{
+    flex: 1 1 100%;
+    text-align: center;
+  }
+  .profile__hero .btn--static{
+    padding: 10px 14px;
+  }
+}

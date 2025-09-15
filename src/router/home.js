@@ -47,10 +47,15 @@ async function runHome({ force = false } = {}) {
     force,
     stream: STREAM_ON,
     onUpdate: ({ items, ad, marquee }) => {
-      render(items, ad, marquee);  
+      render(items || [], ad || null, marquee || { trending: [], new: [] });
     }
   });
-  render(pipe.items, pipe.ad, pipe.marquee); 
+
+  const payload = pipe && typeof pipe === 'object'
+    ? pipe
+    : { items: [], ad: null, marquee: { trending: [], new: [] } };
+
+  render(payload.items, payload.ad, payload.marquee);
 }
 
 export async function showHome({ force = false } = {}) {
