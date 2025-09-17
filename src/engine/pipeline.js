@@ -28,7 +28,7 @@ function rafFlush(fn) {
   raf(() => { _rafPending = false; fn(); });
 }
 
-// Always push a **sorted** array to the DOM.
+// Always push a SORTED array to the DOM.
 function sortedGrid({ useScore = false, store }) {
   const arr = store.toArray();
   const byScore = (a, b) => (b.score || 0) - (a.score || 0);

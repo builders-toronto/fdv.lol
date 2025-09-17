@@ -93,12 +93,6 @@
   </div>
   <header class="header">
     <div class="container">
-
-      <div id="metaBase" class="sub"><svg class="spinner" viewBox="0 0 50 50" role="img" aria-label="Loading">
-        <circle class="ring" cx="25" cy="25" r="22" />
-        <circle class="arc"  cx="25" cy="25" r="22" />
-      </svg><span id="metaBaseSpan">Loading…</span></div>
-
       <div class="controls">
         <select id="sort">
           <option value="score">Sort: Score</option>
@@ -119,6 +113,10 @@
     </div>
   </header>
     <main id="app" class="container grid">
+                <div id="metaBase" class="sub"><svg class="spinner" viewBox="0 0 50 50" role="img" aria-label="Loading">
+        <circle class="ring" cx="25" cy="25" r="22" />
+        <circle class="arc"  cx="25" cy="25" r="22" />
+      </svg><span id="metaBaseSpan">Loading…</span></div>
     <div id="searchWrap" class="search-wrap" style="display: none;">
       <div class="search-ico" aria-hidden="true">
         <svg xmlns="http://www.w3.org/2000/svg" 
@@ -135,6 +133,7 @@
             autocomplete="off" spellcheck="false" />
         <div id="qResults" class="search-results" hidden></div>
         </div>
+        <div id="loading-messages" class="loading-messages"></div>
         <div id="cards" class="cards"></div>
       </main>
     <footer>
