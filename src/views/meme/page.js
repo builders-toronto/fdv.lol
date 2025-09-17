@@ -31,7 +31,7 @@ export function setLoadingStatus(msg = '') {
   } catch {}
 }
 
-// Spinner should hide only when we have actual results
+// Spinner should hide only when we have actual results(there are multiple spinners)
 function syncPageSpinner() {
   if (!elCards || !pageSpinnerEl) return;
   const hasResults = elCards.getAttribute('data-has-results') === '1';
@@ -93,7 +93,7 @@ let _currentSuggestions = [];
 let _activeIndex = -1;
 
 let _qEpoch = 0;
-let _appliedEpoch = 0;
+let _appliedEpoch = 0; // TODO: reimagine this feature
 let _currentQuery = '';
 const _cacheByQuery = new Map();
 
@@ -638,6 +638,45 @@ function patchKeyedGridAnimated(container, nextItems, keyFn = x => x.mint || x.i
     if (Math.abs(window.scrollY - prevY) > 2) window.scrollTo({ top: prevY });
   });
 }
+
+// Local predicate to ensure we only paint measured, scored tokens
+function isDisplayReady(t) {
+  return t &&
+    Number.isFinite(Number(t.priceUsd)) &&
+    Number.isFinite(Number(t.liquidityUsd)) &&
+    Number.isFinite(Number(t.volume?.h24)) &&
+    Number.isFinite(Number(t.txns?.h24)) &&
+    Number.isFinite(t.score) &&
+    t.recommendation && t.recommendation !== 'MEASURING';
+}
+
+// In paintNow(), filter BEFORE ranking:
+function paintNow() {
+  const sortKey = elSort?.value || 'score';
+  const q = elQ?.value || '';
+
+  const eligible = Array.isArray(_latestItems) ? _latestItems.filter(isDisplayReady) : [];
+  const filtered = filterByQuery(eligible, q);
+  const ranked0  = sortItems(filtered, sortKey).slice(0, MAX_CARDS);
+  const ranked   = applyLeaderHysteresis(ranked0);
+
+  // Drive spinner by actual measured result presence
+  const hasResults = ranked.length > 0;
+  updateResultsState(hasResults);
+  if (!hasResults) {
+    const t = Date.now() % 9000;
+    const hint = t < 3000 ? 'Collecting instant Solana pairs…'
+      : t < 6000 ? 'Hydrating (volume & txns)…'
+      : 'Scoring and ranking measured coins…';
+    setLoadingStatus(hint);
+  } else {
+    setLoadingStatus('');
+  }
+
+  patchKeyedGridAnimated(elCards, ranked, x => x.mint || x.id);
+  try { syncSuggestionsAfterPaint(); } catch {}
+}
+
 export function render(items, adPick, marquee) {
   _latestItems = Array.isArray(items) ? items : [];
   _latestAd = adPick || null;
@@ -657,35 +696,6 @@ export function render(items, adPick, marquee) {
       _needsPaint = false;
     }
   }, SETTLE_MS);
-}
-
-function paintNow() {
-  const sortKey = elSort?.value || 'score';
-  const filtered = filterByQuery(_latestItems, elQ?.value || '');
-  const ranked0  = sortItems(filtered, sortKey).slice(0, MAX_CARDS);
-  const ranked   = applyLeaderHysteresis(ranked0);
-
-  // Drive spinner by actual result presence
-  const hasResults = ranked.length > 0;
-  updateResultsState(hasResults);
-
-  // Provide constructive updates while loading
-  if (!hasResults) {
-    // Hint rotates based on time so it doesn’t look stuck
-    const t = Date.now() % 9000;
-    const hint = t < 3000
-      ? 'Collecting instant Solana pairs…'
-      : t < 6000
-      ? 'Hydrating top tokens (volume, txns)…'
-      : 'Scoring and ranking measured coins…';
-    setLoadingStatus(hint);
-  } else {
-    setLoadingStatus(''); // pipeline will keep meta updated
-  }
-
-  patchKeyedGridAnimated(elCards, ranked, x => x.mint || x.id);
-
-  try { syncSuggestionsAfterPaint(); } catch {}
 }
 
 export function renderSkeleton(n = 0) {

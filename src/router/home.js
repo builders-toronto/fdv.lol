@@ -47,15 +47,17 @@ async function runHome({ force = false } = {}) {
     force,
     stream: STREAM_ON,
     onUpdate: ({ items, ad, marquee }) => {
-      render(items || [], ad || null, marquee || { trending: [], new: [] });
+      if (Array.isArray(items) && items.length) {
+        render(items, ad || null, marquee || { trending: [], new: [] });
+      }
     }
   });
 
-  const payload = pipe && typeof pipe === 'object'
-    ? pipe
-    : { items: [], ad: null, marquee: { trending: [], new: [] } };
-
-  render(payload.items, payload.ad, payload.marquee);
+  // Only render the awaited payload if it has results!
+  // / never clear the DOM with empty or nulled coins!!!!
+  if (pipe && Array.isArray(pipe.items) && pipe.items.length) {
+    render(pipe.items, pipe.ad || null, pipe.marquee || { trending: [], new: [] });
+  }
 }
 
 export async function showHome({ force = false } = {}) {

@@ -66,7 +66,7 @@ export function coinCard(it) {
     <div style="flex:1">
       <div class="sym">
         <span class="t-symbol" data-symbol>${it.symbol || ''}</span>
-        <span class="badge" data-dex style="color:${badgeColour()}">${(it.dex||'').toUpperCase()}</span>
+        <span class="badge" data-dex style="color:${badgeColour()}">${(it.dex||'INIT').toUpperCase()}</span>
       </div>
       <div class="addr"><a class="t-explorer" href="${EXPLORER(it.mint)}" target="_blank" rel="noopener">Mint: ${shortAddr(it.mint)}</a></div>
     </div>

@@ -107,64 +107,73 @@ class TokenStore {
     if (!t) {
       t = {
         mint, symbol: '', name: '', logoURI: '',
-        priceUsd: null, priceNative: null,
-        liquidityUsd: null, liquidityBase: null, liquidityQuote: null,
-        fdv: null, marketCap: null,
-        change: { m5: 0, h1: 0, h6: 0, h24: 0 },
-        volume: { h24: null },       
-        txns:   { m5: null, h1: null, h6: null, h24: null }, 
+        priceUsd: null, liquidityUsd: null, fdv: null, marketCap: null,
+        change: { m5: null, h1: null, h6: null, h24: null }, // keep null until known
+        volume: { h24: null },
+        txns:   { m5: null, h1: null, h6: null, h24: null },
         dex: '', pairUrl: '',
         website: null, socials: [],
-        boostsActive: 0,
-        ageMs: null,
-        pairs: [],
-        decimals: null, supply: null,
-        liqToFdvPct: null, volToLiq24h: null, buySell24h: null,
         _chg: [0,0,0,0],
         _norm: { nAct: 0, nLiq: 0, nMom: 0, nVol: 0 },
         score: 0, recommendation: 'MEASURING', why: [],
         _arrivedAt: Date.now(),
-        _hydrated: false,            
+        _hydrated: false,
       };
       this.byMint.set(mint, t);
       this.sources.set(mint, new Set());
     }
     return t;
   }
-
   has(mint) { return this.byMint.has(mint); }
 
   // Merge from search hit
-  mergeSearchHit(hit) {
-    if (!hit?.mint) return false;
-    const t = this._ensure(hit.mint);
-    const srcs = this.sources.get(hit.mint);
+  mergeSearchHit(h) {
+    if (!h?.mint) return false;
+    const t = this._ensure(h.mint);
+    let changed = false;
 
-    // identity
-    if (hit.symbol && !t.symbol) t.symbol = hit.symbol;
-    if (hit.name && !t.name) t.name = hit.name;
-    if (hit.imageUrl && !t.logoURI) t.logoURI = hit.imageUrl;
+    if (h.symbol && h.symbol !== t.symbol) { t.symbol = h.symbol; changed = true; }
+    if (h.name && h.name !== t.name) { t.name = h.name; changed = true; }
+    if (h.imageUrl && h.imageUrl !== t.logoURI) { t.logoURI = h.imageUrl; changed = true; }
 
-    // quick numerics (only if missing to avoid flapping)
-    if (hit.priceUsd != null && t.priceUsd == null) t.priceUsd = num(hit.priceUsd, null);
-    const liq = hit.bestLiq ?? hit.liquidityUsd ?? hit.liquidity ?? null;
-    if (liq != null && t.liquidityUsd == null) t.liquidityUsd = num(liq, null);
+    if (Number.isFinite(+h.priceUsd) && +h.priceUsd !== t.priceUsd) { t.priceUsd = +h.priceUsd; changed = true; }
+    if (Number.isFinite(+h.bestLiq) && +h.bestLiq !== t.liquidityUsd) { t.liquidityUsd = +h.bestLiq; changed = true; }
+    if (Number.isFinite(+h.fdv) && +h.fdv !== t.fdv) { t.fdv = +h.fdv; changed = true; }
 
-    // routing hint
-    if (hit.dexId && !t.dex) t.dex = String(hit.dexId || '');
-    if (hit.url   && !t.pairUrl) t.pairUrl = String(hit.url || '');
+    // Core stats
+    if (Number.isFinite(+h.volume24) && +h.volume24 !== t.volume?.h24) { t.volume.h24 = +h.volume24; changed = true; }
+    if (Number.isFinite(+h.txns24) && +h.txns24 !== t.txns?.h24) { t.txns.h24 = +h.txns24; changed = true; }
 
-    // provenance
-    for (const s of (hit.sources || [])) srcs.add(s);
+    // DEX + pair URL
+    if (h.dexId && h.dexId !== t.dex) { t.dex = h.dexId; changed = true; }
+    if (h.url && h.url !== t.pairUrl) { t.pairUrl = h.url; changed = true; }
 
-    // helpers
-    t._chg = [
-      num(t.change.m5, 0),
-      num(t.change.h1, 0),
-      num(t.change.h6, 0),
-      num(t.change.h24,0),
-    ];
-    return true;
+    // Price changes → both object and chips
+    const m5  = Number.isFinite(+h.change5m)  ? +h.change5m  : null;
+    const h1  = Number.isFinite(+h.change1h)  ? +h.change1h  : null;
+    const h6  = Number.isFinite(+h.change6h)  ? +h.change6h  : null;
+    const h24 = Number.isFinite(+h.change24h) ? +h.change24h : null;
+    if (m5 != null || h1 != null || h6 != null || h24 != null) {
+      t.change = {
+        m5:  m5  != null ? m5  : t.change.m5,
+        h1:  h1  != null ? h1  : t.change.h1,
+        h6:  h6  != null ? h6  : t.change.h6,
+        h24: h24 != null ? h24 : t.change.h24,
+      };
+      t._chg = [
+        t.change.m5  ?? 0,
+        t.change.h1  ?? 0,
+        t.change.h6  ?? 0,
+        t.change.h24 ?? 0,
+      ];
+      changed = true;
+    }
+
+    // Hydrated when all required stats exist
+    if (Number(t.priceUsd) > 0 && Number(t.liquidityUsd) > 0 && Number(t.volume?.h24) > 0 && Number(t.txns?.h24) > 0) {
+      t._hydrated = true;
+    }
+    return changed;
   }
 
   // Merge from deep DS-shape
@@ -252,12 +261,12 @@ class TokenStore {
       liquidityUsd:  t.liquidityUsd == null ? null : num(t.liquidityUsd, null),
       fdv:           t.fdv == null ? null : num(t.fdv, null),
       change: {
-        m5:  num(t.change.m5,  0),
-        h1:  num(t.change.h1,  0),
-        h6:  num(t.change.h6,  0),
-        h24: num(t.change.h24, 0),
+        m5:  t.change.m5  == null ? null : num(t.change.m5,  null),
+        h1:  t.change.h1  == null ? null : num(t.change.h1,  null),
+        h6:  t.change.h6  == null ? null : num(t.change.h6,  null),
+        h24: t.change.h24 == null ? null : num(t.change.h24, null),
       },
-      // CHANGED: keep nulls if unknown to avoid accidental measuring
+      // CHANGED: keep nulls if unknown to avoid accidental measuring(creates massive first paint delay)
       volume: { h24: t.volume.h24 == null ? null : num(t.volume.h24, null) },
       txns:   {
         m5:  t.txns.m5  == null ? null : clamp0(t.txns.m5),
@@ -289,6 +298,7 @@ function filterMeasured(arr = []) {
 function pushUpdate(items) {
   const measured = filterMeasured(items);
   if (!measured.length) return;
+  lastEmitted = measured; // remember last good payload
   try {
     onUpdate({ items: measured, ad: CURRENT_AD, marquee: marquee.payload() });
   } catch {}
@@ -325,9 +335,12 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
   const store = new TokenStore();
   const marquee = new MarqueeStore({ maxPerBucket: 64 });
 
+  let lastEmitted = null; // track last measured payload
+
   const pushUpdate = (items) => {
     const measured = filterMeasured(items);
     if (!measured.length) return;
+    lastEmitted = measured; // remember last good payload
     try {
       onUpdate({ items: measured, ad: CURRENT_AD, marquee: marquee.payload() });
     } catch {}
@@ -362,6 +375,7 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
     if (cached?.items?.length) {
       const measuredCached = filterMeasured(cached.items);
       if (measuredCached.length) {
+        lastEmitted = measuredCached; // remember cached GOOD payload
         if (CURRENT_AD === null) {
           try { const ads = await loadAds(); CURRENT_AD = ads ? pickAd(ads) : null; } catch {}
         }
@@ -386,44 +400,29 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
     try {
       if (ac.signal.aborted) return;
 
-      const hits = await collectInstantSolana({ signal: ac.signal });
-      if (!hits?.length) return;
+      const hits = await collectInstantSolana({ signal: ac.signal, maxBoostedTokens: 40 });
+      if (!hits?.length || ac.signal.aborted) return;
 
-      // Seed store with normalized hits
-      for (const h of hits) store.mergeSearchHit(h);
+      let changed = false;
+      for (const h of hits) changed = store.mergeSearchHit(h) || changed;
 
-      // Hydrate a small top set to get volume/txns/liquidity (ensures _hydrated)
-      const topMints = hits.slice(0, 48).map(h => h.mint);
-      await Promise.all(topMints.map(m =>
-        fetchTokenInfoMulti(m, { signal: ac.signal })
-          .then(info => store.mergeDeepInfo(info))
-          .catch(() => {})
-      ));
+      // Immediate measured set from DS stats (no extra hydration)
+      let items = store.toArray().filter(hasRequiredStats);
+      if (!items.length) return;
 
-      // Optionally enrich remaining details (websites/socials)
-      let items = store.toArray();
-      items = await enrichMissingInfo(items);
-
-      // Only score complete tokens
-      const ready = items.filter(hasRequiredStats);
-      if (!ready.length) return;
-
-      let scored = scoreAndRecommend(ready);
+      let scored = scoreAndRecommend(items);
       scored.sort((a,b) => (b.score || 0) - (a.score || 0) ||
                            (b._arrivedAt || 0) - (a._arrivedAt || 0) ||
                            String(a.mint).localeCompare(String(b.mint)));
       lastScored = scored;
 
-      const measured = scored.filter(isMeasured);
+      const measured = filterMeasured(scored);
       if (!measured.length) return;
 
       marquee.addTrendingFromGrid(measured.slice(0, 40));
-      marquee.addNewFromGrid(measured.slice(0, 24));
-
-      writeCache({ generatedAt: ts(), items: measured, _ts: Date.now() });
       pushUpdate(measured);
       safeText(elMetaBase, `Generated`);
-      safeText(elTimeDerived, `Generated: ${ts()}`);
+      safeText(elTimeDerived, `Generated`);
 
       if (!firstResolved) {
         firstResolved = true;
@@ -580,7 +579,7 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
 
         items = store.toArray();
         items = await enrichMissingInfo(items);
-        items = items.filter(hasRequiredStats); // only score complete tokens
+        items = items.filter(hasRequiredStats); // only score complete tokens(no blank first paint)
         let scored = scoreAndRecommend(items);
         scored.sort((a,b) => (b.score || 0) - (a.score || 0) ||
                            (b._arrivedAt || 0) - (a._arrivedAt || 0) ||
@@ -602,10 +601,12 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
     setTimeout(() => {
       if (!firstResolved) resolveFirstNow();
     }, FIRST_TIMEOUT_MS * 2);
+
+    // Do NOT resolve with an empty payload; use lastEmitted if available, otherwise keep waiting(this breaks the app if bad coins are pre emitted)
     setTimeout(() => {
-      if (!firstResolved) {
+      if (!firstResolved && Array.isArray(lastEmitted) && lastEmitted.length) {
         firstResolved = true;
-        resolveFirst({ items: [], ad: CURRENT_AD, marquee: marquee.payload() });
+        resolveFirst({ items: lastEmitted, ad: CURRENT_AD, marquee: marquee.payload() });
       }
     }, FIRST_TIMEOUT_MS * 3);
   }
