@@ -815,22 +815,21 @@ function normalizePairsToHits(pairs, { sourceTag = 'ds-quote', quoteMints = [MIN
   for (const p of pairs || []) {
     const b = p?.baseToken || {};
     const q = p?.quoteToken || {};
-    let mint = b.address;
-    let symbol = b.symbol || '';
-    let name = b.name || '';
-
-    // Prefer the non-quote side as the candidate token
-    if (Q.has(b.address)) {
-      mint = q.address;
-      symbol = q.symbol || '';
-      name = q.name || '';
-    } else if (Q.has(q.address)) {
-      mint = b.address;
-      symbol = b.symbol || '';
-      name = b.name || '';
-    }
-
+    let mint = b.address, symbol = b.symbol || '', name = b.name || '';
+    if (Q.has(b.address)) { mint = q.address; symbol = q.symbol || ''; name = q.name || ''; }
+    else if (Q.has(q.address)) { mint = b.address; symbol = b.symbol || ''; name = b.name || ''; }
     if (!mint) continue;
+
+    const v24 = asNum(p?.volume?.h24);
+    const buys24 = Number(p?.txns?.h24?.buys);
+    const sells24 = Number(p?.txns?.h24?.sells);
+    const txns24 = Number.isFinite(buys24) && Number.isFinite(sells24) ? (buys24 + sells24) : null;
+
+    const pc = p?.priceChange || {};
+    const chg5  = asNum(pc?.m5);
+    const chg1  = asNum(pc?.h1);
+    const chg6  = asNum(pc?.h6);
+    const chg24 = asNum(pc?.h24);
 
     hits.push({
       mint,
@@ -839,8 +838,17 @@ function normalizePairsToHits(pairs, { sourceTag = 'ds-quote', quoteMints = [MIN
       imageUrl: p?.info?.imageUrl || '',
       priceUsd: asNum(p?.priceUsd),
       bestLiq: asNum(p?.liquidity?.usd),
+      fdv: asNum(p?.fdv),
+      volume24: v24,
+      txns24,
       dexId: p?.dexId || '',
       url: p?.url || '',
+      chainId: (p?.chainId || '').toLowerCase(),
+      pairAddress: p?.pairAddress || '',
+      change5m: chg5,
+      change1h: chg1,
+      change6h: chg6,
+      change24h: chg24,
       sources: [sourceTag],
     });
   }
@@ -869,7 +877,7 @@ export async function collectInstantSolana({
       }
     }
   } catch {
-    // ignore quote pool errors
+    // why do you love me so much?
   }
 
   // 2) Boosted tokens: fetch lists, resolve pairs via tokens/v1 in chunks
@@ -891,7 +899,7 @@ export async function collectInstantSolana({
       }
     }
   } catch {
-    // ignore boosted errors
+    // why do you love me so much?
   }
 
   // 3) Rank and cap
