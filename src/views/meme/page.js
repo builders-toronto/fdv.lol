@@ -13,7 +13,7 @@ export const elSort     = document.getElementById('sort');
 export const elRefresh  = document.getElementById('refresh');
 export const elRelax    = document.getElementById('relax');
 export const elStream   = document.getElementById('stream');
-export const elTimeDerived = document.getElementById('stimeDerived');
+export const elTimeDerived = document.getElementById('loading-messages');
 
 const elSearchWrap = document.getElementById('searchWrap');
 const elQResults   = document.getElementById('qResults');
@@ -56,7 +56,7 @@ if (document.readyState === 'loading') {
   setLoadingStatus('Collecting instant Solana pairs…');
 }
 
-// Observe #cards for children changes (optional), still call sync to be safe
+// Observe #cards for children changes
 const mo = new MutationObserver(syncPageSpinner);
 if (elCards) mo.observe(elCards, { childList: true });
 
@@ -68,7 +68,7 @@ function looksLikeMint(s) {
   if (!s) return false;
   const x = s.trim();
   if (x.length < 30 || x.length > 48) return false; // Solana ~32–44
-  return /^[1-9A-HJ-NP-Za-km-z]+$/.test(x); // base58 (no 0,O,I,l)
+  return /^[1-9A-HJ-NP-Za-km-z]+$/.test(x); // base58 
 }
 
 function tokenHref(mint) {
@@ -643,7 +643,7 @@ export function render(items, adPick, marquee) {
   _latestAd = adPick || null;
   _latestMarquee = marquee || null;
 
-  renderAdTop();
+  // renderAdTop();
   renderMarquee(_latestMarquee);
 
   _needsPaint = true;
