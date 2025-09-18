@@ -1,3 +1,28 @@
+import { initSwap, bindSwapButtons } from "../widgets/swap.js";
+
+function initSwapSystem() {
+  initSwap({
+    feeReceiverWallet: "ENEKo7GEWM6jDTaHfN558bNHPodA9MB5azNiFvTK7ofm",
+    feeAtas: {
+      "So11111111111111111111111111111111111111112": "4FSwzXe544mW2BLYqAAjcyBmFFHYgMbnA1XUdtGUeST8", //WRAPPED SOL
+      "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "BKWwTmwc7FDSRb82n5o76bycH3rKZ4Xqt87EjZ2rnUXB", //USDC
+    },
+
+    jupiterBase: "https://lite-api.jup.ag",
+    rpcUrl: "https://api.mainnet-beta.solana.com", 
+
+    platformFeeBps: 5,         // 0.05% don't go over this, people dont like that!
+    defaultSlippageBps: 50,     
+
+    tokenDecimals: {
+      "So11111111111111111111111111111111111111112": 9, // SOL
+      "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 6, // USDC
+    },
+  });
+
+  bindSwapButtons(document);
+}
+
 export function initRouter({
   onHome = () => {},
   onProfile = () => {},
@@ -63,6 +88,7 @@ export function initRouter({
     history.replaceState({}, '', pending);
   }
   dispatch();
+  initSwapSystem();
 
   return { nav, dispatch, replace: (u) => nav(u, { replace: true }) };
 }

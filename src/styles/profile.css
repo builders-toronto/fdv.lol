@@ -428,7 +428,7 @@ svg.bars rect { fill: rgba(123,241,255,.8) }
 .link { color: var(--neon2); text-decoration:none; border-bottom:1px dotted rgba(123,241,255,.3); padding-bottom:1px }
 .link:hover { border-bottom-style:solid }
 
-.btn { border-radius:10px; color: var(--text); cursor:pointer }
+/* .btn { border-radius:10px; color: var(--text); cursor:pointer } */
 .btn-ghost { background: transparent }
 
 .axis { margin-top:4px; color: var(--muted) }

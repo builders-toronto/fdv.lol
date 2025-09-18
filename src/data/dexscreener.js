@@ -113,9 +113,12 @@ async function fetchWithRetries(url, { signal } = {}) {
   }
 }
 
-async function fetchDS(url, { signal, ttl } = {}) {
+async function fetchDS(url, { signal, ttl, priority = false } = {}) {
   const key = `${CACHE_VERSION}|dex:${url}`;
-  return swrFetch(key, () => fetchWithRetries(url, { signal }), { ttl });
+  const fetcher = priority
+    ? () => getJSON(url, { signal, headers: { accept: 'application/json' } }) 
+    : () => fetchWithRetries(url, { signal });
+  return swrFetch(key, fetcher, { ttl });
 }
 
 async function mapWithLimit(items, limit, fn, { spacingMs = 0 } = {}) {
@@ -254,11 +257,11 @@ export async function fetchDexscreener() {
   return out;
 }
 
-export async function fetchTokenInfo(mint) {
+export async function fetchTokenInfo(mint, { priority = false, signal } = {}) {
   const url = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(mint)}`;
   let json;
   try {
-    json = await fetchDS(url, { ttl: FETCH_TTL_MS_TOKEN });
+    json = await fetchDS(url, { ttl: FETCH_TTL_MS_TOKEN, priority, signal });
   } catch (e) {
     if (e?.status === 429) return { error: 'Rate limited.' };
     throw new Error(`dexscreener ${e?.status || e?.message || 'error'}`);
