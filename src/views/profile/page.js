@@ -25,7 +25,7 @@ function errorNotice(mount, msg) {
   mount.innerHTML = `<div class="wrap"><div class="small">Error: ${msg} <a data-link href="/">Home</a></div></div>`;
 }
 
-// TODO: scale gecko implementation
+// TODO: live load gisqus comment section. comments need to be instant for better community access.
 function ensureGeckoStyles() {
   if (document.getElementById("gecko-embed-styles")) return;
   const s = document.createElement("style");
@@ -315,20 +315,20 @@ export async function renderProfileView(input, { onBack } = {}) {
   } catch {
     primaryPool = null;
   }
-  // We love Gecko
-  mountOrUpdateGecko({
-    root: elApp,
-    mint,
-    pool: primaryPool,
-    options: {
-      info: 0,
-      swaps: 0,
-      light_chart: 0,
-      chart_type: "market_cap", 
-      resolution: "1m",         
-      bg_color: "000000",
-    },
-  });
+  // We love Gecko, but Gecko sleeps for now. Bad Gecko!
+  // mountOrUpdateGecko({
+  //   root: elApp,
+  //   mint,
+  //   pool: primaryPool,
+  //   options: {
+  //     info: 0,
+  //     swaps: 0,
+  //     light_chart: 0,
+  //     chart_type: "market_cap", 
+  //     resolution: "1m",         
+  //     bg_color: "000000",
+  //   },
+  // });
 
   renderPairsTable(document.getElementById("pairsBody"), t.pairs);
 

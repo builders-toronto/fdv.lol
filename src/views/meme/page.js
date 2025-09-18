@@ -47,7 +47,6 @@ function updateResultsState(hasResults) {
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
-    // initial state: no results yet
     updateResultsState(false);
     setLoadingStatus('Collecting instant Solana pairs…');
   }, { once: true });
