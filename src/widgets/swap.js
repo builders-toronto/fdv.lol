@@ -1,16 +1,23 @@
 import { fetchTokenInfo } from "../data/dexscreener.js";
 
+//TODO: add more web3 cloudflare++
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
 const DEFAULTS = {
   jupiterBase: "https://lite-api.jup.ag",
-  rpcUrl: "https://api.mainnet-beta.solana.com", // use a browser-friendly RPC in prod
-  platformFeeBps: 5, // 0.05%
-  defaultSlippageBps: 50, // 0.50%
+
+  rpcUrl: "https://solana-rpc-proxy.fdvlol.workers.dev",
+  authPath: "/auth",
+
+  turnstileSiteKey: "0x4AAAAAAB1-OXJYaV8q4rdX",
+
+  platformFeeBps: 5,
+  defaultSlippageBps: 50,
   feeReceiverWallet: "",
-  feeAtas: {},           
-  tokenDecimals: {},     
+  feeAtas: {},
+  tokenDecimals: {},
+
   buildDexUrl({ outputMint, pairUrl }) {
     if (pairUrl) return pairUrl;
     return `https://dexscreener.com/solana/${encodeURIComponent(outputMint || "")}`;
@@ -23,6 +30,7 @@ const DEFAULTS = {
     if (amountUi != null) u.searchParams.set("amount", String(amountUi));
     return u.toString();
   },
+
   // Hooks
   onConnect(pubkeyBase58) {},
   onQuote(quoteJson) {},
@@ -35,13 +43,20 @@ let CFG = { ...DEFAULTS };
 let _state = {
   wallet: null,
   pubkey: null,
-  inputMint: SOL_MINT, 
+  inputMint: SOL_MINT,
   outputMint: null,
-  token: null,     
-  preQuote: null,   
+  token: null,
+  preQuote: null,
 };
 
-let web3; 
+let web3;
+
+let _rpcSession = { token: null, exp: 0 };  // epoch ms
+let _challengeOk = false;                   // UI state after successful /auth
+let _turnstileWidgetId = null;              // turnstile widget id
+let _turnstileScriptInjected = false;
+
+let _turnstileToken = null;
 
 export function initSwap(userConfig = {}) {
   CFG = { ...DEFAULTS, ...userConfig };
@@ -91,14 +106,11 @@ export function openSwapModal({
   if (tokenHydrate && tokenHydrate.mint) {
     _applyTokenHydrate(tokenHydrate);
   }
-
   if (outputMint) {
     _loadTokenProfile(outputMint, { tokenHydrate, pairUrl, priority, relay, timeoutMs, noFetch });
   }
-
-  _kickPreQuote(); 
+  _kickPreQuote();
 }
-
 
 function isLikelyMobile() {
   const coarse = typeof window !== "undefined" &&
@@ -179,7 +191,7 @@ function _handleSwapClickFromEl(el) {
 
 function _decimalsFor(mint) {
   if (mint === SOL_MINT) return 9;
-  return CFG.tokenDecimals[mint] ?? 6; // sensible default
+  return CFG.tokenDecimals[mint] ?? 6;
 }
 function _uiToRaw(amountUi, mint) {
   const dec = _decimalsFor(mint);
@@ -190,6 +202,105 @@ async function _loadWeb3() {
   if (web3) return web3;
   web3 = await import("https://esm.sh/@solana/web3.js@1.95.3");
   return web3;
+}
+function _now() { return Date.now(); }
+
+async function _authFromChallengeToken(token) {
+  const res = await fetch(CFG.rpcUrl.replace(/\/+$/,"") + CFG.authPath, {
+    method: "POST",
+    headers: { "x-turnstile-token": token },
+  });
+  console.log(res);
+  if (!res.ok) throw new Error(`Auth failed: ${res.status} ${await res.text()}`);
+  const { session, exp } = await res.json();
+  if (!session || !exp) throw new Error("Invalid auth response");
+  _rpcSession = { token: session, exp: Number(exp) || (_now() + 90_000) };
+  _challengeOk = true;
+  _refreshChallengeChrome();
+  return _rpcSession.token;
+}
+
+function _hasLiveSession(skewMs = 1500) {
+  return !!(_rpcSession.token && _rpcSession.exp - skewMs > _now());
+}
+
+function _refreshChallengeChrome() {
+  const badge = _el("[data-captcha-state]");
+  if (badge) {
+    const ok = _challengeOk && _hasLiveSession();
+    badge.textContent = ok ? "Verified" : "Unverified";
+    badge.classList.toggle("ok", ok);
+  }
+  const go = _el("[data-swap-go]");
+  if (go) {
+    const pk = _state?.pubkey?.toBase58?.();
+    go.disabled = !pk || !_hasLiveSession();
+  }
+  // If session expired, reset the widget so user can solve again
+  if (!_hasLiveSession() && typeof window !== "undefined" && window.turnstile && _turnstileWidgetId != null) {
+    try { window.turnstile.reset(_turnstileWidgetId); } catch {}
+  }
+}
+
+// Turnstile script loader
+function _ensureTurnstileScript() {
+  if (typeof window === "undefined") return;
+  if (window.turnstile || _turnstileScriptInjected) return;
+  const s = document.createElement("script");
+  s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
+  s.async = true;
+  s.defer = true;
+  document.head.appendChild(s);
+  _turnstileScriptInjected = true;
+}
+
+// Render the widget into the modal
+function _renderTurnstileWhenReady() {
+  const host = _el("[data-turnstile-slot]");
+  if (!host) return;
+
+  const tryRender = () => {
+    if (!window.turnstile || !window.turnstile.render) {
+      setTimeout(tryRender, 150);
+      return;
+    }
+    // Reset if already present
+    if (_turnstileWidgetId != null) {
+      try { window.turnstile.reset(_turnstileWidgetId); } catch {}
+      return;
+    }
+    _turnstileWidgetId = window.turnstile.render(host, {
+      sitekey: CFG.turnstileSiteKey || DEFAULTS.turnstileSiteKey,
+      theme: "auto",       // "light" | "dark" | "auto"
+      size: "normal",      // "normal" | "flexible"
+      callback: async (token) => {
+        _turnstileToken = token;
+        try {
+          _log("Verifying challenge…");
+          await _authFromChallengeToken(token);
+          _log("Verification complete ✓", "ok");
+        } catch (e) {
+          _challengeOk = false;
+          _log(`Verification error: ${e.message || e}`, "err");
+        } finally {
+          _refreshChallengeChrome();
+        }
+      },
+      "error-callback": () => {
+        _turnstileToken = null;
+        _challengeOk = false;
+        _refreshChallengeChrome();
+        _log("Challenge error. Please retry.", "err");
+      },
+      "expired-callback": () => {
+        _turnstileToken = null;
+        _challengeOk = false;
+        _refreshChallengeChrome();
+        _log("Challenge expired. Please check the box again.", "warn");
+      },
+    });
+  };
+  tryRender();
 }
 
 async function _connectPhantom() {
@@ -204,8 +315,9 @@ async function _connectPhantom() {
     _state.wallet = provider;
     _state.pubkey = new PublicKey(resp.publicKey.toString());
     _log(`Connected: ${_state.pubkey.toBase58()}`, "ok");
+    //change fdv-btn-phantom text to connected
+    
     CFG.onConnect?.(_state.pubkey.toBase58());
-    _el("[data-swap-go]").disabled = false;
     _refreshModalChrome();
   } catch (e) {
     _log(`Connect error: ${e.message || e}`, "err");
@@ -253,10 +365,10 @@ async function _preQuote() {
 }
 const _kickPreQuote = _debounce(_preQuote, 200);
 
-
 async function _quoteAndSwap() {
   try {
     if (!_state.wallet || !_state.pubkey) throw new Error("Connect Phantom first.");
+    if (!_hasLiveSession()) throw new Error("Please solve the verification first.");
 
     const inputMint  = _el("[data-swap-input-mint]").value.trim();
     const outputMint = _el("[data-swap-output-mint]").value.trim();
@@ -264,11 +376,26 @@ async function _quoteAndSwap() {
     const slippageBps = parseInt(_el("[data-swap-slip]").value || CFG.defaultSlippageBps, 10);
 
     const amount = _uiToRaw(amountUi, inputMint);
-    const feeAccount = CFG.feeAtas[inputMint] || null;           // collect fee in INPUT mint
+    const feeAccount = CFG.feeAtas[inputMint] || null;
     const platformFeeBps = feeAccount ? CFG.platformFeeBps : 0;
 
     const { Connection, VersionedTransaction, PublicKey } = await _loadWeb3();
-    const conn = new Connection(CFG.rpcUrl, { commitment: "processed" });
+
+    // Build a Connection that **always** sends x-session
+    const endpoint = CFG.rpcUrl.replace(/\/+$/,"");
+    const sessionHdr = { "x-session": _rpcSession.token };
+    const conn = new Connection(endpoint, {
+      commitment: "processed",
+      httpHeaders: sessionHdr, // some builds respect this
+      fetchMiddleware: (url, options, fetch) => { // this guarantees it
+        options.headers = {
+          ...(options.headers || {}),
+          ...sessionHdr,
+          "content-type": "application/json",
+        };
+        return fetch(url, options);
+      },
+    });
 
     _log("Fetching quote…");
     const q = new URL(`${CFG.jupiterBase}/swap/v1/quote`);
@@ -288,7 +415,7 @@ async function _quoteAndSwap() {
     if (platformFeeBps > 0) {
       _log("Checking fee account…");
       const info = await conn.getParsedAccountInfo(new PublicKey(feeAccount)).catch(() => null);
-      if (!info?.value) throw new Error("Cannot read feeAccount from RPC (CORS?). Use a browser-friendly RPC.");
+      if (!info?.value) throw new Error("Cannot read feeAccount from RPC (auth/session?).");
       const parsed = info.value.data?.parsed;
       const mint = parsed?.info?.mint;
       const owner = parsed?.info?.owner;
@@ -305,7 +432,7 @@ async function _quoteAndSwap() {
         userPublicKey: _state.pubkey.toBase58(),
         feeAccount: feeAccount || undefined,
         dynamicComputeUnitLimit: true,
-        dynamicSlippage: { maxBps: slippageBps }, // cap
+        dynamicSlippage: { maxBps: slippageBps },
       })
     });
     if (!sRes.ok) throw new Error(`Swap build failed: ${sRes.status} ${await sRes.text()}`);
@@ -322,7 +449,7 @@ async function _quoteAndSwap() {
     const signature = typeof sigRes === "string" ? sigRes : sigRes?.signature;
     if (!signature) throw new Error("No signature returned");
 
-    _log(`Sent. Signature: <a href="https://solscan.io/tx/${signature}" target="_blank" rel="noopener">View on Solscan</a>`, "ok");
+    _log(`Sent. Signature: https://solscan.io/tx/${signature}`, "ok");
     CFG.onSwapSent?.(signature);
 
     _log("Confirming (polling)…");
@@ -353,7 +480,7 @@ async function _confirmWithPolling(connection, signature, { timeoutMs = 90_000, 
         if (st.err) throw new Error(`Transaction error: ${JSON.stringify(st.err)}`);
         const conf = st.confirmationStatus ||
           (st.confirmations != null ? (st.confirmations > 0 ? "confirmed" : null) : null);
-        if (conf === "confirmed" || conf === "finalized") return true; // fixed condition
+        if (conf === "confirmed" || "finalized" === conf) return true;
       }
     } catch {}
     await new Promise(r => setTimeout(r, intervalMs));
@@ -372,6 +499,7 @@ const MODAL_HTML = `
             <span class="fdv-chip" data-swap-network>Solana Mainnet</span>
             <span class="fdv-chip fdv-chip-fee" data-swap-fee>Fee: —</span>
             <span class="fdv-chip fdv-chip-wallet" data-swap-wallet>Wallet: Not connected</span>
+            <span class="fdv-chip fdv-chip-captcha" data-captcha-state>Unverified</span>
           </div>
           <button class="btn fdv-btn-phantom" data-swap-connect>Connect Phantom</button>
         </div>
@@ -380,7 +508,6 @@ const MODAL_HTML = `
     </div>
 
     <div class="fdv-modal-body">
-      <!-- Left: token profile + form -->
       <section class="fdv-pane fdv-pane-form">
         <div class="fdv-token">
           <div class="fdv-token-media">
@@ -409,10 +536,7 @@ const MODAL_HTML = `
         <div class="fdv-field">
           <label class="fdv-label">Pay (input mint)</label>
           <div class="fdv-input">
-            <input data-swap-input-mint
-                   inputmode="text"
-                   spellcheck="false"
-                   value="${SOL_MINT}" />
+            <input data-swap-input-mint inputmode="text" spellcheck="false" value="${SOL_MINT}" />
           </div>
           <div class="fdv-help">Fees are taken from the <b>input</b> mint (ExactIn).</div>
         </div>
@@ -449,36 +573,25 @@ const MODAL_HTML = `
         </div>
 
         <div class="fdv-prequote" data-prequote>
-          <div class="row">
-            <div>Est. Output:</div>
-            <div class="v" data-pre-out>—</div>
-          </div>
-          <div class="row">
-            <div>Min Received (slip):</div>
-            <div class="v" data-pre-min>—</div>
-          </div>
-          <div class="row">
-            <div>Route:</div>
-            <div class="v" data-pre-route>—</div>
-          </div>
+          <div class="row"><div>Est. Output:</div><div class="v" data-pre-out>—</div></div>
+          <div class="row"><div>Min Received (slip):</div><div class="v" data-pre-min>—</div></div>
+          <div class="row"><div>Route:</div><div class="v" data-pre-route>—</div></div>
         </div>
 
         <div class="fdv-note">
           <div class="fdv-note-title">Important Notes</div>
-          <div class="fdv-note-body">
-            <p>Prototype version: 0.0.1</p>
-          </div>
+          <div class="fdv-note-body"><p>Prototype version: 0.0.1</p></div>
         </div>
       </section>
 
-      <!-- Right: wallet + logs -->
       <aside class="fdv-pane fdv-pane-aside">
-        <div class="fdv-wallet">
-        </div>
-
+        <div class="fdv-wallet"></div>
         <div class="fdv-status" aria-live="polite">
           <div class="fdv-log" data-swap-log></div>
         </div>
+
+        <!-- Turnstile widget host -->
+        <div data-turnstile-slot style="min-height:78px;display:flex;align-items:center"></div>
       </aside>
     </div>
 
@@ -503,10 +616,8 @@ function _ensureModalMounted() {
   _el("[data-swap-go]").addEventListener("click", _quoteAndSwap);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") _closeModal(); });
 
-  // Default slippage
   _el("[data-swap-slip]").value = CFG.defaultSlippageBps ?? 50;
 
-  // Quick amount buttons
   document.querySelectorAll(".fdv-quickbtn").forEach(btn => {
     btn.addEventListener("click", () => {
       const v = btn.getAttribute("data-amt");
@@ -515,7 +626,6 @@ function _ensureModalMounted() {
     });
   });
 
-  // Slippage +/- buttons
   document.querySelectorAll("[data-slip-delta]").forEach(btn => {
     btn.addEventListener("click", () => {
       const delta = parseInt(btn.getAttribute("data-slip-delta"), 10) || 0;
@@ -528,15 +638,16 @@ function _ensureModalMounted() {
     });
   });
 
-  // Live preview triggers
   _el("[data-swap-amount]").addEventListener("input", _kickPreQuote);
   _el("[data-swap-slip]").addEventListener("input", _kickPreQuote);
   _el("[data-swap-input-mint]").addEventListener("input", () => { _refreshModalChrome(); _kickPreQuote(); });
   _el("[data-swap-output-mint]").addEventListener("input", _kickPreQuote);
+
+  _ensureTurnstileScript();
+  _renderTurnstileWhenReady();
 }
 
 function _applyTokenHydrate(h) {
-  // minimal model to seed UI fast
   const t = {
     mint: h.mint,
     symbol: h.symbol || "",
@@ -553,7 +664,6 @@ function _applyTokenHydrate(h) {
   };
   _state.token = { ...( _state.token || {} ), ...t };
 
-  // Mount refs
   const m = {
     logo: _el("[data-token-logo]"),
     header: _el("[data-token-header]"),
@@ -568,7 +678,6 @@ function _applyTokenHydrate(h) {
     ext: _el("[data-token-external]"),
   };
 
-  // Visuals
   if (m.logo) {
     if (t.imageUrl) m.logo.src = t.imageUrl;
     else { m.logo.removeAttribute("src"); m.logo.style.background = "#222"; }
@@ -579,7 +688,6 @@ function _applyTokenHydrate(h) {
     m.header.style.background = bg ? `center/cover no-repeat url(${esc})` : "#0a0f19";
   }
 
-  // Text
   if (m.sym) m.sym.textContent = t.symbol || "—";
   if (m.name) m.name.textContent = t.name || "";
   if (m.price && t.priceUsd != null) m.price.textContent = _fmtPrice(t.priceUsd);
@@ -588,7 +696,6 @@ function _applyTokenHydrate(h) {
   if (m.fdv && (t.fdv != null || t.marketCap != null)) m.fdv.textContent = _fmtMoney(t.fdv ?? t.marketCap);
   if (m.ext && t.headlineUrl) { m.ext.href = t.headlineUrl; m.ext.textContent = t.headlineDex || "Dex"; }
 
-  // If Receive field empty, seed with mint
   const outEl = _el("[data-swap-output-mint]");
   if (outEl && !outEl.value && t.mint) outEl.value = t.mint;
 }
@@ -617,7 +724,6 @@ async function _loadTokenProfile(mint, opts = {}) {
     ext: _el("[data-token-external]"),
   };
 
-  // Optimistic skeleton
   if (!tokenHydrate) {
     mount.sym.textContent = "…";
     mount.name.textContent = "";
@@ -641,12 +747,10 @@ async function _loadTokenProfile(mint, opts = {}) {
     const t = await fetchTokenInfo(mint, { priority, signal: ac.signal });
     clearTimeout(to);
 
-    // prefer any known pairUrl/headline from hard data if missing
     if (pairUrl && !t.headlineUrl) t.headlineUrl = pairUrl;
 
     _state.token = t;
 
-    // Visuals
     if (mount.logo) {
       if (t.imageUrl) mount.logo.src = t.imageUrl;
       else { mount.logo.removeAttribute("src"); mount.logo.style.background = "#222"; }
@@ -657,7 +761,6 @@ async function _loadTokenProfile(mint, opts = {}) {
       mount.header.style.background = bg ? `center/cover no-repeat url(${esc})` : "#0a0f19";
     }
 
-    // Text
     mount.sym.textContent = t.symbol || "—";
     mount.name.textContent = t.name || "";
     mount.price.textContent = _fmtPrice(t.priceUsd);
@@ -679,18 +782,17 @@ async function _loadTokenProfile(mint, opts = {}) {
       mount.ext.href = pairUrl;
       mount.ext.textContent = "Dex";
     } else {
-      mount.ext.href = `https://dexscreener.com/token/{encodeURIComponent(t.mint)}`;
+      mount.ext.href = `https://dexscreener.com/token/${encodeURIComponent(t.mint)}`;
       mount.ext.textContent = "Dexscreener";
     }
 
-    // Seed Receive field if empty
     const outEl = _el("[data-swap-output-mint]");
     if (outEl && !outEl.value) outEl.value = t.mint;
 
     _refreshModalChrome();
     _kickPreQuote();
   } catch (e) {
-    _state.token = _state.token || null; // keep any hydrate info
+    _state.token = _state.token || null;
     mount.price.textContent = "Failed to load token.";
     mount.change.textContent = "—";
     _refreshModalChrome();
@@ -717,7 +819,6 @@ function _renderPreQuote(q) {
   if (elOut) elOut.textContent = _fmtNumber(outUi);
   if (elMin) elMin.textContent = _fmtNumber(minUi);
 
-  // Route summarization
   const hops = Array.isArray(q.routePlan?.[0]?.swapPlan) ? q.routePlan[0].swapPlan : [];
   const legs = hops.map(h => h.swapInfo?.label || h.swapInfo?.amm || h.swapInfo?.programLabel).filter(Boolean);
   if (elRoute) elRoute.textContent = legs.length ? legs.join(" → ") : "Jupiter route";
@@ -740,14 +841,16 @@ function _refreshModalChrome(){
   const dest = _el("[data-fee-dest]");
   if (dest) dest.textContent = feeDest ? _short(feeDest) : "—";
 
-  const go = _el("[data-swap-go]");
-  if (go) go.disabled = !pk;
+  _refreshChallengeChrome(); // updates the "Quote & Swap" disabled state
 }
 
 function _openModal(){
   _el("[data-swap-backdrop]")?.classList.add("show");
   _clearLog();
+  _challengeOk = _hasLiveSession(); // keep previous session if still valid
   _refreshModalChrome();
+  _ensureTurnstileScript();
+  _renderTurnstileWhenReady();
   setTimeout(()=>{ _el("[data-swap-amount]")?.focus(); }, 30);
 }
 function _closeModal(){ const bd=_el("[data-swap-backdrop]"); if (bd) bd.classList.remove("show"); _clearLog(); }
@@ -759,7 +862,7 @@ function _setModalFields({ inputMint, outputMint, amountUi, slippageBps }) {
 }
 
 function _el(sel){ return document.querySelector(sel); }
-function _log(msg, cls=""){ const logEl=_el("[data-swap-log]"); if(!logEl) return; const d=document.createElement("div"); if(cls) d.className=cls; d.textContent=msg; logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight; }
+function _log(msg, cls=""){ const logEl=_el("[data-swap-log]"); if(!logEl) return; const d=document.createElement("div"); if(cls) d.className=cls; d.textContent = msg; logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight; }
 function _clearLog(){ const logEl=_el("[data-swap-log]"); if (logEl) logEl.innerHTML=""; }
 
 function _fmtNumber(x) {
