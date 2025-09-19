@@ -1,6 +1,7 @@
 import { fetchTokenInfo } from "../data/dexscreener.js";
 
 //TODO: add more web3 cloudflare++
+//SCALE: refactor hooks and other internals
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
@@ -236,7 +237,7 @@ function _refreshChallengeChrome() {
     const pk = _state?.pubkey?.toBase58?.();
     go.disabled = !pk || !_hasLiveSession();
   }
-  // If session expired, reset the widget so user can solve again
+  // If session expired, reset the widget so user can solve again!
   if (!_hasLiveSession() && typeof window !== "undefined" && window.turnstile && _turnstileWidgetId != null) {
     try { window.turnstile.reset(_turnstileWidgetId); } catch {}
   }
@@ -315,10 +316,19 @@ async function _connectPhantom() {
     _state.wallet = provider;
     _state.pubkey = new PublicKey(resp.publicKey.toString());
     _log(`Connected: ${_state.pubkey.toBase58()}`, "ok");
-    //change fdv-btn-phantom text to connected
-    
+
+    try {
+      provider.removeAllListeners?.("disconnect");
+      provider.on?.("disconnect", () => {
+        _state.wallet = null;
+        _state.pubkey = null;
+        _log("Wallet disconnected", "warn");
+        _refreshModalChrome();
+      });
+    } catch {}
+
     CFG.onConnect?.(_state.pubkey.toBase58());
-    _refreshModalChrome();
+    _refreshModalChrome(); // updates chips and button label
   } catch (e) {
     _log(`Connect error: ${e.message || e}`, "err");
     CFG.onError?.("connect", e);
@@ -381,7 +391,6 @@ async function _quoteAndSwap() {
 
     const { Connection, VersionedTransaction, PublicKey } = await _loadWeb3();
 
-    // Build a Connection that **always** sends x-session
     const endpoint = CFG.rpcUrl.replace(/\/+$/,"");
     const sessionHdr = { "x-session": _rpcSession.token };
     const conn = new Connection(endpoint, {
@@ -597,7 +606,10 @@ const MODAL_HTML = `
 
     <div class="fdv-modal-footer">
       <button class="btn fdv-btn-secondary" data-swap-close>Cancel</button>
-      <button class="btn fdv-btn-primary" data-swap-go disabled>Quote & Swap</button>
+      <div class="fdv-modal-controls">
+        <a class="btn fdv-btn-secondary" data-swap-learn href="#" rel="noopener">Learn more</a>
+        <button class="btn fdv-btn-primary" data-swap-go disabled>Quote & Swap</button>
+      </div>
     </div>
   </div>
 </div>
@@ -643,7 +655,7 @@ function _ensureModalMounted() {
   _el("[data-swap-input-mint]").addEventListener("input", () => { _refreshModalChrome(); _kickPreQuote(); });
   _el("[data-swap-output-mint]").addEventListener("input", _kickPreQuote);
 
-  _ensureTurnstileScript();
+  // _ensureTurnstileScript();
   _renderTurnstileWhenReady();
 }
 
@@ -830,6 +842,7 @@ function _refreshModalChrome(){
   const pk = _state?.pubkey?.toBase58?.() || null;
   const feeBps = CFG.platformFeeBps ?? 0;
   const inMint = _el("[data-swap-input-mint]")?.value?.trim();
+  const outMint = _el("[data-swap-output-mint]")?.value?.trim() || _state?.outputMint || _state?.token?.mint || "";
   const feeDest = (inMint && CFG.feeAtas?.[inMint]) ? CFG.feeAtas[inMint] : null;
 
   const chipFee = _el("[data-swap-fee]");
@@ -841,7 +854,38 @@ function _refreshModalChrome(){
   const dest = _el("[data-fee-dest]");
   if (dest) dest.textContent = feeDest ? _short(feeDest) : "—";
 
-  _refreshChallengeChrome(); // updates the "Quote & Swap" disabled state
+  _refreshChallengeChrome();
+
+  // PHANTOM: connect button state and text
+  const btnConn = _el("[data-swap-connect]");
+  if (btnConn) {
+    const connected = !!pk;
+    btnConn.textContent = connected ? "Wallet Connected" : "Connect Phantom";
+    btnConn.setAttribute("aria-label", connected ? "Wallet Connected" : "Connect Phantom");
+    btnConn.classList.toggle("connected", connected);
+    btnConn.disabled = connected;
+  }
+
+  // LEARN MORE FOR THE PLEBS
+  const btnLearn = _el("[data-swap-learn]");
+  if (btnLearn) {
+    const validMint = typeof outMint === "string" && outMint.length > 0;
+    btnLearn.href = validMint ? `/token/${encodeURIComponent(outMint)}` : "#";
+    btnLearn.setAttribute("aria-disabled", validMint ? "false" : "true");
+    btnLearn.classList.toggle("disabled", !validMint);
+
+    if (!btnLearn.dataset.wired) {
+      btnLearn.dataset.wired = "1";
+      btnLearn.addEventListener("click", (e) => {
+        // If mint invalid, do nothing
+        const href = btnLearn.getAttribute("href") || "#";
+        if (href === "#") { e.preventDefault(); return; }
+        // Close modal then navigate
+        try { _el("[data-swap-close]")?.click(); } catch {}
+        // Allow default navigation for normal link behavior
+      });
+    }
+  }
 }
 
 function _openModal(){
@@ -893,3 +937,37 @@ function _fmtAge(ms) {
   for (const [label, div] of u) if (s >= div) return `${Math.floor(s / div)}${label}`;
   return "0s";
 }
+
+// Modal state bridge: emit open/close for swap modal
+(function bridgeSwapModalState() {
+  let prev = null;
+  const SEL = '.fdv-modal-backdrop';
+
+  function emit(open) {
+    try {
+      document.dispatchEvent(new CustomEvent('swap:modal-state', { detail: { open: !!open } }));
+    } catch {}
+  }
+  function check() {
+    const open = !!document.querySelector(SEL);
+    if (open !== prev) {
+      prev = open;
+      emit(open);
+    }
+  }
+
+  const start = () => {
+    try {
+      check();
+      const mo = new MutationObserver(check);
+      mo.observe(document.body, { childList: true, subtree: true });
+      window.addEventListener('beforeunload', () => mo.disconnect(), { once: true });
+    } catch {}
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+})();

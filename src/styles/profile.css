@@ -119,6 +119,12 @@
 .profile__hero .actions { display:flex; gap:8px; align-items:center }
 .profile__navigation { display:flex;flex-direction: row;justify-content: space-between;align-items: flex-end;margin-bottom: 12px }
 .buy-btn { background: #000000;color: #6ec1ff;font-weight: 800;border: 1px solid #1165a3; }
+
+@media (max-width: 520px) {
+  .buy-btn { width: 30%; font-size: small; padding: 12px; }
+}
+
+
 .buy-btn.disabled { opacity:.5; pointer-events:none }
 
 .profile__stats { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap:8px; margin: 8px 0 14px }
@@ -459,12 +465,107 @@ svg.bars rect { fill: rgba(123,241,255,.8) }
   transform: translateY(-1px);
 }
 
+.swap-fab{
+  position: fixed;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  z-index: 1000;
+
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+
+  padding: 12px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(122,222,255,.25);
+  background:
+    radial-gradient(120% 120% at 100% 0%, rgba(38,206,255,.20), rgba(26,255,213,.10) 60%, rgba(26,255,213,.06) 100%),
+    rgba(8,14,24,.9);
+  color: var(--text, #e2e8f0);
+
+  box-shadow:
+    0 8px 24px rgba(15,185,255,.18),
+    inset 0 0 0 1px rgba(122,222,255,.10);
+  backdrop-filter: blur(6px);
+
+  font-weight: 800;
+  letter-spacing: .2px;
+  cursor: pointer;
+
+  transition: transform .18s ease, box-shadow .18s ease, background .18s ease, opacity .18s ease;
+  animation: swapfab-pop .28s ease-out both;
+}
+.swap-fab:hover{ transform: translateY(-2px); box-shadow: 0 12px 28px rgba(15,185,255,.22), inset 0 0 0 1px rgba(122,222,255,.14); }
+.swap-fab:active{ transform: translateY(0); }
+.swap-fab.is-hidden{ opacity: 0; pointer-events: none; }
+
+@keyframes swapfab-pop{
+  from { transform: translateY(8px) scale(.98); opacity: 0; }
+  to   { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+/* Mobile: center, wider pill, bigger touch target */
+@media (max-width: 720px){
+  .swap-fab{
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+    min-width: min(92vw, 560px);
+    justify-content: center;
+    padding: 14px 18px;
+  }
+}
+
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce){
+  .swap-fab{ transition: none; animation: none; }
+}
+
+/* Optional icon (uses emoji fallback) */
+.swap-fab::before{
+  content: "⇄";
+  font-size: 1.05rem;
+  line-height: 1;
+  filter: drop-shadow(0 1px 0 rgba(0,0,0,.25));
+}
+
+/* Responsive actions row */
+.profile__navigation .actions{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: stretch;
+}
+
+/* Animated, responsive Swap button */
+.btn-swap-action{
+  font-weight: 800;
+  letter-spacing: .2px;
+  border-radius: 999px;
+  border: 1px solid rgba(122,222,255,.25);
+  background:
+    radial-gradient(120% 120% at 100% 0%, rgba(38,206,255,.20), rgba(26,255,213,.10) 60%, rgba(26,255,213,.06) 100%),
+    rgba(8,14,24,.9);
+  color: var(--text, #e2e8f0);
+  box-shadow: 0 8px 24px rgba(15,185,255,.18), inset 0 0 0 1px rgba(122,222,255,.10);
+  transition: transform .18s ease, box-shadow .18s ease, background .18s ease, opacity .18s ease;
+  animation: btnswap-pop .24s ease-out both;
+}
+.btn-swap-action:hover{ transform: translateY(-1px); box-shadow: 0 12px 28px rgba(15,185,255,.22), inset 0 0 0 1px rgba(122,222,255,.14); }
+.btn-swap-action:active{ transform: translateY(0); }
+
+@keyframes btnswap-pop{
+  from { transform: translateY(6px) scale(.985); opacity: 0; }
+  to   { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+/* On small screens, make buttons wrap nicely and widen tap targets */
 @media (max-width: 640px){
-  .profile__hero__actions .btn{
-    flex: 1 1 100%;
+  .profile__navigation .actions .btn{
     text-align: center;
   }
-  .profile__hero .btn--static{
-    padding: 10px 14px;
+  .btn-swap-action{
+    padding: 12px 14px;
   }
 }
