@@ -458,7 +458,7 @@ async function _quoteAndSwap() {
     const signature = typeof sigRes === "string" ? sigRes : sigRes?.signature;
     if (!signature) throw new Error("No signature returned");
 
-    _log(`Sent. Signature: <a href="https://solscan.io/tx/${signature}" target="_blank">TXN link</a>`, "ok");
+    _log(`Sent. Signature: `, "ok", signature);
     CFG.onSwapSent?.(signature);
 
     _log("Confirming (polling)…");
@@ -898,6 +898,7 @@ function _openModal(){
   setTimeout(()=>{ _el("[data-swap-amount]")?.focus(); }, 30);
 }
 function _closeModal(){ const bd=_el("[data-swap-backdrop]"); if (bd) bd.classList.remove("show"); _clearLog(); }
+
 function _setModalFields({ inputMint, outputMint, amountUi, slippageBps }) {
   if (inputMint)  _el("[data-swap-input-mint]").value = inputMint;
   if (outputMint) _el("[data-swap-output-mint]").value = outputMint;
@@ -906,7 +907,31 @@ function _setModalFields({ inputMint, outputMint, amountUi, slippageBps }) {
 }
 
 function _el(sel){ return document.querySelector(sel); }
-function _log(msg, cls=""){ const logEl=_el("[data-swap-log]"); if(!logEl) return; const d=document.createElement("div"); if(cls) d.className=cls; d.textContent = msg; logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight; }
+
+// TODO: fix signature output
+function _log(msg, cls = "", signature = "") {
+  const logEl = _el("[data-swap-log]");
+  if (!logEl) return;
+
+  const d = document.createElement("div");
+  if (cls) d.className = cls;
+  d.textContent = msg;
+
+  if (signature) {
+    d.append(" ");
+    const a = document.createElement("a");
+    a.href = `https://solscan.io/tx/${encodeURIComponent(signature)}`;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = "TXN link";
+    d.appendChild(a);
+  }
+
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+
 function _clearLog(){ const logEl=_el("[data-swap-log]"); if (logEl) logEl.innerHTML=""; }
 
 function _fmtNumber(x) {
