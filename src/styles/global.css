@@ -125,7 +125,8 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
   display:flex; gap:10px; justify-content:space-between; margin:12px 0 6px 0; flex-wrap:wrap
 }
 select, input{
-  background:var(--card); border:1px solid rgba(122,222,255,.2); color:var(--text); padding:8px 10px; border-radius:10px;
+  background:var(--card); border:1px solid rgba(122,222,255,.2);
+  font-weight: 600; color:var(--text); padding:8px 10px; border-radius:10px;
   outline:none; transition: .2s border;
 }
 select:focus, input:focus{border-color: var(--neon)}
