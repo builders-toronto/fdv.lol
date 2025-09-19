@@ -20,6 +20,14 @@ const elQResults   = document.getElementById('qResults');
 
 const pageSpinnerEl = document.querySelector('.spinner') && document.querySelector('.loader');
 
+function isStreamOnLocal() {
+  const btn = document.getElementById('stream');
+  if (!btn) return true; // assume on if no button present yet
+  const ap = btn.getAttribute('aria-pressed');
+  if (ap != null) return ap === 'true' || ap === '1';
+  return /on/i.test(btn.textContent || '');
+}
+
 // Status helper: update meta text and spinner labels
 export function setLoadingStatus(msg = '') {
   try {
@@ -29,6 +37,15 @@ export function setLoadingStatus(msg = '') {
       pageSpinnerEl.setAttribute('title', msg || 'Loading…');
     }
   } catch {}
+}
+
+// Convenience: set status based on stream state
+function setLoadingStatusAuto() {
+  if (isStreamOnLocal()) {
+    setLoadingStatus('Collecting instant Solana pairs…');
+  } else {
+    setLoadingStatus('Stream is Off — feed disabled');
+  }
 }
 
 // Spinner should hide only when we have actual results(there are multiple spinners)
@@ -45,14 +62,32 @@ function updateResultsState(hasResults) {
   syncPageSpinner();
 }
 
+// Initial loading message respects stream state
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
     updateResultsState(false);
-    setLoadingStatus('Collecting instant Solana pairs…');
+    setLoadingStatusAuto();
+    // Re-wire stream button to update loading text when toggled and no results yet
+    const sb = document.getElementById('stream');
+    if (sb && !sb.dataset.loadingWired) {
+      sb.dataset.loadingWired = '1';
+      sb.addEventListener('click', () => {
+        const hasResults = elCards?.getAttribute('data-has-results') === '1';
+        if (!hasResults) setLoadingStatusAuto();
+      });
+    }
   }, { once: true });
 } else {
   updateResultsState(false);
-  setLoadingStatus('Collecting instant Solana pairs…');
+  setLoadingStatusAuto();
+  const sb = document.getElementById('stream');
+  if (sb && !sb.dataset.loadingWired) {
+    sb.dataset.loadingWired = '1';
+    sb.addEventListener('click', () => {
+      const hasResults = elCards?.getAttribute('data-has-results') === '1';
+      if (!hasResults) setLoadingStatusAuto();
+    });
+  }
 }
 
 // Observe #cards for children changes
@@ -659,15 +694,18 @@ function paintNow() {
   const ranked0  = sortItems(filtered, sortKey).slice(0, MAX_CARDS);
   const ranked   = applyLeaderHysteresis(ranked0);
 
-  // Drive spinner by actual measured result presence
   const hasResults = ranked.length > 0;
   updateResultsState(hasResults);
   if (!hasResults) {
-    const t = Date.now() % 9000;
-    const hint = t < 3000 ? 'Collecting instant Solana pairs…'
-      : t < 6000 ? 'Hydrating (volume & txns)…'
-      : 'Scoring and ranking measured coins…';
-    setLoadingStatus(hint);
+    if (!isStreamOnLocal()) {
+      setLoadingStatus('Stream is Off — feed disabled');
+    } else {
+      const t = Date.now() % 9000;
+      const hint = t < 3000 ? 'Collecting instant Solana pairs…'
+        : t < 6000 ? 'Hydrating (volume & txns)…'
+        : 'Scoring and ranking measured coins…';
+      setLoadingStatus(hint);
+    }
   } else {
     setLoadingStatus('');
   }

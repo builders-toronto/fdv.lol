@@ -20,6 +20,11 @@ import {
   setupExtraMetricsToggle,
 } from "./render/interactions.js";
 import { loadAds, pickAd, adCard } from "../../ads/load.js";
+import { initSwap, createSwapButton, bindSwapButtons } from "../../widgets/swap.js";
+
+// Global sentinel for swap wiring
+// BLOAT: add hooks
+const SWAP_BRIDGE = (window.__fdvSwapBridge = window.__fdvSwapBridge || { inited:false, wired:false });
 
 function errorNotice(mount, msg) {
   mount.innerHTML = `<div class="wrap"><div class="small">Error: ${msg} <a data-link href="/">Home</a></div></div>`;
@@ -88,8 +93,6 @@ function mountOrUpdateGecko({ root, mint, pool = null, options = {} } = {}) {
   const kind = pool ? "pools" : "tokens";
   const src = buildGeckoUrl({ id, kind, ...options });
   if (!src) return;
-
-  // If already present, update src and bail (prevents "mounted twice")
   const existing = document.getElementById("geckoterminal-embed");
   if (existing) {
     if (existing.getAttribute("src") !== src) existing.setAttribute("src", src);
@@ -152,6 +155,15 @@ export async function renderProfileView(input, { onBack } = {}) {
     return;
   }
 
+  // Init swap only once for the whole app
+  try {
+    if (!SWAP_BRIDGE.inited) {
+      initSwap();
+      bindSwapButtons(document);
+      SWAP_BRIDGE.inited = true;
+    }
+  } catch {}
+
   // Ads
   let CURRENT_AD = null;
   try {
@@ -204,6 +216,37 @@ export async function renderProfileView(input, { onBack } = {}) {
       tradeTop.remove();
     }
   }
+
+  // TODO: better interface and model SWAP widget
+  try {
+    const hydrate = {
+      mint,
+      symbol: t.symbol,
+      name: t.name,
+      imageUrl: t.imageUrl,
+      headerUrl: t.headerUrl,
+      priceUsd: t.priceUsd,
+      v24hTotal: t.v24hTotal,
+      liquidityUsd: t.liquidityUsd,
+      fdv: t.fdv ?? t.marketCap,
+      marketCap: t.marketCap ?? t.fdv,
+      headlineUrl: t.headlineUrl,
+      headlineDex: t.headlineDex,
+    };
+
+    let swapBtn = document.getElementById("btnSwapAction");
+    if (!swapBtn) {
+      swapBtn = createSwapButton({ mint, label: "Swap", className: "btn btn--primary btn-swap-action" });
+      swapBtn.id = "btnSwapAction";
+      const actions = elApp.querySelector(".profile__navigation .actions");
+      if (actions) {
+        actions.prepend(swapBtn); // first, left-most
+      }
+    }
+    swapBtn.dataset.tokenHydrate = JSON.stringify(hydrate);
+    if (t.headlineUrl) swapBtn.dataset.pairUrl = t.headlineUrl;
+    else swapBtn.removeAttribute("data-pair-url");
+  } catch {}
 
   // Stats values
   const PRICE_USD = Number.isFinite(t.priceUsd) ? `$${t.priceUsd.toFixed(6)}` : "—";

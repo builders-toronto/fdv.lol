@@ -25,7 +25,7 @@
 }
 *{box-sizing:border-box}
 html,body{
-  /* height: 100vh; */
+  height: 100vh;
   margin:0;
   background: radial-gradient(1200px 600px at 20% -10%, rgba(26,255,213,.08), transparent),
                     radial-gradient(900px 500px at 80% 110%, rgba(123,241,255,.07), transparent),
@@ -914,12 +914,16 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 /* .btn{ appearance:none; border:0; padding:10px 14px; border-radius:12px; font-weight:600; cursor:pointer } */
 .fdv-btn-phantom{ background:var(--fdv-phantom); color:white }
 .fdv-btn-phantom:disabled{ opacity:.65; cursor:not-allowed }
+.fdv-btn-phantom.connected{
+  opacity: .8;
+  cursor: default;
+}
 
 .fdv-status{ min-height:180px; background:#0b0f17; border:1px solid #172033; border-radius:12px; padding:10px; overflow:hidden; }
 .fdv-log{ white-space:pre-wrap; font-size:.9rem; height:160px; overflow:auto }
 .fdv-log .ok{ color:var(--fdv-ok) } .fdv-log .err{ color:var(--fdv-err) } .fdv-log .warn{ color:var(--fdv-warn) }
 
-.fdv-modal-footer{ display:flex; gap:8px; align-items:center; justify-content:flex-end;
+.fdv-modal-footer{ display:flex; gap:8px; align-items:center; justify-content:space-between;
   padding:12px 16px; border-top:1px solid var(--fdv-border); background:rgba(0,0,0,.18) }
 .fdv-btn-primary{ background:var(--fdv-primary); color:var(--fdv-primary-fg) }
 .fdv-btn-secondary{ background:#1a2233; color:#e6e8eb; border:1px solid #233047 }

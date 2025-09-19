@@ -5,7 +5,7 @@ import {
   collectInstantSolana,          
 } from '../data/feeds.js';
 import { scoreAndRecommend } from '../core/calculate.js';
-import { elMetaBase, elTimeDerived } from '../views/meme/page.js'; // removed elRelax, elMeta
+import { elMetaBase, elTimeDerived } from '../views/meme/page.js'; 
 import { readCache, writeCache } from '../utils/tools.js';
 import { enrichMissingInfo } from '../data/normalize.js';
 import { loadAds, pickAd } from '../ads/load.js';
@@ -315,15 +315,35 @@ function fastScore(t) {
 }
 
 let CURRENT_AD = null;
-let CURRENT_RUN = null;
+let CURRENT_RUN = null; // track the active run
 
 export async function pipeline({ force = false, stream = true, timeboxMs = 8_000, onUpdate } = {}) {
   onUpdate = typeof onUpdate === 'function' ? onUpdate : () => {};
+
+  // Abort any previous run so its stream/timers stop immediately
   if (CURRENT_RUN?.abort) { try { CURRENT_RUN.abort(); } catch {} }
+
   const ac = new AbortController();
   CURRENT_RUN = ac;
 
-  const relax = false;
+  // Utilities to auto-clean timers on abort
+  const cleaners = new Set();
+  const onAbort = (fn) => cleaners.add(fn);
+  ac.signal.addEventListener('abort', () => {
+    for (const fn of cleaners) { try { fn(); } catch {} }
+    cleaners.clear();
+  });
+
+  const setSafeInterval = (fn, ms) => {
+    const id = setInterval(() => { if (!ac.signal.aborted) fn(); }, ms);
+    onAbort(() => clearInterval(id));
+    return id;
+  };
+  const setSafeTimeout = (fn, ms) => {
+    const id = setTimeout(() => { if (!ac.signal.aborted) fn(); }, ms);
+    onAbort(() => clearTimeout(id));
+    return id;
+  };
 
   // ads 
   const adsPromise = loadAds().catch(() => null).then(ads => {
@@ -338,13 +358,12 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
   let lastEmitted = null; // track last measured payload
 
   const pushUpdate = (items) => {
+    if (ac.signal.aborted) return;
     const measured = filterMeasured(items);
     if (!measured.length) return;
-    lastEmitted = measured; // remember last good payload
-    try {
-      onUpdate({ items: measured, ad: CURRENT_AD, marquee: marquee.payload() });
-    } catch {}
+    try { onUpdate({ items: measured, ad: CURRENT_AD, marquee: marquee.payload() }); } catch {}
   };
+
   function feedMarqueeFromGrid({ useScore = false, feedNew = false, trendingCount = 40, newCount = 24 } = {}) {
     const grid = sortedGrid({ useScore, store });
     const eligible = grid.filter(hasRequiredStats);
@@ -437,7 +456,7 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
     if (firstResolved) return;
     const items = sortedGrid({ useScore: false, store });
     feedMarqueeFromGrid({ useScore: false, feedNew: true });
-    // No early push; we only emit measured tokens after scoring
+    // No early push; we only emit measured tokens after scoring(extremely important!)
     safeText(elMetaBase, `Scanning… ${store.size()} tokens • Marquee: ${marquee.trending.length + marquee.new.length}`);
   }
   const scheduleRender = () => rafFlush(renderNow);
@@ -612,4 +631,9 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
   }
 
   return firstReturn;
+}
+
+// BLOAT: add hooks and refactor to scale this properly
+export function stopPipelineStream() {
+  if (CURRENT_RUN?.abort) { try { CURRENT_RUN.abort(); } catch {} }
 }
