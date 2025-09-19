@@ -102,10 +102,7 @@ function startProfileFeed(mint, initialModel) {
   let prev = initialModel || null;
 
   const tick = async () => {
-    if (!isStreamOnDom()) {
-      PROFILE_FEED.timer = setTimeout(tick, 1200);
-      return;
-    }
+    if (!isStreamOnDom()) { PROFILE_FEED.timer = setTimeout(tick, 1200); return; }
     const ac = PROFILE_FEED.ac;
     if (ac?.signal.aborted) return;
 
@@ -113,20 +110,20 @@ function startProfileFeed(mint, initialModel) {
       const live = await fetchTokenInfoLive(mint, { signal: ac.signal, ttlMs: 2000 });
       if (ac?.signal.aborted || !live) return;
 
-      // UI patch
-      patchTopStats(live, prev);
-      patchPairsTable(live);
+      const cur = sanitizeToken(live);
 
-      // Re-score and animate reco bars
+      // Update stats grid + pairs
+      updateStatsGridLive(cur, prev);
+      updatePairsTableLive(cur);
+
+      // Re-score → animate KPI bars
       try {
-        const scored = scoreAndRecommendOne(sanitizeToken(live));
+        const scored = scoreAndRecommendOne(cur);
         updateRecommendationPanel({ scored });
       } catch {}
 
-      prev = live;
-    } catch {
-      // swallow errors; retry
-    } finally {
+      prev = cur;
+    } catch {} finally {
       if (!PROFILE_FEED.ac?.signal.aborted) {
         PROFILE_FEED.timer = setTimeout(tick, 2000 + Math.floor(Math.random()*400));
       }
@@ -134,7 +131,6 @@ function startProfileFeed(mint, initialModel) {
   };
   tick();
 
-  // Quick resume when user turns Stream back on
   if (!PROFILE_FEED._wiredStreamEvt) {
     PROFILE_FEED._wiredStreamEvt = true;
     document.addEventListener('stream-state', () => {
@@ -143,6 +139,86 @@ function startProfileFeed(mint, initialModel) {
       }
     });
   }
+}
+
+function updateStatsGridLive(t, prev) {
+  const qv = (key) => document.querySelector(`.stat[data-stat="${key}"] .v`);
+  const flashV = (el, diff) => {
+    if (!el || !Number.isFinite(diff)) return;
+    el.classList.remove('tick-up','tick-down'); void el.offsetWidth;
+    if (diff > 0) el.classList.add('tick-up');
+    else if (diff < 0) el.classList.add('tick-down');
+  };
+  const num = (x) => (Number.isFinite(x) ? +x : NaN);
+
+  // price
+  {
+    const el = qv("price");
+    const d = num(t.priceUsd) - num(prev?.priceUsd);
+    if (el) { el.textContent = Number.isFinite(t.priceUsd) ? `$${t.priceUsd.toFixed(6)}` : "—"; flashV(el, d); }
+  }
+  // liquidity
+  {
+    const el = qv("liq");
+    const d = num(t.liquidityUsd) - num(prev?.liquidityUsd);
+    if (el) { el.textContent = fmtMoney(t.liquidityUsd); flashV(el, d); }
+  }
+  // fdv
+  {
+    const cur = Number.isFinite(t.fdv) ? t.fdv : t.marketCap;
+    const prv = Number.isFinite(prev?.fdv) ? prev.fdv : prev?.marketCap;
+    const el = qv("fdv");
+    const d = num(cur) - num(prv);
+    if (el) { el.textContent = fmtMoney(cur); flashV(el, d); }
+  }
+  // liq/fdv %
+  {
+    const el = qv("liqfdv");
+    const cur = Number.isFinite(t.liqToFdvPct) ? `${t.liqToFdvPct.toFixed(2)}%` : "—";
+    if (el) el.textContent = cur;
+  }
+  // 24h volume
+  {
+    const el = qv("v24");
+    const d = num(t.v24hTotal) - num(prev?.v24hTotal);
+    if (el) { el.textContent = fmtMoney(t.v24hTotal); flashV(el, d); }
+  }
+  // turnover 24h
+  {
+    const el = qv("vliqr");
+    const d = num(t.volToLiq24h) - num(prev?.volToLiq24h);
+    if (el) { el.textContent = Number.isFinite(t.volToLiq24h) ? `${t.volToLiq24h.toFixed(2)}×` : "—"; flashV(el, d); }
+  }
+  // deltas
+  {
+    const setDelta = (key, val, prevVal) => {
+      const el = qv(key);
+      if (!el) return;
+      el.innerHTML = pill(val);
+      flashV(el, num(val) - num(prevVal));
+    };
+    setDelta("d5m",  t.change5m,  prev?.change5m);
+    setDelta("d1h",  t.change1h,  prev?.change1h);
+    setDelta("d6h",  t.change6h,  prev?.change6h);
+    setDelta("d24h", t.change24h, prev?.change24h);
+  }
+  // buys/sells 24h
+  {
+    const el = qv("bs24");
+    const b = num(t?.tx24h?.buys), s = num(t?.tx24h?.sells);
+    if (el) el.textContent = (Number.isFinite(b) && Number.isFinite(s)) ? `${fmtNum(b)} / ${fmtNum(s)}` : "—";
+  }
+  // buy ratio
+  {
+    const el = qv("buyratio");
+    if (el) el.textContent = Number.isFinite(t.buySell24h) ? `${(t.buySell24h * 100).toFixed(1)}% buys` : "—";
+  }
+}
+
+function updatePairsTableLive(t) {
+  const body = document.getElementById("pairsBody");
+  if (!body) return;
+  try { renderPairsTable(body, t.pairs); } catch {}
 }
 
 export async function renderProfileView(input, { onBack } = {}) {
