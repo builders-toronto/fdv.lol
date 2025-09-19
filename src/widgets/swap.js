@@ -449,7 +449,7 @@ async function _quoteAndSwap() {
     const signature = typeof sigRes === "string" ? sigRes : sigRes?.signature;
     if (!signature) throw new Error("No signature returned");
 
-    _log(`Sent. Signature: https://solscan.io/tx/${signature}`, "ok");
+    _log(`Sent. Signature: <a href="https://solscan.io/tx/${signature}" target="_blank">TXN link</a>`, "ok");
     CFG.onSwapSent?.(signature);
 
     _log("Confirming (polling)…");
