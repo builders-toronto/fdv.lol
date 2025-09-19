@@ -9,7 +9,7 @@ function initSwapSystem() {
     },
 
     jupiterBase: "https://lite-api.jup.ag",
-    rpcUrl: "https://api.mainnet-beta.solana.com", 
+    rpcUrl: "https://solana-rpc-proxy.fdvlol.workers.dev/", 
 
     platformFeeBps: 5,         // 0.05% don't go over this, people dont like that!
     defaultSlippageBps: 50,     

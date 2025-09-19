@@ -316,7 +316,7 @@ input[type="checkbox"]:disabled{
 .actions{display:flex; gap:10px; align-items:center; flex-wrap:wrap;justify-content: space-between; margin-top: 15px;}
 
 .swapCoin{
-  font-style: roboto-mono; font-size:.85rem; padding:4px 8px; border-radius:8px; background: rgba(123,241,255,.06);
+  font-size: 1rem; padding:4px 8px; border-radius:8px; background: rgba(123,241,255,.06);
   border: 1px solid cyan !important;
 }
 
@@ -869,7 +869,7 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 .fdv-token{ display:grid; grid-template-columns: 108px 1fr; gap:12px; padding:8px; border:1px solid var(--fdv-border); border-radius:12px; background:#0b0f17 }
 .fdv-token-media{ position:relative }
 .fdv-token-header{ width:100%; height:60px; background:#0a0f19; border-radius:10px }
-.fdv-token-logo{ position:absolute; bottom:-14px; left:10px; width:54px; height:54px; border-radius:50%; border:2px solid #121725; background:#222; object-fit:cover }
+.fdv-token-logo{ position:absolute; left:10px; width:54px; height:54px; border-radius:50%; border:2px solid #121725; background:#222; object-fit:cover }
 .fdv-token-main{ padding-left:8px; display:flex; flex-direction:column; gap:6px }
 .fdv-token-title{ display:flex; gap:8px; align-items:center; flex-wrap:wrap }
 .fdv-token-symbol{ font-weight:800; font-size:1rem }
