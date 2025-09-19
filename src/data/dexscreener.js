@@ -257,11 +257,11 @@ export async function fetchDexscreener() {
   return out;
 }
 
-export async function fetchTokenInfo(mint, { priority = false, signal } = {}) {
+export async function fetchTokenInfo(mint, { priority = false, signal, ttlMs } = {}) {
   const url = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(mint)}`;
   let json;
   try {
-    json = await fetchDS(url, { ttl: FETCH_TTL_MS_TOKEN, priority, signal });
+    json = await fetchDS(url, { ttl: (ttlMs ?? FETCH_TTL_MS_TOKEN), priority, signal });
   } catch (e) {
     if (e?.status === 429) return { error: 'Rate limited.' };
     throw new Error(`dexscreener ${e?.status || e?.message || 'error'}`);
@@ -347,6 +347,11 @@ export async function fetchTokenInfo(mint, { priority = false, signal } = {}) {
     ? model.tx24h.buys / (model.tx24h.buys + model.tx24h.sells) : null;
 
   return model;
+}
+
+// Low-latency fetch for streaming profile updates
+export function fetchTokenInfoLive(mint, { signal, ttlMs = 2000 } = {}) {
+  return fetchTokenInfo(mint, { priority: true, signal, ttlMs });
 }
 
 export async function searchTokensGlobal(query, { signal, limit = 12 } = {}) {

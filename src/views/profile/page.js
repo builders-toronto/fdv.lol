@@ -1,5 +1,5 @@
 import { FALLBACK_LOGO, BUY_RULES, FDV_LIQ_PENALTY } from "../../config/env.js";
-import { fetchTokenInfo } from "../../data/dexscreener.js";
+import { fetchTokenInfo, fetchTokenInfoLive } from "../../data/dexscreener.js";
 import { scoreAndRecommendOne } from "../../core/calculate.js";
 import { mountGiscus } from "../meme/chat.js";
 
@@ -9,7 +9,7 @@ import { buildStatsGrid, setStat, setStatHtml } from "./render/statsGrid.js";
 import { setStatStatusByKey } from "./render/statuses.js";
 import { renderBarChart } from "./render/charts.js";
 import renderLinks from "./render/links.js";
-import mountRecommendationPanel from "./render/recommendation.js";
+import mountRecommendationPanel, { updateRecommendationPanel } from "./render/recommendation.js";
 import { fmtMoney, fmtNum, pill, cssReco } from "./formatters.js";
 import { renderPairsTable } from "./render/pairsTable.js";
 import {
@@ -23,118 +23,125 @@ import { loadAds, pickAd, adCard } from "../../ads/load.js";
 import { initSwap, createSwapButton, bindSwapButtons } from "../../widgets/swap.js";
 
 // Global sentinel for swap wiring
-// BLOAT: add hooks
 const SWAP_BRIDGE = (window.__fdvSwapBridge = window.__fdvSwapBridge || { inited:false, wired:false });
+
+// Profile live feed sentinel
+const PROFILE_FEED = (window.__fdvProfileFeed = window.__fdvProfileFeed || { ac:null, mint:null, timer:null });
 
 function errorNotice(mount, msg) {
   mount.innerHTML = `<div class="wrap"><div class="small">Error: ${msg} <a data-link href="/">Home</a></div></div>`;
 }
 
-// TODO: live load gisqus comment section. comments need to be instant for better community access.
-function ensureGeckoStyles() {
-  if (document.getElementById("gecko-embed-styles")) return;
-  const s = document.createElement("style");
-  s.id = "gecko-embed-styles";
-  s.textContent = `
-    .profile__gecko { margin: 12px 0 8px; background: transparent; border: none; padding: 0; }
-    .profile__gecko .profile__module__header {
-      display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px;
-    }
-    .profile__gecko .profile__module__title { font-size: 14px; line-height: 1.2; margin:0; }
-    .profile__gecko .small.muted { opacity: 0.7; font-size: 12px; }
-    .gecko__framewrap { width: 100%; position: relative; }
-    /* Smaller default aspect; looks good in tight spaces */
-    .gecko__framewrap { aspect-ratio: 16 / 10; min-height: 220px; max-height: 420px; }
-    .gecko__framewrap > iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
-    /* Compact on narrow screens */
-    @media (max-width: 900px) {
-      .gecko__framewrap { aspect-ratio: 16 / 11; min-height: 200px; max-height: 360px; }
-      .profile__gecko .profile__module__title { font-size: 13px; }
-    }
-    @media (max-width: 600px) {
-      .gecko__framewrap { aspect-ratio: 16 / 12; min-height: 480px; max-height: 500px; }
-    }
-  `;
-  document.head.appendChild(s);
+// Read stream state from the button (no import cycle)
+function isStreamOnDom() {
+  const btn = document.getElementById('stream');
+  if (!btn) return true;
+  const ap = btn.getAttribute('aria-pressed');
+  if (ap != null) return ap === 'true' || ap === '1';
+  return /on/i.test(btn.textContent || '');
 }
 
-function buildGeckoUrl({
-  chain = "solana",
-  kind = "tokens", 
-  id, // mint or pool
-  embed = 1,
-  info = 0,
-  swaps = 0,
-  light_chart = 0,
-  chart_type = "market_cap",
-  resolution = "1m",
-  bg_color = "000000",
-} = {}) {
-  if (!id) return null;
-  const base = `https://www.geckoterminal.com/${chain}/${kind}/${encodeURIComponent(id)}`;
-  const qs = new URLSearchParams({
-    embed: String(embed),
-    info: String(info),
-    swaps: String(swaps),
-    light_chart: String(light_chart),
-    chart_type,
-    resolution,
-    bg_color,
-  });
-  return `${base}?${qs.toString()}`;
+function flash(el, dir = 0) {
+  if (!el) return;
+  el.classList.remove('tick-up','tick-down');
+  void el.offsetWidth;
+  if (dir > 0) el.classList.add('tick-up');
+  else if (dir < 0) el.classList.add('tick-down');
 }
 
-function mountOrUpdateGecko({ root, mint, pool = null, options = {} } = {}) {
-  if (!root || (!mint && !pool)) return;
+function patchTopStats(t, prev) {
+  const elPrice = document.querySelector('[data-token-price]');
+  const elChg   = document.querySelector('[data-token-change]');
+  const elLiq   = document.querySelector('[data-token-liq]');
+  const elVol24 = document.querySelector('[data-token-vol24]');
+  const elFdv   = document.querySelector('[data-token-fdv]');
 
-  ensureGeckoStyles();
-
-  const id = pool || mint;
-  const kind = pool ? "pools" : "tokens";
-  const src = buildGeckoUrl({ id, kind, ...options });
-  if (!src) return;
-  const existing = document.getElementById("geckoterminal-embed");
-  if (existing) {
-    if (existing.getAttribute("src") !== src) existing.setAttribute("src", src);
-    return;
+  if (elPrice) {
+    const before = Number(prev?.priceUsd ?? t.priceUsd);
+    elPrice.textContent = Number.isFinite(t.priceUsd) ? fmtMoney(t.priceUsd) : '—';
+    flash(elPrice, Number(t.priceUsd) - before);
   }
+  if (elChg) {
+    const v = Number.isFinite(t.change24h) ? t.change24h : null;
+    elChg.textContent = v == null ? '—' : `${v >= 0 ? '+' : ''}${fmtNum(v)}%`;
+    elChg.classList.toggle('pos', (v ?? 0) > 0);
+    elChg.classList.toggle('neg', (v ?? 0) < 0);
+  }
+  if (elLiq) {
+    const before = Number(prev?.liquidityUsd ?? t.liquidityUsd);
+    elLiq.textContent = Number.isFinite(t.liquidityUsd) ? fmtMoney(t.liquidityUsd) : '—';
+    flash(elLiq, Number(t.liquidityUsd) - before);
+  }
+  if (elVol24) {
+    const before = Number(prev?.v24hTotal ?? t.v24hTotal);
+    elVol24.textContent = Number.isFinite(t.v24hTotal) ? fmtMoney(t.v24hTotal) : '—';
+    flash(elVol24, Number(t.v24hTotal) - before);
+  }
+  if (elFdv) {
+    const before = Number(prev?.fdv ?? t.fdv);
+    elFdv.textContent = Number.isFinite(t.fdv) ? fmtMoney(t.fdv) : '—';
+    flash(elFdv, Number(t.fdv) - before);
+  }
+}
 
-  // Remove any stray previous containers if present
-  document.querySelectorAll(".profile__gecko").forEach((n, i) => {
-    if (i === 0) return;
-    n.remove();
-  });
+function patchPairsTable(t) {
+  const tbody = document.getElementById('pairsBody');
+  if (!tbody) return;
+  try { renderPairsTable(t.pairs); } catch {}
+}
 
-  // Build section
-  const section = document.createElement("section");
-  section.className = "profile__module profile__gecko";
-  section.innerHTML = `
-    <div class="profile__module__header">
-      <h3 class="profile__module__title">Market Chart</h3>
-      <div class="small muted">${kind === "pools" ? "Pool view" : "Token view"} · GeckoTerminal</div>
-    </div>
-    <div class="gecko__framewrap">
-      <iframe
-        id="geckoterminal-embed"
-        title="GeckoTerminal Embed"
-        src="${src}"
-        allow="clipboard-write"
-        allowfullscreen
-      ></iframe>
-    </div>
-  `;
+function stopProfileFeed() {
+  if (PROFILE_FEED.timer) { clearTimeout(PROFILE_FEED.timer); PROFILE_FEED.timer = null; }
+  if (PROFILE_FEED.ac) { try { PROFILE_FEED.ac.abort(); } catch {} PROFILE_FEED.ac = null; }
+}
 
-  // Preferred placement: directly above the ad block if we can find it.
-  const adMount = document.querySelector(".adcard") || null;
-  if (adMount && adMount.parentElement) {
-    adMount.parentElement.insertBefore(section, adMount);
-  } else {
-    const firstModule = root.querySelector(".profile__module");
-    if (firstModule) {
-      firstModule.parentElement.insertBefore(section, firstModule);
-    } else {
-      root.appendChild(section);
+function startProfileFeed(mint, initialModel) {
+  stopProfileFeed();
+  PROFILE_FEED.mint = mint;
+  PROFILE_FEED.ac = new AbortController();
+  let prev = initialModel || null;
+
+  const tick = async () => {
+    if (!isStreamOnDom()) {
+      PROFILE_FEED.timer = setTimeout(tick, 1200);
+      return;
     }
+    const ac = PROFILE_FEED.ac;
+    if (ac?.signal.aborted) return;
+
+    try {
+      const live = await fetchTokenInfoLive(mint, { signal: ac.signal, ttlMs: 2000 });
+      if (ac?.signal.aborted || !live) return;
+
+      // UI patch
+      patchTopStats(live, prev);
+      patchPairsTable(live);
+
+      // Re-score and animate reco bars
+      try {
+        const scored = scoreAndRecommendOne(sanitizeToken(live));
+        updateRecommendationPanel({ scored });
+      } catch {}
+
+      prev = live;
+    } catch {
+      // swallow errors; retry
+    } finally {
+      if (!PROFILE_FEED.ac?.signal.aborted) {
+        PROFILE_FEED.timer = setTimeout(tick, 2000 + Math.floor(Math.random()*400));
+      }
+    }
+  };
+  tick();
+
+  // Quick resume when user turns Stream back on
+  if (!PROFILE_FEED._wiredStreamEvt) {
+    PROFILE_FEED._wiredStreamEvt = true;
+    document.addEventListener('stream-state', () => {
+      if (isStreamOnDom() && PROFILE_FEED.mint && !PROFILE_FEED.timer) {
+        PROFILE_FEED.timer = setTimeout(() => startProfileFeed(PROFILE_FEED.mint, prev), 50);
+      }
+    });
   }
 }
 
@@ -143,7 +150,6 @@ export async function renderProfileView(input, { onBack } = {}) {
   const elHeader = document.querySelector(".header");
   if (!elApp) return;
 
-  // styles (defer/inline)
   const style = document.createElement("link");
   style.rel = "stylesheet";
   style.href = "/src/styles/profile.css";
@@ -155,7 +161,6 @@ export async function renderProfileView(input, { onBack } = {}) {
     return;
   }
 
-  // Init swap only once for the whole app
   try {
     if (!SWAP_BRIDGE.inited) {
       initSwap();
@@ -164,16 +169,10 @@ export async function renderProfileView(input, { onBack } = {}) {
     }
   } catch {}
 
-  // Ads
   let CURRENT_AD = null;
-  try {
-    CURRENT_AD = pickAd(await loadAds());
-  } catch {
-    CURRENT_AD = null;
-  }
+  try { CURRENT_AD = pickAd(await loadAds()); } catch { CURRENT_AD = null; }
   const adHtml = CURRENT_AD ? adCard(CURRENT_AD) : "";
 
-  // Shell
   renderShell({ mount: elApp, mint, adHtml });
 
   const gridEl = document.getElementById("statsGrid");
@@ -186,7 +185,7 @@ export async function renderProfileView(input, { onBack } = {}) {
   wireNavigation({ onBack });
   wireCopy(mint);
 
-  // Data
+  // Initial data
   let raw;
   try {
     raw = await fetchTokenInfo(mint);
@@ -201,7 +200,7 @@ export async function renderProfileView(input, { onBack } = {}) {
 
   if (elHeader) elHeader.style.display = "none";
 
-  // Hero
+  // Hero & actions
   const logo = t.imageUrl || FALLBACK_LOGO(t.symbol);
   const media = elApp.querySelector(".profile__hero .media");
   if (media) media.innerHTML = `<img class="logo" src="${logo}" alt="">`;
@@ -209,46 +208,29 @@ export async function renderProfileView(input, { onBack } = {}) {
   if (title) title.textContent = t.symbol || "Token";
   const tradeTop = document.getElementById("btnTradeTop");
   if (tradeTop) {
-    if (t.headlineUrl) {
-      tradeTop.href = t.headlineUrl;
-      tradeTop.classList.remove("disabled");
-    } else {
-      tradeTop.remove();
-    }
+    if (t.headlineUrl) { tradeTop.href = t.headlineUrl; tradeTop.classList.remove("disabled"); }
+    else tradeTop.remove();
   }
 
-  // TODO: better interface and model SWAP widget
+  // Swap button in actions
   try {
     const hydrate = {
-      mint,
-      symbol: t.symbol,
-      name: t.name,
-      imageUrl: t.imageUrl,
-      headerUrl: t.headerUrl,
-      priceUsd: t.priceUsd,
-      v24hTotal: t.v24hTotal,
-      liquidityUsd: t.liquidityUsd,
-      fdv: t.fdv ?? t.marketCap,
-      marketCap: t.marketCap ?? t.fdv,
-      headlineUrl: t.headlineUrl,
-      headlineDex: t.headlineDex,
+      mint, symbol: t.symbol, name: t.name, imageUrl: t.imageUrl, headerUrl: t.headerUrl,
+      priceUsd: t.priceUsd, v24hTotal: t.v24hTotal, liquidityUsd: t.liquidityUsd,
+      fdv: t.fdv ?? t.marketCap, marketCap: t.marketCap ?? t.fdv, headlineUrl: t.headlineUrl, headlineDex: t.headlineDex,
     };
-
     let swapBtn = document.getElementById("btnSwapAction");
     if (!swapBtn) {
       swapBtn = createSwapButton({ mint, label: "Swap", className: "btn btn--primary btn-swap-action" });
       swapBtn.id = "btnSwapAction";
       const actions = elApp.querySelector(".profile__navigation .actions");
-      if (actions) {
-        actions.prepend(swapBtn); // first, left-most
-      }
+      if (actions) actions.prepend(swapBtn);
     }
     swapBtn.dataset.tokenHydrate = JSON.stringify(hydrate);
-    if (t.headlineUrl) swapBtn.dataset.pairUrl = t.headlineUrl;
-    else swapBtn.removeAttribute("data-pair-url");
+    if (t.headlineUrl) swapBtn.dataset.pairUrl = t.headlineUrl; else swapBtn.removeAttribute("data-pair-url");
   } catch {}
 
-  // Stats values
+  // Stats values (initial)
   const PRICE_USD = Number.isFinite(t.priceUsd) ? `$${t.priceUsd.toFixed(6)}` : "—";
   setStat(gridEl, 0, PRICE_USD);
   setStat(gridEl, 1, fmtMoney(t.liquidityUsd));
@@ -260,25 +242,14 @@ export async function renderProfileView(input, { onBack } = {}) {
   setStatHtml(gridEl, 7, pill(t.change1h));
   setStatHtml(gridEl, 8, pill(t.change6h));
   setStatHtml(gridEl, 9, pill(t.change24h));
-  setStat(
-    gridEl,
-    10,
-    (() => {
-      const ms = t.ageMs;
-      if (!Number.isFinite(ms) || ms < 1000) return "—";
-      const s = Math.floor(ms / 1000);
-      const u = [
-        ["y", 31536000],
-        ["mo", 2592000],
-        ["d", 86400],
-        ["h", 3600],
-        ["m", 60],
-        ["s", 1],
-      ];
-      for (const [label, div] of u) if (s >= div) return `${Math.floor(s / div)}${label}`;
-      return "0s";
-    })()
-  );
+  setStat(gridEl, 10, (() => {
+    const ms = t.ageMs;
+    if (!Number.isFinite(ms) || ms < 1000) return "—";
+    const s = Math.floor(ms / 1000);
+    const u = [["y",31536000],["mo",2592000],["d",86400],["h",3600],["m",60],["s",1]];
+    for (const [label, div] of u) if (s >= div) return `${Math.floor(s / div)}${label}`;
+    return "0s";
+  })());
   setStat(gridEl, 11, `${fmtNum(t.tx24h.buys)} / ${fmtNum(t.tx24h.sells)}`);
   setStat(gridEl, 12, Number.isFinite(t.buySell24h) ? `${(t.buySell24h * 100).toFixed(1)}% buys` : "—");
 
@@ -294,27 +265,12 @@ export async function renderProfileView(input, { onBack } = {}) {
   const VLIQR_OK = Number.isFinite(t.volToLiq24h) ? t.volToLiq24h >= 0.5 : null;
   const BUYR_OK = Number.isFinite(t.buySell24h) ? t.buySell24h >= 0.5 : null;
 
-  setStatStatusByKey(gridEl, "liq", {
-    ok: LIQ_OK,
-    reason: LIQ_OK ? "Meets liquidity rule" : `Needs ≥ ${Intl.NumberFormat().format(BUY_RULES.liq)} liquidity`,
-  });
+  setStatStatusByKey(gridEl, "liq", { ok: LIQ_OK, reason: LIQ_OK ? "Meets liquidity rule" : `Needs ≥ ${Intl.NumberFormat().format(BUY_RULES.liq)} liquidity` });
   setStatStatusByKey(gridEl, "fdv", { ok: null });
-  setStatStatusByKey(gridEl, "liqfdv", {
-    ok: LIQFDV_OK,
-    reason: LIQFDV_OK === null ? "" : LIQFDV_OK ? "FDV/Liq is balanced" : "FDV/Liq imbalance detected",
-  });
-  setStatStatusByKey(gridEl, "v24", {
-    ok: VOL_OK,
-    reason: VOL_OK ? "Meets 24h volume rule" : `Needs ≥ ${Intl.NumberFormat().format(BUY_RULES.vol24)} 24h volume`,
-  });
-  setStatStatusByKey(gridEl, "vliqr", {
-    ok: VLIQR_OK,
-    reason: VLIQR_OK === null ? "" : VLIQR_OK ? "Healthy 24h turnover vs liquidity" : "Low turnover vs liquidity",
-  });
-  setStatStatusByKey(gridEl, "d1h", {
-    ok: CH1H_OK,
-    reason: CH1H_OK ? "Positive 1h momentum" : `Needs > ${BUY_RULES.change1h.toFixed(2)}% 1h change`,
-  });
+  setStatStatusByKey(gridEl, "liqfdv", { ok: LIQFDV_OK, reason: LIQFDV_OK === null ? "" : LIQFDV_OK ? "FDV/Liq is balanced" : "FDV/Liq imbalance detected" });
+  setStatStatusByKey(gridEl, "v24", { ok: VOL_OK, reason: VOL_OK ? "Meets 24h volume rule" : `Needs ≥ ${Intl.NumberFormat().format(BUY_RULES.vol24)} 24h volume` });
+  setStatStatusByKey(gridEl, "vliqr", { ok: VLIQR_OK, reason: VLIQR_OK === null ? "" : VLIQR_OK ? "Healthy 24h turnover vs liquidity" : "Low turnover vs liquidity" });
+  setStatStatusByKey(gridEl, "d1h", { ok: CH1H_OK, reason: CH1H_OK ? "Positive 1h momentum" : `Needs > ${BUY_RULES.change1h.toFixed(2)}% 1h change` });
   setStatStatusByKey(gridEl, "d6h", { ok: CH6H_OK, reason: CH6H_OK ? "Up over 6h" : "Down over 6h" });
   setStatStatusByKey(gridEl, "d24h", { ok: CH24H_OK, reason: CH24H_OK ? "Up over 24h" : "Down over 24h" });
   setStatStatusByKey(gridEl, "price", { ok: null });
@@ -323,10 +279,7 @@ export async function renderProfileView(input, { onBack } = {}) {
   const txKnown = Number.isFinite(t?.tx24h?.buys) && Number.isFinite(t?.tx24h?.sells);
   const TX_OK = txKnown ? t.tx24h.buys + t.tx24h.sells > 0 : null;
   setStatStatusByKey(gridEl, "bs24", { ok: TX_OK, reason: TX_OK === null ? "" : TX_OK ? "24h trading present" : "No 24h trades" });
-  setStatStatusByKey(gridEl, "buyratio", {
-    ok: BUYR_OK,
-    reason: BUYR_OK === null ? "" : BUYR_OK ? "Buy pressure ≥ 50%" : "Sell pressure ≥ 50%",
-  });
+  setStatStatusByKey(gridEl, "buyratio", { ok: BUYR_OK, reason: BUYR_OK === null ? "" : BUYR_OK ? "Buy pressure ≥ 50%" : "Sell pressure ≥ 50%" });
 
   // Badge in hero
   const badgeWrap = elApp.querySelector(".profile__hero .row");
@@ -334,44 +287,14 @@ export async function renderProfileView(input, { onBack } = {}) {
     badgeWrap.innerHTML = `<span class="badge ${cssReco(scored.recommendation)}">${scored.recommendation}</span>`;
   }
 
-  // Recommendation panel
-  mountRecommendationPanel(statsCollapseBtn, {
-    scored,
-    token: t,
-    checks: { LIQFDV_OK, VLIQR_OK, BUYR_OK },
-  });
+  // Recommendation panel (then live updates will animate bars)
+  mountRecommendationPanel(statsCollapseBtn, { scored, token: t, checks: { LIQFDV_OK, VLIQR_OK, BUYR_OK } });
 
   // Charts
   const mom = [t.change5m, t.change1h, t.change6h, t.change24h].map((x) => (Number.isFinite(x) ? Math.max(0, x) : 0));
-  renderBarChart(document.getElementById("momBars"), mom, {
-    height: 72,
-    max: Math.max(5, ...mom),
-    labels: ["5m", "1h", "6h", "24h"],
-  });
-
+  renderBarChart(document.getElementById("momBars"), mom, { height: 72, max: Math.max(5, ...mom), labels: ["5m", "1h", "6h", "24h"] });
   const vols = [t.v5mTotal, t.v1hTotal, t.v6hTotal, t.v24hTotal].map((x) => (Number.isFinite(x) ? x : 0));
   renderBarChart(document.getElementById("volBars"), vols, { height: 72, labels: ["5m", "1h", "6h", "24h"] });
-
-  let primaryPool = null;
-  try {
-    primaryPool = t?.pairs?.[0]?.poolAddress || null;
-  } catch {
-    primaryPool = null;
-  }
-  // We love Gecko, but Gecko sleeps for now. Bad Gecko!
-  // mountOrUpdateGecko({
-  //   root: elApp,
-  //   mint,
-  //   pool: primaryPool,
-  //   options: {
-  //     info: 0,
-  //     swaps: 0,
-  //     light_chart: 0,
-  //     chart_type: "market_cap", 
-  //     resolution: "1m",         
-  //     bg_color: "000000",
-  //   },
-  // });
 
   renderPairsTable(document.getElementById("pairsBody"), t.pairs);
 
@@ -384,4 +307,7 @@ export async function renderProfileView(input, { onBack } = {}) {
     renderLinks(linksMount, t.socials);
     if (!linksMount.innerHTML.trim()) linksMount.style.display = "none";
   }
+
+  // Live updates
+  try { startProfileFeed(t.mint || mint, t); } catch {}
 }

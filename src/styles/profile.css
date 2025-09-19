@@ -373,6 +373,27 @@ svg.bars rect { fill: rgba(123,241,255,.8) }
   transition: width .25s ease;
 }
 
+/* Reco bar smooth animation */
+.reco .reco__bar__fill{
+  transition: width .28s ease, background-color .28s ease, box-shadow .28s ease;
+}
+
+/* Subtle tick flash on change (reused for stats too) */
+.tick-up{
+  animation: tickUp .8s ease-out;
+}
+.tick-down{
+  animation: tickDown .8s ease-out;
+}
+@keyframes tickUp{
+  0%{ background: rgba(34,197,94,.22); }
+  100%{ background: transparent; }
+}
+@keyframes tickDown{
+  0%{ background: rgba(239,68,68,.22); }
+  100%{ background: transparent; }
+}
+
 .reco__kpis {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
