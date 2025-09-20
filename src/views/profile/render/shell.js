@@ -19,7 +19,7 @@ export default function renderShell({ mount, mint, adHtml = "" }) {
       <div class="profile__navigation">
         <a class="btn buy-btn disabled" id="btnTradeTop" target="_blank" rel="noopener">Dexscreener</a>
         <div class="actions">
-          <button class="btn btn-ghost" id="btnCopyMint" title="Copy mint">Copy</button>
+          <button class="btn btn-ghost" id="btnCopyMint" title="Copy mint">Share</button>
           <button class="btn" id="btnBack">Back</button>
         </div>
       </div>
