@@ -126,6 +126,14 @@ function hasPhantomInstalled() {
   catch { return false; }
 }
 
+// Build Phantom universal swap link: https://phantom.app/ul/swap/?buy=<MINT>&sell=<MINT>
+function buildPhantomSwapUrl({ buyMint, sellMint }) {
+  const u = new URL("https://phantom.app/ul/swap/");
+  u.searchParams.set("buy", buyMint);
+  u.searchParams.set("sell", sellMint);
+  return u.toString();
+}
+
 function _parseJsonAttr(str) {
   if (!str) return null;
   try { return JSON.parse(str); } catch { return null; }
@@ -154,31 +162,86 @@ function _collectHardDataFromEl(el) {
   return { mint, pairUrl, tokenHydrate, priority, relay, timeoutMs };
 }
 
+function _openPhantomDeepLink({ outputMint, pairUrl }) {
+  // Try Phantom deep link if installed is unlikely; otherwise open Dex
+  // Docs: https://docs.phantom.app/in-app-browser/deeplinks
+  const appUrl = location.origin;
+  const ref = `https://phantom.app/ul/v1/connect?app_url=${encodeURIComponent(appUrl)}`;
+  const dex = CFG.buildDexUrl({ outputMint, pairUrl });
+  try {
+    // Open deep link in a new tab; some mobile browsers will route to app
+    window.open(ref, "_blank", "noopener,noreferrer");
+  } catch {}
+  // Always provide a trade page fallback
+  setTimeout(() => window.open(dex, "_blank", "noopener,noreferrer"), 300);
+}
+
+function _lockPageScroll(lock) {
+  try {
+    const b = document.body;
+    if (lock) {
+      if (b.dataset.scrollLocked) return;
+      b.dataset.scrollLocked = "1";
+      b.style.overflow = "hidden";
+      // Optional: compensate scrollbar shift if desired
+      // b.style.paddingRight = `${window.innerWidth - document.documentElement.clientWidth}px`;
+    } else {
+      delete b.dataset.scrollLocked;
+      b.style.overflow = "";
+      // b.style.paddingRight = "";
+    }
+  } catch {}
+}
+
+function _watchKeyboardViewport(on) {
+  try {
+    if (!window.visualViewport) return;
+    const setVar = () => {
+      const kb = Math.max(0, window.innerHeight - window.visualViewport.height);
+      document.documentElement.style.setProperty("--kb-safe", `${kb}px`);
+    };
+    if (on) {
+      if (!window.__fdvVVWired) {
+        window.__fdvVVWired = true;
+        window.visualViewport.addEventListener("resize", setVar);
+        window.visualViewport.addEventListener("scroll", setVar);
+      }
+      setVar();
+    } else {
+      if (window.__fdvVVWired) {
+        window.visualViewport.removeEventListener("resize", setVar);
+        window.visualViewport.removeEventListener("scroll", setVar);
+        window.__fdvVVWired = false;
+      }
+      document.documentElement.style.removeProperty("--kb-safe");
+    }
+  } catch {}
+}
+
 function _handleSwapClickFromEl(el) {
   const { mint, pairUrl, tokenHydrate, priority, relay, timeoutMs } = _collectHardDataFromEl(el);
   if (!mint) return;
 
-  if (isLikelyMobile() || !hasPhantomInstalled()) {
-    const bestPair = pairUrl || tokenHydrate?.headlineUrl || null;
-    if (bestPair) {
-      const url = CFG.buildDexUrl({ outputMint: mint, pairUrl: bestPair });
-      window.open(url, "_blank", "noopener");
-      return;
-    }
-    (async () => {
-      let url = CFG.buildDexUrl({ outputMint: mint });
-      try {
-        const ac = new AbortController();
-        const to = setTimeout(() => ac.abort(new Error("timeout")), timeoutMs ?? 2000);
-        const info = await fetchTokenInfo(mint, { priority: true, signal: ac.signal });
-        clearTimeout(to);
-        if (info?.headlineUrl) url = CFG.buildDexUrl({ outputMint: mint, pairUrl: info.headlineUrl });
-      } catch {}
-      window.open(url, "_blank", "noopener");
-    })();
+  const mobile = isLikelyMobile();
+  const phantom = hasPhantomInstalled();
+
+  // Mobile → open Phantom universal swap link directly
+  if (mobile) {
+    const url = buildPhantomSwapUrl({ buyMint: mint, sellMint: SOL_MINT });
+    try { _log("Opening Phantom swap…"); } catch {}
+    // Use same-tab navigation to maximize Universal Link handling
+    window.location.href = url;
     return;
   }
 
+  // Desktop fallbacks: Dex if no Phantom, otherwise our modal
+  if (!phantom) {
+    const url = CFG.buildDexUrl({ outputMint: mint, pairUrl: tokenHydrate?.headlineUrl || pairUrl });
+    window.open(url, "_blank", "noopener");
+    return;
+  }
+
+  // Phantom available → open our modal on desktop
   openSwapModal({
     inputMint: SOL_MINT,
     outputMint: mint,
@@ -235,7 +298,12 @@ function _refreshChallengeChrome() {
   const go = _el("[data-swap-go]");
   if (go) {
     const pk = _state?.pubkey?.toBase58?.();
-    go.disabled = !pk || !_hasLiveSession();
+    const blocked = !pk || !_hasLiveSession();
+    // Always clickable; reflect state via aria/class
+    go.disabled = false;
+    go.dataset.blocked = blocked ? "1" : "";
+    go.setAttribute("aria-disabled", blocked ? "true" : "false");
+    go.classList.toggle("disabled", blocked);
   }
   // If session expired, reset the widget so user can solve again!
   if (!_hasLiveSession() && typeof window !== "undefined" && window.turnstile && _turnstileWidgetId != null) {
@@ -377,8 +445,13 @@ const _kickPreQuote = _debounce(_preQuote, 200);
 
 async function _quoteAndSwap() {
   try {
-    if (!_state.wallet || !_state.pubkey) throw new Error("Connect Phantom first.");
-    if (!_hasLiveSession()) throw new Error("Please solve the verification first.");
+    const missing = [];
+    if (!_state.wallet || !_state.pubkey) missing.push("connect your wallet");
+    if (!_hasLiveSession()) missing.push("complete the verification");
+    if (missing.length) {
+      _log(`Cannot swap yet: please ${missing.join(" and ")}.`, "warn");
+      return;
+    }
 
     const inputMint  = _el("[data-swap-input-mint]").value.trim();
     const outputMint = _el("[data-swap-output-mint]").value.trim();
@@ -891,13 +964,21 @@ function _refreshModalChrome(){
 function _openModal(){
   _el("[data-swap-backdrop]")?.classList.add("show");
   _clearLog();
-  _challengeOk = _hasLiveSession(); // keep previous session if still valid
+  _challengeOk = _hasLiveSession();
   _refreshModalChrome();
   _ensureTurnstileScript();
   _renderTurnstileWhenReady();
+  _lockPageScroll(true);
+  _watchKeyboardViewport(true);
   setTimeout(()=>{ _el("[data-swap-amount]")?.focus(); }, 30);
 }
-function _closeModal(){ const bd=_el("[data-swap-backdrop]"); if (bd) bd.classList.remove("show"); _clearLog(); }
+function _closeModal(){
+  const bd=_el("[data-swap-backdrop]");
+  if (bd) bd.classList.remove("show");
+  _clearLog();
+  _lockPageScroll(false);
+  _watchKeyboardViewport(false);
+}
 
 function _setModalFields({ inputMint, outputMint, amountUi, slippageBps }) {
   if (inputMint)  _el("[data-swap-input-mint]").value = inputMint;
