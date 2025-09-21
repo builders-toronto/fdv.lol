@@ -24,7 +24,7 @@
 /* Header */
 .shill__header{
   display:flex; align-items:center; justify-content:space-between; gap: clamp(8px, 2vw, 18px);
-  margin-bottom: clamp(10px, 2.2vw, 22px);
+  margin-bottom: clamp(10px, 2.2vw, 22px); overflow: hidden;
 }
 .shill__header h1{
   margin: 0;
@@ -109,9 +109,7 @@
 }
 @media (max-width: 640px){
   .shill__card .btn{ 
-    /* font-size: 13px;
-    /* margin-left: 185px;
-    margin-top: 15px; */
+    margin-left: 1px;
     margin-bottom: 15px;
    }
 }
@@ -143,6 +141,10 @@
 .shill__card .hint{ margin-top: 6px; color: var(--muted) }
 
 /* List */
+.shill__list {
+  padding: 9px;
+}
+
 .shill__list h3{
   margin: 12px 0 10px;
   font-size: clamp(1rem, 1.8vw, 1.1rem);
@@ -151,7 +153,7 @@
   display:grid;
   grid-template-columns: 1fr auto;
   gap: 8px 12px;
-  padding: clamp(10px, 1.6vw, 14px);
+  padding: clamp(15px, 1.6vw, 14px);
   border: 1px solid #132238;
   border-radius: 12px;
   margin-bottom: 10px;
@@ -214,7 +216,7 @@
 
 .shill__tab_actions {
     width: 100%;
-    grid-column: 2;
+    grid-column: 1;
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
@@ -236,7 +238,7 @@
 }
 
 .shill__tools {
-  margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; justify-content: space-between;
+  margin-top:40px; display:flex; gap:8px; flex-wrap:wrap; justify-content: space-between;
 }
 
 /* Animations */

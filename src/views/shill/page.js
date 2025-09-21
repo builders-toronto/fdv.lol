@@ -14,7 +14,7 @@ export async function renderShillContestView(input) {
       <header class="shill__header">
         <div class="lhs">
           <h1>Shill</h1>
-          <p class="sub">Generate your personal link and track your impact for this token.</p>
+          <p class="sub">Generate your personal link.</p>
         </div>
         <div class="rhs">
           ${mint ? `<a class="btn btn-ghost" data-link href="/token/${mint}">Back</a>` : ""}
@@ -93,6 +93,7 @@ export async function renderShillContestView(input) {
       const html = rows.map((r) => `
         <div class="shill__row" data-slug="${r.slug}">
           <div class="url"><a href="${r.url}" target="_blank" rel="noopener">${r.url}</a></div>
+          <code class="slug">${r.slug}</code>
           <div class="stats">
             <span title="Views">👁️ ${r.stats.views}</span>
             <span title="Trade clicks">🛒 ${r.stats.tradeClicks}</span>
@@ -100,7 +101,6 @@ export async function renderShillContestView(input) {
             <span title="Wallet connects">💼 ${r.stats.walletConnects}</span>
             <!-- <span title="Time on page">⏱️ ${t(r.stats.timeMs)}</span> -->
           </div>
-          <code class="slug">${r.slug}</code>
           <div class="shill__tab_actions">
             <button class="btn btn-ghost btn--danger" data-del-shill data-slug="${r.slug}" data-owner-id="${r.ownerId || ""}" title="Delete link">🗑️ Delete</button>
           </div>      

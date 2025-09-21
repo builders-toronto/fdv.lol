@@ -12,7 +12,7 @@ export default function renderShell({ mount, mint, adHtml = "" }) {
           <div class="titleMint"><span class="muted mono">${esc(shortMint)}</span></div>
         </div>
         <div class="profile__links" id="profileLinks"></div>
-        <div class="backBox"><button class="btn" id="btnBack">Home</button></div>
+        <div class="backBox"><button class="btn btn-ghost" id="btnBack">Home</button></div>
         <div class="extraFeat"></div>
       </div>
 

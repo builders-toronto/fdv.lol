@@ -298,7 +298,7 @@ export async function renderProfileView(input, { onBack } = {}) {
     };
     let swapBtn = document.getElementById("btnSwapAction");
     if (!swapBtn) {
-      swapBtn = createSwapButton({ mint, label: "Swap", className: "btn btn--primary btn-swap-action" });
+      swapBtn = createSwapButton({ mint, label: "Swap", className: "btn btn--primary btn-ghost" });
       swapBtn.id = "btnSwapAction";
       const actions = elApp.querySelector(".profile__navigation .actions");
       if (actions) actions.prepend(swapBtn);
