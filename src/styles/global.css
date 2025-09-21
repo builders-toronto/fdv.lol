@@ -327,7 +327,7 @@ input[type="checkbox"]:disabled{
 }
 
 .btn{
-  display:inline-flex; align-items:center; gap:8px; padding:13px 12px; border-radius:12px; font-weight:600; letter-spacing:.2px;
+  display:inline-flex; align-items:center; justify-content: center; gap:8px; padding:13px 12px; border-radius:12px; font-weight:600; letter-spacing:.2px;
   background: linear-gradient(90deg, rgb(0 0 0 / 15%), rgb(11 156 173 / 15%));
   border:1px solid rgba(122,222,255,.28); color:var(--text); text-decoration:none; cursor: pointer;
 }

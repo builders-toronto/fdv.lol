@@ -45,3 +45,14 @@ fdv.lol is open-source and community-driven. You can help by:
 ---
 
 ⚡ Together we can make fdv.lol the **fastest, simplest, and most trusted memecoin radar on Solana**.  
+
+
+
+
+
+git commit -m "shill(frontend): add live leaderboard + NDJSON aggregation; fix tracker" -m "
+- New /leaderboard/:mint view with auto-refresh (client-aggregates NDJSON stream)
+- Shill page links to leaderboard, hides global header, ensures styles
+- Shill tracker: supports window.__metricsBase, handles JSON /diag, unwraps summary.stats
+- Lightweight table styles and better empty/error states
+"

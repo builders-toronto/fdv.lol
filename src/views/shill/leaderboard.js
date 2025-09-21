@@ -18,7 +18,7 @@ export async function renderShillLeaderboardView({ mint } = {}) {
         <div class="lhs">
           <h1>Leaderboard</h1>
           <p class="sub">Live stats for this tokens shill links.</p>
-          <p class="muted small">${mint}</p>
+
         </div>
         <div class="rhs">
           <a class="btn btn-ghost" data-link href="/token/${mint}">Back</a>
@@ -32,6 +32,7 @@ export async function renderShillLeaderboardView({ mint } = {}) {
           <input type="checkbox" id="autoRefresh" checked />
           <span class="note small" id="statusNote"></span>
         </div>
+        <p class="muted small" style="margin-left: 8px;"><b>MINT:</b> ${mint}</p>
       </div>
 
       <div class="shill__list">
