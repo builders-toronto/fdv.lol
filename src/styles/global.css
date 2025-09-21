@@ -9,6 +9,7 @@
   --good:#1aff7a;
   --watch:#ffd166;
   --avoid:#ff4d6d;
+  --shill: #e27419;
   --grid: rgba(122, 222, 255, .06);
   --fdv-bg:#0b0f17; 
   --fdv-surface:#11151f; 
@@ -326,7 +327,7 @@ input[type="checkbox"]:disabled{
 }
 
 .btn{
-  display:inline-flex; align-items:center; gap:8px; padding:9px 12px; border-radius:12px; font-weight:600; letter-spacing:.2px;
+  display:inline-flex; align-items:center; gap:8px; padding:13px 12px; border-radius:12px; font-weight:600; letter-spacing:.2px;
   background: linear-gradient(90deg, rgb(0 0 0 / 15%), rgb(11 156 173 / 15%));
   border:1px solid rgba(122,222,255,.28); color:var(--text); text-decoration:none; cursor: pointer;
 }
@@ -337,6 +338,7 @@ input[type="checkbox"]:disabled{
 .rec.GOOD  { color: var(--good);   border-color: rgba(26,255,122,.45); background: rgba(26,255,122,.08)}
 .rec.WATCH{ color: var(--watch); border-color: rgba(255,209,102,.45); background: rgba(255,209,102,.08)}
 .rec.AVOID{ color: var(--avoid); border-color: rgba(255,77,109,.45);  background: rgba(255,77,109,.08)}
+.rec.SHILL{ color: var(--shill); border-color: rgba(138,99,210,.45);  background: rgba(138,99,210,.08)}
 
 .iconrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .iconbtn{

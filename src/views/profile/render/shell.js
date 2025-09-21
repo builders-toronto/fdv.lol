@@ -8,10 +8,12 @@ export default function renderShell({ mount, mint, adHtml = "" }) {
         <div class="media"><div class="logo sk"></div></div>
         <div class="meta">
           <div class="title">Token</div>
-          <div class="titleMint"><span class="muted mono">${esc(shortMint)}</span></div>
           <div class="row"><span class="badge WATCH">WATCH</span></div>
+          <div class="titleMint"><span class="muted mono">${esc(shortMint)}</span></div>
         </div>
         <div class="profile__links" id="profileLinks"></div>
+        <div class="backBox"><button class="btn" id="btnBack">Home</button></div>
+        <div class="extraFeat"></div>
       </div>
 
       <div class="divider"></div>
@@ -20,7 +22,6 @@ export default function renderShell({ mount, mint, adHtml = "" }) {
         <a class="btn buy-btn disabled" id="btnTradeTop" target="_blank" rel="noopener">Dexscreener</a>
         <div class="actions">
           <button class="btn btn-ghost" id="btnCopyMint" title="Copy mint">Share</button>
-          <button class="btn" id="btnBack">Back</button>
         </div>
       </div>
 

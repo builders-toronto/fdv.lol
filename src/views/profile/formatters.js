@@ -23,7 +23,7 @@ export const pill = (x) => {
   return `<span class="pill ${cls}">${fmtPct(x)}</span>`;
 };
 
-export const cssReco = (reco="watch") => {
+export const cssReco = (reco="shill") => {
   const r = String(reco).toLowerCase();
-  return r === "good" ? "good" : r === "avoid" ? "avoid" : "watch";
+  return r === "good" ? "good" : r === "avoid" ? "avoid" : "shill";
 };

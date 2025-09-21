@@ -26,6 +26,7 @@ function initSwapSystem() {
 export function initRouter({
   onHome = () => {},
   onProfile = () => {},
+  onShill = () => {},
   onNotFound       
 } = {}) {
   const notFound = onNotFound || onHome;
@@ -35,6 +36,12 @@ export function initRouter({
 
   const routes = [
     { pattern: /^\/$/, handler: onHome },
+    { pattern: /^\/leaderboard\/([1-9A-HJ-NP-Za-km-z]{32,44})\/?$/, handler: (mint) => onShill({ mint, leaderboard: true }) },
+    { pattern: /^\/shill\/?$/, handler: () => {
+      const mint = new URLSearchParams(location.search).get("mint") || "";
+      onShill({ mint });
+    }},
+    { pattern: /^\/shill\/([1-9A-HJ-NP-Za-km-z]{32,44})\/?$/, handler: (mint) => onShill({ mint }) },
     { pattern: /^\/token\/([1-9A-HJ-NP-Za-km-z]{32,44})\/?$/, handler: (mint) => onProfile({ mint }) },
   ];
 

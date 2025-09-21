@@ -8,3 +8,5 @@
     document.head.appendChild(s);
   } catch {}
 })();
+
+// clarity smarity polarity microsfoting clarity

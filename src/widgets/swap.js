@@ -23,12 +23,12 @@ const DEFAULTS = {
     if (pairUrl) return pairUrl;
     return `https://dexscreener.com/solana/${encodeURIComponent(outputMint || "")}`;
   },
-  buildJupUrl({ inputMint, outputMint, amountUi, slippageBps }) {
-    const u = new URL("https://jup.ag/swap");
-    if (inputMint) u.searchParams.set("inputMint", inputMint);
-    if (outputMint) u.searchParams.set("outputMint", outputMint);
-    if (slippageBps != null) u.searchParams.set("slippageBps", String(slippageBps));
-    if (amountUi != null) u.searchParams.set("amount", String(amountUi));
+  buildJupUrl({ inputMint, outputMint, amountUi, slippageBps, platform }) {
+    const u = new URL("https://jup.ag/tokens/" + outputMint);
+    // if (inputMint) u.searchParams.set("inputMint", inputMint);
+    // if (slippageBps != null) u.searchParams.set("slippageBps", String(slippageBps));
+    // if (amountUi != null) u.searchParams.set("amount", String(amountUi));
+    // if (platform) u.searchParams.set("platform", platform); // "mobile" | "web"
     return u.toString();
   },
 
@@ -126,7 +126,6 @@ function hasPhantomInstalled() {
   catch { return false; }
 }
 
-// Build Phantom universal swap link: https://phantom.app/ul/swap/?buy=<MINT>&sell=<MINT>
 function buildPhantomSwapUrl({ buyMint, sellMint }) {
   const u = new URL("https://phantom.app/ul/swap/");
   u.searchParams.set("buy", buyMint);
@@ -162,17 +161,14 @@ function _collectHardDataFromEl(el) {
   return { mint, pairUrl, tokenHydrate, priority, relay, timeoutMs };
 }
 
+// TODO: wait for phantom
 function _openPhantomDeepLink({ outputMint, pairUrl }) {
-  // Try Phantom deep link if installed is unlikely; otherwise open Dex
-  // Docs: https://docs.phantom.app/in-app-browser/deeplinks
   const appUrl = location.origin;
   const ref = `https://phantom.app/ul/v1/connect?app_url=${encodeURIComponent(appUrl)}`;
   const dex = CFG.buildDexUrl({ outputMint, pairUrl });
   try {
-    // Open deep link in a new tab; some mobile browsers will route to app
     window.open(ref, "_blank", "noopener,noreferrer");
   } catch {}
-  // Always provide a trade page fallback
   setTimeout(() => window.open(dex, "_blank", "noopener,noreferrer"), 300);
 }
 
@@ -183,12 +179,11 @@ function _lockPageScroll(lock) {
       if (b.dataset.scrollLocked) return;
       b.dataset.scrollLocked = "1";
       b.style.overflow = "hidden";
-      // Optional: compensate scrollbar shift if desired
-      // b.style.paddingRight = `${window.innerWidth - document.documentElement.clientWidth}px`;
+      b.style.paddingRight = `${window.innerWidth - document.documentElement.clientWidth}px`;
     } else {
       delete b.dataset.scrollLocked;
       b.style.overflow = "";
-      // b.style.paddingRight = "";
+      b.style.paddingRight = "";
     }
   } catch {}
 }
@@ -225,23 +220,23 @@ function _handleSwapClickFromEl(el) {
   const mobile = isLikelyMobile();
   const phantom = hasPhantomInstalled();
 
-  // Mobile → open Phantom universal swap link directly
   if (mobile) {
-    const url = buildPhantomSwapUrl({ buyMint: mint, sellMint: SOL_MINT });
-    try { _log("Opening Phantom swap…"); } catch {}
-    // Use same-tab navigation to maximize Universal Link handling
-    window.location.href = url;
+    const url = CFG.buildJupUrl({
+      inputMint: SOL_MINT,
+      outputMint: mint,
+      amountUi: 0.1,
+      slippageBps: CFG.defaultSlippageBps,
+      platform: "mobile",
+    });
+    try { _log("Opening Jupiter…"); } catch {}
+    window.location.href = url; 
     return;
   }
-
-  // Desktop fallbacks: Dex if no Phantom, otherwise our modal
   if (!phantom) {
     const url = CFG.buildDexUrl({ outputMint: mint, pairUrl: tokenHydrate?.headlineUrl || pairUrl });
     window.open(url, "_blank", "noopener");
     return;
   }
-
-  // Phantom available → open our modal on desktop
   openSwapModal({
     inputMint: SOL_MINT,
     outputMint: mint,
@@ -299,19 +294,16 @@ function _refreshChallengeChrome() {
   if (go) {
     const pk = _state?.pubkey?.toBase58?.();
     const blocked = !pk || !_hasLiveSession();
-    // Always clickable; reflect state via aria/class
     go.disabled = false;
     go.dataset.blocked = blocked ? "1" : "";
     go.setAttribute("aria-disabled", blocked ? "true" : "false");
     go.classList.toggle("disabled", blocked);
   }
-  // If session expired, reset the widget so user can solve again!
   if (!_hasLiveSession() && typeof window !== "undefined" && window.turnstile && _turnstileWidgetId != null) {
     try { window.turnstile.reset(_turnstileWidgetId); } catch {}
   }
 }
 
-// Turnstile script loader
 function _ensureTurnstileScript() {
   if (typeof window === "undefined") return;
   if (window.turnstile || _turnstileScriptInjected) return;
@@ -397,6 +389,11 @@ async function _connectPhantom() {
 
     CFG.onConnect?.(_state.pubkey.toBase58());
     _refreshModalChrome(); // updates chips and button label
+    try {
+      document.dispatchEvent(new CustomEvent("swap:wallet-connect", {
+        detail: { pubkey: _state.pubkey.toBase58(), wallet: "phantom" }
+      }));
+    } catch {}
   } catch (e) {
     _log(`Connect error: ${e.message || e}`, "err");
     CFG.onError?.("connect", e);
