@@ -141,8 +141,9 @@ export function scoreAndRecommendOne(r) {
 
   const BUY_SCORE = Number.isFinite(BUY_RULES?.score) ? BUY_RULES.score : null;
 
-  let rec = 'AVOID';
+  let rec = 'SHILL';
   let why = ['Weak composite score'];
+  why.push('Try shilling it!');
 
   if (
     (BUY_SCORE == null || score >= BUY_SCORE) &&

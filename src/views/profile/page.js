@@ -21,6 +21,7 @@ import {
 } from "./render/interactions.js";
 import { loadAds, pickAd, adCard } from "../../ads/load.js";
 import { initSwap, createSwapButton, bindSwapButtons } from "../../widgets/swap.js";
+import { startProfileShillAttribution } from "../../analytics/shill.js"; 
 
 // Global sentinel for swap wiring
 const SWAP_BRIDGE = (window.__fdvSwapBridge = window.__fdvSwapBridge || { inited:false, wired:false });
@@ -306,6 +307,19 @@ export async function renderProfileView(input, { onBack } = {}) {
     if (t.headlineUrl) swapBtn.dataset.pairUrl = t.headlineUrl; else swapBtn.removeAttribute("data-pair-url");
   } catch {}
 
+  try {
+    const actions = elApp.querySelector(".extraFeat");
+    if (actions && !document.getElementById("btnShill")) {
+      const a = document.createElement("a");
+      a.id = "btnShill";
+      a.className = "btn btn-ghost";
+      a.setAttribute("data-link", "");
+      a.href = `/shill?mint=${encodeURIComponent(mint)}`;
+      a.textContent = "Shill";
+      actions.appendChild(a);
+    }
+  } catch {}
+
   // Stats values (initial)
   const PRICE_USD = Number.isFinite(t.priceUsd) ? `$${t.priceUsd.toFixed(6)}` : "—";
   setStat(gridEl, 0, PRICE_USD);
@@ -386,4 +400,7 @@ export async function renderProfileView(input, { onBack } = {}) {
 
   // Live updates
   try { startProfileFeed(t.mint || mint, t); } catch {}
+
+  // Start shill attribution if a referral is present (?ref=slug)
+  try { startProfileShillAttribution({ mint }); } catch {}
 }

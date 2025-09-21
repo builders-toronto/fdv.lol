@@ -1,6 +1,8 @@
 import { pipeline, stopPipelineStream } from '../engine/pipeline.js';
 import { renderProfileView } from "../views/profile/page.js";
 import { render } from '../views/meme/page.js';
+import { renderShillContestView } from "../views/shill/page.js"; 
+import { renderShillLeaderboardView } from "../views/shill/leaderboard.js"; // ← add
 import { hideLoading } from '../utils/tools.js';
 
 let HOME_INTERVAL = null;
@@ -95,4 +97,15 @@ export async function showHome({ force = false } = {}) {
 
 export async function showProfile({ mint }) {
   try { renderProfileView(mint); } finally { hideLoading(); }
+}
+export async function showShill({ mint, leaderboard = false } = {}) {
+  try {
+    if (leaderboard) {
+      await renderShillLeaderboardView({ mint });
+    } else {
+      await renderShillContestView(mint);
+    }
+  } finally {
+    hideLoading();
+  }
 }

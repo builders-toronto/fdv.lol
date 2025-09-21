@@ -1,6 +1,6 @@
 export function wireNavigation({ onBack }) {
   document.getElementById("btnBack")?.addEventListener("click", () => {
-    window.location.href="/"; // keep current behaviour
+    window.location.href="/"; 
   });
 }
 
