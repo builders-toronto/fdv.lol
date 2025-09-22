@@ -17,8 +17,7 @@ export async function renderShillLeaderboardView({ mint } = {}) {
       <header class="shill__header">
         <div class="lhs">
           <h1>Leaderboard</h1>
-          <p class="sub">Live stats for this tokens shill links.</p>
-
+          <p class="sub">Live stats for this tokens shill links (weekly).</p>
         </div>
         <div class="rhs">
           <a class="btn btn-ghost" data-link href="/token/${mint}">Back</a>
@@ -50,6 +49,7 @@ export async function renderShillLeaderboardView({ mint } = {}) {
   const tableWrap = document.getElementById("tableWrap");
 
   const METRICS_BASE = String(window.__metricsBase || "https://fdv-lol-metrics.fdvlol.workers.dev").replace(/\/+$/,"");
+  const SOL_ADDR_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
   async function refresh() {
     try {
@@ -57,14 +57,16 @@ export async function renderShillLeaderboardView({ mint } = {}) {
       const res = await fetch(`${METRICS_BASE}/api/shill/ndjson?mint=${encodeURIComponent(mint)}`, { cache: "no-store" });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
-      const agg = new Map(); // slug -> stats
+      const agg = new Map(); // slug -> stats+owner
       const dec = new TextDecoder();
       const reader = res.body.getReader();
       let buf = "";
 
       const apply = (evt) => {
         if (!evt || !evt.slug || !evt.event) return;
-        const a = agg.get(evt.slug) || { slug: evt.slug, views:0, tradeClicks:0, swapStarts:0, walletConnects:0, timeMs:0 };
+        const a = agg.get(evt.slug) || { slug: evt.slug, owner: "", views:0, tradeClicks:0, swapStarts:0, walletConnects:0, timeMs:0 };
+        const wid = evt.wallet_id || evt.owner || "";
+        if (!a.owner && wid && SOL_ADDR_RE.test(String(wid))) a.owner = String(wid);
         switch (evt.event) {
           case "view": a.views += 1; break;
           case "trade_click": a.tradeClicks += 1; break;
@@ -79,7 +81,6 @@ export async function renderShillLeaderboardView({ mint } = {}) {
         const { done, value } = await reader.read();
         if (done) break;
         buf += dec.decode(value, { stream: true });
-        // process complete lines
         let idx;
         while ((idx = buf.indexOf("\n")) !== -1) {
           const line = buf.slice(0, idx).trim();
@@ -88,7 +89,6 @@ export async function renderShillLeaderboardView({ mint } = {}) {
           try { apply(JSON.parse(line)); } catch {}
         }
       }
-      // flush any trailing line
       const tail = buf.trim();
       if (tail) { try { apply(JSON.parse(tail)); } catch {} }
 
@@ -118,6 +118,8 @@ export async function renderShillLeaderboardView({ mint } = {}) {
 }
 
 function renderTable(list, mint) {
+  const short = (w) => w ? `${w.slice(0,4)}…${w.slice(-4)}` : "—";
+  const solscan = (w) => `https://solscan.io/account/${encodeURIComponent(w)}`;
   const t = (ms)=> {
     const s = Math.round((ms||0)/1000);
     const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
@@ -126,7 +128,7 @@ function renderTable(list, mint) {
   if (!list.length) return `<div class="empty">No data yet.</div>`;
   const rows = list.map((r, i) => `
     <tr>
-      <td>${i+1}</td>
+      <td>${r.owner ? `<a href="${solscan(r.owner)}" target="_blank" rel="noopener" title="${r.owner}">${short(r.owner)}</a>` : "—"}</td>
       <td><code>${r.slug}</code></td>
       <td>${r.views}</td>
       <td>${r.tradeClicks}</td>
@@ -142,7 +144,7 @@ function renderTable(list, mint) {
       <table class="shill__table">
         <thead>
           <tr>
-            <th>#</th>
+            <th>Wallet</th>
             <th>Slug</th>
             <th>Views</th>
             <th>Trade clicks</th>
@@ -160,7 +162,11 @@ function renderTable(list, mint) {
 
 function detectMintFromPath() {
   try {
-    const m = location.pathname.match(/\/shill\/([^/]+)\/leaderboard/i);
+    // support /leaderboard/<mint> and /shill/<mint>/leaderboard
+    const p = location.pathname;
+    let m = p.match(/^\/leaderboard\/([^/]+)/i);
+    if (m) return decodeURIComponent(m[1]);
+    m = p.match(/\/shill\/([^/]+)\/leaderboard/i);
     return m ? decodeURIComponent(m[1]) : "";
   } catch { return ""; }
 }
