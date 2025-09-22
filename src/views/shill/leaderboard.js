@@ -49,49 +49,26 @@ export async function renderShillLeaderboardView({ mint } = {}) {
   const tableWrap = document.getElementById("tableWrap");
 
   const METRICS_BASE = String(window.__metricsBase || "https://fdv-lol-metrics.fdvlol.workers.dev").replace(/\/+$/,"");
+  // Aggregates and dedupe state
+  const agg = new Map();          // slug -> { views, ... }
+  const seen = new Set();         // dedupe keys
+  const MAX_SEEN = 200000;
   const SOL_ADDR_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
-  async function refresh() {
-    try {
-      statusNote.textContent = "Fetching…";
-      const res = await fetch(`${METRICS_BASE}/api/shill/ndjson?mint=${encodeURIComponent(mint)}`, { cache: "no-store" });
-      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+  // Cache across refreshes within this view
+  let lastEtag = "";
+  let cacheAgg = new Map(); // slug -> {slug, owner, views, tradeClicks, swapStarts, walletConnects, timeMs}
 
-      const agg = new Map(); // slug -> stats+owner
-      const dec = new TextDecoder();
-      const reader = res.body.getReader();
-      let buf = "";
+  // Live tail control
+  let tailAbort = null;
+  let tailActive = false;
 
-      const apply = (evt) => {
-        if (!evt || !evt.slug || !evt.event) return;
-        const a = agg.get(evt.slug) || { slug: evt.slug, owner: "", views:0, tradeClicks:0, swapStarts:0, walletConnects:0, timeMs:0 };
-        const wid = evt.wallet_id || evt.owner || "";
-        if (!a.owner && wid && SOL_ADDR_RE.test(String(wid))) a.owner = String(wid);
-        switch (evt.event) {
-          case "view": a.views += 1; break;
-          case "trade_click": a.tradeClicks += 1; break;
-          case "swap_start": a.swapStarts += 1; break;
-          case "wallet_connect": a.walletConnects += 1; break;
-          case "time_ms": a.timeMs += Number.isFinite(+evt.value) ? +evt.value : 0; break;
-        }
-        agg.set(evt.slug, a);
-      };
-
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let idx;
-        while ((idx = buf.indexOf("\n")) !== -1) {
-          const line = buf.slice(0, idx).trim();
-          buf = buf.slice(idx + 1);
-          if (!line) continue;
-          try { apply(JSON.parse(line)); } catch {}
-        }
-      }
-      const tail = buf.trim();
-      if (tail) { try { apply(JSON.parse(tail)); } catch {} }
-
+  // Throttled UI updates
+  let updateRaf = 0;
+  const scheduleUpdate = () => {
+    if (updateRaf) return;
+    updateRaf = requestAnimationFrame(() => {
+      updateRaf = 0;
       const list = [...agg.values()]
         .sort((a,b) =>
           (b.views - a.views) ||
@@ -99,9 +76,152 @@ export async function renderShillLeaderboardView({ mint } = {}) {
           (b.tradeClicks - a.tradeClicks) ||
           (b.swapStarts - a.swapStarts))
         .slice(0, 200);
-
       tableWrap.innerHTML = renderTable(list, mint);
-      statusNote.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+      statusNote.textContent = `${tailActive ? "Live" : "Updated"} ${new Date().toLocaleTimeString()}`;
+    });
+  };
+
+  function sevenDaysAgo() {
+    const d = new Date(Date.now() - 7*24*3600*1000);
+    return d.toISOString().slice(0,10);
+  }
+
+  async function fetchAllSlugs() {
+    const items = [];
+    let cursor = "";
+    for (let i = 0; i < 10; i++) { // cap to avoid infinite loops
+      const res = await fetch(`${METRICS_BASE}/api/shill/slugs?mint=${encodeURIComponent(mint)}&limit=2000&cursor=${encodeURIComponent(cursor)}`, { cache: "no-store" });
+      if (!res.ok) break;
+      const j = await res.json();
+      if (Array.isArray(j.items)) items.push(...j.items);
+      cursor = j.cursor || "";
+      if (!cursor) break;
+    }
+    return items;
+  }
+
+  const apply = (evt) => {
+    if (!evt || !evt.slug || !evt.event) return;
+
+    // Dedupe: prefer server nonce; fallback to 1s time bucket
+    let sec = 0;
+    if (evt.ts) {
+      const t = Date.parse(evt.ts);
+      if (Number.isFinite(t)) sec = Math.floor(t / 1000);
+    }
+    const bucket = (Number.isFinite(+evt.nonce) && +evt.nonce > 0) ? `n:${+evt.nonce}` : `s:${sec}`;
+    const key = `${evt.slug}|${evt.event}|${evt.ipHash||""}|${evt.uaHash||""}|${evt.path||""}|${bucket}`;
+    if (seen.has(key)) return;
+    if (seen.size > MAX_SEEN) seen.clear();
+    seen.add(key);
+
+    const a = agg.get(evt.slug) || { slug: evt.slug, owner: "", views:0, tradeClicks:0, swapStarts:0, walletConnects:0, timeMs:0 };
+    const wid = evt.wallet_id || evt.owner || "";
+    if (!a.owner && wid && SOL_ADDR_RE.test(String(wid))) a.owner = String(wid);
+    switch (evt.event) {
+      case "view": a.views += 1; break;
+      case "trade_click": a.tradeClicks += 1; break;
+      case "swap_start": a.swapStarts += 1; break;
+      case "wallet_connect": a.walletConnects += 1; break;
+      case "time_ms": {
+        const v = Number.isFinite(+evt.value) ? +evt.value : 0;
+        a.timeMs += v > 0 ? v : 0;
+        break;
+      }
+    }
+    agg.set(evt.slug, a);
+    scheduleUpdate();
+  };
+
+  async function readNdjsonStream(body) {
+    const dec = new TextDecoder();
+    const reader = body.getReader();
+    let buf = "";
+    let firstChunk = true;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      if (firstChunk) {
+        firstChunk = false;
+        if (buf.charCodeAt(0) === 0xFEFF) buf = buf.slice(1); // strip BOM
+      }
+      let idx;
+      while ((idx = buf.indexOf("\n")) !== -1) {
+        let line = buf.slice(0, idx);
+        buf = buf.slice(idx + 1);
+        line = line.replace(/\r$/, "").trim();
+        if (!line) continue;
+        try { apply(JSON.parse(line)); } catch {}
+      }
+    }
+    const tail = buf.replace(/\r$/, "").trim();
+    if (tail) { try { apply(JSON.parse(tail)); } catch {} }
+  }
+
+  function stopTail() {
+    try { tailAbort?.abort(); } catch {}
+    tailAbort = null;
+    tailActive = false;
+  }
+
+  async function startTail() {
+    stopTail();
+    tailAbort = new AbortController();
+    const since = sevenDaysAgo();
+    const url = `${METRICS_BASE}/api/shill/ndjson?mint=${encodeURIComponent(mint)}&since=${encodeURIComponent(since)}&tail=1`;
+    const headers = { "Accept": "application/x-ndjson,application/json;q=0.5,*/*;q=0.1" };
+    try {
+      const res = await fetch(url, { cache: "no-store", headers, signal: tailAbort.signal });
+      if (!res.ok || !res.body) return;
+      tailActive = true;
+      statusNote.textContent = "Live…";
+      (async () => {
+        try { await readNdjsonStream(res.body); }
+        catch {}
+        finally {
+          tailActive = false;
+          if (autoCb.checked) {
+            // reconnect after short delay
+            setTimeout(() => { if (autoCb.checked) startTail(); }, 1500);
+          }
+        }
+      })();
+    } catch {
+      tailActive = false;
+    }
+  }
+
+  async function refresh() {
+    try {
+      statusNote.textContent = "Fetching…";
+      stopTail();
+      agg.clear(); seen.clear();
+
+      const owners = await fetchAllSlugs();
+      const base = new Map();
+      for (const { slug, wallet_id } of owners) {
+        base.set(slug, {
+          slug,
+          owner: (wallet_id && SOL_ADDR_RE.test(wallet_id)) ? wallet_id : "",
+          views: 0, tradeClicks: 0, swapStarts: 0, walletConnects: 0, timeMs: 0
+        });
+      }
+      for (const v of base.values()) agg.set(v.slug, v);
+
+      const since = sevenDaysAgo();
+      const headers = { "Accept": "application/x-ndjson,application/json;q=0.5,*/*;q=0.1" };
+      const url = `${METRICS_BASE}/api/shill/ndjson?mint=${encodeURIComponent(mint)}&since=${encodeURIComponent(since)}`;
+      const res = await fetch(url, { cache: "no-store", headers });
+      if (res.ok && res.body) {
+        await readNdjsonStream(res.body);
+      }
+
+      cacheAgg = new Map(agg);
+      scheduleUpdate();
+
+      if (autoCb.checked) startTail();
+      else statusNote.textContent = `Updated ${new Date().toLocaleTimeString()}`;
     } catch (e) {
       tableWrap.innerHTML = `<div class="empty">Failed to load leaderboard. ${e?.message || "error"}</div>`;
       statusNote.textContent = "";
@@ -109,9 +229,13 @@ export async function renderShillLeaderboardView({ mint } = {}) {
   }
 
   btnRefresh.addEventListener("click", refresh);
-  setInterval(() => { if (autoCb.checked && document.visibilityState === "visible") refresh(); }, 5000);
+  autoCb.addEventListener("change", () => {
+    if (autoCb.checked) startTail(); else stopTail();
+  });
+  window.addEventListener("beforeunload", stopTail);
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && autoCb.checked) refresh();
+    if (document.visibilityState === "hidden") stopTail();
+    else if (autoCb.checked) startTail();
   });
 
   await refresh();

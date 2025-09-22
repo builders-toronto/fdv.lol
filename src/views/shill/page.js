@@ -125,7 +125,8 @@ export async function renderShillContestView(input) {
           </div>
           <div class="shill__tab_actions">
             <button class="btn btn-ghost btn--danger" data-del-shill data-slug="${r.slug}" data-owner-id="${r.ownerId || ""}" title="Delete link">🗑️ Delete</button>
-          </div>      
+          </div>  
+          <code class="wallet slug url">${r.wallet_id || "—"}</code>    
         </div>
       `).join("") || `<div class="empty">${valid ? "No links yet." : "Enter a valid wallet to view your links."}</div>`;
       links.innerHTML = html;
@@ -135,35 +136,26 @@ export async function renderShillContestView(input) {
   };
 
   // Metrics backend probe
-  pingMetrics().then((ok) => {
-    if (!ok) {
-      const msg = document.createElement("div");
-      msg.className = "note small";
-      msg.textContent = "Metrics backend unavailable; stats may be delayed.";
-      limitNote.insertAdjacentElement("afterend", msg);
-    }
-  }).catch(()=>{});
+  // pingMetrics().then((ok) => {
+  //   if (!ok) {
+  //     const msg = document.createElement("div");
+  //     msg.className = "note small";
+  //     msg.textContent = "Metrics backend unavailable; stats may be delayed.";
+  //     limitNote.insertAdjacentElement("afterend", msg);
+  //   }
+  // }).catch(()=>{});
 
   btnGen.addEventListener("click", async () => {
     try {
       const owner = ownerIdOf(handleIn.value);
-      if (!isValidSolAddr(owner)) {
-        handleIn.reportValidity();
-        handleIn.focus();
-        return;
-      }
-      // pass wallet_id explicitly
-      const { url } = makeShillShortlink({ mint, wallet_id: owner });
+      if (!isValidSolAddr(owner)) { handleIn.reportValidity(); handleIn.focus(); return; }
+      const { url } = await makeShillShortlink({ mint, wallet_id: owner }); // awaits register + token
       out.hidden = false;
       linkIn.value = url;
       await renderList();
       updateLimitUI();
     } catch (e) {
-      if (e?.code === "LIMIT") {
-        updateLimitUI();
-      } else {
-        console.error(e);
-      }
+      if (e?.code === "LIMIT") { updateLimitUI(); } else { console.error(e); alert("Failed to create link. Please try again."); }
     }
   });
 
