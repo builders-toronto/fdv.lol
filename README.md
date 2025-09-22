@@ -50,9 +50,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 
 
-git commit -m "shill(frontend): add live leaderboard + NDJSON aggregation; fix tracker" -m "
-- New /leaderboard/:mint view with auto-refresh (client-aggregates NDJSON stream)
-- Shill page links to leaderboard, hides global header, ensures styles
-- Shill tracker: supports window.__metricsBase, handles JSON /diag, unwraps summary.stats
-- Lightweight table styles and better empty/error states
-"
+git commit -m "metrics: add wallet_id + tighten controls (CORS allowlist, GET rate limits, nonce dedupe, time_ms clamp); leaderboard shows Solscan wallet links"

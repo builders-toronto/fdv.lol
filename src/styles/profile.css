@@ -119,7 +119,7 @@ html, body {
 .profile__hero .media { width:92px; height:92px; border-radius:18px; background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02)); overflow:hidden; display:flex; align-items:center; justify-content:center }
 .profile__hero img.logo, .profile__hero .logo { width:84px; height:84px; border-radius:14px; background: rgba(255,255,255,.04) }
 .profile__hero .title { font-weight:800; font-size:20px }
-.profile__hero .titleMint { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; color: var(--muted); font-size:13px; margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100% }
+.profile__hero .titleMint { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; color: var(--muted); font-size:13px; margin-top:15px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100% }
 .profile__hero .row { display:flex; gap:8px; margin-top:6px }
 .profile__hero .actions { display:flex; gap:8px; align-items:center }
 .profile__navigation { display:flex;flex-direction: row;justify-content: space-between;align-items: flex-end;margin-bottom: 12px }

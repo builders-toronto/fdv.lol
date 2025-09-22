@@ -8,6 +8,17 @@ const SESS_KEY  = "fdv.shill.session";
 
 const MAX_LINKS_PER_USER = 3;
 
+// detect current ref from URL
+function _currentRef() {
+  try { return new URLSearchParams(location.search).get("ref") || ""; } catch { return ""; }
+}
+function _analyticsEnabled(slug) {
+  const ref = _currentRef();
+  if (!ref) return false;
+  if (slug && ref !== slug) return false; // require match if slug provided
+  return true;
+}
+
 function _load(k){ try{ return JSON.parse(localStorage.getItem(k)) || {}; }catch{return{}} }
 function _save(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch{} }
 function _now(){ return Date.now(); }
@@ -66,11 +77,30 @@ async function _postJSON(url, payload, { keepalive = false } = {}) {
   return res;
 }
 
+// Prefer wallet_id in local storage
+function _ownerForSlug(slug) {
+  try {
+    const links = _load(LINKS_KEY);
+    const v = links?.[slug];
+    if (v?.wallet_id && _sanitizeMint(v.wallet_id)) return v.wallet_id;
+    if (v?.owner && _sanitizeMint(v.owner)) return v.owner;
+  } catch {}
+  try {
+    const usp = new URLSearchParams(location.search);
+    const w = _sanitizeMint(usp.get("wallet_id") || usp.get("owner") || "");
+    if (w) return w;
+  } catch {}
+  return "";
+}
+
 async function _sendEvent({ mint, slug, event, value = 1, keepalive = false }) {
   try {
     const mintOk = _sanitizeMint(mint);
     const slugOk = _sanitizeSlug(slug);
     if (!mintOk || !slugOk) return false;
+    if (!_analyticsEnabled(slugOk)) return false;
+
+    const walletId = _ownerForSlug(slugOk);
 
     const url = `${METRICS_BASE}/api/shill/event`;
     const payload = {
@@ -78,6 +108,8 @@ async function _sendEvent({ mint, slug, event, value = 1, keepalive = false }) {
       slug: slugOk,
       event,
       value,
+      wallet_id: walletId || undefined, // primary
+      owner: walletId || undefined,      // legacy
       path: location.pathname + location.search,
       href: location.href,
       referrer: document.referrer || "",
@@ -138,8 +170,10 @@ export function canCreateShillLink({ owner } = {}) {
   return { allowed: used < MAX_LINKS_PER_USER, used, remaining: Math.max(0, MAX_LINKS_PER_USER - used) };
 }
 
-export function makeShillShortlink({ mint, owner }) {
-  const { allowed, remaining } = canCreateShillLink({ owner });
+// Create shortlink
+export function makeShillShortlink({ mint, wallet_id, owner }) {
+  const walletId = _sanitizeMint(wallet_id || owner || "");
+  const { allowed, remaining } = canCreateShillLink({ owner: walletId });
   if (!allowed) {
     const e = new Error("Limit reached: maximum 3 links per user");
     e.code = "LIMIT";
@@ -151,14 +185,19 @@ export function makeShillShortlink({ mint, owner }) {
   while (links[slug]) slug = _slug();
 
   const did = _did();
-  const ownerId = _ownerId(owner);
+  const ownerId = _ownerId(walletId);
 
-  links[slug] = { mint, owner: owner || null, ownerId, did, createdAt: _now() };
+  // store both keys for compatibility
+  links[slug] = { mint, wallet_id: walletId, owner: walletId, ownerId, did, createdAt: _now() };
   _save(LINKS_KEY, links);
 
   const url = new URL(location.origin);
   url.pathname = `/token/${mint}`;
   url.searchParams.set("ref", slug);
+  if (walletId) {
+    url.searchParams.set("wallet_id", walletId);
+    url.searchParams.set("owner", walletId); // legacy
+  }
   return { slug, url: url.toString() };
 }
 async function _mergeStatsFromWorker(entry, localStats) {
@@ -246,18 +285,9 @@ function _bumpLocal(slug, field, by=1){
   _save(STATS_KEY, stats);
 }
 
-
-
-
-
-
-
-
-
-
-
-
 async function _bumpBoth({ slug, mint, field, event, by = 1, keepalive = false }) {
+  // Guard: only bump/send if current URL has ?ref= and matches slug! dont waste resources otherwise
+  if (!_analyticsEnabled(slug)) return;
   _bumpLocal(slug, field, by);
   _sendEvent({ mint, slug, event, value: by, keepalive }).catch(()=>{});
 }
@@ -317,9 +347,12 @@ export function startProfileShillAttribution({ mint }) {
 
 
 export async function mintShillSession() {
+  if (!_analyticsEnabled()) return null;
   try {
     const res = await _postJSON(`${METRICS_BASE}/api/shill/session`, {});
     if (!res.ok) return null;
-    return await res.json(); 
+    return await res.json();
   } catch { return null; }
 }
+
+export function shillAnalyticsEnabled() { return _analyticsEnabled(); }
