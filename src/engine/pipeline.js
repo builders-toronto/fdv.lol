@@ -440,8 +440,8 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
 
       marquee.addTrendingFromGrid(measured.slice(0, 40));
       pushUpdate(measured);
-      safeText(elMetaBase, `Generated`);
-      safeText(elTimeDerived, `Generated`);
+      safeText(elMetaBase, `Generating`);
+      safeText(elTimeDerived, `Sorting Card Data...`);
 
       if (!firstResolved) {
         firstResolved = true;

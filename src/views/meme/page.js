@@ -313,20 +313,6 @@ function ensureMarqueeSlot() {
   if (!document.getElementById('marqueeInlineStyles')) {
     const css = document.createElement('style');
     css.id = 'marqueeInlineStyles';
-    css.textContent = `
-      .marquee-wrap { overflow: hidden; }
-      .mq-row { display:flex; align-items:center; gap:10px; margin:6px 0; }
-      .mq-label { flex:0 0 auto; font-size:12px; font-weight:700; padding:4px 8px; border-radius:999px; background:#111; color:#fff; letter-spacing:.4px; text-transform:uppercase; }
-      .mq-strip { display:flex; gap:14px; overflow:hidden; mask-image: linear-gradient(to right, transparent 0, #000 40px, #000 calc(100% - 40px), transparent 100%); }
-      .mq-item { display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; background:rgba(255,255,255,.06); color:inherit; text-decoration:none; white-space:nowrap; }
-      .mq-item:hover { background:rgba(255,255,255,.12); }
-      .mq-logo { width:18px; height:18px; border-radius:50%; object-fit:cover; background:#222; }
-      .mq-sym { font-weight:700; font-size:12px; }
-      .mq-name { opacity:.8; font-size:12px; }
-      .mq-price { opacity:.8; font-size:12px; }
-      .mq-gap { width:24px; flex:0 0 auto; }
-      .mq-strip-inner { display:flex; gap:14px; }
-    `;
     document.head.appendChild(css);
   }
   return elMarqueeWrap;

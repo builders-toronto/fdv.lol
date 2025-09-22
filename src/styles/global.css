@@ -184,7 +184,7 @@ input[type="checkbox"]:checked{
 
 input[type="checkbox"]:checked::after{
   content:"";
-  position:absolute; left:4px; top:1px;
+  position:absolute; left:6px; top:0px;
   width:6px; height:10px;
   border-right:2px solid var(--neon);
   border-bottom:2px solid var(--neon);
@@ -268,7 +268,7 @@ input[type="checkbox"]:disabled{
 .card{
   position:relative; 
   z-index:0;
-  background: linear-gradient(180deg, rgba(15,22,37,.95), rgba(15,22,37,.8));
+  background: linear-gradient(180deg, rgb(14 16 27 / 95%), rgb(22 26 33 / 80%));
   /* border:1px solid rgba(122,222,255,.16); */
   border-radius:16px;
   padding:14px 14px 12px;
@@ -318,8 +318,10 @@ input[type="checkbox"]:disabled{
 .actions{display:flex; gap:10px; align-items:center; flex-wrap:wrap;justify-content: space-between; margin-top: 15px;}
 
 .swapCoin{
-  font-size: 1rem; padding:4px 8px; border-radius:8px; background: rgba(123,241,255,.06);
-  border: 1px solid cyan !important;
+    font-size: 1.1rem;
+    background: rgba(123, 241, 255, .06);
+    border: 1px solid rgb(115 200 227 / 80%) !important;
+    margin-right: 5px;
 }
 
 #stream {
@@ -328,12 +330,17 @@ input[type="checkbox"]:disabled{
 
 .btn{
   display:inline-flex; align-items:center; justify-content: center; gap:8px; padding:13px 12px; border-radius:12px; font-weight:600; letter-spacing:.2px;
-  background: linear-gradient(90deg, rgb(0 0 0 / 15%), rgb(11 156 173 / 15%));
+  /* background: linear-gradient(90deg, rgb(0 0 0 / 15%), rgb(11 156 173 / 15%)); */
   border:1px solid rgba(122,222,255,.28); color:var(--text); text-decoration:none; cursor: pointer;
 }
 .btn:hover{filter:brightness(1.1)}
 .btn.buy{border-color: rgba(26,255,122,.45); box-shadow: inset 0 0 0 1px rgba(26,255,122,.2)}
 .btn.info{opacity:.9}
+
+.innerControls .btn {
+  background: black;
+}
+
 .rec{margin-left:auto; font-weight:700; font-size:.9rem; padding:6px 10px; border-radius:10px; border:1px solid; }
 .rec.GOOD  { color: var(--good);   border-color: rgba(26,255,122,.45); background: rgba(26,255,122,.08)}
 .rec.WATCH{ color: var(--watch); border-color: rgba(255,209,102,.45); background: rgba(255,209,102,.08)}
@@ -720,6 +727,23 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 
 .searchbar{flex:1; min-width:240px; display:flex; align-items:center; gap:8px}
 .searchbar input{width:100%}
+
+
+.marquee-wrap { overflow: hidden; }
+.mq-row { display:flex; align-items:center; gap:10px; margin:6px 0; }
+.mq-label { flex:0 0 auto; font-size:12px; font-weight:700; padding:4px 8px; border-radius:999px; background:#111; color:#fff; letter-spacing:.4px; text-transform:uppercase; }
+.mq-strip { display:flex; gap:14px; overflow:hidden; mask-image: linear-gradient(to right, transparent 0, #000 40px, #000 calc(100% - 40px), transparent 100%); }
+.mq-item { display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; background: rgb(0 0 0 / 72%); color:inherit; text-decoration:none; white-space:nowrap; }
+.mq-item:hover { background:rgba(255,255,255,.12); }
+.mq-logo { width:18px; height:18px; border-radius:50%; object-fit:cover; background:#222; }
+.mq-sym { font-weight:700; font-size:12px; }
+.mq-name { opacity:.8; font-size:12px; }
+.mq-price { opacity:.8; font-size:12px; }
+.mq-gap { width:24px; flex:0 0 auto; }
+.mq-strip-inner { display:flex; gap:14px; }
+
+
+
 .small{font-size:.78rem;color:var(--muted)}
 
 .adcard{

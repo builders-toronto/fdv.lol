@@ -100,6 +100,7 @@
 }
 
 .shill__card .btn{
+  background: black;
   font-size: 1em;
   margin-left: 8px;
   border-radius: 12px;
@@ -210,7 +211,7 @@
   font-weight: 800;
 }
 .shill__header .btn.btn-ghost:hover{
-  box-shadow: 0 10px 28px rgba(26,255,213,.16);
+  /* box-shadow: 0 10px 28px rgba(26,255,213,.16); */
   transform: translateY(-1px);
 }
 
@@ -239,6 +240,10 @@
 
 .shill__tools {
   margin-top:40px; display:flex; gap:8px; flex-wrap:wrap; justify-content: space-between;
+}
+
+.shill__tools .btn{
+  background: black;
 }
 
 /* Animations */

@@ -315,7 +315,7 @@ export async function renderProfileView(input, { onBack } = {}) {
       a.className = "btn btn-ghost";
       a.setAttribute("data-link", "");
       a.href = `/shill?mint=${encodeURIComponent(mint)}`;
-      a.textContent = "Shill";
+      a.textContent = "Promote";
       actions.appendChild(a);
     }
   } catch {}
