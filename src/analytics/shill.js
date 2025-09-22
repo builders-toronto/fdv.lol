@@ -93,6 +93,14 @@ function _ownerForSlug(slug) {
   return "";
 }
 
+function parseRefParam() {
+  const ref = _currentRef();
+  if (!ref) return { slug: "", token: "" };
+  const dot = ref.indexOf(".");
+  if (dot === -1) return { slug: ref, token: "" };
+  return { slug: ref.slice(0, dot), token: ref.slice(dot + 1) };
+}
+
 async function _sendEvent({ mint, slug, event, value = 1, keepalive = false }) {
   try {
     const mintOk = _sanitizeMint(mint);
@@ -108,8 +116,8 @@ async function _sendEvent({ mint, slug, event, value = 1, keepalive = false }) {
       slug: slugOk,
       event,
       value,
-      wallet_id: walletId || undefined, // primary
-      owner: walletId || undefined,      // legacy
+      // no refToken; backend checks slug binding
+      wallet_id: walletId,
       path: location.pathname + location.search,
       href: location.href,
       referrer: document.referrer || "",
@@ -170,34 +178,38 @@ export function canCreateShillLink({ owner } = {}) {
   return { allowed: used < MAX_LINKS_PER_USER, used, remaining: Math.max(0, MAX_LINKS_PER_USER - used) };
 }
 
-// Create shortlink
-export function makeShillShortlink({ mint, wallet_id, owner }) {
+// Create shortlink (slug-only; bind to wallet_id)
+export async function makeShillShortlink({ mint, wallet_id, owner }) {
   const walletId = _sanitizeMint(wallet_id || owner || "");
+  if (!walletId) throw new Error("A valid wallet address is required");
   const { allowed, remaining } = canCreateShillLink({ owner: walletId });
   if (!allowed) {
     const e = new Error("Limit reached: maximum 3 links per user");
-    e.code = "LIMIT";
-    e.remaining = remaining;
-    throw e;
+    e.code = "LIMIT"; e.remaining = remaining; throw e;
   }
-  const links = _load(LINKS_KEY);
   let slug = _slug();
-  while (links[slug]) slug = _slug();
 
+  const regRes = await fetch(`${METRICS_BASE}/api/shill/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mint, wallet_id: walletId, slug })
+  });
+  if (!regRes.ok) throw new Error("Failed to register shill link");
+  const reg = await regRes.json();
+  slug = reg.slug || slug;
+
+  _migrateLinksStore();
+  const links = _load(LINKS_KEY);
   const did = _did();
   const ownerId = _ownerId(walletId);
-
-  // store both keys for compatibility
   links[slug] = { mint, wallet_id: walletId, owner: walletId, ownerId, did, createdAt: _now() };
   _save(LINKS_KEY, links);
 
   const url = new URL(location.origin);
   url.pathname = `/token/${mint}`;
   url.searchParams.set("ref", slug);
-  if (walletId) {
-    url.searchParams.set("wallet_id", walletId);
-    url.searchParams.set("owner", walletId); // legacy
-  }
+  url.searchParams.set("wallet_id", walletId);
+  url.searchParams.set("owner", walletId);
   return { slug, url: url.toString() };
 }
 async function _mergeStatsFromWorker(entry, localStats) {
