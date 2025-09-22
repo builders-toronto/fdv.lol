@@ -123,7 +123,7 @@ html, body {
 .profile__hero .row { display:flex; gap:8px; margin-top:6px }
 .profile__hero .actions { display:flex; gap:8px; align-items:center }
 .profile__navigation { display:flex;flex-direction: row;justify-content: space-between;align-items: flex-end;margin-bottom: 12px }
-.buy-btn { background: #000000;color: #6ec1ff;font-weight: 800;border: 1px solid #1165a3; }
+.buy-btn { color: #6ec1ff;font-weight: 800;border: 1px solid #1165a3; }
 
 @media (max-width: 520px) {
   .buy-btn { width: 30%; font-size: small; padding: 12px; }

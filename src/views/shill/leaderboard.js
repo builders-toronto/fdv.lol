@@ -27,7 +27,7 @@ export async function renderShillLeaderboardView({ mint } = {}) {
       <div class="shill__card">
         <div class="form" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
           <button class="btn" id="btnRefresh">Refresh</button>
-          <label class="lbl small" style="margin-left:8px;">Auto-refresh</label>
+          <label for="autoRefresh" class="lbl small" style="margin-left:8px;">Auto-refresh</label>
           <input type="checkbox" id="autoRefresh" checked />
           <span class="note small" id="statusNote"></span>
         </div>

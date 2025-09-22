@@ -50,4 +50,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 
 
-git commit -m "metrics: add wallet_id + tighten controls (CORS allowlist, GET rate limits, nonce dedupe, time_ms clamp); leaderboard shows Solscan wallet links"
+git commit -m "frontend(shill): non-blocking live leaderboard with snapshot+tail, robust NDJSON parser + dedupe" -m "Render quickly with a finite 7-day snapshot, then update via background live tail without blocking the UI." -m "Ensure only one live connection using AbortController; stop on hidden/unload and auto-reconnect when visible." -m "Add agg/seen state; dedupe by nonce (fallback 1s bucket), cap seen size; per-slug aggregation (views/tradeClicks/swapStarts/walletConnects/timeMs) with SOL owner detection." -m "Improve NDJSON streaming parser (BOM/CRLF/blank-line tolerant, incremental line splitting)." -m "Throttle UI updates via requestAnimationFrame; show Live/Updated status; limit table to top 200." -m "Fix 'agg is not defined' and add clearer error"
