@@ -15,10 +15,10 @@
   padding: clamp(12px, 2.8vw, 28px) clamp(10px, 2.4vw, 24px) clamp(32px, 5vw, 64px);
   color: var(--text);
 
-  background:
+  /* background:
     radial-gradient(1200px 800px at 50% -10%, color-mix(in oklab, var(--accent) 8%, transparent), transparent 60%),
     linear-gradient(180deg, rgba(10,16,24,.6), transparent 40%),
-    var(--bg);
+    var(--bg); */
 }
 
 /* Header */
@@ -207,7 +207,7 @@
 /* Buttons inside header override (ghost) */
 .shill__header .btn.btn-ghost{
   border: 1px solid rgba(122,222,255,.28);
-  background: linear-gradient(90deg, rgba(26,255,213,.08), rgba(123,241,255,.08));
+  /* background: linear-gradient(90deg, rgba(26,255,213,.08), rgba(123,241,255,.08)); */
   font-weight: 800;
 }
 .shill__header .btn.btn-ghost:hover{

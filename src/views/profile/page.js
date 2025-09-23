@@ -8,6 +8,7 @@ import renderShell from "./render/shell.js";
 import { buildStatsGrid, setStat, setStatHtml, setStatPrice } from "./render/statsGrid.js";
 import { setStatStatusByKey } from "./render/statuses.js";
 import { renderBarChart } from "./render/charts.js";
+import { mountLivePriceLine, updateLivePriceLine } from "./render/liveLine.js"; 
 import renderLinks from "./render/links.js";
 import mountRecommendationPanel, { updateRecommendationPanel } from "./render/recommendation.js";
 import { fmtMoney, fmtNum, pill, cssReco } from "./formatters.js";
@@ -142,6 +143,213 @@ function startProfileFeed(mint, initialModel) {
   }
 }
 
+export async function renderProfileView(input, { onBack } = {}) {
+  const elApp = document.getElementById("app");
+  const elHeader = document.querySelector(".header");
+  if (!elApp) return;
+
+  const style = document.createElement("link");
+  style.rel = "stylesheet";
+  style.href = "/src/styles/profile.css";
+  document.head.appendChild(style);
+
+  const mint = typeof input === "string" ? input : input?.mint;
+  if (!mint) {
+    errorNotice(elApp, "Token not found.");
+    return;
+  }
+
+  try {
+    if (!SWAP_BRIDGE.inited) {
+      initSwap();
+      bindSwapButtons(document);
+      SWAP_BRIDGE.inited = true;
+    }
+  } catch {}
+
+  let CURRENT_AD = null;
+  try { CURRENT_AD = pickAd(await loadAds()); } catch { CURRENT_AD = null; }
+  const adHtml = CURRENT_AD ? adCard(CURRENT_AD) : "";
+
+  renderShell({ mount: elApp, mint, adHtml });
+
+  const gridEl = document.getElementById("statsGrid");
+  buildStatsGrid(gridEl);
+  wireStatsResizeAutoShortLabels(gridEl);
+  setupStatsCollapse(gridEl);
+  const statsCollapseBtn = document.querySelector(".profile__stats-toggle");
+  setupExtraMetricsToggle(document.querySelector(".profile__card__extra_metrics"));
+
+
+  wireNavigation({ onBack });
+  wireCopy(mint);
+
+  // Initial data
+  let raw;
+  try {
+    raw = await fetchTokenInfo(mint);
+    if (raw.error) return errorNotice(elApp, raw.error);
+  } catch (e) {
+    console.warn("fetchTokenInfo failed:", e);
+    window.location.href = "/";
+    return;
+  }
+  const t = sanitizeToken(raw);
+  const scored = scoreAndRecommendOne(t);
+
+  if (elHeader) elHeader.style.display = "none";
+
+  // Hero & actions
+  const logo = t.imageUrl || FALLBACK_LOGO(t.symbol);
+  const media = elApp.querySelector(".profile__hero .media");
+  if (media) media.innerHTML = `<img class="logo" src="${logo}" alt="">`;
+  const title = elApp.querySelector(".profile__hero .title");
+  if (title) title.textContent = t.symbol || "Token";
+  const tradeTop = document.getElementById("btnTradeTop");
+  if (tradeTop) {
+    if (t.headlineUrl) { tradeTop.href = t.headlineUrl; tradeTop.classList.remove("disabled"); }
+    else tradeTop.remove();
+  }
+
+  // Swap button in actions
+  try {
+    const hydrate = {
+      mint, symbol: t.symbol, name: t.name, imageUrl: t.imageUrl, headerUrl: t.headerUrl,
+      priceUsd: t.priceUsd, v24hTotal: t.v24hTotal, liquidityUsd: t.liquidityUsd,
+      fdv: t.fdv ?? t.marketCap, marketCap: t.marketCap ?? t.fdv, headlineUrl: t.headlineUrl, headlineDex: t.headlineDex,
+    };
+    let swapBtn = document.getElementById("btnSwapAction");
+    if (!swapBtn) {
+      swapBtn = createSwapButton({ mint, label: "Swap", className: "btn btn--primary btn-ghost" });
+      swapBtn.id = "btnSwapAction";
+      const actions = elApp.querySelector(".profile__navigation .actions");
+      if (actions) actions.prepend(swapBtn);
+    }
+    swapBtn.dataset.tokenHydrate = JSON.stringify(hydrate);
+    if (t.headlineUrl) swapBtn.dataset.pairUrl = t.headlineUrl; else swapBtn.removeAttribute("data-pair-url");
+  } catch {}
+
+  try {
+    const actions = elApp.querySelector(".extraFeat");
+    if (actions && !document.getElementById("btnShill")) {
+      const a = document.createElement("a");
+      a.id = "btnShill";
+      a.className = "btn btn-ghost";
+      a.setAttribute("data-link", "");
+      a.href = `/shill?mint=${encodeURIComponent(mint)}`;
+      a.textContent = "Promote";
+      actions.appendChild(a);
+    }
+  } catch {}
+
+  // Stats values (initial)
+  setStatPrice(gridEl, t.priceUsd, { maxFrac: 9, minFrac: 1 });
+  // Seed line with initial price
+
+
+  setStat(gridEl, 1, fmtMoney(t.liquidityUsd));
+  setStat(gridEl, 2, fmtMoney(t.fdv ?? t.marketCap));
+  setStat(gridEl, 3, Number.isFinite(t.liqToFdvPct) ? `${t.liqToFdvPct.toFixed(2)}%` : "—");
+  setStat(gridEl, 4, fmtMoney(t.v24hTotal));
+  setStat(gridEl, 5, Number.isFinite(t.volToLiq24h) ? `${t.volToLiq24h.toFixed(2)}×` : "—");
+  setStatHtml(gridEl, 6, pill(t.change5m));
+  setStatHtml(gridEl, 7, pill(t.change1h));
+  setStatHtml(gridEl, 8, pill(t.change6h));
+  setStatHtml(gridEl, 9, pill(t.change24h));
+  setStat(gridEl, 10, (() => {
+    const ms = t.ageMs;
+    if (!Number.isFinite(ms) || ms < 1000) return "—";
+    const s = Math.floor(ms / 1000);
+    const u = [["y",31536000],["mo",2592000],["d",86400],["h",3600],["m",60],["s",1]];
+    for (const [label, div] of u) if (s >= div) return `${Math.floor(s / div)}${label}`;
+    return "0s";
+  })());
+  setStat(gridEl, 11, `${fmtNum(t.tx24h.buys)} / ${fmtNum(t.tx24h.sells)}`);
+  setStat(gridEl, 12, Number.isFinite(t.buySell24h) ? `${(t.buySell24h * 100).toFixed(1)}% buys` : "—");
+
+  // Status badges
+  const LIQ_OK = Number.isFinite(t.liquidityUsd) && t.liquidityUsd >= BUY_RULES.liq;
+  const VOL_OK = Number.isFinite(t.v24hTotal) && t.v24hTotal >= BUY_RULES.vol24;
+  const CH1H_OK = Number.isFinite(t.change1h) && t.change1h > BUY_RULES.change1h;
+  const liqToFdvPct = Number.isFinite(t.liqToFdvPct) ? t.liqToFdvPct : null;
+  const minLiqPct = 100 / Math.max(FDV_LIQ_PENALTY.ratio, 1);
+  const LIQFDV_OK = Number.isFinite(liqToFdvPct) ? liqToFdvPct >= minLiqPct : null;
+  const CH6H_OK = Number.isFinite(t.change6h) ? t.change6h > 0 : null;
+  const CH24H_OK = Number.isFinite(t.change24h) ? t.change24h > 0 : null;
+  const VLIQR_OK = Number.isFinite(t.volToLiq24h) ? t.volToLiq24h >= 0.5 : null;
+  const BUYR_OK = Number.isFinite(t.buySell24h) ? t.buySell24h >= 0.5 : null;
+
+  setStatStatusByKey(gridEl, "liq", { ok: LIQ_OK, reason: LIQ_OK ? "Meets liquidity rule" : `Needs ≥ ${Intl.NumberFormat().format(BUY_RULES.liq)} liquidity` });
+  setStatStatusByKey(gridEl, "fdv", { ok: null });
+  setStatStatusByKey(gridEl, "liqfdv", { ok: LIQFDV_OK, reason: LIQFDV_OK === null ? "" : LIQFDV_OK ? "FDV/Liq is balanced" : "FDV/Liq imbalance detected" });
+  setStatStatusByKey(gridEl, "v24", { ok: VOL_OK, reason: VOL_OK ? "Meets 24h volume rule" : `Needs ≥ ${Intl.NumberFormat().format(BUY_RULES.vol24)} 24h volume` });
+  setStatStatusByKey(gridEl, "vliqr", { ok: VLIQR_OK, reason: VLIQR_OK === null ? "" : VLIQR_OK ? "Healthy 24h turnover vs liquidity" : "Low turnover vs liquidity" });
+  setStatStatusByKey(gridEl, "d1h", { ok: CH1H_OK, reason: CH1H_OK ? "Positive 1h momentum" : `Needs > ${BUY_RULES.change1h.toFixed(2)}% 1h change` });
+  setStatStatusByKey(gridEl, "d6h", { ok: CH6H_OK, reason: CH6H_OK ? "Up over 6h" : "Down over 6h" });
+  setStatStatusByKey(gridEl, "d24h", { ok: CH24H_OK, reason: CH24H_OK ? "Up over 24h" : "Down over 24h" });
+  setStatStatusByKey(gridEl, "price", { ok: null });
+  setStatStatusByKey(gridEl, "d5m", { ok: null });
+  setStatStatusByKey(gridEl, "age", { ok: null });
+  const txKnown = Number.isFinite(t?.tx24h?.buys) && Number.isFinite(t?.tx24h?.sells);
+  const TX_OK = txKnown ? t.tx24h.buys + t.tx24h.sells > 0 : null;
+  setStatStatusByKey(gridEl, "bs24", { ok: TX_OK, reason: TX_OK === null ? "" : TX_OK ? "24h trading present" : "No 24h trades" });
+  setStatStatusByKey(gridEl, "buyratio", { ok: BUYR_OK, reason: BUYR_OK === null ? "" : BUYR_OK ? "Buy pressure ≥ 50%" : "Sell pressure ≥ 50%" });
+
+  // Badge in hero
+  const badgeWrap = elApp.querySelector(".profile__hero .row");
+  if (badgeWrap) {
+    badgeWrap.innerHTML = `<span class="badge ${cssReco(scored.recommendation)}">${scored.recommendation}</span>`;
+  }
+
+  // Recommendation panel 
+  mountRecommendationPanel(statsCollapseBtn, { scored, token: t, checks: { LIQFDV_OK, VLIQR_OK, BUYR_OK } });
+
+  // Charts
+  const mom = [t.change5m, t.change1h, t.change6h, t.change24h].map((x) => (Number.isFinite(x) ? Math.max(0, x) : 0));
+  renderBarChart(document.getElementById("momBars"), mom, { height: 72, max: Math.max(5, ...mom), labels: ["5m", "1h", "6h", "24h"] });
+  const vols = [t.v5mTotal, t.v1hTotal, t.v6hTotal, t.v24hTotal].map((x) => (Number.isFinite(x) ? x : 0));
+  renderBarChart(document.getElementById("volBars"), vols, { height: 72, labels: ["5m", "1h", "6h", "24h"] });
+
+  renderPairsTable(document.getElementById("pairsBody"), t.pairs);
+
+  // Live price line
+  let liveWrap = document.getElementById("livePriceWrap");
+  if (!liveWrap) {
+    liveWrap = document.createElement("div");
+    liveWrap.id = "livePriceWrap";
+  }
+
+  const pairsBody = document.querySelector(".profile__card__extra_metrics")
+
+  const anchor = pairsBody;
+
+  anchor.parentElement.insertBefore(liveWrap, anchor);
+
+  if (!liveWrap.__livePrice) {
+    mountLivePriceLine(liveWrap, { windowMs: 10 * 60 * 1000, height: 140 });
+  }
+
+  if (Number.isFinite(t.priceUsd)) {
+    updateLivePriceLine(liveWrap, +t.priceUsd, Date.now());
+  }
+
+  // Chat
+  mountGiscus({ mint });
+
+  // Socials
+  const linksMount = document.getElementById("profileLinks");
+  if (linksMount) {
+    renderLinks(linksMount, t.socials);
+    if (!linksMount.innerHTML.trim()) linksMount.style.display = "none";
+  }
+
+  // Live updates
+  try { startProfileFeed(t.mint || mint, t); } catch {}
+
+  // Start shill attribution if a referral is present (?ref=slug)
+  try { startProfileShillAttribution({ mint }); } catch {}
+}
+
 function updateStatsGridLive(t, prev) {
   const qv = (key) => document.querySelector(`.stat[data-stat="${key}"] .v`);
   const flashV = (el, diff) => {
@@ -160,6 +368,11 @@ function updateStatsGridLive(t, prev) {
       const grid = document.getElementById("statsGrid");
       if (grid) setStatPrice(grid, t.priceUsd, { maxFrac: 6, minFrac: 1 });
       flashV(el, d);
+    }
+    // push to live line if changed
+    if (Number.isFinite(t.priceUsd) && t.priceUsd !== prev?.priceUsd) {
+      const wrap = document.getElementById("livePriceWrap");
+      if (wrap) updateLivePriceLine(wrap, +t.priceUsd, Date.now());
     }
   }
   // liquidity
@@ -224,188 +437,4 @@ function updatePairsTableLive(t) {
   const body = document.getElementById("pairsBody");
   if (!body) return;
   try { renderPairsTable(body, t.pairs); } catch {}
-}
-
-export async function renderProfileView(input, { onBack } = {}) {
-  const elApp = document.getElementById("app");
-  const elHeader = document.querySelector(".header");
-  if (!elApp) return;
-
-  const style = document.createElement("link");
-  style.rel = "stylesheet";
-  style.href = "/src/styles/profile.css";
-  document.head.appendChild(style);
-
-  const mint = typeof input === "string" ? input : input?.mint;
-  if (!mint) {
-    errorNotice(elApp, "Token not found.");
-    return;
-  }
-
-  try {
-    if (!SWAP_BRIDGE.inited) {
-      initSwap();
-      bindSwapButtons(document);
-      SWAP_BRIDGE.inited = true;
-    }
-  } catch {}
-
-  let CURRENT_AD = null;
-  try { CURRENT_AD = pickAd(await loadAds()); } catch { CURRENT_AD = null; }
-  const adHtml = CURRENT_AD ? adCard(CURRENT_AD) : "";
-
-  renderShell({ mount: elApp, mint, adHtml });
-
-  const gridEl = document.getElementById("statsGrid");
-  buildStatsGrid(gridEl);
-  wireStatsResizeAutoShortLabels(gridEl);
-  setupStatsCollapse(gridEl);
-  const statsCollapseBtn = document.querySelector(".profile__stats-toggle");
-  setupExtraMetricsToggle(document.querySelector(".profile__card__extra_metrics"));
-
-  wireNavigation({ onBack });
-  wireCopy(mint);
-
-  // Initial data
-  let raw;
-  try {
-    raw = await fetchTokenInfo(mint);
-    if (raw.error) return errorNotice(elApp, raw.error);
-  } catch (e) {
-    console.warn("fetchTokenInfo failed:", e);
-    window.location.href = "/";
-    return;
-  }
-  const t = sanitizeToken(raw);
-  const scored = scoreAndRecommendOne(t);
-
-  if (elHeader) elHeader.style.display = "none";
-
-  // Hero & actions
-  const logo = t.imageUrl || FALLBACK_LOGO(t.symbol);
-  const media = elApp.querySelector(".profile__hero .media");
-  if (media) media.innerHTML = `<img class="logo" src="${logo}" alt="">`;
-  const title = elApp.querySelector(".profile__hero .title");
-  if (title) title.textContent = t.symbol || "Token";
-  const tradeTop = document.getElementById("btnTradeTop");
-  if (tradeTop) {
-    if (t.headlineUrl) { tradeTop.href = t.headlineUrl; tradeTop.classList.remove("disabled"); }
-    else tradeTop.remove();
-  }
-
-  // Swap button in actions
-  try {
-    const hydrate = {
-      mint, symbol: t.symbol, name: t.name, imageUrl: t.imageUrl, headerUrl: t.headerUrl,
-      priceUsd: t.priceUsd, v24hTotal: t.v24hTotal, liquidityUsd: t.liquidityUsd,
-      fdv: t.fdv ?? t.marketCap, marketCap: t.marketCap ?? t.fdv, headlineUrl: t.headlineUrl, headlineDex: t.headlineDex,
-    };
-    let swapBtn = document.getElementById("btnSwapAction");
-    if (!swapBtn) {
-      swapBtn = createSwapButton({ mint, label: "Swap", className: "btn btn--primary btn-ghost" });
-      swapBtn.id = "btnSwapAction";
-      const actions = elApp.querySelector(".profile__navigation .actions");
-      if (actions) actions.prepend(swapBtn);
-    }
-    swapBtn.dataset.tokenHydrate = JSON.stringify(hydrate);
-    if (t.headlineUrl) swapBtn.dataset.pairUrl = t.headlineUrl; else swapBtn.removeAttribute("data-pair-url");
-  } catch {}
-
-  try {
-    const actions = elApp.querySelector(".extraFeat");
-    if (actions && !document.getElementById("btnShill")) {
-      const a = document.createElement("a");
-      a.id = "btnShill";
-      a.className = "btn btn-ghost";
-      a.setAttribute("data-link", "");
-      a.href = `/shill?mint=${encodeURIComponent(mint)}`;
-      a.textContent = "Promote";
-      actions.appendChild(a);
-    }
-  } catch {}
-
-  // Stats values (initial)
-  // const PRICE_USD = Number.isFinite(t.priceUsd) ? `$${t.priceUsd.toFixed(6)}` : "—";
-  // setStat(gridEl, 0, PRICE_USD); // format to the decima;
-  setStatPrice(gridEl, t.priceUsd, { maxFrac: 9, minFrac: 1 });
-  setStat(gridEl, 1, fmtMoney(t.liquidityUsd));
-  setStat(gridEl, 2, fmtMoney(t.fdv ?? t.marketCap));
-  setStat(gridEl, 3, Number.isFinite(t.liqToFdvPct) ? `${t.liqToFdvPct.toFixed(2)}%` : "—");
-  setStat(gridEl, 4, fmtMoney(t.v24hTotal));
-  setStat(gridEl, 5, Number.isFinite(t.volToLiq24h) ? `${t.volToLiq24h.toFixed(2)}×` : "—");
-  setStatHtml(gridEl, 6, pill(t.change5m));
-  setStatHtml(gridEl, 7, pill(t.change1h));
-  setStatHtml(gridEl, 8, pill(t.change6h));
-  setStatHtml(gridEl, 9, pill(t.change24h));
-  setStat(gridEl, 10, (() => {
-    const ms = t.ageMs;
-    if (!Number.isFinite(ms) || ms < 1000) return "—";
-    const s = Math.floor(ms / 1000);
-    const u = [["y",31536000],["mo",2592000],["d",86400],["h",3600],["m",60],["s",1]];
-    for (const [label, div] of u) if (s >= div) return `${Math.floor(s / div)}${label}`;
-    return "0s";
-  })());
-  setStat(gridEl, 11, `${fmtNum(t.tx24h.buys)} / ${fmtNum(t.tx24h.sells)}`);
-  setStat(gridEl, 12, Number.isFinite(t.buySell24h) ? `${(t.buySell24h * 100).toFixed(1)}% buys` : "—");
-
-  // Status badges
-  const LIQ_OK = Number.isFinite(t.liquidityUsd) && t.liquidityUsd >= BUY_RULES.liq;
-  const VOL_OK = Number.isFinite(t.v24hTotal) && t.v24hTotal >= BUY_RULES.vol24;
-  const CH1H_OK = Number.isFinite(t.change1h) && t.change1h > BUY_RULES.change1h;
-  const liqToFdvPct = Number.isFinite(t.liqToFdvPct) ? t.liqToFdvPct : null;
-  const minLiqPct = 100 / Math.max(FDV_LIQ_PENALTY.ratio, 1);
-  const LIQFDV_OK = Number.isFinite(liqToFdvPct) ? liqToFdvPct >= minLiqPct : null;
-  const CH6H_OK = Number.isFinite(t.change6h) ? t.change6h > 0 : null;
-  const CH24H_OK = Number.isFinite(t.change24h) ? t.change24h > 0 : null;
-  const VLIQR_OK = Number.isFinite(t.volToLiq24h) ? t.volToLiq24h >= 0.5 : null;
-  const BUYR_OK = Number.isFinite(t.buySell24h) ? t.buySell24h >= 0.5 : null;
-
-  setStatStatusByKey(gridEl, "liq", { ok: LIQ_OK, reason: LIQ_OK ? "Meets liquidity rule" : `Needs ≥ ${Intl.NumberFormat().format(BUY_RULES.liq)} liquidity` });
-  setStatStatusByKey(gridEl, "fdv", { ok: null });
-  setStatStatusByKey(gridEl, "liqfdv", { ok: LIQFDV_OK, reason: LIQFDV_OK === null ? "" : LIQFDV_OK ? "FDV/Liq is balanced" : "FDV/Liq imbalance detected" });
-  setStatStatusByKey(gridEl, "v24", { ok: VOL_OK, reason: VOL_OK ? "Meets 24h volume rule" : `Needs ≥ ${Intl.NumberFormat().format(BUY_RULES.vol24)} 24h volume` });
-  setStatStatusByKey(gridEl, "vliqr", { ok: VLIQR_OK, reason: VLIQR_OK === null ? "" : VLIQR_OK ? "Healthy 24h turnover vs liquidity" : "Low turnover vs liquidity" });
-  setStatStatusByKey(gridEl, "d1h", { ok: CH1H_OK, reason: CH1H_OK ? "Positive 1h momentum" : `Needs > ${BUY_RULES.change1h.toFixed(2)}% 1h change` });
-  setStatStatusByKey(gridEl, "d6h", { ok: CH6H_OK, reason: CH6H_OK ? "Up over 6h" : "Down over 6h" });
-  setStatStatusByKey(gridEl, "d24h", { ok: CH24H_OK, reason: CH24H_OK ? "Up over 24h" : "Down over 24h" });
-  setStatStatusByKey(gridEl, "price", { ok: null });
-  setStatStatusByKey(gridEl, "d5m", { ok: null });
-  setStatStatusByKey(gridEl, "age", { ok: null });
-  const txKnown = Number.isFinite(t?.tx24h?.buys) && Number.isFinite(t?.tx24h?.sells);
-  const TX_OK = txKnown ? t.tx24h.buys + t.tx24h.sells > 0 : null;
-  setStatStatusByKey(gridEl, "bs24", { ok: TX_OK, reason: TX_OK === null ? "" : TX_OK ? "24h trading present" : "No 24h trades" });
-  setStatStatusByKey(gridEl, "buyratio", { ok: BUYR_OK, reason: BUYR_OK === null ? "" : BUYR_OK ? "Buy pressure ≥ 50%" : "Sell pressure ≥ 50%" });
-
-  // Badge in hero
-  const badgeWrap = elApp.querySelector(".profile__hero .row");
-  if (badgeWrap) {
-    badgeWrap.innerHTML = `<span class="badge ${cssReco(scored.recommendation)}">${scored.recommendation}</span>`;
-  }
-
-  // Recommendation panel (then live updates will animate bars)
-  mountRecommendationPanel(statsCollapseBtn, { scored, token: t, checks: { LIQFDV_OK, VLIQR_OK, BUYR_OK } });
-
-  // Charts
-  const mom = [t.change5m, t.change1h, t.change6h, t.change24h].map((x) => (Number.isFinite(x) ? Math.max(0, x) : 0));
-  renderBarChart(document.getElementById("momBars"), mom, { height: 72, max: Math.max(5, ...mom), labels: ["5m", "1h", "6h", "24h"] });
-  const vols = [t.v5mTotal, t.v1hTotal, t.v6hTotal, t.v24hTotal].map((x) => (Number.isFinite(x) ? x : 0));
-  renderBarChart(document.getElementById("volBars"), vols, { height: 72, labels: ["5m", "1h", "6h", "24h"] });
-
-  renderPairsTable(document.getElementById("pairsBody"), t.pairs);
-
-  // Chat
-  mountGiscus({ mint });
-
-  // Socials
-  const linksMount = document.getElementById("profileLinks");
-  if (linksMount) {
-    renderLinks(linksMount, t.socials);
-    if (!linksMount.innerHTML.trim()) linksMount.style.display = "none";
-  }
-
-  // Live updates
-  try { startProfileFeed(t.mint || mint, t); } catch {}
-
-  // Start shill attribution if a referral is present (?ref=slug)
-  try { startProfileShillAttribution({ mint }); } catch {}
 }
