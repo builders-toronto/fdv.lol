@@ -1,5 +1,5 @@
 import { MAX_CARDS } from '../../config/env.js';
-import { coinCard } from './cards.js';
+import { coinCard, priceHTML } from './cards.js';
 import { adCard } from '../../ads/load.js';
 import { sparklineSVG } from './render/sparkline.js';
 import { pctChipsHTML } from './render/chips.js';
@@ -507,8 +507,10 @@ function updateCardDOM(el, it) {
   // price
   const priceEl = el.querySelector('.v-price');
   if (priceEl) {
-    const txt = it.priceUsd ? ('$'+Number(it.priceUsd).toLocaleString(undefined,{maximumFractionDigits:6})) : '—';
-    if (priceEl.textContent !== txt) priceEl.textContent = txt;
+    const nextHtml = (it.priceUsd != null && Number.isFinite(+it.priceUsd))
+      ? priceHTML(+it.priceUsd)
+      : '—';
+    if (priceEl.innerHTML !== nextHtml) priceEl.innerHTML = nextHtml;
   }
 
   // score

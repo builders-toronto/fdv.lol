@@ -5,7 +5,7 @@ import { mountGiscus } from "../meme/chat.js";
 
 import sanitizeToken from "./sanitizeToken.js";
 import renderShell from "./render/shell.js";
-import { buildStatsGrid, setStat, setStatHtml } from "./render/statsGrid.js";
+import { buildStatsGrid, setStat, setStatHtml, setStatPrice } from "./render/statsGrid.js";
 import { setStatStatusByKey } from "./render/statuses.js";
 import { renderBarChart } from "./render/charts.js";
 import renderLinks from "./render/links.js";
@@ -156,7 +156,11 @@ function updateStatsGridLive(t, prev) {
   {
     const el = qv("price");
     const d = num(t.priceUsd) - num(prev?.priceUsd);
-    if (el) { el.textContent = Number.isFinite(t.priceUsd) ? `$${t.priceUsd.toFixed(6)}` : "—"; flashV(el, d); }
+    if (el) {
+      const grid = document.getElementById("statsGrid");
+      if (grid) setStatPrice(grid, t.priceUsd, { maxFrac: 6, minFrac: 1 });
+      flashV(el, d);
+    }
   }
   // liquidity
   {
@@ -321,8 +325,9 @@ export async function renderProfileView(input, { onBack } = {}) {
   } catch {}
 
   // Stats values (initial)
-  const PRICE_USD = Number.isFinite(t.priceUsd) ? `$${t.priceUsd.toFixed(6)}` : "—";
-  setStat(gridEl, 0, PRICE_USD);
+  // const PRICE_USD = Number.isFinite(t.priceUsd) ? `$${t.priceUsd.toFixed(6)}` : "—";
+  // setStat(gridEl, 0, PRICE_USD); // format to the decima;
+  setStatPrice(gridEl, t.priceUsd, { maxFrac: 9, minFrac: 1 });
   setStat(gridEl, 1, fmtMoney(t.liquidityUsd));
   setStat(gridEl, 2, fmtMoney(t.fdv ?? t.marketCap));
   setStat(gridEl, 3, Number.isFinite(t.liqToFdvPct) ? `${t.liqToFdvPct.toFixed(2)}%` : "—");
