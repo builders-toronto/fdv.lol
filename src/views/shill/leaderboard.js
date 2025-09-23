@@ -89,14 +89,18 @@ export async function renderShillLeaderboardView({ mint } = {}) {
   async function fetchAllSlugs() {
     const items = [];
     let cursor = "";
-    for (let i = 0; i < 10; i++) { // cap to avoid infinite loops
-      const res = await fetch(`${METRICS_BASE}/api/shill/slugs?mint=${encodeURIComponent(mint)}&limit=2000&cursor=${encodeURIComponent(cursor)}`, { cache: "no-store" });
+    const since = sevenDaysAgo(); 
+
+    for (let i = 0; i < 10; i++) {
+      const url = `${METRICS_BASE}/api/shill/slugs?mint=${encodeURIComponent(mint)}&limit=2000&cursor=${encodeURIComponent(cursor)}&active=1&since=${encodeURIComponent(since)}`;
+      const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) break;
       const j = await res.json();
       if (Array.isArray(j.items)) items.push(...j.items);
       cursor = j.cursor || "";
       if (!cursor) break;
     }
+    console.log(items);
     return items;
   }
 
