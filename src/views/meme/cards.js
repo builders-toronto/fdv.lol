@@ -4,6 +4,7 @@ import { EXPLORER, FALLBACK_LOGO, JUP_SWAP, shortAddr } from '../../config/env.j
 import { normalizeSocial, iconFor, xSearchUrl } from '../../data/socials.js';
 import { normalizeWebsite } from '../../data/normalize.js';
 import { fmtUsd } from '../../utils/tools.js';
+import { formatPriceParts } from '../../lib/formatPrice.js'; 
 
 function escAttr(v) {
   const s = String(v ?? '');
@@ -12,6 +13,62 @@ function escAttr(v) {
     .replaceAll('"', '&quot;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;');
+}
+
+// Normalize to plain decimal (handles 1e-9)
+function toDecimalString(v) {
+  if (v == null) return "0.0";
+  let s = String(v).trim();
+  if (/^[+-]?\d+(\.\d+)?$/.test(s)) return s.includes(".") ? s : s + ".0";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "0.0";
+  if (Math.abs(n) >= 1) return n.toString().includes(".") ? n.toString() : n.toString() + ".0";
+  const m = n.toExponential().match(/^([+-]?\d(?:\.\d+)?)[eE]([+-]\d+)$/);
+  if (!m) return "0.0";
+  const coef = m[1].replace(".", "").replace(/^-/, "");
+  const exp = parseInt(m[2], 10);
+  if (exp >= 0) {
+    const pad = exp - (m[1].split(".")[1]?.length || 0);
+    return coef + (pad > 0 ? "0".repeat(pad) : "");
+  } else {
+    const k = -exp - 1;
+    return "0." + "0".repeat(k) + coef;
+  }
+}
+
+// Price HTML with tiny counter for sub-unit values
+export function priceHTML(value) {
+  if (value == null || !Number.isFinite(+value)) return '—';
+  const dec = toDecimalString(value);
+  const [rawInt = "0", rawFrac = "0"] = dec.replace(/^[+-]?/, "").split(".");
+  const sign = String(value).trim().startsWith("-") ? "-" : "";
+  const title = `${sign}${rawInt}.${rawFrac}`;
+
+  // >= 1: standard formatted price with clamped fraction
+  if (rawInt !== "0") {
+    const p = formatPriceParts(dec, { maxFrac: 6, minFrac: 1 });
+    return `
+      <span class="currency">$</span>
+      <span class="price" title="${escAttr(p.text)}">
+        ${p.sign ? `<span class="sign">${p.sign}</span>` : ""}
+        <span class="int">${p.int}</span><span class="dot">.</span><span class="frac">${p.frac}</span>
+      </span>
+    `;
+  }
+
+  // < 1: tiny price with leading-zero counter and significant digits
+  const fracRaw = (rawFrac || "0").replace(/[^0-9]/g, "");
+  const leadZeros = (fracRaw.match(/^0+/) || [""])[0].length;
+  const sig = fracRaw.slice(leadZeros, leadZeros + 3) || "0"; // first few significant digits
+
+  return `
+    <span class="currency">$</span>
+    <span class="priceTiny" title="${escAttr(title)}" aria-label="${escAttr(`0.0 - ${leadZeros} DECIMAL - ${sig}`)}">
+      <span class="base">0.0</span>
+      <span class="count">${leadZeros}</span>
+      <span class="sig">${escAttr(sig)}</span>
+    </span>
+  `;
 }
 
 export function coinCard(it) {
@@ -95,7 +152,6 @@ export function coinCard(it) {
       ${sparklineSVG(it._chg)}
     </div>`;
 
-  // Inline Swap button to attach extra data-* without changing swapButtonHTML()
   const swapBtn = `
     <button
       type="button"
@@ -134,7 +190,7 @@ export function coinCard(it) {
   </div>
 
   <div class="metrics">
-    <div class="kv"><div class="k">Price</div><div class="v v-price">${it.priceUsd ? ('$'+Number(it.priceUsd).toLocaleString(undefined,{maximumFractionDigits:6})) : '—'}</div></div>
+    <div class="kv"><div class="k">Price</div><div class="v v-price">${it.priceUsd != null ? priceHTML(+it.priceUsd) : '—'}</div></div>
     <div class="kv"><div class="k">Trending Score</div><div class="v v-score">${Math.round((it.score||0)*100)} / 100</div></div>
     <div class="kv"><div class="k">24h Volume</div><div class="v v-vol24">${fmtUsd(it.volume?.h24)}</div></div>
     <div class="kv"><div class="k">Liquidity</div><div class="v v-liq">${fmtUsd(it.liquidityUsd)}</div></div>
