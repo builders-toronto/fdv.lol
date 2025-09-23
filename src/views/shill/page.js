@@ -82,10 +82,10 @@ export async function renderShillContestView(input) {
     const valid = isValidSolAddr(owner);
 
     // HTML5 validity + inline note
-    handleIn.setCustomValidity(valid ? "" : "Enter a valid Solana wallet address (base58, 32–44 chars).");
+    handleIn.setCustomValidity(valid ? "" : "Enter a valid Solana wallet address.");
     limitNote.textContent = valid
       ? ""
-      : "Enter a valid Solana wallet address (base58, 32–44 chars).";
+      : "Enter a valid Solana wallet address.";
 
     // Respect creation limits only when valid
     let remaining = 0;
@@ -97,7 +97,7 @@ export async function renderShillContestView(input) {
     if (valid) {
       limitNote.textContent = remaining > 0
         ? `You can create ${remaining} more link${remaining === 1 ? "" : "s"}.`
-        : "Link limit reached (3 per user). Delete old ones to create more.";
+        : "Link limit reached (3 per user).";
     }
   }
 
