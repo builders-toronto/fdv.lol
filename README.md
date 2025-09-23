@@ -50,4 +50,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 
 
-"ui: live price line under stats + tiny-price counter; keep formatted price on updates; black cards w/ green border"
+git commit -m "profile: live line graph from 5m/1h/6h/24h % anchors; animated, responsive"
