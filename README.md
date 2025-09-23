@@ -50,4 +50,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 
 
-git commit -m "profile: live line graph from 5m/1h/6h/24h % anchors; animated, responsive"
+git commit -am "fix: correct bump logic on swap success"

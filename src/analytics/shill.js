@@ -343,7 +343,6 @@ export function startProfileShillAttribution({ mint }) {
     }
   });
 
-
   document.addEventListener("click", (e) => {
     const swapBtn = e.target.closest?.("#btnSwapAction,[data-swap-go]");
     if (swapBtn) _bumpBoth({ slug, mint: cleanMint, field: "swapStarts", event: "swap_start", by: 1 });
@@ -355,6 +354,12 @@ export function startProfileShillAttribution({ mint }) {
     if (!sess?.slug || !sess?.mint) return;
     _bumpBoth({ slug: sess.slug, mint: sess.mint, field: "walletConnects", event: "wallet_connect", by: 1 });
   }, { passive: true });
+
+  document.addEventListener("swap:confirmed", () => {
+    const sess = _load(SESS_KEY);
+    if (!sess?.slug || !sess?.mint) return;
+    _bumpBoth({ slug: sess.slug, mint: sess.mint, field: "tradeClicks", event: "trade_click", by: 1 });
+  }, { passive: true } );
 }
 
 
