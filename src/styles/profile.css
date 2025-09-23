@@ -469,9 +469,16 @@ svg.bars rect { fill: rgba(123,241,255,.8) }
 .livePrice__head .val{ font-variant-numeric: tabular-nums; opacity:.95 }
 
 .livePrice__svg{ width:100%; height:140px; display:block; }
-.livePrice__line{ fill:none; stroke: var(--neon, #18eac7); stroke-width:2; vector-effect:non-scaling-stroke;
-  filter: drop-shadow(0 0 8px color-mix(in oklab, var(--neon,#18eac7) 35%, transparent)); }
-.livePrice__area{ fill: color-mix(in oklab, var(--neon,#18eac7) 16%, transparent); }
+.livePrice__line{
+  fill:none;
+  stroke: var(--neon, #18eac7);
+  stroke-width:2;
+  vector-effect:non-scaling-stroke;
+  filter: drop-shadow(0 0 8px color-mix(in oklab, var(--neon,#18eac7) 35%, transparent));
+  will-change: stroke-dashoffset;
+  transition: stroke-dashoffset .6s ease, d .15s ease;
+}
+.livePrice__area{ fill: color-mix(in oklab, var(--neon,#18eac7) 16%, transparent); transition: d .15s ease; }
 
 /* .btn { border-radius:10px; color: var(--text); cursor:pointer } */
 .btn-ghost { background: transparent }
