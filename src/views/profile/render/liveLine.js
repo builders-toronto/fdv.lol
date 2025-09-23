@@ -1,4 +1,4 @@
-export function mountLivePriceLine(container, { windowMs = 10 * 60 * 1000, height = 140, pad = 8 } = {}) {
+export function mountLivePriceLine(container, { windowMs = 10 * 60 * 1000, height = 140, pad = 8, seed } = {}) {
   if (!container) return null;
   container.classList.add("livePrice");
   container.innerHTML = `
@@ -16,10 +16,15 @@ export function mountLivePriceLine(container, { windowMs = 10 * 60 * 1000, heigh
   svg.appendChild(area);
   svg.appendChild(line);
 
+  const PERIODS = { "5m": 5 * 60 * 1000, "1h": 60 * 60 * 1000, "6h": 6 * 60 * 60 * 1000, "24h": 24 * 60 * 60 * 1000 };
+
   const state = {
     svg, line, area,
-    points: [], // [ [ts, price], ... ]
+    points: [],          // [ [ts, price], ... ], sorted asc
     windowMs, height, pad, width: container.clientWidth || 600,
+    timeFrom: null,      // earliest ts shown (left edge)
+    timeTo: null,        // latest ts shown (right edge)
+    lastPrice: NaN
   };
 
   const ro = ("ResizeObserver" in window) ? new ResizeObserver(() => {
@@ -28,23 +33,94 @@ export function mountLivePriceLine(container, { windowMs = 10 * 60 * 1000, heigh
   }) : null;
   if (ro) ro.observe(container);
 
+  function computeAnchors(nowPrice, changes, nowTs = Date.now()) {
+    if (!Number.isFinite(nowPrice) || !changes) return [];
+    const anchors = [];
+    // Rank by recency: 5m, 1h, 6h, 24h if available
+    const order = ["24h","6h","1h","5m"]; // compute oldest first, will sort later
+    for (const k of order) {
+      const pct = Number(changes?.[k] ?? changes?.[k.replace("h","h")] ?? NaN);
+      const period = PERIODS[k];
+      if (!Number.isFinite(pct) || !period) continue;
+      // pricePast * (1 + pct/100) = nowPrice  => pricePast = nowPrice / (1 + pct/100)
+      const denom = 1 + (pct / 100);
+      if (denom === 0) continue;
+      const past = nowPrice / denom;
+      const ts = nowTs - period;
+      if (Number.isFinite(past) && past >= 0) anchors.push([ts, past]);
+    }
+    anchors.sort((a,b) => a[0] - b[0]); // oldest -> newest
+    // ensure unique timestamps
+    const uniq = [];
+    let lastTs = -Infinity;
+    for (const a of anchors) {
+      if (a[0] !== lastTs) { uniq.push(a); lastTs = a[0]; }
+    }
+    return uniq;
+  }
+
+  function sampleAnchors(anchors, nowPoint, samplesPerSeg = 24) {
+    const out = [];
+    if (!anchors.length && nowPoint) return [nowPoint];
+    const pts = [...anchors, nowPoint].filter(Boolean);
+    for (let i = 0; i < pts.length; i++) {
+      const cur = pts[i];
+      if (i === 0) { out.push(cur); continue; }
+      const prev = pts[i - 1];
+      const dt = cur[0] - prev[0];
+      const dv = cur[1] - prev[1];
+      const steps = Math.max(2, Math.min(samplesPerSeg, Math.floor(dt / 1000))); // ~1s granularity
+      for (let s = 1; s < steps; s++) {
+        const f = s / steps;
+        out.push([prev[0] + f * dt, prev[1] + f * dv]);
+      }
+      out.push(cur);
+    }
+    return out;
+  }
+
+  function animateDraw() {
+    try {
+      const len = state.line.getTotalLength();
+      state.line.style.transition = "none";
+      state.line.style.strokeDasharray = `${Math.max(1, len)} ${Math.max(1, len)}`;
+      state.line.style.strokeDashoffset = `${Math.max(1, len)}`;
+      // force reflow
+      // eslint-disable-next-line no-unused-expressions
+      state.line.getBoundingClientRect();
+      state.line.style.transition = "stroke-dashoffset .6s ease";
+      state.line.style.strokeDashoffset = "0";
+      // clear dash after animation ends for crispness
+      setTimeout(() => {
+        state.line.style.transition = "";
+        state.line.style.strokeDasharray = "";
+        state.line.style.strokeDashoffset = "";
+      }, 700);
+    } catch {}
+  }
+
   function render() {
-    const now = Date.now();
-    const from = now - state.windowMs;
-    state.points = state.points.filter(p => p[0] >= from);
     if (!state.points.length) {
       state.line.setAttribute("d", "");
       state.area.setAttribute("d", "");
       return;
     }
 
+    // Horizontal domain: from earliest point to latest point (starts at left, moves right)
+    const minTs = state.points[0][0];
+    const maxTs = state.points[state.points.length - 1][0];
+    state.timeFrom = minTs;
+    state.timeTo = maxTs;
+
     const w = state.width;
     const h = state.height;
     state.svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
-    const xs = state.points.map(p => p[0]);
-    const ys = state.points.map(p => p[1]);
-    const minX = Math.min(...xs), maxX = Math.max(...xs);
-    let minY = Math.min(...ys), maxY = Math.max(...ys);
+
+    let minY = Infinity, maxY = -Infinity;
+    for (const [, v] of state.points) {
+      if (v < minY) minY = v;
+      if (v > maxY) maxY = v;
+    }
     if (!Number.isFinite(minY) || !Number.isFinite(maxY)) return;
 
     // Avoid flat-line collapse
@@ -55,8 +131,10 @@ export function mountLivePriceLine(container, { windowMs = 10 * 60 * 1000, heigh
     }
 
     const px = (t) => {
-      if (maxX === minX) return w;
-      return ((t - from) / (state.windowMs)) * w;
+      const span = (state.timeTo - state.timeFrom) || 1;
+      let x = ((t - state.timeFrom) / span) * w;
+      if (!Number.isFinite(x)) x = 0;
+      return Math.max(0, Math.min(w, x));
     };
     const py = (v) => {
       const y = (v - minY) / (maxY - minY);
@@ -81,10 +159,14 @@ export function mountLivePriceLine(container, { windowMs = 10 * 60 * 1000, heigh
 
   function push(price, ts = Date.now()) {
     if (!Number.isFinite(price)) return;
+    state.lastPrice = price;
+    // Append new point and keep in ascending order
     state.points.push([ts, price]);
+    // Small tail trim to keep performance (keep last 2000 points)
+    if (state.points.length > 2000) state.points.splice(0, state.points.length - 2000);
+
     const lbl = container.querySelector("#livePriceNow");
     if (lbl) {
-      // minimal inline formatting to avoid deps here; keep one decimal at least
       const s = String(price);
       let out = s;
       if (!s.includes(".")) out = s + ".0";
@@ -93,11 +175,44 @@ export function mountLivePriceLine(container, { windowMs = 10 * 60 * 1000, heigh
     render();
   }
 
-  container.__livePrice = { push, render, destroy: () => ro?.disconnect() };
+  function seedFromPercent({ priceNow, changes, nowTs = Date.now() }) {
+    if (!Number.isFinite(priceNow)) return;
+    state.lastPrice = priceNow;
+    const anchors = computeAnchors(priceNow, changes, nowTs);
+    const sampled = sampleAnchors(anchors, [nowTs, priceNow], 24);
+    state.points = sampled;
+    render();
+    animateDraw();
+  }
+
+  container.__livePrice = {
+    push,
+    render,
+    destroy: () => ro?.disconnect(),
+    seedFromPercent
+  };
+
+  // Optional initial seeding from percent changes
+  try {
+    if (seed?.priceNow != null && seed?.changes) {
+      container.__livePrice.seedFromPercent({ priceNow: +seed.priceNow, changes: seed.changes, nowTs: Date.now() });
+    }
+  } catch {}
+
   return container.__livePrice;
 }
 
 export function updateLivePriceLine(container, price, ts = Date.now()) {
   const inst = container?.__livePrice;
   if (inst) inst.push(price, ts);
+}
+
+export function updateLivePriceAnchors(container, changes, priceNow) {
+  const inst = container?.__livePrice;
+  if (!inst) return;
+  const p = Number.isFinite(+priceNow) ? +priceNow : inst.lastPrice;
+  if (!Number.isFinite(p)) return;
+  try {
+    inst.seedFromPercent({ priceNow: p, changes, nowTs: Date.now() });
+  } catch {}
 }

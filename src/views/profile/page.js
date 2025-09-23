@@ -8,7 +8,7 @@ import renderShell from "./render/shell.js";
 import { buildStatsGrid, setStat, setStatHtml, setStatPrice } from "./render/statsGrid.js";
 import { setStatStatusByKey } from "./render/statuses.js";
 import { renderBarChart } from "./render/charts.js";
-import { mountLivePriceLine, updateLivePriceLine } from "./render/liveLine.js"; 
+import { mountLivePriceLine, updateLivePriceLine, updateLivePriceAnchors } from "./render/liveLine.js"; 
 import renderLinks from "./render/links.js";
 import mountRecommendationPanel, { updateRecommendationPanel } from "./render/recommendation.js";
 import { fmtMoney, fmtNum, pill, cssReco } from "./formatters.js";
@@ -318,15 +318,23 @@ export async function renderProfileView(input, { onBack } = {}) {
     liveWrap = document.createElement("div");
     liveWrap.id = "livePriceWrap";
   }
-
-  const pairsBody = document.querySelector(".profile__card__extra_metrics")
-
+  const pairsBody = document.querySelector(".profile__card__extra_metrics");
   const anchor = pairsBody;
-
   anchor.parentElement.insertBefore(liveWrap, anchor);
 
   if (!liveWrap.__livePrice) {
-    mountLivePriceLine(liveWrap, { windowMs: 10 * 60 * 1000, height: 140 });
+    // Seed graph from percent changes so it starts from left with history anchors
+    mountLivePriceLine(liveWrap, {
+      windowMs: 10 * 60 * 1000,
+      height: 140,
+      seed: {
+        priceNow: t.priceUsd,
+        changes: { "5m": t.change5m, "1h": t.change1h, "6h": t.change6h, "24h": t.change24h }
+      }
+    });
+  } else {
+    // If already mounted, refresh the anchors
+    updateLivePriceAnchors(liveWrap, { "5m": t.change5m, "1h": t.change1h, "6h": t.change6h, "24h": t.change24h }, t.priceUsd);
   }
 
   if (Number.isFinite(t.priceUsd)) {
@@ -373,6 +381,22 @@ function updateStatsGridLive(t, prev) {
     if (Number.isFinite(t.priceUsd) && t.priceUsd !== prev?.priceUsd) {
       const wrap = document.getElementById("livePriceWrap");
       if (wrap) updateLivePriceLine(wrap, +t.priceUsd, Date.now());
+    }
+    // re-seed anchors if any window change changed
+    const changed =
+      (t.change5m !== prev?.change5m) ||
+      (t.change1h !== prev?.change1h) ||
+      (t.change6h !== prev?.change6h) ||
+      (t.change24h !== prev?.change24h);
+    if (changed) {
+      const wrap = document.getElementById("livePriceWrap");
+      if (wrap) {
+        updateLivePriceAnchors(
+          wrap,
+          { "5m": t.change5m, "1h": t.change1h, "6h": t.change6h, "24h": t.change24h },
+          t.priceUsd
+        );
+      }
     }
   }
   // liquidity
