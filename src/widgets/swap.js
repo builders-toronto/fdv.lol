@@ -52,12 +52,36 @@ let _state = {
 
 let web3;
 
-let _rpcSession = { token: null, exp: 0 };  // epoch ms
-let _challengeOk = false;                   // UI state after successful /auth
-let _turnstileWidgetId = null;              // turnstile widget id
-let _turnstileScriptInjected = false;
 
-let _turnstileToken = null;
+let _rpcSession = { token: null, exp: 0 };  // epoch ms
+let _challengeOk = false;                   // UI state
+let _sessionInFlight = null;                // dedupe concurrent solves
+
+// Verify animation state
+let _verifyAnimTimer = null;
+let _verifyAnimStep = 0;
+
+function _startVerifyAnim() {
+  const chip = _el("[data-captcha-state]");
+  if (!chip) return;
+  if (_verifyAnimTimer) return; // already animating
+  chip.dataset.verifying = "1";
+  _verifyAnimStep = 0;
+  _verifyAnimTimer = setInterval(() => {
+    const dots = ".".repeat((_verifyAnimStep++ % 3) + 1);
+    chip.textContent = `Verifying${dots}`;
+  }, 400);
+  chip.classList.remove("ok");
+}
+function _stopVerifyAnim() {
+  const chip = _el("[data-captcha-state]");
+  if (_verifyAnimTimer) {
+    clearInterval(_verifyAnimTimer);
+    _verifyAnimTimer = null;
+  }
+  if (chip) delete chip.dataset.verifying;
+  _refreshChallengeChrome(); // restore final state
+}
 
 export function initSwap(userConfig = {}) {
   CFG = { ...DEFAULTS, ...userConfig };
@@ -124,13 +148,6 @@ function isLikelyMobile() {
 function hasPhantomInstalled() {
   try { return !!(window?.solana && window.solana.isPhantom); }
   catch { return false; }
-}
-
-function buildPhantomSwapUrl({ buyMint, sellMint }) {
-  const u = new URL("https://phantom.app/ul/swap/");
-  u.searchParams.set("buy", buyMint);
-  u.searchParams.set("sell", sellMint);
-  return u.toString();
 }
 
 function _parseJsonAttr(str) {
@@ -262,106 +279,145 @@ async function _loadWeb3() {
   web3 = await import("https://esm.sh/@solana/web3.js@1.95.3");
   return web3;
 }
+
 function _now() { return Date.now(); }
+function _hasLiveSession(skewMs = 1500) { return !!(_rpcSession.token && _rpcSession.exp - skewMs > _now()); }
 
-async function _authFromChallengeToken(token) {
-  const res = await fetch(CFG.rpcUrl.replace(/\/+$/,"") + CFG.authPath, {
-    method: "POST",
-    headers: { "x-turnstile-token": token },
-  });
-  console.log(res);
-  if (!res.ok) throw new Error(`Auth failed: ${res.status} ${await res.text()}`);
-  const { session, exp } = await res.json();
-  if (!session || !exp) throw new Error("Invalid auth response");
-  _rpcSession = { token: session, exp: Number(exp) || (_now() + 90_000) };
-  _challengeOk = true;
-  _refreshChallengeChrome();
-  return _rpcSession.token;
+async function _sha256(buf){ return new Uint8Array(await crypto.subtle.digest("SHA-256", buf)); }
+function _b64uToBytes(b64u){ const b64=b64u.replace(/-/g,'+').replace(/_/g,'/'); const pad='='.repeat((4-(b64.length%4))%4); const bin=atob(b64+pad); return Uint8Array.from(bin, c=>c.charCodeAt(0)); }
+function _hexToBytes(hex){ const a=new Uint8Array(Math.ceil(hex.length/2)); for(let i=0;i<a.length;i++) a[i]=parseInt(hex.substr(i*2,2),16); return a; }
+function _leadingZeroBits(bytes){ let bits=0; for(const b of bytes){ if(b===0){bits+=8; continue;} for(let i=7;i>=0;i--){ if((b>>i)&1) return bits+(7-i); } } return bits; }
+
+async function _solvePow(chalB64, bits = 18) {
+  const payload = _b64uToBytes(chalB64);
+  const delim = new TextEncoder().encode(":");
+  const t0 = performance.now();
+  const BUDGET_MS = 20000;
+  for (let nonce = 0; nonce < 0x7fffffff; nonce++) {
+    if ((nonce & 0x3fff) === 0) {
+      if (performance.now() - t0 > BUDGET_MS) break;
+      await Promise.resolve();
+    }
+    const nhex = nonce.toString(16).padStart(8, "0");
+    const nbytes = _hexToBytes(nhex);
+    const buf = new Uint8Array(payload.length + 1 + nbytes.length);
+    buf.set(payload, 0); buf.set(delim, payload.length); buf.set(nbytes, payload.length + 1);
+    const h = await _sha256(buf);
+    if (_leadingZeroBits(h) >= bits) return nhex;
+  }
+  throw new Error("pow_failed");
 }
 
-function _hasLiveSession(skewMs = 1500) {
-  return !!(_rpcSession.token && _rpcSession.exp - skewMs > _now());
+
+async function ensureRpcSession(force = false) {
+  if (!force && _hasLiveSession()) return _rpcSession.token;
+  if (_sessionInFlight && !force) return _sessionInFlight;
+
+  const base = CFG.rpcUrl.replace(/\/+$/,"");
+
+  const run = (async () => {
+    try {
+      let r = await fetch(`${base}/session`, { method: "POST" });
+      console.log("session resp", r);
+      if (r.status === 401) {
+        const chalHdr = r.headers.get("x-pow-chal");
+        const bits = +(r.headers.get("x-pow-bits") || 18);
+        if (chalHdr?.startsWith("v1:")) {
+          const chal = chalHdr.slice(3);
+          _log("Verifying…");
+          const nonceHex = await _solvePow(chal, bits);
+          _log("POW solved, acquiring session…");
+          r = await fetch(`${base}/session`, { method: "POST", headers: { "x-pow": `v1:${chal}:${nonceHex}` } });
+        }
+      }
+      if (r.ok) {
+        const j = await r.json().catch(()=>null);
+        if (j?.session) {
+          _rpcSession = { token: j.session, exp: Number(j.exp) || (_now() + 120_000) };
+          _challengeOk = true;
+          _refreshChallengeChrome();
+          return _rpcSession.token;
+        }
+      }
+    } catch (e) {
+      _log(`Session verify error: ${e.message || e}`, "err");
+    }
+
+    try {
+      const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getHealth", params: [] });
+      let res = await fetch(base, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+      if (res.status === 401) {
+        const chalHdr = res.headers.get("x-pow-chal");
+        const bits = +(res.headers.get("x-pow-bits") || 18);
+        if (chalHdr?.startsWith("v1:")) {
+          const chal = chalHdr.slice(3);
+          _log("PoW acquiring session…");
+          _log("Verifying…");
+          const nonceHex = await _solvePow(chal, bits);
+          res = await fetch(base, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-pow": `v1:${chal}:${nonceHex}` },
+            body
+          });
+          console.log("session resp", res);
+        }
+      }
+      const newSess = res.headers.get("x-new-session");
+      const exp = Number(res.headers.get("x-session-exp") || 0);
+      if (newSess) {
+        _rpcSession = { token: newSess, exp: exp || (_now() + 120_000) };
+        _challengeOk = true;
+        _refreshChallengeChrome();
+        _log("Verification complete ✓", "ok");
+        return _rpcSession.token;
+      }
+    } catch (e) {
+      _log(`Verification error: ${e.message || e}`, "err");
+    }
+
+    _challengeOk = false;
+    _refreshChallengeChrome();
+    return null;
+  })();
+
+  _sessionInFlight = run.finally(() => { _sessionInFlight = null; });
+  return _sessionInFlight;
 }
 
+async function _verifySessionWithUi(force = false) {
+  if (!force && _hasLiveSession()) {
+    _refreshChallengeChrome();
+    return _rpcSession.token;
+  }
+  _startVerifyAnim();
+  try {
+    const tok = await ensureRpcSession(force);
+    return tok;
+  } finally {
+    _stopVerifyAnim();
+  }
+}
+
+// Reflect session state in UI
 function _refreshChallengeChrome() {
-  const badge = _el("[data-captcha-state]");
-  if (badge) {
-    const ok = _challengeOk && _hasLiveSession();
-    badge.textContent = ok ? "Verified" : "Unverified";
-    badge.classList.toggle("ok", ok);
+  const ok = _hasLiveSession();
+  const chip = _el("[data-captcha-state]");
+  if (chip) {
+    const anim = chip.dataset.verifying === "1";
+    if (!anim) {
+      chip.textContent = ok ? "Verified" : "Unverified";
+    }
+    chip.classList.toggle("ok", ok && !anim);
   }
   const go = _el("[data-swap-go]");
   if (go) {
     const pk = _state?.pubkey?.toBase58?.();
-    const blocked = !pk || !_hasLiveSession();
-    go.disabled = false;
+    const blocked = !pk || !ok;
+    go.disabled = blocked;
     go.dataset.blocked = blocked ? "1" : "";
     go.setAttribute("aria-disabled", blocked ? "true" : "false");
     go.classList.toggle("disabled", blocked);
   }
-  if (!_hasLiveSession() && typeof window !== "undefined" && window.turnstile && _turnstileWidgetId != null) {
-    try { window.turnstile.reset(_turnstileWidgetId); } catch {}
-  }
-}
-
-function _ensureTurnstileScript() {
-  if (typeof window === "undefined") return;
-  if (window.turnstile || _turnstileScriptInjected) return;
-  const s = document.createElement("script");
-  s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
-  s.async = true;
-  s.defer = true;
-  document.head.appendChild(s);
-  _turnstileScriptInjected = true;
-}
-
-// Render the widget into the modal
-function _renderTurnstileWhenReady() {
-  const host = _el("[data-turnstile-slot]");
-  if (!host) return;
-
-  const tryRender = () => {
-    if (!window.turnstile || !window.turnstile.render) {
-      setTimeout(tryRender, 150);
-      return;
-    }
-    // Reset if already present
-    if (_turnstileWidgetId != null) {
-      try { window.turnstile.reset(_turnstileWidgetId); } catch {}
-      return;
-    }
-    _turnstileWidgetId = window.turnstile.render(host, {
-      sitekey: CFG.turnstileSiteKey || DEFAULTS.turnstileSiteKey,
-      theme: "auto",       // "light" | "dark" | "auto"
-      size: "normal",      // "normal" | "flexible"
-      callback: async (token) => {
-        _turnstileToken = token;
-        try {
-          _log("Verifying challenge…");
-          await _authFromChallengeToken(token);
-          _log("Verification complete ✓", "ok");
-        } catch (e) {
-          _challengeOk = false;
-          _log(`Verification error: ${e.message || e}`, "err");
-        } finally {
-          _refreshChallengeChrome();
-        }
-      },
-      "error-callback": () => {
-        _turnstileToken = null;
-        _challengeOk = false;
-        _refreshChallengeChrome();
-        _log("Challenge error. Please retry.", "err");
-      },
-      "expired-callback": () => {
-        _turnstileToken = null;
-        _challengeOk = false;
-        _refreshChallengeChrome();
-        _log("Challenge expired. Please check the box again.", "warn");
-      },
-    });
-  };
-  tryRender();
 }
 
 async function _connectPhantom() {
@@ -388,7 +444,7 @@ async function _connectPhantom() {
     } catch {}
 
     CFG.onConnect?.(_state.pubkey.toBase58());
-    _refreshModalChrome(); // updates chips and button label
+    _refreshModalChrome(); 
     try {
       document.dispatchEvent(new CustomEvent("swap:wallet-connect", {
         detail: { pubkey: _state.pubkey.toBase58(), wallet: "phantom" }
@@ -441,12 +497,24 @@ async function _preQuote() {
 const _kickPreQuote = _debounce(_preQuote, 200);
 
 async function _quoteAndSwap() {
+  // prevent reentrancy/double-click races
+  if (window.__fdvSwapBusy) return;
+  window.__fdvSwapBusy = true;
   try {
-    const missing = [];
-    if (!_state.wallet || !_state.pubkey) missing.push("connect your wallet");
-    if (!_hasLiveSession()) missing.push("complete the verification");
-    if (missing.length) {
-      _log(`Cannot swap yet: please ${missing.join(" and ")}.`, "warn");
+    if (!_state.wallet || !_state.pubkey) {
+      _log("Please connect your wallet.", "warn");
+      return;
+    }
+    if (!_hasLiveSession()) {
+      await _verifySessionWithUi(true);
+    }
+    if (!_hasLiveSession()) {
+      _log("Trying to Solve PoW");
+      await ensureRpcSession(true);
+      _refreshChallengeChrome();
+    }
+    if (!_hasLiveSession()) {
+      _log("Verification failed. Please try again.", "err");
       return;
     }
 
@@ -454,7 +522,6 @@ async function _quoteAndSwap() {
     const outputMint = _el("[data-swap-output-mint]").value.trim();
     const amountUi   = _el("[data-swap-amount]").value;
     const slippageBps = parseInt(_el("[data-swap-slip]").value || CFG.defaultSlippageBps, 10);
-
     const amount = _uiToRaw(amountUi, inputMint);
     const feeAccount = CFG.feeAtas[inputMint] || null;
     const platformFeeBps = feeAccount ? CFG.platformFeeBps : 0;
@@ -462,16 +529,12 @@ async function _quoteAndSwap() {
     const { Connection, VersionedTransaction, PublicKey } = await _loadWeb3();
 
     const endpoint = CFG.rpcUrl.replace(/\/+$/,"");
-    const sessionHdr = { "x-session": _rpcSession.token };
     const conn = new Connection(endpoint, {
       commitment: "processed",
-      httpHeaders: sessionHdr, // some builds respect this
-      fetchMiddleware: (url, options, fetch) => { // this guarantees it
-        options.headers = {
-          ...(options.headers || {}),
-          ...sessionHdr,
-          "content-type": "application/json",
-        };
+      fetchMiddleware: (url, options, fetch) => {
+        const h = { ...(options.headers || {}), "content-type": "application/json" };
+        if (_rpcSession.token) h["x-session"] = _rpcSession.token; 
+        options.headers = h;
         return fetch(url, options);
       },
     });
@@ -523,11 +586,26 @@ async function _quoteAndSwap() {
     for (let i = 0; i < raw.length; i++) rawBytes[i] = raw.charCodeAt(i);
     const vtx = VersionedTransaction.deserialize(rawBytes);
 
-    _log("Requesting signature from wallet…");
-    const sigRes = await _state.wallet.signAndSendTransaction(vtx);
-    const signature = typeof sigRes === "string" ? sigRes : sigRes?.signature;
-    if (!signature) throw new Error("No signature returned");
+    const sendViaWallet = false;
+    let signature;
 
+    if (sendViaWallet) {
+      _log("Requesting signature from wallet…");
+      const sigRes = await _state.wallet.signAndSendTransaction(vtx);
+      signature = typeof sigRes === "string" ? sigRes : sigRes?.signature;
+    } else {
+      _log("Requesting signature…");
+      const signed = await _state.wallet.signTransaction(vtx);
+      _log("Submitting via proxy…");
+      const h = _rpcSession.token ? { "x-session": _rpcSession.token } : {};
+      signature = await conn.sendRawTransaction(signed.serialize(), {
+        preflightCommitment: "processed",
+        skipPreflight: false,
+        minContextSlot: undefined,
+      });
+    }
+
+    if (!signature) throw new Error("No signature returned");
     _log(`Sent. Signature: `, "ok", signature);
     CFG.onSwapSent?.(signature);
 
@@ -542,10 +620,12 @@ async function _quoteAndSwap() {
     }
   } catch (e) {
     if (String(e).includes("custom program error: 6025")) {
-      _log("Swap failed: feeAccount must be ATA for the **input** mint (ExactIn). Token-2022 not supported for fees.", "err");
+      _log("Swap failed: feeAccount must be ATA for the input mint (ExactIn). Token-2022 not supported for fees.", "err");
     }
     _log(String(e.message || e), "err");
     CFG.onError?.("swap", e);
+  } finally {
+    window.__fdvSwapBusy = false;
   }
 }
 
@@ -668,9 +748,6 @@ const MODAL_HTML = `
         <div class="fdv-status" aria-live="polite">
           <div class="fdv-log" data-swap-log></div>
         </div>
-
-        <!-- Turnstile widget host -->
-        <div data-turnstile-slot style="min-height:78px;display:flex;align-items:center"></div>
       </aside>
     </div>
 
@@ -678,7 +755,7 @@ const MODAL_HTML = `
       <button class="btn fdv-btn-secondary" data-swap-close>Cancel</button>
       <div class="fdv-modal-controls">
         <a class="btn fdv-btn-secondary" data-swap-learn href="#" rel="noopener">Learn more</a>
-        <button class="btn fdv-btn-primary" data-swap-go disabled>Quote & Swap</button>
+        <button class="btn fdv-btn-primary" data-swap-go>Quote & Swap</button>
       </div>
     </div>
   </div>
@@ -724,9 +801,6 @@ function _ensureModalMounted() {
   _el("[data-swap-slip]").addEventListener("input", _kickPreQuote);
   _el("[data-swap-input-mint]").addEventListener("input", () => { _refreshModalChrome(); _kickPreQuote(); });
   _el("[data-swap-output-mint]").addEventListener("input", _kickPreQuote);
-
-  // _ensureTurnstileScript();
-  _renderTurnstileWhenReady();
 }
 
 function _applyTokenHydrate(h) {
@@ -926,7 +1000,6 @@ function _refreshModalChrome(){
 
   _refreshChallengeChrome();
 
-  // PHANTOM: connect button state and text
   const btnConn = _el("[data-swap-connect]");
   if (btnConn) {
     const connected = !!pk;
@@ -936,7 +1009,6 @@ function _refreshModalChrome(){
     btnConn.disabled = connected;
   }
 
-  // LEARN MORE FOR THE PLEBS
   const btnLearn = _el("[data-swap-learn]");
   if (btnLearn) {
     const validMint = typeof outMint === "string" && outMint.length > 0;
@@ -961,10 +1033,8 @@ function _refreshModalChrome(){
 function _openModal(){
   _el("[data-swap-backdrop]")?.classList.add("show");
   _clearLog();
-  _challengeOk = _hasLiveSession();
   _refreshModalChrome();
-  _ensureTurnstileScript();
-  _renderTurnstileWhenReady();
+  _verifySessionWithUi(false).catch(()=>{});
   _lockPageScroll(true);
   _watchKeyboardViewport(true);
   setTimeout(()=>{ _el("[data-swap-amount]")?.focus(); }, 30);
@@ -1041,7 +1111,6 @@ function _fmtAge(ms) {
   return "0s";
 }
 
-// Modal state bridge: emit open/close for swap modal
 (function bridgeSwapModalState() {
   let prev = null;
   const SEL = '.fdv-modal-backdrop';
@@ -1074,68 +1143,3 @@ function _fmtAge(ms) {
     start();
   }
 })();
-
-async function sha256Bytes(buf){ return new Uint8Array(await crypto.subtle.digest("SHA-256", buf)); }
-function bytesFromHex(hex){ const a=new Uint8Array(hex.length/2); for(let i=0;i<a.length;i++) a[i]=parseInt(hex.substr(i*2,2),16); return a; }
-function hexFromBytes(a){ return [...a].map(b=>b.toString(16).padStart(2,'0')).join(''); }
-function leadingZeroBits(bytes){ let bits=0; for(const b of bytes){ if(b===0){bits+=8; continue;} for(let i=7;i>=0;i--){ if((b>>i)&1) return bits+(7-i); } } return bits; }
-function b64uToBytes(b64u){ const b64=b64u.replace(/-/g,'+').replace(/_/g,'/'); const pad='='.repeat((4-(b64.length%4))%4); const bin=atob(b64+pad); return Uint8Array.from(bin,c=>c.charCodeAt(0)); }
-
-async function solvePow(chalB64, bits){
-  const payload = b64uToBytes(chalB64);
-  const delim = new TextEncoder().encode(":");
-  // simple linear search; fast at ~18 bits
-  for (let nonce = 0; nonce < 1e9; nonce++) {
-    const nhex = nonce.toString(16).padStart(8, "0");
-    const nbytes = bytesFromHex(nhex);
-    const buf = new Uint8Array(payload.length + 1 + nbytes.length);
-    buf.set(payload, 0); buf.set(delim, payload.length); buf.set(nbytes, payload.length + 1);
-    const h = await sha256Bytes(buf);
-    if (leadingZeroBits(h) >= bits) return nhex;
-  }
-  throw new Error("pow_failed");
-}
-
-let SESSION = null;
-
-async function ensureSession() {
-  if (SESSION) return SESSION;
-  const r = await fetch("/session", { method: "POST", credentials: "include" });
-  if (r.ok) {
-    const j = await r.json();
-    SESSION = j.session;
-    return SESSION;
-  }
-  return null;
-}
-
-export async function callRpc(body) {
-  // Try with session first
-  let session = await ensureSession();
-  let res = await fetch("/rpc", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...(session ? { "x-session": session } : {}) },
-    body: JSON.stringify(body),
-  });
-
-  if (res.status === 401) {
-    // Solve PoW then retry
-    const chalHdr = res.headers.get("x-pow-chal"); // format v1:<b64payload>
-    const bits = +(res.headers.get("x-pow-bits") || 18);
-    if (chalHdr?.startsWith("v1:")) {
-      const chal = chalHdr.slice(3);
-      const nonceHex = await solvePow(chal, bits);
-      res = await fetch("/rpc", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-pow": `v1:${chal}:${nonceHex}`,
-        },
-        body: JSON.stringify(body),
-      });
-      const newSess = res.headers.get("x-new-session");
-      if (newSess) SESSION = newSess;
-    }
-  }
-  return res;
-}
