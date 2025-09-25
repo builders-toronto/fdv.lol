@@ -48,5 +48,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 
 
-
-git commit -m "HMAC/PoW: remove Turnstile, gate /session, propagate headers; swap.js auto-verify on open/click with animated chip;"
+ git commit -m "header: responsive controls on mobile; prevent 420px overlap; larger buttons"

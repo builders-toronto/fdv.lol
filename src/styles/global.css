@@ -147,19 +147,56 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
 h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
 .sub{color:var(--muted); font-size:.8rem}
 .controls{
-  display:flex; gap:10px; justify-content:space-between; margin:12px 0 6px 0; flex-wrap:wrap
+  display:flex; gap:10px; justify-content:space-between; margin:12px 0 6px 0; flex-wrap:wrap;
+  align-items: stretch;
 }
+.controls select{
+  min-width:0; 
+}
+.innerControls{
+  display:flex; flex-direction:row; gap:8px;
+  flex:0 0 auto;
+}
+.innerControls .btn{
+  flex:1 1 auto; min-width:0;
+  padding: 12px 14px;
+  font-size: clamp(.9rem, .85rem + .3vw, 1rem);
+  min-height: 40px;
+}
+
+/* If search bar is inside controls, make it full-width on small screens */
+@media (max-width: 560px){
+  .controls { gap: 8px; }
+  .controls .search-wrap{ flex: 1 1 100%; }
+}
+
+/* Mobile: select on its own row, buttons 2-up */
+@media (max-width: 540px){
+  .controls{
+    display: grid;
+    grid-template-columns: 1fr;
+    row-gap: 8px;
+  }
+  .controls select{ width:100%; }
+  .innerControls{
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .innerControls .btn{ width:100%; }
+}
+
+/* Very narrow phones: stack buttons if needed */
+@media (max-width: 360px){
+  .innerControls{ grid-template-columns: 1fr; }
+}
+
 select, input{
   background:var(--card); border:1px solid rgba(122,222,255,.2);
   font-weight: 600; color:var(--text); padding:8px 10px; border-radius:10px;
   outline:none; transition: .2s border;
 }
 select:focus, input:focus{border-color: var(--neon)}
-
-.innerControls{
-  display: flex;
-  flex-direction: row;
-}
 
 .relaxControl{
   display: none;
@@ -346,10 +383,6 @@ input[type="checkbox"]:disabled{
     background: rgba(123, 241, 255, .06);
     border: 1px solid rgb(115 200 227 / 80%) !important;
     margin-right: 5px;
-}
-
-#stream {
-  margin-left: 5px;
 }
 
 .btn{
