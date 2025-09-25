@@ -27,7 +27,7 @@ export async function renderShillContestView(input) {
       <div class="shill__card">
         <div class="form">
           <label class="lbl">Wallet Address</label>
-          <input class="in" type="text" id="shillHandle" placeholder="@wallet_id" />
+          <input class="in" type="text" id="shillHandle" placeholder="@wallet_address" />
           <button class="btn btn--primary" id="btnGen">Generate my link</button>
         </div>
 
@@ -39,17 +39,17 @@ export async function renderShillContestView(input) {
             <input class="in" type="text" id="shillLink" readonly />
             <button class="btn" id="btnCopy">Copy</button>
           </div>
-          <p class="hint">Share this link anywhere. Max 3 links per user.</p>
+          <p class="hint">Share this link anywhere. Max 3 links per wallet.</p>
         </div>
       </div>
 
-      <div class="shill__list">
+      <div class="shill__list" id="shillList" hidden>
         <h3>Your links for this token</h3>
         <div id="links"></div>
       </div>
 
       <div class="shill__tools">
-        ${mint ? `<button class="btn btn--primary" id="btnExportCsvEnc">Export CSV (encrypted)</button>` : ""}
+        ${mint ? `<button class="btn btn--primary" id="btnExportCsvEnc">Export CSV</button>` : ""}
         ${mint ? `<a class="btn" data-link href="/leaderboard/${mint}">Leaderboard</a>` : ""}
       </div>
     </section>
@@ -60,8 +60,6 @@ export async function renderShillContestView(input) {
     makeShillShortlink,
     listShillLinks,
     canCreateShillLink,
-    // downloadShillCSV,   // removed
-    pingMetrics
   } = mod;
 
   const handleIn = document.getElementById("shillHandle");
@@ -70,6 +68,7 @@ export async function renderShillContestView(input) {
   const links = document.getElementById("links");
   const btnGen = document.getElementById("btnGen");
   const limitNote = document.getElementById("limitNote");
+  const listWrap = document.getElementById("shillList");
 
   const ownerIdOf = (h) => (h || "").trim();
 
@@ -82,10 +81,10 @@ export async function renderShillContestView(input) {
     const valid = isValidSolAddr(owner);
 
     // HTML5 validity + inline note
-    handleIn.setCustomValidity(valid ? "" : "Enter a valid Solana wallet address.");
+    handleIn.setCustomValidity(valid ? "" : "Invalid Solana address");
     limitNote.textContent = valid
       ? ""
-      : "Enter a valid Solana wallet address.";
+      : "";
 
     // Respect creation limits only when valid
     let remaining = 0;
@@ -105,45 +104,38 @@ export async function renderShillContestView(input) {
   const renderList = async () => {
     const owner = ownerIdOf(handleIn.value);
     const valid = isValidSolAddr(owner);
-    links.innerHTML = `<div class="empty">Loading…</div>`;
+    if (listWrap) listWrap.hidden = true; // hide while loading / when empty
+    if (links) links.innerHTML = "";
     try {
       const rows = await listShillLinks({ mint, owner: valid ? owner : "" });
-      const t = (ms)=> {
-        const s = Math.round((ms||0)/1000);
-        const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
-        return `${h}h ${m}m`;
-      };
-      const html = rows.map((r) => `
-        <div class="shill__row" data-slug="${r.slug}">
-          <div class="url"><a href="${r.url}" target="_blank" rel="noopener">${r.url}</a></div>
-          <code class="slug">${r.slug}</code>
-          <div class="stats">
-            <span title="Views">👁️ ${r.stats.views}</span>
-            <span title="Trade clicks">🛒 ${r.stats.tradeClicks}</span>
-            <span title="Swap starts">🔁 ${r.stats.swapStarts}</span>
-            <span title="Wallet connects">💼 ${r.stats.walletConnects}</span>
+      if (Array.isArray(rows) && rows.length > 0) {
+        const html = rows.map((r) => `
+          <div class="shill__row" data-slug="${r.slug}">
+            <div class="url"><a href="${r.url}" target="_blank" rel="noopener">${r.url}</a></div>
+            <code class="slug">${r.slug}</code>
+            <div class="stats">
+              <span title="Views">👁️ ${r.stats.views}</span>
+              <span title="Trade clicks">🛒 ${r.stats.tradeClicks}</span>
+              <span title="Swap starts">🔁 ${r.stats.swapStarts}</span>
+              <span title="Wallet connects">💼 ${r.stats.walletConnects}</span>
+            </div>
+            <div class="shill__tab_actions">
+              <button class="btn btn-ghost btn--danger" data-del-shill data-slug="${r.slug}" data-owner-id="${r.ownerId || ""}" title="Delete link">🗑️ Delete</button>
+            </div>  
+            <code class="wallet slug url">${r.wallet_id || "—"}</code>    
           </div>
-          <div class="shill__tab_actions">
-            <button class="btn btn-ghost btn--danger" data-del-shill data-slug="${r.slug}" data-owner-id="${r.ownerId || ""}" title="Delete link">🗑️ Delete</button>
-          </div>  
-          <code class="wallet slug url">${r.wallet_id || "—"}</code>    
-        </div>
-      `).join("") || `<div class="empty">${valid ? "No links yet." : "Enter a valid wallet to view your links."}</div>`;
-      links.innerHTML = html;
+        `).join("");
+        if (links) links.innerHTML = html;
+        if (listWrap) listWrap.hidden = false;
+      } else {
+        if (links) links.innerHTML = "";
+        if (listWrap) listWrap.hidden = true;
+      }
     } catch {
-      links.innerHTML = `<div class="empty">Failed to load stats. Showing local only.</div>`;
+      if (links) links.innerHTML = "";
+      if (listWrap) listWrap.hidden = true;
     }
   };
-
-  // Metrics backend probe
-  // pingMetrics().then((ok) => {
-  //   if (!ok) {
-  //     const msg = document.createElement("div");
-  //     msg.className = "note small";
-  //     msg.textContent = "Metrics backend unavailable; stats may be delayed.";
-  //     limitNote.insertAdjacentElement("afterend", msg);
-  //   }
-  // }).catch(()=>{});
 
   btnGen.addEventListener("click", async () => {
     try {
@@ -239,7 +231,7 @@ export async function renderShillContestView(input) {
 
     const { deleteShillLink } = await import("../../analytics/shill.js");
     const removed = deleteShillLink({ slug, owner, ownerId });
-    await renderList();
+    await renderList(); // will hide the section if now empty
     updateLimitUI();
   });
 

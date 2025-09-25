@@ -25,19 +25,23 @@ export async function renderShillLeaderboardView({ mint } = {}) {
       </header>
 
       <div class="shill__card">
-        <div class="form" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <button class="btn" id="btnRefresh">Refresh</button>
-          <label for="autoRefresh" class="lbl small" style="margin-left:8px;">Auto-refresh</label>
-          <input type="checkbox" id="autoRefresh" checked />
-          <span class="note small" id="statusNote"></span>
-        </div>
-        <p class="muted small" style="margin-left: 8px;"><b>MINT:</b> ${mint}</p>
+
       </div>
 
       <div class="shill__list">
         <h3>Top shills</h3>
+        <p class="muted small"><b>${mint}</b> | <span class="note small" id="statusNote"></span></p>
         <div id="tableWrap" class="tableWrap">
           <div class="empty">Loading…</div>
+        </div>
+        <div class="form" style="display:flex; gap:8px; align-items:center; justify-content: space-between; flex-wrap:wrap; margin-block-start: 25px;">
+        <div class="sill__table_actions">
+          <button class="btn" id="btnRefresh">Refresh</button>
+        </div>
+        <div class="shill__livecontrol" style="display:flex; align-items:center; gap:4px;">
+          <label for="autoRefresh" class="lbl small" style="margin-left:8px;">Auto-refresh</label>
+          <input type="checkbox" id="autoRefresh" checked />
+        </div>
         </div>
       </div>
     </section>
@@ -55,6 +59,23 @@ export async function renderShillLeaderboardView({ mint } = {}) {
   const MAX_SEEN = 200000;
   const SOL_ADDR_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
+  // Sort state
+  const SORTABLE = ["views","tradeClicks","swapStarts","walletConnects"];
+  let sort = { key: "views", dir: "desc" };
+
+  function sortList(list) {
+    const k = sort.key;
+    const dir = sort.dir === "asc" ? 1 : -1;
+    return list.sort((a, b) => {
+      const av = +a[k] || 0, bv = +b[k] || 0;
+      if (av !== bv) return (av < bv ? -1 : 1) * dir;
+      // tiebreakers
+      if ((a.timeMs||0) !== (b.timeMs||0)) return ((a.timeMs||0) < (b.timeMs||0) ? -1 : 1) * -1; // favor higher dwell
+      if (a.slug !== b.slug) return a.slug < b.slug ? -1 : 1;
+      return 0;
+    });
+  }
+
   // Cache across refreshes within this view
   let lastEtag = "";
   let cacheAgg = new Map(); // slug -> {slug, owner, views, tradeClicks, swapStarts, walletConnects, timeMs}
@@ -69,14 +90,8 @@ export async function renderShillLeaderboardView({ mint } = {}) {
     if (updateRaf) return;
     updateRaf = requestAnimationFrame(() => {
       updateRaf = 0;
-      const list = [...agg.values()]
-        .sort((a,b) =>
-          (b.views - a.views) ||
-          (b.timeMs - a.timeMs) ||
-          (b.tradeClicks - a.tradeClicks) ||
-          (b.swapStarts - a.swapStarts))
-        .slice(0, 200);
-      tableWrap.innerHTML = renderTable(list, mint);
+      const list = sortList([...agg.values()]).slice(0, 200);
+      tableWrap.innerHTML = renderTable(list, mint, sort);
       statusNote.textContent = `${tailActive ? "Live" : "Updated"} ${new Date().toLocaleTimeString()}`;
     });
   };
@@ -236,6 +251,33 @@ export async function renderShillLeaderboardView({ mint } = {}) {
   autoCb.addEventListener("change", () => {
     if (autoCb.checked) startTail(); else stopTail();
   });
+
+  // Sort handlers (click + keyboard)
+  tableWrap.addEventListener("click", (e) => {
+    const th = e.target.closest?.('th[data-sort]');
+    if (!th) return;
+    const key = th.getAttribute('data-sort');
+    if (!SORTABLE.includes(key)) return;
+    sort = {
+      key,
+      dir: (sort.key === key && sort.dir === "desc") ? "asc" : "desc",
+    };
+    scheduleUpdate();
+  });
+  tableWrap.addEventListener("keydown", (e) => {
+    const th = e.target.closest?.('th[data-sort]');
+    if (!th) return;
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    const key = th.getAttribute('data-sort');
+    if (!SORTABLE.includes(key)) return;
+    sort = {
+      key,
+      dir: (sort.key === key && sort.dir === "desc") ? "asc" : "desc",
+    };
+    scheduleUpdate();
+  });
+
   window.addEventListener("beforeunload", stopTail);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") stopTail();
@@ -245,7 +287,7 @@ export async function renderShillLeaderboardView({ mint } = {}) {
   await refresh();
 }
 
-function renderTable(list, mint) {
+function renderTable(list, mint, sort) {
   const short = (w) => w ? `${w.slice(0,4)}…${w.slice(-4)}` : "—";
   const solscan = (w) => `https://solscan.io/account/${encodeURIComponent(w)}`;
   const t = (ms)=> {
@@ -253,8 +295,9 @@ function renderTable(list, mint) {
     const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
     return `${h}h ${m}m`;
   };
+  const arrow = (k) => sort?.key === k ? (sort.dir === "desc" ? "▼" : "▲") : "";
   if (!list.length) return `<div class="empty">No data yet.</div>`;
-  const rows = list.map((r, i) => `
+  const rows = list.map((r) => `
     <tr>
       <td>${r.owner ? `<a href="${solscan(r.owner)}" target="_blank" rel="noopener" title="${r.owner}">${short(r.owner)}</a>` : "—"}</td>
       <td><code>${r.slug}</code></td>
@@ -274,10 +317,10 @@ function renderTable(list, mint) {
           <tr>
             <th>Wallet</th>
             <th>Slug</th>
-            <th>Views</th>
-            <th>Trade clicks</th>
-            <th>Swap starts</th>
-            <th>Wallet connects</th>
+            <th data-sort="views" class="sortable" role="button" tabindex="0" title="Sort by views">Views ${arrow("views")}</th>
+            <th data-sort="tradeClicks" class="sortable" role="button" tabindex="0" title="Sort by trade clicks">Trade clicks ${arrow("tradeClicks")}</th>
+            <th data-sort="swapStarts" class="sortable" role="button" tabindex="0" title="Sort by swap starts">Swap starts ${arrow("swapStarts")}</th>
+            <th data-sort="walletConnects" class="sortable" role="button" tabindex="0" title="Sort by wallet connects">Wallet connects ${arrow("walletConnects")}</th>
             <th>Dwell</th>
             <th></th>
           </tr>

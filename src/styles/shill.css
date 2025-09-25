@@ -1,276 +1,181 @@
-/* Shill Contest — responsive, animated, accessible */
+:where(html){
+  -webkit-text-size-adjust:100%; text-size-adjust:100%;
+  font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, Helvetica, Arial, Apple Color Emoji, Segoe UI Emoji;
+  line-height:1.5;
+  color-scheme: dark light;
+}
+:where(body){ margin:0; background: var(--bg) }
+:where(img,svg,video,canvas){ max-inline-size:100%; block-size:auto; vertical-align:middle }
+:where(button,input,textarea,select){ font: inherit }
+:where(*), :where(*::before), :where(*::after){ box-sizing: border-box }
+
+@media (prefers-color-scheme: light){
+  :root{
+    --bg:#f6f8fc; --surface:#ffffff; --surface-2:#f7fbff; --border:#dbe7f5;
+    --text:#0f172a; --text-dim:#334155; --muted:#5b708a;
+    --shadow-1: 0 2px 10px rgba(16,24,40,.06);
+    --shadow-2: 0 8px 30px rgba(16,24,40,.08);
+    --shadow-3: 0 18px 48px rgba(16,24,40,.1);
+  }
+}
+:root[data-theme="dark"]{ color-scheme: dark }
+:root[data-theme="light"]{ color-scheme: light }
+
+
+@media (prefers-reduced-motion: reduce){ *{ animation-duration:.001ms !important; transition-duration:.001ms !important; scroll-behavior:auto !important } }
+@media (prefers-reduced-transparency: reduce){ .ghost, .glass { background: var(--surface) !important; backdrop-filter:none !important } }
 
 .shill__wrap{
-  --bg: #060a10;
-  --card-bg: #0b111a;
-  --card-border: #142237;
-  --muted: #9fb3c8;
-  --text: #e2e8f0;
-  --accent: var(--neon,#1affd5);
-  --accent2: var(--neon2,#7bf1ff);
-
-  container-type: inline-size;
-  max-width: 1040px;
-  margin: 0 auto;
-  padding: clamp(12px, 2.8vw, 28px) clamp(10px, 2.4vw, 24px) clamp(32px, 5vw, 64px);
-  color: var(--text);
-
-  /* background:
-    radial-gradient(1200px 800px at 50% -10%, color-mix(in oklab, var(--accent) 8%, transparent), transparent 60%),
-    linear-gradient(180deg, rgba(10,16,24,.6), transparent 40%),
-    var(--bg); */
-}
-
-/* Header */
-.shill__header{
-  display:flex; align-items:center; justify-content:space-between; gap: clamp(8px, 2vw, 18px);
-  margin-bottom: clamp(10px, 2.2vw, 22px); overflow: hidden;
-}
-.shill__header h1{
-  margin: 0;
-  font-size: clamp(1.25rem, 2.8vw, 2rem);
-  line-height: 1.1;
-  letter-spacing: .2px;
-  background: linear-gradient(90deg, var(--text), color-mix(in oklab, var(--accent2) 60%, #cfe7ff));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-.shill__header .sub{
-  opacity:.85; margin: 6px 0 0; font-size: clamp(.9rem, 1.6vw, 1rem);
-}
-
-/* Card */
-.shill__card{
-  position: relative;
-  background: linear-gradient(180deg, color-mix(in oklab, var(--card-bg) 96%, #000) 0%, #0a1421 100%);
-  border: 1px solid var(--card-border);
-  border-radius: 16px;
-  padding: clamp(12px, 2vw, 20px);
-  margin-bottom: clamp(12px, 2.2vw, 24px);
-  box-shadow: 0 12px 36px rgba(0,0,0,.45);
-  overflow: clip;
-}
-.shill__card::after{
-  content:"";
-  position:absolute; inset:-1px;
-  border-radius: 16px;
-  pointer-events:none;
-  background:
-    linear-gradient(180deg, rgba(26,255,213,.12), rgba(123,241,255,.08)) border-box;
-  mask: linear-gradient(#000 0 0) padding-box, linear-gradient(#000 0 0);
-  -webkit-mask: linear-gradient(#000 0 0) padding-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  opacity: .25;
-}
-
-/* Form grid */
-.shill__card .form{
-  display:grid; align-items:end; gap: clamp(8px, 2vw, 14px);
-  grid-template-columns: 1fr auto;
-}
-@media (max-width: 640px){
-  .shill__card .form{ grid-template-columns: 1fr; align-items: stretch }
-}
-.shill__card .form .lbl{
-  grid-column: 1 / -1;
-  font-weight: 800; letter-spacing:.2px; color: color-mix(in oklab, var(--text) 88%, #fff);
-}
-/* 
-#btnGen {
-  height: 100%;
-} */
-
-.shill__card .in{
-  appearance:none; outline: none;
-  width: 100%;
-  background: #0a1421;
-  color: var(--text);
-  border: 1px solid #132238;
-  border-radius: 12px;
-  padding: 12px 14px;
-  font-size: 0.98rem;
-  transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
-}
-.shill__card .in::placeholder{ color: #7a90a8 }
-.shill__card .in:focus-visible{
-  border-color: color-mix(in oklab, var(--accent2) 50%, #132238);
-  box-shadow: 0 0 0 4px rgba(123,241,255,.12), 0 6px 22px rgba(0,0,0,.3);
-}
-
-.shill__card .btn{
-  background: black;
-  font-size: 1em;
-  margin-left: 8px;
-  border-radius: 12px;
-  font-weight: 800;
-  letter-spacing: .2px;
-  transition: transform .14s ease, box-shadow .14s ease, background .14s ease, filter .14s ease;
-}
-@media (max-width: 640px){
-  .shill__card .btn{ 
-    margin-left: 1px;
-    margin-bottom: 15px;
-   }
-}
-.shill__card .btn:hover{ transform: translateY(-1px); box-shadow: 0 10px 28px rgba(26,255,213,.14) }
-.shill__card .btn:active{ transform: translateY(0) scale(.99) }
-
-/* Limit note */
-.note.small#limitNote{
-  margin-top: 6px;
-  color: var(--muted);
-}
-
-
-
-/* Output row */
-.shill__card .out{ margin-top: 12px; animation: fadeIn .24s ease both }
-.shill__card .linkrow{
-  display:grid; grid-template-columns: 1fr auto; gap: 8px; align-items:center; margin-bottom: 15px;
-}
-
-#btnCopy {
-  margin: 0;
-}
-
-.shill__card .linkrow .btn{
-  background: linear-gradient(90deg, rgba(26,255,213,.14), rgba(123,241,255,.14));
-  border: 1px solid rgba(122,222,255,.28);
-}
-.shill__card .hint{ margin-top: 6px; color: var(--muted) }
-
-/* List */
-.shill__list {
-  padding: 9px;
-}
-
-.shill__list h3{
-  margin: 12px 0 10px;
-  font-size: clamp(1rem, 1.8vw, 1.1rem);
-}
-.shill__row{
-  display:grid;
-  grid-template-columns: 1fr auto;
-  gap: 8px 12px;
-  padding: clamp(15px, 1.6vw, 14px);
-  border: 1px solid #132238;
-  border-radius: 12px;
-  margin-bottom: 10px;
-  background: linear-gradient(180deg, rgba(11,17,26,.9), rgba(10,20,33,.9));
-  box-shadow: 0 8px 24px rgba(0,0,0,.35);
-  transform: translateZ(0);
-  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
-}
-.shill__row:hover{
-  transform: translateY(-1px);
-  border-color: color-mix(in oklab, var(--accent2) 30%, #132238);
-  box-shadow: 0 14px 36px rgba(0,0,0,.45);
-}
-.shill__row .url{
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-  align-self:center;
-}
-.shill__row .url a{
-  color: var(--accent2);
-  text-decoration: none;
-}
-.shill__row .url a:hover{ filter: brightness(1.1) }
-
-.shill__row .stats{
-  display:flex; flex-wrap: wrap; gap: 8px;
-  align-items:center; justify-content:flex-end;
-}
-.shill__row .stats span{
-  display:inline-flex; align-items:center; gap: 6px;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: rgba(20,34,55,.6);
-  border: 1px solid rgba(122,222,255,.18);
-  font-weight: 800;
-  color: color-mix(in oklab, var(--text) 86%, #fff);
-  font-size: .92rem;
-}
-.shill__row .slug{
-  grid-column: 1 / -1;
-  opacity:.7;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-  font-size: .85rem;
-}
-
-/* Empty state */
-.empty{
-  opacity:.75; font-style: italic; padding: 8px 2px;
-}
-
-/* Buttons inside header override (ghost) */
-.shill__header .btn.btn-ghost{
-  border: 1px solid rgba(122,222,255,.28);
-  /* background: linear-gradient(90deg, rgba(26,255,213,.08), rgba(123,241,255,.08)); */
-  font-weight: 800;
-}
-.shill__header .btn.btn-ghost:hover{
-  /* box-shadow: 0 10px 28px rgba(26,255,213,.16); */
-  transform: translateY(-1px);
-}
-
-.shill__tab_actions {
-    width: 100%;
-    grid-column: 1;
+    min-height: 100dvh;
+    height: auto;
     display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
+    flex-direction: column;
+    container-name: shill;
+    container-type: inline-size;
+    max-inline-size: 1080px;
+    margin-inline: auto;
+    /* padding: clamp(12px, 2.6vw, 28px) clamp(10px, 2.2vw, 26px) clamp(28px, 5vw, 64px); */
+    color: var(--text);
+    /* background: var(--bg); */
+    isolation: isolate;
+    /* padding-inline: calc(env(safe-area-inset-left) + 16px) calc(env(safe-area-inset-right) + 16px); */
+}
+.shill__wrap::before{
+  content:""; position:fixed; inset:auto 0 0; block-size:min(38vh,520px); z-index:-1; pointer-events:none; opacity:.55;
 }
 
-.btn--danger{
-  width: 90px;
-  margin-top: 15px;
-  background: linear-gradient(90deg, rgba(255,56,96,.12), rgba(255,56,96,.08));
-  border: 1px solid rgba(255,56,96,.28);
+.shill__header{ display:flex; align-items:center; justify-content:space-between; gap: clamp(8px, 2vw, 18px); margin-block-end: var(--gap-3);     padding: 15px; }
+.shill__header h1{ margin:0; font-size: var(--step-2); line-height:1.1; letter-spacing:.2px;
+  background: linear-gradient(90deg, var(--text), color-mix(in oklab, var(--accent2) 60%, #cfe7ff)); -webkit-background-clip:text; background-clip:text; color:transparent;
+}
+.shill__header .sub{ margin-block-start:6px; font-size: var(--step--1); color: var(--text-dim) }
+.shill__header .btn.btn-ghost{ border:1px solid color-mix(in oklab, var(--accent2) 38%, transparent); font-weight:800 }
+.shill__header .btn.btn-ghost:hover{ transform: translateY(-1px) }
+
+.shill__card{ 
+    position: relative;
+    border-radius: var(--r-lg);
+    padding: var(--gap-4);
+    margin-block-end: var(--gap-3);
+    /* background: linear-gradient(180deg, color-mix(in oklab, var(--surface) 88%, transparent), color-mix(in oklab, var(--surface-2) 100%, transparent)); */
+    /* border: 1px solid var(--border); */
+    /* box-shadow: var(--shadow-2); */
+    transform: translateZ(0);
+    animation: fadeIn .22s ease both;
+}
+.shill__card::after{ content:""; position:absolute; inset:-1px; border-radius: inherit; pointer-events:none; opacity:.28;
+  background: linear-gradient(180deg, color-mix(in oklab,var(--accent) 12%, transparent), color-mix(in oklab,var(--accent2) 8%, transparent)) border-box;
+  -webkit-mask: linear-gradient(#000 0 0) padding-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) padding-box, linear-gradient(#000 0 0); mask-composite: exclude;
 }
 
-/* Focus styles */
-.shill__wrap :is(a,button,input):focus-visible{
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(123,241,255,.22);
-  border-color: color-mix(in oklab, var(--accent2) 60%, #132238);
+.shill__wrap.is-compact .shill__card{ padding: var(--gap-3) }
+.shill__wrap.is-cozy .shill__card{ padding: calc(var(--gap-4) + 6px) }
+
+.shill__card .form{ display:grid; align-items:end; gap: var(--gap-2); grid-template-columns: 1fr auto }
+@media (max-width: 640px){ .shill__card .form{ grid-template-columns:1fr; align-items:stretch } }
+.shill__card .form .lbl{ grid-column:1 / -1; font-weight:800; letter-spacing:.2px; color: color-mix(in oklab, var(--text) 88%, #fff) }
+
+.shill__card .in{ 
+  appearance: none;
+    width: 100%;
+    background: var(--fdv-surface);
+    color: var(--text);
+    border: 1px solid var(--fdv-primary);
+    border-radius: var(--r);
+    padding: 12px 14px;
+    font-size: var(--step-0);
+    transition: border-color .14s ease, box-shadow .14s ease, background .14s ease;
+  }
+.shill__card .in::placeholder{ color:#7a90a8 }
+.shill__card .in:focus-visible{ border-color: color-mix(in oklab, var(--accent2) 50%, var(--border)); box-shadow: var(--ring-strong), var(--shadow-1) }
+.shill__card .in[aria-invalid="true"]{ border-color: color-mix(in oklab, var(--danger) 60%, var(--border)) }
+.shill__card .in[aria-invalid="true"]:focus-visible{ box-shadow: 0 0 0 .2rem color-mix(in oklab, var(--danger) 40%, transparent) }
+:where(.btn){ -webkit-tap-highlight-color: transparent; will-change: transform; backface-visibility:hidden; translate:0; cursor:pointer; user-select:none }
+.shill__card .btn{ font-size: var(--step-0); margin-inline-start:8px; border-radius: var(--r); font-weight:800; letter-spacing:.2px; padding:.72em 1.05em; border:1px solid var(--accent); transition: transform .14s ease, box-shadow .14s ease, background .14s ease, filter .14s ease }
+@media (max-width:640px){ .shill__card .btn{ margin-inline-start:1px; margin-block-end:15px; margin-block-start: 15px; } }
+.shill__card .btn:hover{ transform: translateY(-1px); box-shadow: var(--shadow-2) }
+.shill__card .btn:active{ transform: translateY(0) scale(.99) }
+.btn--primary{ color: var(--text); background: linear-gradient(90deg, color-mix(in oklab,var(--accent) 20%, transparent), color-mix(in oklab,var(--accent2) 20%, transparent)); border-color: color-mix(in oklab, var(--accent2) 40%, transparent) }
+.btn--subtle{ background: linear-gradient(90deg, rgba(26,255,213,.10), rgba(123,241,255,.10)); border-color: rgba(122,222,255,.24) }
+.btn--danger{ inline-size: 102px; margin-block-start:15px; color:#ffe8ed; background: linear-gradient(90deg, color-mix(in oklab, var(--danger) 22%, transparent), color-mix(in oklab, var(--danger) 12%, transparent)); border-color: color-mix(in oklab, var(--danger) 42%, transparent) }
+.btn[aria-busy="true"]{ position:relative; pointer-events:none; filter:saturate(.3) brightness(.9) }
+.btn[aria-busy="true"]::after{ content:""; position:absolute; inset-inline:auto 10px; inset-block:calc(50% - .45em); width:.9em; aspect-ratio:1; border-radius:50%; border:2px solid currentColor; border-right-color:transparent; animation: spin .6s linear infinite }
+@keyframes spin{ to{ transform: rotate(360deg) } }
+
+.shill__wrap :where(a,button,input,textarea,select):focus-visible{ outline:none; box-shadow: var(--ring); border-color: color-mix(in oklab, var(--accent2) 60%, var(--border)) }
+
+.note.small#limitNote{ margin-block-start:6px; color:var(--muted) }
+.shill__card .out{ margin-block-start:12px; animation: fadeIn .2s ease both }
+.shill__card .linkrow{ display:grid; grid-template-columns:1fr auto; gap:8px; align-items:center; margin-block-end: 12px }
+#btnCopy{ margin:0 }
+.shill__card .linkrow .btn{ background: linear-gradient(90deg, rgba(26,255,213,.14), rgba(123,241,255,.14)); border:1px solid rgba(122,222,255,.28) }
+.shill__card .hint{ margin-block-start:6px; color: var(--muted) }
+
+.shill__list{ padding: 9px }
+.shill__list h3{ margin: 12px 0 10px; font-size: var(--step-1) }
+
+.shill__row{
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px 12px;
+    padding: clamp(15px, 1.5vw, 16px);
+    border: 1px solid var(--fdv-ok);
+    border-radius: var(--r);
+    margin-block-end: 10px;
+    background: linear-gradient(180deg, color-mix(in oklab, var(--surface) 92%, transparent), color-mix(in oklab, var(--surface-2) 94%, transparent));
+    box-shadow: var(--shadow-2);
+    transform: translateZ(0);
+    transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+    content-visibility: auto;
+    contain-intrinsic-size: 52px;
 }
 
-.shill__tools {
-  margin-top:40px; display:flex; gap:8px; flex-wrap:wrap; justify-content: space-between;
+@media (hover:hover){ .shill__row:hover{ transform: translateY(-1px); border-color: color-mix(in oklab, var(--accent2) 30%, var(--border)); box-shadow: var(--shadow-3) } }
+.shill__row .url{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; align-self:center }
+.shill__row .url a{ color: var(--accent2); text-decoration:none }
+.shill__row .url a:hover{ filter: brightness(1.1) }
+.shill__row .stats{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:flex-end }
+.shill__row .stats span{ display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:999px; background: color-mix(in oklab, var(--border) 60%, transparent); border:1px solid rgba(122,222,255,.18); font-weight:800; color: color-mix(in oklab, var(--text) 86%, #fff); font-size:.92rem }
+.shill__row .slug{ grid-column:1 / -1; opacity:.74; font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace; font-size:.85rem }
+
+.shill__tools{ margin-block-start: auto; padding: 12px 15px calc(env(safe-area-inset-bottom) + 35px); display:flex; gap:8px; flex-wrap:wrap; justify-content:space-between }
+.shill__tab_actions{ inline-size:100%; grid-column:1; display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end }
+
+.table-scroller{ overflow:auto; background: var(--bg); border:1px solid color-mix(in oklab, #fff 8%, transparent) }
+.shill__table{ inline-size:100%; border-collapse:collapse; font-size:14px }
+.shill__table th, .shill__table td{ padding: 8px 10px; text-align:left; border-bottom:1px solid color-mix(in oklab, #fff 6%, transparent) }
+.shill__table thead th{ position:sticky; inset-block-start:0; background: color-mix(in oklab, #000 20%, transparent); backdrop-filter: blur(6px); z-index:1 }
+.shill__table th.sortable{ cursor: pointer; user-select: none; }
+.shill__table th.sortable:hover{ background: rgba(26,255,213,.06); }
+
+@container shill (max-width: 420px){ .shill__row{ grid-template-columns:1fr } .shill__row .stats{ justify-content:flex-start } }
+@container shill (min-width: 920px){ .shill__row .stats span{ font-size:.9rem; padding:6px 12px } }
+
+@media (pointer: coarse){ .shill__row:hover{ transform:none; box-shadow: var(--shadow-2) } }
+
+.visually-hidden{ position:absolute !important; inline-size:1px; block-size:1px; margin:-1px; border:0; padding:0; white-space:nowrap; clip-path:inset(50%); clip:rect(0 0 0 0); overflow:hidden }
+.u-center{ display:grid; place-items:center }
+.u-nowrap{ white-space:nowrap }
+.u-ellipsis{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.u-grid-2{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap: var(--gap-2) }
+@media (max-width:720px){ .u-grid-2{ grid-template-columns:1fr } }
+
+@media (prefers-contrast: more){
+  :root{ --border: color-mix(in oklab, var(--text) 30%, #000); --ring: 0 0 0 .22rem color-mix(in oklab, var(--accent2) 60%, transparent) }
+  .shill__card, .shill__row{ border-color: var(--border) }
+}
+@media (forced-colors: active){
+  *{ forced-color-adjust:auto }
+  .shill__card, .shill__row{ border: 1px solid CanvasText }
 }
 
-.shill__tools .btn{
-  background: black;
-}
-
-/* Animations */
 @keyframes fadeIn{ from{ opacity:0; transform: translateY(4px) } to{ opacity:1; transform:none } }
-.shill__card, .shill__row{ animation: fadeIn .26s ease both }
 
-/* Ultra-small and wide tweaks via container queries */
-@container (max-width: 420px){
-  .shill__row{ grid-template-columns: 1fr }
-  .shill__row .stats{ justify-content:flex-start }
-}
-@container (min-width: 920px){
-  .shill__row .stats span{ font-size: .9rem; padding: 6px 12px }
-}
 
-/* Coarse pointers */
-@media (pointer: coarse){
-  .shill__row:hover{ transform:none; box-shadow: 0 8px 24px rgba(0,0,0,.35) }
-}
+*{ scrollbar-width: thin; scrollbar-color: color-mix(in oklab,var(--accent2) 30%, #2b3c53) transparent }
+::-webkit-scrollbar{ height:10px; width:10px }
+::-webkit-scrollbar-thumb{ border-radius:999px; background: color-mix(in oklab,var(--accent2) 30%, #2b3c53) }
+::-webkit-scrollbar-track{ background: transparent }
 
-/* Reduced motion */
-@media (prefers-reduced-motion: reduce){
-  .shill__card, .shill__row, .shill__card .out{ animation: none }
-  .shill__row, .shill__card, .shill__header .btn{ transition:cubic-bezier(1, 0, 0, 1) .1s }
-}
-
-.table-scroller { overflow: auto; border-radius: 8px; border: 1px solid rgba(255,255,255,.08); }
-.shill__table { width: 100%; border-collapse: collapse; font-size: 14px; }
-.shill__table th, .shill__table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid rgba(255,255,255,.06); }
-.shill__table thead th { position: sticky; top: 0; background: rgba(0,0,0,.2); backdrop-filter: blur(6px); z-index: 1; }
+@media print{ .shill__wrap{ max-inline-size:none; padding:0; background:white; color:black } .shill__card, .shill__row{ box-shadow:none; background:white; border-color:#bbb } .btn, .shill__tools, .shill__header .btn{ display:none !important } }

@@ -1074,3 +1074,68 @@ function _fmtAge(ms) {
     start();
   }
 })();
+
+async function sha256Bytes(buf){ return new Uint8Array(await crypto.subtle.digest("SHA-256", buf)); }
+function bytesFromHex(hex){ const a=new Uint8Array(hex.length/2); for(let i=0;i<a.length;i++) a[i]=parseInt(hex.substr(i*2,2),16); return a; }
+function hexFromBytes(a){ return [...a].map(b=>b.toString(16).padStart(2,'0')).join(''); }
+function leadingZeroBits(bytes){ let bits=0; for(const b of bytes){ if(b===0){bits+=8; continue;} for(let i=7;i>=0;i--){ if((b>>i)&1) return bits+(7-i); } } return bits; }
+function b64uToBytes(b64u){ const b64=b64u.replace(/-/g,'+').replace(/_/g,'/'); const pad='='.repeat((4-(b64.length%4))%4); const bin=atob(b64+pad); return Uint8Array.from(bin,c=>c.charCodeAt(0)); }
+
+async function solvePow(chalB64, bits){
+  const payload = b64uToBytes(chalB64);
+  const delim = new TextEncoder().encode(":");
+  // simple linear search; fast at ~18 bits
+  for (let nonce = 0; nonce < 1e9; nonce++) {
+    const nhex = nonce.toString(16).padStart(8, "0");
+    const nbytes = bytesFromHex(nhex);
+    const buf = new Uint8Array(payload.length + 1 + nbytes.length);
+    buf.set(payload, 0); buf.set(delim, payload.length); buf.set(nbytes, payload.length + 1);
+    const h = await sha256Bytes(buf);
+    if (leadingZeroBits(h) >= bits) return nhex;
+  }
+  throw new Error("pow_failed");
+}
+
+let SESSION = null;
+
+async function ensureSession() {
+  if (SESSION) return SESSION;
+  const r = await fetch("/session", { method: "POST", credentials: "include" });
+  if (r.ok) {
+    const j = await r.json();
+    SESSION = j.session;
+    return SESSION;
+  }
+  return null;
+}
+
+export async function callRpc(body) {
+  // Try with session first
+  let session = await ensureSession();
+  let res = await fetch("/rpc", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(session ? { "x-session": session } : {}) },
+    body: JSON.stringify(body),
+  });
+
+  if (res.status === 401) {
+    // Solve PoW then retry
+    const chalHdr = res.headers.get("x-pow-chal"); // format v1:<b64payload>
+    const bits = +(res.headers.get("x-pow-bits") || 18);
+    if (chalHdr?.startsWith("v1:")) {
+      const chal = chalHdr.slice(3);
+      const nonceHex = await solvePow(chal, bits);
+      res = await fetch("/rpc", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-pow": `v1:${chal}:${nonceHex}`,
+        },
+        body: JSON.stringify(body),
+      });
+      const newSess = res.headers.get("x-new-session");
+      if (newSess) SESSION = newSess;
+    }
+  }
+  return res;
+}
