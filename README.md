@@ -49,5 +49,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 
 
-
-git commit -am "fix: correct bump logic on swap success"
+git commit -m "HMAC/PoW: remove Turnstile, gate /session, propagate headers; swap.js auto-verify on open/click with animated chip;"
