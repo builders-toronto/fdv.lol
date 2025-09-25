@@ -208,8 +208,6 @@ export async function makeShillShortlink({ mint, wallet_id, owner }) {
   const url = new URL(location.origin);
   url.pathname = `/token/${mint}`;
   url.searchParams.set("ref", slug);
-  url.searchParams.set("wallet_id", walletId);
-  url.searchParams.set("owner", walletId);
   return { slug, url: url.toString() };
 }
 async function _mergeStatsFromWorker(entry, localStats) {

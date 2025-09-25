@@ -43,55 +43,6 @@ function isStreamOnDom() {
   return /on/i.test(btn.textContent || '');
 }
 
-function flash(el, dir = 0) {
-  if (!el) return;
-  el.classList.remove('tick-up','tick-down');
-  void el.offsetWidth;
-  if (dir > 0) el.classList.add('tick-up');
-  else if (dir < 0) el.classList.add('tick-down');
-}
-
-function patchTopStats(t, prev) {
-  const elPrice = document.querySelector('[data-token-price]');
-  const elChg   = document.querySelector('[data-token-change]');
-  const elLiq   = document.querySelector('[data-token-liq]');
-  const elVol24 = document.querySelector('[data-token-vol24]');
-  const elFdv   = document.querySelector('[data-token-fdv]');
-
-  if (elPrice) {
-    const before = Number(prev?.priceUsd ?? t.priceUsd);
-    elPrice.textContent = Number.isFinite(t.priceUsd) ? fmtMoney(t.priceUsd) : '—';
-    flash(elPrice, Number(t.priceUsd) - before);
-  }
-  if (elChg) {
-    const v = Number.isFinite(t.change24h) ? t.change24h : null;
-    elChg.textContent = v == null ? '—' : `${v >= 0 ? '+' : ''}${fmtNum(v)}%`;
-    elChg.classList.toggle('pos', (v ?? 0) > 0);
-    elChg.classList.toggle('neg', (v ?? 0) < 0);
-  }
-  if (elLiq) {
-    const before = Number(prev?.liquidityUsd ?? t.liquidityUsd);
-    elLiq.textContent = Number.isFinite(t.liquidityUsd) ? fmtMoney(t.liquidityUsd) : '—';
-    flash(elLiq, Number(t.liquidityUsd) - before);
-  }
-  if (elVol24) {
-    const before = Number(prev?.v24hTotal ?? t.v24hTotal);
-    elVol24.textContent = Number.isFinite(t.v24hTotal) ? fmtMoney(t.v24hTotal) : '—';
-    flash(elVol24, Number(t.v24hTotal) - before);
-  }
-  if (elFdv) {
-    const before = Number(prev?.fdv ?? t.fdv);
-    elFdv.textContent = Number.isFinite(t.fdv) ? fmtMoney(t.fdv) : '—';
-    flash(elFdv, Number(t.fdv) - before);
-  }
-}
-
-function patchPairsTable(t) {
-  const tbody = document.getElementById('pairsBody');
-  if (!tbody) return;
-  try { renderPairsTable(t.pairs); } catch {}
-}
-
 function stopProfileFeed() {
   if (PROFILE_FEED.timer) { clearTimeout(PROFILE_FEED.timer); PROFILE_FEED.timer = null; }
   if (PROFILE_FEED.ac) { try { PROFILE_FEED.ac.abort(); } catch {} PROFILE_FEED.ac = null; }
@@ -146,6 +97,7 @@ function startProfileFeed(mint, initialModel) {
 export async function renderProfileView(input, { onBack } = {}) {
   const elApp = document.getElementById("app");
   const elHeader = document.querySelector(".header");
+  if (elHeader) elHeader.style.display = "none";
   if (!elApp) return;
 
   const style = document.createElement("link");
@@ -191,13 +143,12 @@ export async function renderProfileView(input, { onBack } = {}) {
     if (raw.error) return errorNotice(elApp, raw.error);
   } catch (e) {
     console.warn("fetchTokenInfo failed:", e);
-    window.location.href = "/";
+    window.location.href = "https://jup.ag/tokens/" + encodeURIComponent(mint);
     return;
   }
   const t = sanitizeToken(raw);
   const scored = scoreAndRecommendOne(t);
 
-  if (elHeader) elHeader.style.display = "none";
 
   // Hero & actions
   const logo = t.imageUrl || FALLBACK_LOGO(t.symbol);
@@ -244,8 +195,6 @@ export async function renderProfileView(input, { onBack } = {}) {
 
   // Stats values (initial)
   setStatPrice(gridEl, t.priceUsd, { maxFrac: 9, minFrac: 1 });
-  // Seed line with initial price
-
 
   setStat(gridEl, 1, fmtMoney(t.liquidityUsd));
   setStat(gridEl, 2, fmtMoney(t.fdv ?? t.marketCap));
