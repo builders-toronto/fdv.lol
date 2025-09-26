@@ -8,14 +8,13 @@ const SESS_KEY  = "fdv.shill.session";
 
 const MAX_LINKS_PER_USER = 3;
 
-// detect current ref from URL
 function _currentRef() {
   try { return new URLSearchParams(location.search).get("ref") || ""; } catch { return ""; }
 }
 function _analyticsEnabled(slug) {
   const ref = _currentRef();
   if (!ref) return false;
-  if (slug && ref !== slug) return false; // require match if slug provided
+  if (slug && ref !== slug) return false; 
   return true;
 }
 
@@ -77,7 +76,6 @@ async function _postJSON(url, payload, { keepalive = false } = {}) {
   return res;
 }
 
-// Prefer wallet_id in local storage
 function _ownerForSlug(slug) {
   try {
     const links = _load(LINKS_KEY);
@@ -296,7 +294,6 @@ function _bumpLocal(slug, field, by=1){
 }
 
 async function _bumpBoth({ slug, mint, field, event, by = 1, keepalive = false }) {
-  // Guard: only bump/send if current URL has ?ref= and matches slug! dont waste resources otherwise
   if (!_analyticsEnabled(slug)) return;
   _bumpLocal(slug, field, by);
   _sendEvent({ mint, slug, event, value: by, keepalive }).catch(()=>{});
@@ -346,6 +343,11 @@ export function startProfileShillAttribution({ mint }) {
     if (swapBtn) _bumpBoth({ slug, mint: cleanMint, field: "swapStarts", event: "swap_start", by: 1 });
   }, { passive: true });
 
+  // document.addEventListener("swap:open-swap", () => {
+  //   const sess = _load(SESS_KEY);
+  //   if (!sess?.slug || !sess?.mint) return;
+  //   _bumpBoth({ slug: sess.slug, mint: sess.mint, field: "swapStarts", event: "swap_start", by: 1 });
+  // });
 
   document.addEventListener("swap:wallet-connect", () => {
     const sess = _load(SESS_KEY);
@@ -360,6 +362,84 @@ export function startProfileShillAttribution({ mint }) {
   }, { passive: true } );
 }
 
+// NEW: start profile-page metrics (rich interactions)
+export function startProfileMetrics({ mint }) {
+  const cleanMint = _sanitizeMint(mint);
+  if (!cleanMint) return;
+
+  // Reuse base attribution (views, time_ms, trade_click, swap_start, wallet_connect, swap:confirmed→trade_click)
+  try { startProfileShillAttribution({ mint: cleanMint }); } catch {}
+
+  const usp = new URLSearchParams(location.search);
+  const slug = usp.get("ref") || "";
+
+  // Helper to bump safely
+  const bump = (event, value = 1) => _bumpBoth({ slug, mint: cleanMint, field: "views", event, by: value });
+
+  // Swap modal open (from buttons)
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest?.("[data-swap],[data-swap-open],[data-open-swap]");
+    if (btn) bump("open_swap_modal", 1);
+  }, { passive: true });
+
+  // Copy mint/CA
+  document.addEventListener("click", (e) => {
+    const ca = e.target.closest?.("[data-copy-mint],[data-copy-ca]");
+    if (ca) bump(ca.hasAttribute("data-copy-ca") ? "copy_ca" : "copy_mint", 1);
+  }, { passive: true });
+
+  // Share button
+  document.addEventListener("click", (e) => {
+    const el = e.target.closest?.("[data-share]");
+    if (el) bump("share_click", 1);
+  }, { passive: true });
+
+  // External links (dex, socials, site)
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest?.('a[target="_blank"], a[rel~="noopener"], [data-external]');
+    if (a) bump("external_click", 1);
+  }, { passive: true });
+
+  // Header controls (if present on profile)
+  document.getElementById("refresh")?.addEventListener("click", () => bump("refresh_click", 1), { passive: true });
+  document.getElementById("stream")?.addEventListener("click", () => bump("stream_toggle", 1), { passive: true });
+  document.getElementById("sort")?.addEventListener("change", () => bump("sort_change", 1), { passive: true });
+
+  // Search (if input exists on profile)
+  const q = document.getElementById("q");
+  if (q) {
+    let lastSent = 0;
+    q.addEventListener("input", () => {
+      const now = Date.now();
+      if (now - lastSent > 1200) { lastSent = now; bump("search", 1); }
+    }, { passive: true });
+
+    document.getElementById("qResults")?.addEventListener("click", (e) => {
+      const row = e.target.closest?.(".row");
+      if (row) bump("suggestion_click", 1);
+    }, { passive: true });
+  }
+
+  // Scroll depth (max % of page seen)
+  let maxDepth = 0;
+  const onScroll = () => {
+    const h = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+    const wh = window.innerHeight || document.documentElement.clientHeight || 0;
+    const y = window.scrollY || window.pageYOffset || 0;
+    const perc = Math.max(0, Math.min(100, Math.round(((y + wh) / h) * 100)));
+    if (perc > maxDepth) maxDepth = perc;
+  };
+  window.addEventListener("scroll", onScroll, { passive: true });
+  window.addEventListener("pagehide", () => { if (maxDepth > 0) bump("scroll_depth", maxDepth); }, { once: true });
+
+  // Swap lifecycle events from widget
+  document.addEventListener("swap:verify:start", () => bump("verify_start", 1), { passive: true });
+  document.addEventListener("swap:verify:ok", () => bump("verify_ok", 1), { passive: true });
+  document.addEventListener("swap:verify:fail", () => bump("verify_fail", 1), { passive: true });
+  document.addEventListener("swap:quote", () => bump("swap_quote", 1), { passive: true });
+  document.addEventListener("swap:sent", () => bump("swap_sent", 1), { passive: true });
+  document.addEventListener("swap:confirmed", () => bump("swap_confirmed", 1), { passive: true });
+}
 
 export async function mintShillSession() {
   if (!_analyticsEnabled()) return null;

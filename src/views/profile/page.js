@@ -22,7 +22,7 @@ import {
 } from "./render/interactions.js";
 import { loadAds, pickAd, adCard } from "../../ads/load.js";
 import { initSwap, createSwapButton, bindSwapButtons } from "../../widgets/swap.js";
-import { startProfileShillAttribution } from "../../analytics/shill.js"; 
+import { startProfileMetrics } from "../../analytics/shill.js"; 
 
 // Global sentinel for swap wiring
 const SWAP_BRIDGE = (window.__fdvSwapBridge = window.__fdvSwapBridge || { inited:false, wired:false });
@@ -125,6 +125,12 @@ export async function renderProfileView(input, { onBack } = {}) {
 
   renderShell({ mount: elApp, mint, adHtml });
 
+  // Ensure Share button is tagged for metrics (copy_mint)
+  try {
+    const copyBtn = document.getElementById("btnCopyMint");
+    if (copyBtn) copyBtn.setAttribute("data-copy-mint", "");
+  } catch {}
+
   const gridEl = document.getElementById("statsGrid");
   buildStatsGrid(gridEl);
   wireStatsResizeAutoShortLabels(gridEl);
@@ -173,8 +179,13 @@ export async function renderProfileView(input, { onBack } = {}) {
     if (!swapBtn) {
       swapBtn = createSwapButton({ mint, label: "Swap", className: "btn btn--primary btn-ghost" });
       swapBtn.id = "btnSwapAction";
+      // tag for metrics: open_swap_modal
+      swapBtn.setAttribute("data-open-swap", "");
       const actions = elApp.querySelector(".profile__navigation .actions");
       if (actions) actions.prepend(swapBtn);
+    } else {
+      // ensure tag present if button already exists
+      swapBtn.setAttribute("data-open-swap", "");
     }
     swapBtn.dataset.tokenHydrate = JSON.stringify(hydrate);
     if (t.headlineUrl) swapBtn.dataset.pairUrl = t.headlineUrl; else swapBtn.removeAttribute("data-pair-url");
@@ -303,8 +314,8 @@ export async function renderProfileView(input, { onBack } = {}) {
   // Live updates
   try { startProfileFeed(t.mint || mint, t); } catch {}
 
-  // Start shill attribution if a referral is present (?ref=slug)
-  try { startProfileShillAttribution({ mint }); } catch {}
+  // Start rich shill metrics (includes base attribution)
+  try { startProfileMetrics({ mint }); } catch {}
 }
 
 function updateStatsGridLive(t, prev) {

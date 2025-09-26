@@ -61,6 +61,8 @@ let _sessionInFlight = null;                // dedupe concurrent solves
 let _verifyAnimTimer = null;
 let _verifyAnimStep = 0;
 
+
+
 function _startVerifyAnim() {
   const chip = _el("[data-captcha-state]");
   if (!chip) return;
@@ -384,20 +386,6 @@ async function ensureRpcSession(force = false) {
   return _sessionInFlight;
 }
 
-async function _verifySessionWithUi(force = false) {
-  if (!force && _hasLiveSession()) {
-    _refreshChallengeChrome();
-    return _rpcSession.token;
-  }
-  _startVerifyAnim();
-  try {
-    const tok = await ensureRpcSession(force);
-    return tok;
-  } finally {
-    _stopVerifyAnim();
-  }
-}
-
 // Reflect session state in UI
 function _refreshChallengeChrome() {
   const ok = _hasLiveSession();
@@ -456,6 +444,25 @@ async function _connectPhantom() {
   }
 }
 
+
+// UI-aware verification used on modal open and on swap click
+async function _verifySessionWithUi(force = false) {
+  if (!force && _hasLiveSession()) {
+    _refreshChallengeChrome();
+    return _rpcSession.token;
+  }
+  try { document.dispatchEvent(new CustomEvent("swap:verify:start")); } catch {}
+  _startVerifyAnim();
+  try {
+    const tok = await ensureRpcSession(force);
+    if (tok) { try { document.dispatchEvent(new CustomEvent("swap:verify:ok")); } catch {} }
+    else { try { document.dispatchEvent(new CustomEvent("swap:verify:fail")); } catch {} }
+    return tok;
+  } finally {
+    _stopVerifyAnim();
+  }
+}
+
 let _preQuoteCtl = null;
 const _debounce = (fn, ms = 180) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 
@@ -496,8 +503,8 @@ async function _preQuote() {
 }
 const _kickPreQuote = _debounce(_preQuote, 200);
 
+// In _quoteAndSwap(), emit swap lifecycle events
 async function _quoteAndSwap() {
-  // prevent reentrancy/double-click races
   if (window.__fdvSwapBusy) return;
   window.__fdvSwapBusy = true;
   try {
@@ -505,18 +512,8 @@ async function _quoteAndSwap() {
       _log("Please connect your wallet.", "warn");
       return;
     }
-    if (!_hasLiveSession()) {
-      await _verifySessionWithUi(true);
-    }
-    if (!_hasLiveSession()) {
-      _log("Trying to Solve PoW");
-      await ensureRpcSession(true);
-      _refreshChallengeChrome();
-    }
-    if (!_hasLiveSession()) {
-      _log("Verification failed. Please try again.", "err");
-      return;
-    }
+    if (!_hasLiveSession()) await _verifySessionWithUi(true);
+    if (!_hasLiveSession()) { _log("Verification failed. Please try again.", "err"); return; }
 
     const inputMint  = _el("[data-swap-input-mint]").value.trim();
     const outputMint = _el("[data-swap-output-mint]").value.trim();
@@ -551,6 +548,7 @@ async function _quoteAndSwap() {
     const qRes = await fetch(q.toString());
     if (!qRes.ok) throw new Error(`Quote failed: ${qRes.status} ${await qRes.text()}`);
     const quote = await qRes.json();
+    try { document.dispatchEvent(new CustomEvent("swap:quote", { detail: { quote } })); } catch {}
     _log(`Best out (raw): ${quote.outAmount || "n/a"}`);
     CFG.onQuote?.(quote);
 
@@ -606,8 +604,7 @@ async function _quoteAndSwap() {
     }
 
     if (!signature) throw new Error("No signature returned");
-    _log(`Sent. Signature: `, "ok", signature);
-    CFG.onSwapSent?.(signature);
+    try { document.dispatchEvent(new CustomEvent("swap:sent", { detail: { signature } })); } catch {}
 
     _log("Confirming (polling)…");
     const ok = await _confirmWithPolling(conn, signature, { timeoutMs: 90_000, intervalMs: 1_500 });
@@ -1034,6 +1031,7 @@ function _openModal(){
   _el("[data-swap-backdrop]")?.classList.add("show");
   _clearLog();
   _refreshModalChrome();
+  try { document.dispatchEvent(new CustomEvent("swap:open")); } catch {}
   _verifySessionWithUi(false).catch(()=>{});
   _lockPageScroll(true);
   _watchKeyboardViewport(true);

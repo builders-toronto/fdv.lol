@@ -44,7 +44,7 @@
   content:""; position:fixed; inset:auto 0 0; block-size:min(38vh,520px); z-index:-1; pointer-events:none; opacity:.55;
 }
 
-.shill__header{ display:flex; align-items:center; justify-content:space-between; gap: clamp(8px, 2vw, 18px); margin-block-end: var(--gap-3);     padding: 15px; }
+.shill__header{ display:flex; align-items:center; justify-content:space-between; gap: clamp(8px, 2vw, 18px);    padding: 15px; }
 .shill__header h1{ margin:0; font-size: var(--step-2); line-height:1.1; letter-spacing:.2px;
   background: linear-gradient(90deg, var(--text), color-mix(in oklab, var(--accent2) 60%, #cfe7ff)); -webkit-background-clip:text; background-clip:text; color:transparent;
 }
