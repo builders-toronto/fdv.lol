@@ -4,13 +4,23 @@ export async function renderShillLeaderboardView({ mint } = {}) {
   if (header) header.style.display = 'none';
   if (!root) return;
 
-  mint = mint || detectMintFromPath() || new URLSearchParams(location.search).get("mint") || "";
+  const urlParams = new URLSearchParams(location.search);
+  const isEmbed = ["1","true","yes"].includes((urlParams.get("embed") || "").toLowerCase());
+
+  mint = mint || detectMintFromPath() || urlParams.get("mint") || "";
   if (!mint) {
     root.innerHTML = `<section class="shill__wrap"><p class="empty">No token provided.</p></section>`;
     return;
   }
-
-  root.innerHTML = `
+  root.innerHTML = isEmbed
+    ? `
+    <section class="shill__wrap shill__embed">
+      <div id="tableWrap" class="tableWrap">
+        <div class="empty">Loading…</div>
+      </div>
+    </section>
+  `
+    : `
     <section class="shill__wrap">
       <header class="shill__header">
         <div class="lhs">
@@ -24,59 +34,38 @@ export async function renderShillLeaderboardView({ mint } = {}) {
 
       <div class="shill__list">
         <h3>Top shills</h3>
-        <p class="muted small"><b>${mint}</b> | <span class="note small" id="statusNote"></span></p>
-
-        <!-- Search by wallet -->
-        <div class="form" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin: 20px 0 20px;">
-          <input id="lbSearch" type="text" inputmode="latin" autocomplete="off" spellcheck="false"
-                 placeholder="Search by wallet (base58)…"
-                 style="flex:1 1 260px; min-width:200px; padding:10px 12px; border-radius:8px; border:1px solid rgba(255,255,255,.12); background:rgba(255,255,255,.04); color:inherit;">
-          <button class="btn" id="lbSearchBtn">Search</button>
-        </div>
-
         <div id="tableWrap" class="tableWrap">
           <div class="empty">Loading…</div>
-        </div>
-        <div class="form" style="display:flex; gap:8px; align-items:center; justify-content: space-between; flex-wrap:wrap; margin-block-start: 25px;">
-          <div class="sill__table_actions" style="display:flex; gap:8px; align-items:center;">
-            <button class="btn" id="btnRefresh">Refresh</button>
-            <button class="btn btn-ghost" id="btnClearFilter" style="display:none;">Clear</button>
-            <button class="btn" id="btnExportCsv">Export CSV</button>
-          </div>
-          <div class="shill__livecontrol" style="display:flex; align-items:center; gap:4px;">
-            <label for="autoRefresh" class="lbl small" style="margin-left:8px;">Auto-refresh</label>
-            <input type="checkbox" id="autoRefresh" checked />
-          </div>
         </div>
       </div>
     </section>
   `;
-
-  ensureLeaderboardModalStyles();
   ensureLeaderboardModalRoot();
 
-  const btnRefresh = document.getElementById("btnRefresh");
-  const btnClearFilter = document.getElementById("btnClearFilter");
-  const btnExportCsv = document.getElementById("btnExportCsv");
-  const autoCb = document.getElementById("autoRefresh");
-  const statusNote = document.getElementById("statusNote");
-  const tableWrap = document.getElementById("tableWrap");
-  const lbSearch = document.getElementById("lbSearch");
-  const lbSearchBtn = document.getElementById("lbSearchBtn");
-
+  // State
   const METRICS_BASE = String(window.__metricsBase || "https://fdv-lol-metrics.fdvlol.workers.dev").replace(/\/+$/,"");
-  // Aggregates and dedupe state
-  const agg = new Map();          // slug -> { views, ... }
-  const seen = new Set();         // dedupe keys
+  const agg = new Map();         // slug -> row
+  const seen = new Set();
   const MAX_SEEN = 200000;
   const SOL_ADDR_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
-  // Sort & filter state
   const SORTABLE = ["views","tradeClicks","swapStarts","walletConnects"];
   let sort = { key: "views", dir: "desc" };
-  let filterWallet = ""; 
+  let filterWallet = "";
   let page = 1;
-  const PAGE_SZ = 5;
+  let PAGE_SZ = 5;
+  let useCsv = false;
+  let autoRefreshEnabled = true;
+
+  // Responsive page size (optional bump on wide screens)
+  const computePageSize = () => (window.innerWidth >= 1200 ? 10 : 5);
+  const applyPageSize = () => { PAGE_SZ = computePageSize(); };
+  applyPageSize();
+  window.addEventListener("resize", () => {
+    const prev = PAGE_SZ;
+    applyPageSize();
+    if (PAGE_SZ !== prev) { page = 1; scheduleUpdate(); }
+  }, { passive: true });
 
   function exportLeaderboardCsv() {
     const base = [...agg.values()];
@@ -120,8 +109,9 @@ export async function renderShillLeaderboardView({ mint } = {}) {
     });
   }
 
-  // Throttled UI updates
+  // Fast UI updates
   let updateRaf = 0;
+  let tailActive = false;
   const scheduleUpdate = () => {
     if (updateRaf) return;
     updateRaf = requestAnimationFrame(() => {
@@ -135,23 +125,26 @@ export async function renderShillLeaderboardView({ mint } = {}) {
       if (page < 1) page = 1;
       const start = (page - 1) * PAGE_SZ;
       const visible = sorted.slice(start, start + PAGE_SZ);
-      tableWrap.innerHTML = renderTable(visible, mint, sort, filterWallet, page, PAGE_SZ, total);
-      statusNote.textContent =
+      const statusText =
         `${tailActive ? "Live" : "Updated"} ${new Date().toLocaleTimeString()}`
         + (filterWallet ? ` • filter: ${filterWallet}` : "")
         + ` • ${total} result${total===1?"":"s"} • page ${page}/${totalPages}`;
+      tableWrap.innerHTML = renderTable({
+        list: visible, mint, sort, filterWallet, page, pageSize: PAGE_SZ, total, totalPages,
+        statusText, useCsv, autoRefreshEnabled, showEmbedButton: !isEmbed
+      });
     });
   };
 
-  function runSearch() {
-    const q = (lbSearch.value || "").trim();
-    filterWallet = q.toLowerCase();
-    page = 1; // reset to first page on search
+  function runSearch(q) {
+    const val = (q != null ? q : (document.getElementById("lbSearch")?.value || "")).trim();
+    filterWallet = val.toLowerCase();
+    page = 1;
     scheduleUpdate();
     // Auto-open if unique match
-    if (q) {
-      if (SOL_ADDR_RE.test(q)) {
-        const hit = [...agg.values()].find(r => r.owner === q);
+    if (val) {
+      if (SOL_ADDR_RE.test(val)) {
+        const hit = [...agg.values()].find(r => r.owner === val);
         if (hit) openMetricsModal({ mint, slug: hit.slug, owner: hit.owner });
       } else {
         const matches = [...agg.values()].filter(r => (r.owner||"").toLowerCase().includes(filterWallet));
@@ -159,45 +152,118 @@ export async function renderShillLeaderboardView({ mint } = {}) {
       }
     }
   }
-  lbSearchBtn.addEventListener("click", runSearch);
-  lbSearch.addEventListener("keydown", (e) => { if (e.key === "Enter") runSearch(); });
-  btnClearFilter.addEventListener("click", () => {
-    filterWallet = "";
-    lbSearch.value = "";
-    page = 1;
-    scheduleUpdate();
+
+  // Delegated events for toolbar + table
+  const tableWrap = document.getElementById("tableWrap");
+
+  // Copy helper + toast
+  async function copyText(txt) {
+    try {
+      if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(txt); return true; }
+      const ta = document.createElement("textarea");
+      ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0"; document.body.appendChild(ta);
+      ta.select(); document.execCommand("copy"); ta.remove(); return true;
+    } catch { return false; }
+  }
+  function showToast(msg) {
+    const t = document.createElement("div");
+    t.className = "lb-toast";
+    t.textContent = msg;
+    document.body.appendChild(t);
+    requestAnimationFrame(() => t.classList.add("show"));
+    setTimeout(() => { t.classList.remove("show"); setTimeout(() => t.remove(), 250); }, 1800);
+  }
+  function makeEmbedHtml() {
+    const origin = (window.location && window.location.origin) ? window.location.origin : "https://fdv.lol";
+    const params = new URLSearchParams({ mint });
+    params.set("embed", "1");
+    if (useCsv) params.set("source", "csv");
+    const src = `${origin}/shill/leaderboard?${params.toString()}`;
+    // Only leaderboard renders when embed=1
+    return `<iframe src="${src}" loading="lazy" style="width:100%;max-width:100%;border:0;background:transparent;" height="520" title="FDV Leaderboard"></iframe>`;
+  }
+
+  // Search (debounced)
+  let searchTimer = 0;
+  tableWrap.addEventListener("input", (e) => {
+    const inp = e.target.closest?.('#lbSearch');
+    if (!inp) return;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => runSearch(inp.value), 200);
   });
-  btnExportCsv.addEventListener("click", () => {
-    try { exportLeaderboardCsv(); } catch (e) { console.error("CSV export failed", e); }
+  tableWrap.addEventListener("click", async (e) => {
+    const btn = e.target.closest?.('[data-act]');
+    if (!btn) return;
+    const act = btn.getAttribute("data-act");
+    if (act === "search") runSearch();
+    if (act === "clear") { filterWallet = ""; page = 1; scheduleUpdate(); }
+    if (act === "refresh") { useCsv ? refreshFromCsv() : refresh(); }
+    if (act === "export") { exportLeaderboardCsv(); }
+    if (act === "embed") {
+      const html = makeEmbedHtml();
+      const ok = await copyText(html);
+      showToast(ok ? "Embed code copied" : "Copy failed");
+    }
+  });
+  tableWrap.addEventListener("change", (e) => {
+    const sel = e.target.closest?.('[data-source]');
+    if (sel) {
+      useCsv = String(sel.value) === "csv";
+      if (useCsv) { autoRefreshEnabled = false; stopTail(); refreshFromCsv(); }
+      else { autoRefreshEnabled = true; refresh(); }
+      return;
+    }
+    const cb = e.target.closest?.('[data-auto]');
+    if (cb) {
+      autoRefreshEnabled = !!cb.checked;
+      if (autoRefreshEnabled) startTail(); else stopTail();
+    }
+    const ps = e.target.closest?.('[data-page-size]');
+    if (ps) {
+      const n = Math.max(1, Math.min(50, +ps.value || 5));
+      PAGE_SZ = n; page = 1; scheduleUpdate();
+    }
   });
 
-  // Pagination controls (Prev/Next)
+  // Pagination + sorting (delegated)
   tableWrap.addEventListener("click", (e) => {
     const nav = e.target.closest?.("[data-nav]");
-    if (!nav) return;
-    const dir = nav.getAttribute("data-nav");
-    if (dir === "prev") page = Math.max(1, page - 1);
-    if (dir === "next") page = page + 1; // clamped in scheduleUpdate()
-    scheduleUpdate();
+    if (nav) {
+      const dir = nav.getAttribute("data-nav");
+      if (dir === "prev") page = Math.max(1, page - 1);
+      if (dir === "next") page = page + 1;
+      scheduleUpdate();
+      return;
+    }
+    const th = e.target.closest?.('th[data-sort]');
+    if (th) {
+      const key = th.getAttribute('data-sort');
+      if (SORTABLE.includes(key)) {
+        sort = { key, dir: (sort.key === key && sort.dir === "desc") ? "asc" : "desc" };
+        page = 1;
+        scheduleUpdate();
+      }
+    }
   });
-  tableWrap.addEventListener("keydown", (e) => {
-    const nav = e.target.closest?.("[data-nav]");
-    if (!nav) return;
-    if (e.key !== "Enter" && e.key !== " ") return;
-    e.preventDefault();
-    const dir = nav.getAttribute("data-nav");
-    if (dir === "prev") page = Math.max(1, page - 1);
-    if (dir === "next") page = page + 1;
-    scheduleUpdate();
+
+  tableWrap.addEventListener("click", (e) => {
+    const a = e.target.closest?.("a,button,[data-act]");
+    if (a) return; // ignore toolbar buttons/links
+    const tr = e.target.closest?.('tr[data-slug]');
+    if (!tr) return;
+    const slug = tr.getAttribute('data-slug');
+    if (!slug) return;
+    const entry = agg.get(slug);
+    const owner = entry?.owner || "";
+    openMetricsModal({ mint, slug, owner });
   });
 
   // Cache across refreshes within this view
   let lastEtag = "";
-  let cacheAgg = new Map(); // slug -> {slug, owner, views, tradeClicks, swapStarts, walletConnects, timeMs}
+  let cacheAgg = new Map();
 
   // Live tail control
   let tailAbort = null;
-  let tailActive = false;
 
   function sevenDaysAgo() {
     const d = new Date(Date.now() - 7*24*3600*1000);
@@ -207,8 +273,7 @@ export async function renderShillLeaderboardView({ mint } = {}) {
   async function fetchAllSlugs() {
     const items = [];
     let cursor = "";
-    const since = sevenDaysAgo(); 
-
+    const since = sevenDaysAgo();
     for (let i = 0; i < 10; i++) {
       const url = `${METRICS_BASE}/api/shill/slugs?mint=${encodeURIComponent(mint)}&limit=2000&cursor=${encodeURIComponent(cursor)}&active=1&since=${encodeURIComponent(since)}`;
       const res = await fetch(url, { cache: "no-store" });
@@ -224,7 +289,7 @@ export async function renderShillLeaderboardView({ mint } = {}) {
   const apply = (evt) => {
     if (!evt || !evt.slug || !evt.event) return;
 
-    // Dedupe: prefer server nonce; fallback to 1s time bucket
+    // Dedupe: prefer server nonce; fallback to 1s bucket
     let sec = 0;
     if (evt.ts) {
       const t = Date.parse(evt.ts);
@@ -249,6 +314,7 @@ export async function renderShillLeaderboardView({ mint } = {}) {
         a.timeMs += v > 0 ? v : 0;
         break;
       }
+      default: break;
     }
     agg.set(evt.slug, a);
     scheduleUpdate();
@@ -263,10 +329,7 @@ export async function renderShillLeaderboardView({ mint } = {}) {
       const { done, value } = await reader.read();
       if (done) break;
       buf += dec.decode(value, { stream: true });
-      if (firstChunk) {
-        firstChunk = false;
-        if (buf.charCodeAt(0) === 0xFEFF) buf = buf.slice(1); // strip BOM
-      }
+      if (firstChunk) { firstChunk = false; if (buf.charCodeAt(0) === 0xFEFF) buf = buf.slice(1); }
       let idx;
       while ((idx = buf.indexOf("\n")) !== -1) {
         let line = buf.slice(0, idx);
@@ -280,14 +343,62 @@ export async function renderShillLeaderboardView({ mint } = {}) {
     if (tail) { try { apply(JSON.parse(tail)); } catch {} }
   }
 
+  // CSV snapshot
+  function parseCsvLine(s) {
+    const out = []; let cur = ""; let q = false;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (q) {
+        if (c === '"') { if (s[i+1] === '"') { cur += '"'; i++; } else q = false; }
+        else cur += c;
+      } else {
+        if (c === '"') q = true;
+        else if (c === ",") { out.push(cur); cur = ""; }
+        else cur += c;
+      }
+    }
+    out.push(cur);
+    return out;
+  }
+  async function readCsvStream(body) {
+    const dec = new TextDecoder();
+    const reader = body.getReader();
+    let buf = "";
+    let first = true;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, idx); buf = buf.slice(idx + 1);
+        const raw = line.replace(/\r$/, "");
+        if (!raw) continue;
+        if (first) { first = false; if (raw.toLowerCase().startsWith("ts,slug,event,")) continue; }
+        const cols = parseCsvLine(raw);
+        const slug = cols[1] || ""; const event = cols[2] || ""; const valRaw = cols[3] || ""; const ts = cols[0] || "";
+        if (!slug || !event) continue;
+        const value = Number.isFinite(+valRaw) ? +valRaw : 1;
+        apply({ slug, event, value, ts });
+      }
+    }
+    const tail = buf.replace(/\r$/, "");
+    if (tail) {
+      const cols = parseCsvLine(tail);
+      const slug = cols[1] || ""; const event = cols[2] || ""; const valRaw = cols[3] || ""; const ts = cols[0] || "";
+      if (slug && event) apply({ slug, event, value: Number.isFinite(+valRaw) ? +valRaw : 1, ts });
+    }
+  }
+
   function stopTail() {
     try { tailAbort?.abort(); } catch {}
     tailAbort = null;
     tailActive = false;
+    scheduleUpdate();
   }
-
   async function startTail() {
     stopTail();
+    if (!autoRefreshEnabled || useCsv) return;
     tailAbort = new AbortController();
     const since = sevenDaysAgo();
     const url = `${METRICS_BASE}/api/shill/ndjson?mint=${encodeURIComponent(mint)}&since=${encodeURIComponent(since)}&tail=1`;
@@ -296,26 +407,26 @@ export async function renderShillLeaderboardView({ mint } = {}) {
       const res = await fetch(url, { cache: "no-store", headers, signal: tailAbort.signal });
       if (!res.ok || !res.body) return;
       tailActive = true;
-      statusNote.textContent = "Live…";
+      scheduleUpdate();
       (async () => {
         try { await readNdjsonStream(res.body); }
         catch {}
         finally {
           tailActive = false;
-          if (autoCb.checked) {
-            // reconnect after short delay
-            setTimeout(() => { if (autoCb.checked) startTail(); }, 1500);
+          scheduleUpdate();
+          if (autoRefreshEnabled) {
+            setTimeout(() => { if (autoRefreshEnabled) startTail(); }, 1500);
           }
         }
       })();
     } catch {
       tailActive = false;
+      scheduleUpdate();
     }
   }
 
   async function refresh() {
     try {
-      statusNote.textContent = "Fetching…";
       stopTail();
       agg.clear(); seen.clear();
 
@@ -334,81 +445,53 @@ export async function renderShillLeaderboardView({ mint } = {}) {
       const headers = { "Accept": "application/x-ndjson,application/json;q=0.5,*/*;q=0.1" };
       const url = `${METRICS_BASE}/api/shill/ndjson?mint=${encodeURIComponent(mint)}&since=${encodeURIComponent(since)}`;
       const res = await fetch(url, { cache: "no-store", headers });
-      if (res.ok && res.body) {
-        await readNdjsonStream(res.body);
-      }
+      if (res.ok && res.body) await readNdjsonStream(res.body);
 
-      cacheAgg = new Map(agg);
       scheduleUpdate();
-
-      if (autoCb.checked) startTail();
-      else statusNote.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+      if (autoRefreshEnabled) startTail();
     } catch (e) {
       tableWrap.innerHTML = `<div class="empty">Failed to load leaderboard. ${e?.message || "error"}</div>`;
-      statusNote.textContent = "";
     }
   }
 
-  btnRefresh.addEventListener("click", refresh);
-  autoCb.addEventListener("change", () => {
-    if (autoCb.checked) startTail(); else stopTail();
-  });
+  async function refreshFromCsv() {
+    try {
+      stopTail();
+      agg.clear(); seen.clear();
 
-  // Row click → metrics modal
-  tableWrap.addEventListener("click", (e) => {
-    const a = e.target.closest?.("a,button");
-    if (a) return; // let normal buttons/links work
-    const tr = e.target.closest?.('tr[data-slug]');
-    if (!tr) return;
-    const slug = tr.getAttribute('data-slug');
-    if (!slug) return;
-    //get the owner from the agg map
-    const entry = agg.get(slug);
-    const owner = entry?.owner || "";
-    openMetricsModal({ mint, slug, owner });
-  });
-  tableWrap.addEventListener("keydown", (e) => {
-    const tr = e.target.closest?.('tr[data-slug]');
-    if (!tr) return;
-    if (e.key !== "Enter" && e.key !== " ") return;
-    e.preventDefault();
-    const slug = tr.getAttribute('data-slug');
-    if (!slug) return;
-    openMetricsModal({ mint, slug });
-  });
+      const owners = await fetchAllSlugs();
+      const base = new Map();
+      for (const { slug, wallet_id } of owners) {
+        base.set(slug, {
+          slug,
+          owner: (wallet_id && SOL_ADDR_RE.test(wallet_id)) ? wallet_id : "",
+          views: 0, tradeClicks: 0, swapStarts: 0, walletConnects: 0, timeMs: 0
+        });
+      }
+      for (const v of base.values()) agg.set(v.slug, v);
 
-  // Sort handlers (click + keyboard)
-  tableWrap.addEventListener("click", (e) => {
-    const th = e.target.closest?.('th[data-sort]');
-    if (!th) return;
-    const key = th.getAttribute('data-sort');
-    if (!SORTABLE.includes(key)) return;
-    sort = { key, dir: (sort.key === key && sort.dir === "desc") ? "asc" : "desc" };
-    page = 1; // reset to first page on sort
-    scheduleUpdate();
-  });
-  tableWrap.addEventListener("keydown", (e) => {
-    const th = e.target.closest?.('th[data-sort]');
-    if (!th) return;
-    if (e.key !== "Enter" && e.key !== " ") return;
-    e.preventDefault();
-    const key = th.getAttribute('data-sort');
-    if (!SORTABLE.includes(key)) return;
-    sort = { key, dir: (sort.key === key && sort.dir === "desc") ? "asc" : "desc" };
-    page = 1; // reset to first page on sort
-    scheduleUpdate();
-  });
+      const since = sevenDaysAgo();
+      const url = `${METRICS_BASE}/api/shill/csv?mint=${encodeURIComponent(mint)}&since=${encodeURIComponent(since)}`;
+      const res = await fetch(url, { cache: "no-store" });
+      if (res.ok && res.body) await readCsvStream(res.body);
 
+      scheduleUpdate();
+    } catch (e) {
+      tableWrap.innerHTML = `<div class="empty">CSV load failed. ${e?.message || "error"}</div>`;
+    }
+  }
+
+  // Lifecycle controls
   window.addEventListener("beforeunload", stopTail);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") stopTail();
-    else if (autoCb.checked) startTail();
+    else if (autoRefreshEnabled && !useCsv) startTail();
   });
 
-  await refresh();
+  await (useCsv ? refreshFromCsv() : refresh());
 }
 
-function renderTable(list, mint, sort, filterWallet = "", page = 1, pageSize = 5, total = 0) {
+function renderTable({ list, mint, sort, filterWallet = "", page = 1, pageSize = 5, total = 0, totalPages = 1, statusText = "", useCsv = false, autoRefreshEnabled = true, showEmbedButton = true }) {
   const short = (w) => w ? `${w.slice(0,4)}…${w.slice(-4)}` : "—";
   const solscan = (w) => `https://solscan.io/account/${encodeURIComponent(w)}`;
   const t = (ms)=> {
@@ -424,12 +507,10 @@ function renderTable(list, mint, sort, filterWallet = "", page = 1, pageSize = 5
     if (i < 0) return w;
     return `${w.slice(0,i)}<mark>${w.slice(i,i+f.length)}</mark>${w.slice(i+f.length)}`;
   };
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const atStart = page <= 1;
   const atEnd = page >= totalPages;
 
-  if (!list.length) return `<div class="empty">No data yet.</div>`;
-  const rows = list.map((r) => `
+  const rows = list.length ? list.map((r) => `
     <tr data-slug="${r.slug}" role="button" tabindex="0" class="clickable">
       <td>${r.owner ? `<a href="${solscan(r.owner)}" target="_blank" rel="noopener" title="${r.owner}">${mark(short(r.owner))}</a>` : "—"}</td>
       <td><code>${r.slug}</code></td>
@@ -440,9 +521,53 @@ function renderTable(list, mint, sort, filterWallet = "", page = 1, pageSize = 5
       <td>${t(r.timeMs)}</td>
       <td><a class="btn btn-ghost" href="/token/${mint}?ref=${r.slug}" target="_blank" rel="noopener">Open</a></td>
     </tr>
-  `).join("");
+  `).join("") : "";
 
   return `
+    <div class="lb-toolbar">
+      <div class="lb-tool-center">
+        <div class="lb-tool-center-left">
+            <input id="lbSearch" type="text" inputmode="latin" autocomplete="off" spellcheck="false"
+                  value="${filterWallet?.replace(/"/g,'&quot;')}"
+                  placeholder="Search wallet (base58)…" class="lb-inp">
+            <div class="lb-tool-center-inner-btns">
+            <button class="btn" data-act="search">Search</button>
+            <button class="btn btn-ghost" data-act="clear" ${filterWallet ? "" : "disabled"}>Clear</button>
+          </div>
+        </div>
+        <div class="lb-tool-center-right">
+          <span class="smallLeaderboard muted">${statusText}</span>
+        </div>
+      </div>
+
+      <div class="lb-tool-right">
+        <div class="lb-tool-right-inner-left">
+          <button class="btn" data-act="refresh">Refresh</button>
+          <button class="btn" data-act="export">Export CSV</button>
+          <select data-source id="selDataSource" class="lb-sel" title="Data source">
+            <option value="live"${useCsv ? "" : " selected"}>Live</option>
+            <option value="csv"${useCsv ? " selected" : ""}>CSV</option>
+          </select>
+          <label class="lb-check">
+            <input type="checkbox" data-auto ${autoRefreshEnabled && !useCsv ? "checked" : ""} ${useCsv ? "disabled" : ""}>
+            <span>Auto</span>
+          </label>
+        </div>
+        <div class="lb-tool-right-inner-right">
+          <div class="lb-pager">
+            <button class="btn btn-ghost" data-nav="prev" ${atStart ? "disabled" : ""} aria-label="Previous page">Prev</button>
+            <span class="muted small">Page ${page} / ${totalPages}</span>
+            <button class="btn" data-nav="next" ${atEnd ? "disabled" : ""} aria-label="Next page">Next</button>
+          </div>
+          <select data-page-size id="selPageAmount" class="lb-sel" title="Rows/page">
+            <option value="5"${pageSize===5?" selected":""}>5</option>
+            <option value="10"${pageSize===10?" selected":""}>10</option>
+            <option value="25"${pageSize===25?" selected":""}>25</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
     <div class="table-scroller">
       <table class="shill__table shill__table--interactive">
         <thead>
@@ -457,14 +582,13 @@ function renderTable(list, mint, sort, filterWallet = "", page = 1, pageSize = 5
             <th></th>
           </tr>
         </thead>
-        <tbody>${rows}</tbody>
+        <tbody>${rows || `<tr><td colspan="8"><div class="empty">No data yet.</div></td></tr>`}</tbody>
       </table>
-      <div class="pager" style="display:flex; align-items:center; justify-content:center; gap:8px; margin-top:8px;">
-        <button class="btn btn-ghost" data-nav="prev" ${atStart ? "disabled" : ""} aria-label="Previous page">Prev</button>
-        <span class="muted small">Page ${page} / ${totalPages}</span>
-        <button class="btn" data-nav="next" ${atEnd ? "disabled" : ""} aria-label="Next page">Next</button>
-      </div>
-      <p class="muted small tip" style="padding:7px;">Tip: click a row to view full metrics.</p>
+      ${showEmbedButton ? `
+      <div class="lb-bottom-actions">
+        <p class="muted small tip" style="padding:7px;">Tip: click a row to view full metrics.</p>
+        <button class="lb-embed-btn" data-act="embed" aria-label="Copy embed code" title="Embed this leaderboard">Embed</button>
+      </div>` : ``}
     </div>
   `;
 }
@@ -501,52 +625,6 @@ function ensureLeaderboardModalRoot() {
   document.addEventListener("keydown", (e) => { if (wrap.classList.contains("show") && e.key === "Escape") close(); });
 }
 
-// tack on css to improve performance
-function ensureLeaderboardModalStyles() {
-  if (document.getElementById("style-lbm")) return;
-  const css = `
-    .shill__table--interactive tbody tr.clickable { cursor: pointer; }
-    .lbm-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.45); display:none; z-index: 1000; }
-    .lbm-backdrop.show { display:block; }
-    .lbm-modal { position: absolute; max-width: 980px; margin: 0 auto; left: 0; right: 0;
-      background: var(--bg, #0b0b0c); color: var(--fg, #eaeaea); border-radius: 10px; border: 1px solid rgba(255,255,255,.08);
-      box-shadow: 0 10px 28px rgba(0,0,0,.4); padding: 14px; }
-    @media (min-width: 760px){ .lbm-modal { inset: 60px auto auto auto; } }
-    /* Center on desktops */
-    @media (min-width: 1024px){
-      .lbm-backdrop.show { display:block; }
-      .lbm-modal {
-        position: fixed; top: 50%; left: 50%; right: auto; bottom: auto;
-        transform: translate(-50%, -50%);
-        width: min(980px, calc(100vw - 48px));
-        max-height: min(90vh, 820px);
-        overflow: auto;
-      }
-    }
-    .lbm-close { position:absolute; top: 10px; right: 12px; background: transparent; color: inherit; border: 0; font-size: 22px; cursor: pointer; }
-    .lbm-header { display:flex; flex-direction: column; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
-    .lbm-sub { opacity: .8; font-size: 12px; }
-    .lbm-content { display:grid; grid-template-columns: 1fr; gap: 12px; }
-    @media (min-width: 740px){ .lbm-content { grid-template-columns: 1fr 1fr; } }
-    .kpi { display:flex; align-items: center; justify-content: space-between; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08);
-      padding: 10px 12px; border-radius: 8px; }
-    .kpi h4 { margin: 0; font-size: 13px; opacity: .9; }
-    .kpi .v { font-weight: 600; font-size: 16px; }
-    .lbm-grid { display:grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    .lbm-list { background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.06); border-radius: 8px; padding: 10px; }
-    .lbm-list h5 { margin: 0 0 6px 0; font-size: 12px; opacity: .8; }
-    .lbm-list ul { list-style: none; margin: 0; padding: 0; display:grid; gap: 6px; }
-    .lbm-list li { display:flex; justify-content: space-between; gap: 8px; font-size: 13px; }
-    .lbm-footer { display:flex; align-items:center; justify-content: flex-end; gap: 8px; margin-top: 8px; }
-    .lbm-empty { opacity: .8; padding: 20px; text-align:center; }
-  `;
-  const st = document.createElement("style");
-  st.id = "style-lbm";
-  st.textContent = css;
-  document.head.appendChild(st);
-}
-
-// Open modal and render metrics for a slug
 async function openMetricsModal({ mint, slug, owner = "" }) {
   const el = document.getElementById("lb-metrics-modal");
   if (!el) return;
