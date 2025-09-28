@@ -1,7 +1,7 @@
 import { FALLBACK_LOGO, BUY_RULES, FDV_LIQ_PENALTY } from "../../config/env.js";
 import { fetchTokenInfo, fetchTokenInfoLive } from "../../data/dexscreener.js";
 import { scoreAndRecommendOne } from "../../core/calculate.js";
-import { mountGiscus } from "../meme/chat.js";
+import { mountGiscus } from "./chat.js";
 
 import sanitizeToken from "./sanitizeToken.js";
 import renderShell from "./render/shell.js";

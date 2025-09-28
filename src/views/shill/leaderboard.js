@@ -6,7 +6,10 @@ export async function renderShillLeaderboardView({ mint } = {}) {
 
   const urlParams = new URLSearchParams(location.search);
   const isEmbed = ["1","true","yes"].includes((urlParams.get("embed") || "").toLowerCase());
-
+  if (isEmbed) {
+    enterEmbedMode();
+    setupEmbedAutoHeight();
+  }
   mint = mint || detectMintFromPath() || urlParams.get("mint") || "";
   if (!mint) {
     root.innerHTML = `<section class="shill__wrap"><p class="empty">No token provided.</p></section>`;
@@ -176,12 +179,59 @@ export async function renderShillLeaderboardView({ mint } = {}) {
   function makeEmbedHtml() {
     const origin = (window.location && window.location.origin) ? window.location.origin : "https://fdv.lol";
     const params = new URLSearchParams({ mint });
-    params.set("embed", "1");
     if (useCsv) params.set("source", "csv");
-    const src = `${origin}/shill/leaderboard?${params.toString()}`;
-    // Only leaderboard renders when embed=1
+    const src = `${origin}/leaderboard/${params.toString()}?embed=1`;
     return `<iframe src="${src}" loading="lazy" style="width:100%;max-width:100%;border:0;background:transparent;" height="520" title="FDV Leaderboard"></iframe>`;
   }
+
+  function enterEmbedMode() {
+
+    let app = document.getElementById("app");
+    if (!app) {
+      app = document.createElement("div");
+      app.id = "app";
+      document.body.textContent = "";
+      document.body.appendChild(app);
+    } else {
+
+      [...document.body.children].forEach(node => { if (node !== app) node.remove(); });
+    }
+
+    document.documentElement.classList.add("embed");
+    document.body.classList.add("embed");
+    const style = document.createElement("style");
+    style.setAttribute("data-embed-css", "1");
+    style.textContent = `
+      html.embed, body.embed { margin:0; padding:0; background:transparent; }
+      /* keep your existing table styles; this just ensures we don't inherit site chrome */
+      .shill__wrap.shill__embed { padding: 0; background: transparent; }
+      .table-scroller { max-height: none; }
+      .lb-bottom-actions { display: none; } /* safety; you're already gating with showEmbedButton */
+      /* optional: tighten toolbar spacing in embeds */
+      .lb-toolbar { padding: 8px; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function setupEmbedAutoHeight() {
+    if (window.self === window.top) return; // not inside an iframe
+    const post = () => {
+      try {
+        const h = Math.max(
+          document.body.scrollHeight,
+          document.documentElement.scrollHeight
+        );
+        window.parent.postMessage({ type: "FDV_LEADERBOARD_SIZE", height: h }, "*");
+      } catch {}
+    };
+    const ro = new ResizeObserver(() => post());
+    ro.observe(document.body);
+    window.addEventListener("load", post, { once: true });
+    setTimeout(post, 0);
+    setTimeout(post, 300);
+    setTimeout(post, 1200);
+  }
+
 
   // Search (debounced)
   let searchTimer = 0;

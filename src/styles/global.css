@@ -164,13 +164,25 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
   min-height: 40px;
 }
 
+.hdr-tools {
+  display: block;
+  width: 100%;
+  border-top: 1px solid rgba(255,255,255,.08);
+  border-bottom: 1px solid rgba(255,255,255,.06);
+  background: linear-gradient(to bottom, rgba(16,16,22,.6), rgba(16,16,22,.35));
+  backdrop-filter: blur(6px) saturate(120%);
+  -webkit-backdrop-filter: blur(6px) saturate(120%);
+  padding: 6px 0 8px;
+}
+.hdr-tools .tools-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:0 8px; }
+.hdr-tools .panel-row { display:block; padding:6px 8px 0; }
+
 /* If search bar is inside controls, make it full-width on small screens */
 @media (max-width: 560px){
   .controls { gap: 8px; }
   .controls .search-wrap{ flex: 1 1 100%; }
 }
 
-/* Mobile: select on its own row, buttons 2-up */
 @media (max-width: 540px){
   .controls{
     display: grid;
@@ -184,9 +196,14 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
     gap: 8px;
   }
   .innerControls .btn{ width:100%; }
+  .hdr-tools button {
+    /* flex: 1 1 auto; */
+    padding: 8px 10px;
+    font-size: clamp(.85rem, .8rem + .3vw, .95rem);
+    min-height: 36px;
+  }
 }
 
-/* Very narrow phones: stack buttons if needed */
 @media (max-width: 360px){
   .innerControls{ grid-template-columns: 1fr; }
 }
@@ -1104,7 +1121,6 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--neon) 10%, transparent);
 }
 
-/* Add a small "0s" label so it's obvious what the number means */
 .priceTiny .count::after{
   margin-left: .25ch;
   opacity: .85;
