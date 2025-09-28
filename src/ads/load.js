@@ -92,7 +92,8 @@ export function adCard(ad){
         ${icons}
         <div class="adtag" title="Sponsored">SPONSORED</div>
         
-        <a class="adbtn primary" href="${buyUrl}" target="_blank" rel="noopener"><span class="ademoji">🔥</span>${cta}</a>
+        <a class="adbtn primary" href="${buyUrl}" target="_blank" rel="noopener">${cta}</a>
+        <a class="adbtn" href="https://fdv.lol/token/${ad.mint}" target="_blank" rel="noopener nofollow">Learn</a>
       </div>
     </div>
   </section>`;
