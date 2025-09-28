@@ -1,5 +1,6 @@
 import { MAX_CARDS } from '../../config/env.js';
 import { coinCard, priceHTML } from './cards.js';
+import { ensureAddonsUI, runAddonsTick } from './addons/register.js';
 import { adCard } from '../../ads/load.js';
 import { sparklineSVG } from './render/sparkline.js';
 import { pctChipsHTML } from './render/chips.js';
@@ -19,6 +20,33 @@ const elSearchWrap = document.getElementById('searchWrap');
 const elQResults   = document.getElementById('qResults');
 
 const pageSpinnerEl = document.querySelector('.spinner') && document.querySelector('.loader');
+
+function ensureHeaderToolsStrip() {
+  let strip = document.getElementById('hdrTools');
+  if (strip) return strip;
+
+  const header =
+    document.querySelector('.header .container') ||
+    document.querySelector('.header') ||
+    document.getElementById('header') ||
+    document.querySelector('header') ||
+    document.body;
+
+  strip = document.createElement('div');
+  strip.id = 'hdrTools';
+  strip.className = 'hdr-tools';
+  strip.innerHTML = `
+    <div class="tools-row" id="hdrToolsRow" role="toolbar" aria-label="Tools"></div>
+    <div class="panel-row" id="hdrToolsPanels" aria-live="polite"></div>
+  `;
+  header.appendChild(strip);
+  return strip;
+}
+
+try { 
+  ensureHeaderToolsStrip();
+  ensureAddonsUI();
+} catch {}
 
 function isStreamOnLocal() {
   const btn = document.getElementById('stream');
@@ -707,6 +735,7 @@ export function render(items, adPick, marquee) {
   _latestAd = adPick || null;
   _latestMarquee = marquee || null;
 
+  try { runAddonsTick({ items: Array.isArray(items) ? items : [], marquee }); } catch {}
   // renderAdTop();
   renderMarquee(_latestMarquee);
 

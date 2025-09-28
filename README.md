@@ -47,5 +47,4 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the **fastest, simplest, and most trusted memecoin radar on Solana**.  
 
 
-
- git commit -m "header: responsive controls on mobile; prevent 420px overlap; larger buttons"
+git commit -m "design: header tools strip + mobile list; leaderboard: progressive stream fixes; backend: engagement feed groundwork"
