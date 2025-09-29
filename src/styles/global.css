@@ -49,6 +49,7 @@
 html,body{
   /* height: 100vh; */
   margin:0;
+  background-color: var(--bg); /* ensure base paint on Safari */
   background: radial-gradient(1200px 600px at 20% -10%, rgba(26,255,213,.08), transparent),
                     radial-gradient(900px 500px at 80% 110%, rgba(123,241,255,.07), transparent),
                     var(--bg);
@@ -304,10 +305,6 @@ input[type="checkbox"]:disabled{
 }
 
 .cards .card { will-change: transform, opacity; }
-
-.cards .card.is-moving {
-  /* no extra styles needed; JS sets transform/transition */
-}
 
 .cards .card.is-entering,
 .cards .card.is-exiting {
@@ -1147,3 +1144,22 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
   font-weight: 600;
   letter-spacing: .01em;
 }
+
+.livePrice__line{
+  fill:none;
+  stroke: var(--neon, #18eac7);
+  stroke-width:2;
+  vector-effect:non-scaling-stroke;
+-  filter: drop-shadow(0 0 8px color-mix(in oklab, var(--neon,#18eac7) 35%, transparent));
++  /* fallback + Safari-safe srgb mix */
++  filter: drop-shadow(0 0 8px rgba(24,234,199,.35));
++  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--neon,#18eac7) 35%, transparent));
+  will-change: stroke-dashoffset;
+  transition: stroke-dashoffset .6s ease, d .15s ease;
+}
+-.livePrice__area{ fill: color-mix(in oklab, var(--neon,#18eac7) 16%, transparent); transition: d .15s ease; }
++.livePrice__area{
++  fill: rgba(24,234,199,.16); /* fallback */
++  fill: color-mix(in srgb, var(--neon,#18eac7) 16%, transparent);
++  transition: d .15s ease;
++}
