@@ -1,7 +1,3 @@
-html, body {
-  height: 0 !important;
-}
-
 .profile { 
     padding: 16px;
     min-height: calc(100vh - 32px - 48px - 48px); 
@@ -181,8 +177,8 @@ html, body {
 }
 
 .profile__card__extra_metrics .table-scroll {
-  overflow: hidden;                 
-  max-height: 0;                  
+  overflow: hidden;
+  max-height: 0;
   opacity: 0;
   transform: translateY(-4px);
   transition:
@@ -193,11 +189,21 @@ html, body {
   border-radius: 12px;
 }
 
-.profile__card__extra_metrics:has(.extra-metrics-toggle[aria-expanded="true"]) .table-scroll {
-  max-height: 56vh;                 
+/* New: class-based open state (Safari-safe) */
+.profile__card__extra_metrics.is-open .table-scroll {
+  max-height: 56vh;
   opacity: 1;
   transform: translateY(0);
   box-shadow: inset 0 0 0 1px rgba(122,222,255,.08);
+}
+
+/* Optional: sticky fade for open state */
+.profile__card__extra_metrics.is-open .table-scroll::after {
+  content: "";
+  position: sticky;
+  display: block;
+  bottom: 0; height: 16px;
+  background: linear-gradient(to bottom, rgba(0,0,0,0), rgba(0,0,0,.06));
 }
 
 .extra-metrics-toggle {

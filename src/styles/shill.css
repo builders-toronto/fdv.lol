@@ -51,7 +51,8 @@
 @media (prefers-reduced-transparency: reduce){ .ghost, .glass { background: var(--surface) !important; backdrop-filter:none !important } }
 
 .shill__wrap{
-    min-height: 100dvh;
+    min-height: 100vh;   /* fallback for iOS < 16.4 */
+    min-height: 100dvh;  /* modern dynamic viewport */
     height: auto;
     display: flex;
     flex-direction: column;
@@ -59,11 +60,8 @@
     container-type: inline-size;
     max-inline-size: 1080px;
     margin-inline: auto;
-    /* padding: clamp(12px, 2.6vw, 28px) clamp(10px, 2.2vw, 26px) clamp(28px, 5vw, 64px); */
     color: var(--text);
-    /* background: var(--bg); */
     isolation: isolate;
-    /* padding-inline: calc(env(safe-area-inset-left) + 16px) calc(env(safe-area-inset-right) + 16px); */
 }
 .shill__wrap::before{
   content:""; position:fixed; inset:auto 0 0; block-size:min(38vh,520px); z-index:-1; pointer-events:none; opacity:.55;
@@ -71,7 +69,7 @@
 
 .shill__header{ display:flex; align-items:center; justify-content:space-between; gap: clamp(8px, 2vw, 18px);    padding: 15px; }
 .shill__header h1{ margin:0; font-size: var(--step-2); line-height:1.1; letter-spacing:.2px;
-  background: linear-gradient(90deg, var(--text), color-mix(in oklab, var(--accent2) 60%, #cfe7ff)); -webkit-background-clip:text; background-clip:text; color:transparent;
+  background: linear-gradient(90deg, var(--text), color-mix(in srgb, var(--accent2) 60%, #cfe7ff)); -webkit-background-clip:text; background-clip:text; color:transparent;
 }
 .shill__header .sub{ margin-block-start:6px; font-size: var(--step--1); color: var(--text-dim) }
 .shill__header .btn.btn-ghost{ border:1px solid color-mix(in oklab, var(--accent2) 38%, transparent); font-weight:800 }
@@ -148,7 +146,14 @@
     /* border: 1px solid var(--fdv-ok); */
     border-radius: var(--r);
     margin-block-end: 10px;
-    background: linear-gradient(180deg, color-mix(in oklab, var(--surface) 92%, transparent), color-mix(in oklab, var(--surface-2) 94%, transparent));
+    /* fallback background */
+    background: rgba(255,255,255,.06);
+    /* original gradient with srgb mix */
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface) 92%, transparent),
+      color-mix(in srgb, var(--surface-2) 94%, transparent)
+    );
     box-shadow: var(--shadow-2);
     transform: translateZ(0);
     transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
@@ -170,7 +175,13 @@
 .table-scroller{ overflow:auto; background: var(--bg); border:1px solid color-mix(in oklab, #fff 8%, transparent) }
 .shill__table{ inline-size:100%; border-collapse:collapse; font-size:14px }
 .shill__table th, .shill__table td{ padding: 8px 10px; text-align:left; border-bottom:1px solid color-mix(in oklab, #fff 6%, transparent) }
-.shill__table thead th{ position:sticky; inset-block-start:0; background: color-mix(in oklab, #000 20%, transparent); backdrop-filter: blur(6px); z-index:1 }
+.shill__table thead th{ position:sticky; inset-block-start:0;
+  /* fallback */
+  background: rgba(0,0,0,.20);
+  /* keep blur variants */
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  z-index:1 }
 .shill__table th.sortable{ cursor: pointer; user-select: none; }
 .shill__table th.sortable:hover{ background: rgba(26,255,213,.06); }
 
