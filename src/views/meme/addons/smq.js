@@ -1,12 +1,7 @@
-// reuse top3 storage
-import { registerAddon, setAddonData } from './register.js';
+import { addKpiAddon } from './ingest.js';
 
-export const SMQ_STORAGE_KEY =
-  (typeof TOP3_STORAGE_KEY === 'string' && TOP3_STORAGE_KEY) ||
-  'meme_top3_history_v1';
-
-export const SMQ_WINDOW_DAYS =
-  (typeof TOP3_WINDOW_DAYS === 'number' && TOP3_WINDOW_DAYS) || 3;
+export const SMQ_STORAGE_KEY = 'meme_top3_history_v1';
+export const SMQ_WINDOW_DAYS = 3;
 
 const DAY_MS = 24*3600*1000;
 const clamp01 = (n) => Math.max(0, Math.min(1, n));
@@ -14,6 +9,7 @@ const nz = (n, d=0) => {
   const x = Number(n);
   return Number.isFinite(x) ? x : d;
 };
+
 
 function loadHistory() {
   try {
@@ -50,6 +46,7 @@ function seriesFromHistory(h, mint, windowDays){
   if (price.length < 5) return null;
   return { ts, price, liq, vol, latest: rows[rows.length-1]?.kp || {} };
 }
+
 
 function linregPctPerDay(tsArr, priceArr){
   const n = Math.min(tsArr.length, priceArr.length);
@@ -88,6 +85,7 @@ function reversalRate(priceArr){
   }
   return total ? flips/total : 0.5;
 }
+
 
 function computeSMQForMint(mint, windowDays = SMQ_WINDOW_DAYS){
   const hist = pruneHistory(loadHistory(), windowDays);
@@ -140,29 +138,28 @@ function mapToRegistryRows(tbl){
   }));
 }
 
-function pushSmqToRegistry(){
-  const tbl = computeSMQTable(SMQ_WINDOW_DAYS).slice(0, 3);
-  setAddonData('smq', {
-    title: `SMQ leaders (last ${SMQ_WINDOW_DAYS}d)`,
-    metricLabel: 'SMQ',
-    items: mapToRegistryRows(tbl),
-  });
-}
 
-export function smqTick(){
-  try { pushSmqToRegistry(); } catch {}
-}
 
-export function registerSmqAddon(opts = {}) {
-  const { order = 15, label = 'SMQ', limit = 3 } = opts;
-  registerAddon({
+
+addKpiAddon(
+  {
     id: 'smq',
-    order,
-    label,
+    order: 15,
+    label: 'SMQ',
     title: `SMQ leaders (last ${SMQ_WINDOW_DAYS}d)`,
     metricLabel: 'SMQ',
-    limit
-  });
-  pushSmqToRegistry();
-}
+    limit: 3,
+  },
+  {
+    computePayload() {
+      const tbl = computeSMQTable(SMQ_WINDOW_DAYS).slice(0, 3);
+      return {
+        title: `SMQ leaders`,
+        metricLabel: 'SMQ',
+        items: mapToRegistryRows(tbl),
+      };
+    },
+    ingestSnapshot() {}
+  }
+);
 

@@ -1,4 +1,4 @@
-import { registerAddon, setAddonData } from './register.js';
+import { addKpiAddon } from './ingest.js';
 
 export const TOP3_STORAGE_KEY = 'meme_top3_history_v1';
 export const TOP3_WINDOW_DAYS = 3;          // lookback window for "long-term"
@@ -126,7 +126,7 @@ export function computeTop3FromHistory() {
   return agg.slice(0,3);
 }
 
-function mapAggToRegistryRows(agg) {
+export function mapAggToRegistryRows(agg) {
   return agg.map(it => ({
     mint: it.mint,
     symbol: it.kp?.symbol || '',
@@ -141,36 +141,26 @@ function mapAggToRegistryRows(agg) {
   }));
 }
 
-function pushTop3ToRegistry() {
-  const agg = computeTop3FromHistory();
-  setAddonData('top3', {
-    title: `Top performers (last ${TOP3_WINDOW_DAYS}d)`,
-    metricLabel: 'Score',
-    items: mapAggToRegistryRows(agg),
-  });
-}
-
-export function top3Tick() {
-  try { pushTop3ToRegistry(); } catch {}
-}
-
-export function top3IngestSnapshot(items) {
-  try {
-    updateTop3History(items);
-  } finally {
-    pushTop3ToRegistry();
-  }
-}
-
-export function registerTop3Addon(opts = {}) {
-  const { order = 10, label = 'Top 3 (LT)', limit = 3 } = opts;
-  registerAddon({
+addKpiAddon(
+  {
     id: 'top3',
-    order,
-    label,
-    title: `Top performers (last ${TOP3_WINDOW_DAYS}d)`,
+    order: 10,
+    label: 'Top 3 (LT)',
+    title: `Top performers`,
     metricLabel: 'Score',
-    limit
-  });
-  pushTop3ToRegistry();
-}
+    limit: 3,
+  },
+  {
+    computePayload() {
+      const agg = computeTop3FromHistory();
+      return {
+        title: `Top performers`,
+        metricLabel: 'Score',
+        items: mapAggToRegistryRows(agg),
+      };
+    },
+    ingestSnapshot(items) {
+      updateTop3History(items);
+    }
+  }
+);

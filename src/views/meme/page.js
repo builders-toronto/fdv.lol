@@ -1,10 +1,17 @@
 import { MAX_CARDS } from '../../config/env.js';
 import { coinCard, priceHTML } from './cards.js';
-import { ensureAddonsUI, runAddonsTick } from './addons/register.js';
+import { ensureAddonsUI } from './addons/register.js';
+import { ingestSnapshot } from './addons/ingest.js';
 import { adCard } from '../../ads/load.js';
 import { sparklineSVG } from './render/sparkline.js';
 import { pctChipsHTML } from './render/chips.js';
 import { searchTokensGlobal } from '../../data/dexscreener.js';
+
+// Addons and KPIs
+import './addons/three.js';
+import './addons/smq.js';
+import './addons/engagement.js';
+import './addons/das.js';
 
 export const elCards    = document.getElementById('cards');
 export const elMeta     = document.getElementById('meta');
@@ -735,7 +742,9 @@ export function render(items, adPick, marquee) {
   _latestAd = adPick || null;
   _latestMarquee = marquee || null;
 
-  try { runAddonsTick({ items: Array.isArray(items) ? items : [], marquee }); } catch {}
+  // Push stream snapshot to KPI ingest (registry UI renders automatically)
+  try { ingestSnapshot(Array.isArray(items) ? items : []); } catch {}
+
   // renderAdTop();
   renderMarquee(_latestMarquee);
 
