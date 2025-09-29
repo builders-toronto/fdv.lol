@@ -11,7 +11,8 @@
 
 
 /* TODO: refactor root colors to global scope */
-:root{
+/* keep shill and leaderboard sep for embed */
+.shill__wrap{
   --bg:#0b0b0c; --bg-elev-1:rgba(255,255,255,.04); --bg-elev-2:rgba(255,255,255,.06);
   --glass-1:rgba(20,20,28,.68); --glass-2:rgba(20,20,28,.42);
   --fg:#eaeaea; --fg-dim:rgba(235,235,235,.8); --fg-subtle:rgba(235,235,235,.6);
@@ -25,7 +26,7 @@
   --font-14:clamp(13px,.9vw,14px); --font-16:clamp(14px,1vw,16px);
 }
 @media (prefers-color-scheme: light){
-  :root{
+  .shill__wrap{
     --bg:#fff; --bg-elev-1:rgba(0,0,0,.035); --bg-elev-2:rgba(0,0,0,.06);
     --glass-1:rgba(250,250,255,.85); --glass-2:rgba(250,250,255,.65);
     --fg:#0b0b0c; --fg-dim:rgba(11,11,12,.8); --fg-subtle:rgba(11,11,12,.6);
@@ -35,7 +36,7 @@
 }
 
 @media (prefers-color-scheme: light){
-  :root{
+  .shill__wrap{
     --bg:#f6f8fc; --surface:#ffffff; --surface-2:#f7fbff; --border:#dbe7f5;
     --text:#0f172a; --text-dim:#334155; --muted:#5b708a;
     --shadow-1: 0 2px 10px rgba(16,24,40,.06);

@@ -7,6 +7,8 @@
 !/token/**/index.html
 !/token/**/og.jpg
 
+/testing/*
+
 !/sitemap.xml
 !/robots.txt
 
