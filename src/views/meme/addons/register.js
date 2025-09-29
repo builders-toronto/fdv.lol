@@ -1,10 +1,5 @@
-import { registerTop3Addon, top3IngestSnapshot, top3Tick } from './three.js';
-import { registerEngagementAddon, engagementIngestSnapshot, engagementTick } from './engagement.js';
-import { registerSmqAddon, smqTick } from './smq.js';
-
-
 const REGISTRY = [];
-const STATE = new Map(); // id -> { items: [], title?, subtitle?, metricLabel?, ts }
+const STATE = new Map(); 
 
 // side load css
 function ensureAddonStyles() {
@@ -231,38 +226,4 @@ export function setAddonData(id, data) {
 export function runTheAddonsTick() {
   runAddonsTick();
 }
-
-(function bootRegistry(){
-  try { registerTop3Addon({ order: 10, limit: 3 }); } catch {}
-  try { registerSmqAddon({ order: 15, limit: 3 }); } catch {}
-  try { registerEngagementAddon({ order: 20, limit: 3 }); } catch {}
-
-  function initDom() {
-    try { ensureAddonsUI(); } catch {}
-    try { top3Tick(); } catch {}
-    try { smqTick(); } catch {}
-    try { engagementTick(); } catch {}
-    try { runTheAddonsTick(); } catch {}
-  }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initDom, { once: true });
-  } else {
-    initDom();
-  }
-
-  window.pushMemeSnapshot = function(items){
-    try { top3IngestSnapshot(items); } catch {}
-    try { engagementIngestSnapshot(items); } catch {}
-    try { smqTick(); } catch {} // recompute from updated history
-    try { runTheAddonsTick(); } catch {}
-  };
-  window.addEventListener('meme:snapshot', (e) => {
-    const items = e?.detail?.items ?? e?.detail;
-    if (items) window.pushMemeSnapshot(items);
-  });
-
-  setInterval(() => {
-    try { runTheAddonsTick(); } catch {}
-  }, 2500);
-})();
 

@@ -1,4 +1,4 @@
-import { registerAddon, setAddonData } from './register.js';
+import { addKpiAddon } from './ingest.js';
 
 export const ENG_STORAGE_KEY = 'meme_engagement_history_v1';
 export const ENG_WINDOW_DAYS = 3;
@@ -169,35 +169,26 @@ function mapAggToRegistryRows(agg) {
   }));
 }
 
-function pushEngagementToRegistry() {
-  const agg = computeEngagementTop3();
-  setAddonData('engagement', {
-    title: `Most engaged tokens (last ${ENG_WINDOW_DAYS}d)`,
-    metricLabel: 'Engagement',
-    items: mapAggToRegistryRows(agg),
-  });
-}
-
-export function engagementTick() {
-  try { pushEngagementToRegistry(); } catch {}
-}
-export function engagementIngestSnapshot(items) {
-  try {
-    updateEngagementHistory(items);
-  } finally {
-    pushEngagementToRegistry();
-  }
-}
-
-export function registerEngagementAddon(opts = {}) {
-  const { order = 20, label = 'Engagement', limit = 3 } = opts;
-  registerAddon({
+addKpiAddon(
+  {
     id: 'engagement',
-    order,
-    label,
-    title: `Most engaged tokens (last ${ENG_WINDOW_DAYS}d)`,
+    order: 20,
+    label: 'Engagement',
+    title: `Most engaged tokens`,
     metricLabel: 'Engagement',
-    limit
-  });
-  pushEngagementToRegistry();
-}
+    limit: 3,
+  },
+  {
+    computePayload() {
+      const agg = computeEngagementTop3();
+      return {
+        title: `Most engaged tokens`,
+        metricLabel: 'Engagement',
+        items: mapAggToRegistryRows(agg),
+      };
+    },
+    ingestSnapshot(items) {
+      updateEngagementHistory(items);
+    }
+  }
+);
