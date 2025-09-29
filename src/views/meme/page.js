@@ -10,6 +10,7 @@ import { searchTokensGlobal } from '../../data/dexscreener.js';
 // Addons and KPIs
 import './addons/three.js';
 import './addons/smq.js';
+import './addons/degen.js';
 import './addons/engagement.js';
 import './addons/das.js';
 

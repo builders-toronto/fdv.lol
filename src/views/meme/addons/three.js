@@ -145,7 +145,7 @@ addKpiAddon(
   {
     id: 'top3',
     order: 10,
-    label: 'Top 3 (LT)',
+    label: 'Top',
     title: `Top performers`,
     metricLabel: 'Score',
     limit: 3,

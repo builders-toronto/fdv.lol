@@ -217,12 +217,6 @@
 
 @keyframes fadeIn{ from{ opacity:0; transform: translateY(4px) } to{ opacity:1; transform:none } }
 
-
-*{ scrollbar-width: thin; scrollbar-color: color-mix(in oklab,var(--accent2) 30%, #2b3c53) transparent }
-::-webkit-scrollbar{ height:10px; width:10px }
-::-webkit-scrollbar-thumb{ border-radius:999px; background: color-mix(in oklab,var(--accent2) 30%, #2b3c53) }
-::-webkit-scrollbar-track{ background: transparent }
-
 @media print{ .shill__wrap{ max-inline-size:none; padding:0; background:white; color:black } .shill__card, .shill__row{ box-shadow:none; background:white; border-color:#bbb } .btn, .shill__tools, .shill__header .btn{ display:none !important } }
 
 .shill__table--interactive tbody tr.clickable{cursor:pointer;}
