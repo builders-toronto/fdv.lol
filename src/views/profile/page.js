@@ -28,6 +28,20 @@ import { startProfileMetrics } from "../../analytics/shill.js";
 // Global sentinel for swap wiring
 const SWAP_BRIDGE = (window.__fdvSwapBridge = window.__fdvSwapBridge || { inited:false, wired:false });
 
+// Wire Safari-safe toggle for extra metrics (once)
+if (!window.__fdvProfileExtraMetricsWired) {
+  window.__fdvProfileExtraMetricsWired = true;
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.extra-metrics-toggle');
+    if (!btn) return;
+    const wrap = btn.closest('.profile__card__extra_metrics');
+    if (!wrap) return;
+    const on = btn.getAttribute('aria-expanded') === 'true';
+    btn.setAttribute('aria-expanded', on ? 'false' : 'true');
+    wrap.classList.toggle('is-open', !on);
+  });
+}
+
 // Profile live feed sentinel
 const PROFILE_FEED = (window.__fdvProfileFeed = window.__fdvProfileFeed || { ac:null, mint:null, timer:null });
 
@@ -139,6 +153,15 @@ export async function renderProfileView(input, { onBack } = {}) {
   const statsCollapseBtn = document.querySelector(".profile__stats-toggle");
   setupExtraMetricsToggle(document.querySelector(".profile__card__extra_metrics"));
 
+  // Sync initial open state with aria-expanded (if preset)
+  try {
+    const btn = document.querySelector('.extra-metrics-toggle');
+    const wrap = document.querySelector('.profile__card__extra_metrics');
+    if (btn && wrap) {
+      const on = btn.getAttribute('aria-expanded') === 'true';
+      wrap.classList.toggle('is-open', on);
+    }
+  } catch {}
 
   wireNavigation({ onBack });
   wireCopy(mint);
