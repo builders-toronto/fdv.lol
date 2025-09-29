@@ -45,7 +45,8 @@
   --ring: 0 0 0 .14rem color-mix(in oklab, var(--accent2) 40%, transparent);
   --ring-strong: 0 0 0 .22rem color-mix(in oklab, var(--accent2) 58%, transparent);
 }
-html, body, input, select, textarea { color-scheme: dark; background: var(--bg); }
+
+html, body, input, select, textarea { color-scheme: dark; }
 
 input, select, textarea, button{
   color: inherit;
@@ -54,16 +55,11 @@ input, select, textarea, button{
 ::placeholder{
   color: rgba(157,176,198,.75);
 }
-body{
-  background-color: #0b0b0c;
-  color: #eaeaea;
-}
 
 *{box-sizing:border-box}
 html,body{
   /* height: 100vh; */
   margin:0;
-  background-color: var(--bg); /* ensure base paint on Safari */
   background: radial-gradient(1200px 600px at 20% -10%, rgba(26,255,213,.08), transparent),
                     radial-gradient(900px 500px at 80% 110%, rgba(123,241,255,.07), transparent),
                     var(--bg);
@@ -72,9 +68,15 @@ html,body{
 
 }
 
-/* #app {
-  height: 100vh;
-} */
+#app {
+  height: 100dvh;
+  overflow: auto;
+}
+
+*{ scrollbar-width: thin; scrollbar-color: color-mix(in oklab,var(--accent2) 30%, #000000) transparent }
+::-webkit-scrollbar{ height:10px; width:10px }
+::-webkit-scrollbar-thumb{ border-radius:999px; background: color-mix(in oklab,var(--accent2) 30%, #1c1c1d) }
+::-webkit-scrollbar-track{ background: transparent }
 
 a{color:var(--neon2);text-decoration:none}
 a:hover{text-decoration:none; filter:brightness(1.1)}
@@ -94,7 +96,6 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
 .loader-overlay {
   position: fixed; inset: 0; z-index: 9999;
   display: grid; place-items: center;
-
   /* Fallback color before color-mix for older Safari */
   background: rgba(11,17,29,.85);
   background: color-mix(in srgb, var(--bg, #0b111d) 85%, transparent);
@@ -195,8 +196,9 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
   backdrop-filter: blur(6px) saturate(120%);
   -webkit-backdrop-filter: blur(6px) saturate(120%);
   padding: 6px 0 8px;
+  overflow: scroll;
 }
-.hdr-tools .tools-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:0 8px; }
+.hdr-tools .tools-row { display:flex; align-items:center; gap:8px; padding:0 8px; }
 .hdr-tools .panel-row { display:block; padding:6px 8px 0; }
 
 /* If search bar is inside controls, make it full-width on small screens */
@@ -639,7 +641,7 @@ footer {
     justify-content: center;
     align-items: center;
     color:var(--muted);
-    font-size:.86rem;
+    font-size:.66rem;
     margin-top:14px
 }
 

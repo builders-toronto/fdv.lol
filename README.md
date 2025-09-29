@@ -46,4 +46,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the **fastest, simplest, and most trusted memecoin radar on Solana**.  
 
-"fix(css): iOS/Safari color/layout - scoped vars, srgb color-mix, dvh fallback, global scope colour leaks"
+feat: add degen KPI; update global theme; iOS/Safari style fixes
