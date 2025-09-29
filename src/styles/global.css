@@ -45,6 +45,20 @@
   --ring: 0 0 0 .14rem color-mix(in oklab, var(--accent2) 40%, transparent);
   --ring-strong: 0 0 0 .22rem color-mix(in oklab, var(--accent2) 58%, transparent);
 }
+html, body, input, select, textarea { color-scheme: dark; background: var(--bg); }
+
+input, select, textarea, button{
+  color: inherit;
+  -webkit-text-fill-color: currentColor;
+}
+::placeholder{
+  color: rgba(157,176,198,.75);
+}
+body{
+  background-color: #0b0b0c;
+  color: #eaeaea;
+}
+
 *{box-sizing:border-box}
 html,body{
   /* height: 100vh; */
@@ -1150,16 +1164,13 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
   stroke: var(--neon, #18eac7);
   stroke-width:2;
   vector-effect:non-scaling-stroke;
--  filter: drop-shadow(0 0 8px color-mix(in oklab, var(--neon,#18eac7) 35%, transparent));
-+  /* fallback + Safari-safe srgb mix */
-+  filter: drop-shadow(0 0 8px rgba(24,234,199,.35));
-+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--neon,#18eac7) 35%, transparent));
+  filter: drop-shadow(0 0 8px rgba(24,234,199,.35));
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--neon,#18eac7) 35%, transparent));
   will-change: stroke-dashoffset;
   transition: stroke-dashoffset .6s ease, d .15s ease;
 }
--.livePrice__area{ fill: color-mix(in oklab, var(--neon,#18eac7) 16%, transparent); transition: d .15s ease; }
-+.livePrice__area{
-+  fill: rgba(24,234,199,.16); /* fallback */
-+  fill: color-mix(in srgb, var(--neon,#18eac7) 16%, transparent);
-+  transition: d .15s ease;
-+}
+.livePrice__area{
+  fill: rgba(24,234,199,.16); /* fallback */
+  fill: color-mix(in srgb, var(--neon,#18eac7) 16%, transparent);
+  transition: d .15s ease;
+}
