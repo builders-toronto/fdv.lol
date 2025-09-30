@@ -582,6 +582,9 @@ svg.bars rect { fill: rgba(123,241,255,.8) }
 }
 
 .extraFeat {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
     grid-column: 3;
     grid-row: 2;
     justify-self: end;
