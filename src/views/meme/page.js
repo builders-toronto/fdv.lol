@@ -6,6 +6,7 @@ import { adCard } from '../../ads/load.js';
 import { sparklineSVG } from './render/sparkline.js';
 import { pctChipsHTML } from './render/chips.js';
 import { searchTokensGlobal } from '../../data/dexscreener.js';
+import { initLibrary, createFavoriteButton } from '../../widgets/library.js';
 
 // Addons and KPIs
 import './addons/three.js';
@@ -54,6 +55,7 @@ function ensureHeaderToolsStrip() {
 try { 
   ensureHeaderToolsStrip();
   ensureAddonsUI();
+  initLibrary();
 } catch {}
 
 function isStreamOnLocal() {
@@ -629,12 +631,39 @@ function patchKeyedGridAnimated(container, nextItems, keyFn = x => x.mint || x.i
       el.className = 'card';
       el.dataset.key = k;
       el.innerHTML = coinCard(it);
+      try {
+        const top = el.querySelector('.top') || el;
+        if (!top.querySelector(`[data-fav-btn][data-mint="${it.mint}"]`)) {
+          const favBtn = createFavoriteButton({
+            mint: it.mint,
+            symbol: it.symbol || '',
+            name: it.name || '',
+            imageUrl: it.logoURI || it.imageUrl || ''
+          });
+          // Nudge to the right in flex rows
+          favBtn.style.marginLeft = 'auto';
+          top.appendChild(favBtn);
+        }
+      } catch {}
       el.classList.add('is-entering');
       el.style.opacity = '0';
       el.style.transform = 'translateY(10px) scale(.98)';
       el.style.willChange = 'transform,opacity';
     } else {
       updateCardDOM(el, it);
+      try {
+        const top = el.querySelector('.top') || el;
+        if (!top.querySelector(`[data-fav-btn][data-mint="${it.mint}"]`)) {
+          const favBtn = createFavoriteButton({
+            mint: it.mint,
+            symbol: it.symbol || '',
+            name: it.name || '',
+            imageUrl: it.logoURI || it.imageUrl || ''
+          });
+          favBtn.style.marginLeft = 'auto';
+          top.appendChild(favBtn);
+        }
+      } catch {}
       el.style.willChange = 'transform,opacity';
       el.classList.remove('is-exiting');
     }

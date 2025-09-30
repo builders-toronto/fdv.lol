@@ -24,6 +24,7 @@ import {
 import { loadAds, pickAd, adCard } from "../../ads/load.js";
 import { initSwap, createSwapButton, bindSwapButtons } from "../../widgets/swap.js";
 import { startProfileMetrics } from "../../analytics/shill.js"; 
+import { initLibrary, createFavoriteButton, bindFavoriteButtons } from "../../widgets/library.js";
 
 // Global sentinel for swap wiring
 const SWAP_BRIDGE = (window.__fdvSwapBridge = window.__fdvSwapBridge || { inited:false, wired:false });
@@ -140,6 +141,12 @@ export async function renderProfileView(input, { onBack } = {}) {
 
   renderShell({ mount: elApp, mint, adHtml });
 
+  // Init Library widget once (uses new /favorite and /favcount endpoints)
+  try {
+    initLibrary({ metricsBase: "/api/shill" });
+    bindFavoriteButtons(document);
+  } catch {}
+
   // Ensure Share button is tagged for metrics (copy_mint)
   try {
     const copyBtn = document.getElementById("btnCopyMint");
@@ -186,6 +193,19 @@ export async function renderProfileView(input, { onBack } = {}) {
   if (media) media.innerHTML = `<img class="logo" src="${logo}" alt="">`;
   const title = elApp.querySelector(".profile__hero .title");
   if (title) title.textContent = t.symbol || "Token";
+  try {
+    const extra = elApp.querySelector(".profile__hero .extraFeat");
+    if (extra && !extra.querySelector(`[data-fav-btn][data-mint="${mint}"]`)) {
+      const favBtn = createFavoriteButton({
+        mint,
+        symbol: t.symbol || "",
+        name: t.name || "",
+        imageUrl: logo || "",
+        className: "fdv-lib-btn"
+      });
+      extra.prepend(favBtn);
+    }
+  } catch {}
   const tradeTop = document.getElementById("btnTradeTop");
   if (tradeTop) {
     if (t.headlineUrl) { tradeTop.href = t.headlineUrl; tradeTop.classList.remove("disabled"); }

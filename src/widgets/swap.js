@@ -1,8 +1,5 @@
 import { fetchTokenInfo } from "../data/dexscreener.js";
 
-//TODO: add more web3 cloudflare++
-//SCALE: refactor hooks and other internals
-
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
 const DEFAULTS = {
