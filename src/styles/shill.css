@@ -128,9 +128,9 @@
 @media (max-width:640px){ .shill__card .btn{ margin-inline-start:1px; margin-block-end:15px; margin-block-start: 15px; } }
 .shill__card .btn:hover{ transform: translateY(-1px); box-shadow: var(--shadow-2) }
 .shill__card .btn:active{ transform: translateY(0) scale(.99) }
-.btn--primary{ color: var(--text); background: linear-gradient(90deg, color-mix(in oklab,var(--accent) 20%, transparent), color-mix(in oklab,var(--accent2) 20%, transparent)); border-color: color-mix(in oklab, var(--accent2) 40%, transparent) }
+.btn--primary{ color: var(--text); }
 .btn--subtle{ background: linear-gradient(90deg, rgba(26,255,213,.10), rgba(123,241,255,.10)); border-color: rgba(122,222,255,.24) }
-.btn--danger{ inline-size: 102px; margin-block-start:15px; color:#ffe8ed; background: linear-gradient(90deg, color-mix(in oklab, var(--danger) 22%, transparent), color-mix(in oklab, var(--danger) 12%, transparent)); border-color: color-mix(in oklab, var(--danger) 42%, transparent) }
+.btn--danger{ inline-size: 102px; margin-block-start:15px; color:#ffe8ed; }
 .btn[aria-busy="true"]{ position:relative; pointer-events:none; filter:saturate(.3) brightness(.9) }
 .btn[aria-busy="true"]::after{ content:""; position:absolute; inset-inline:auto 10px; inset-block:calc(50% - .45em); width:.9em; aspect-ratio:1; border-radius:50%; border:2px solid currentColor; border-right-color:transparent; animation: spin .6s linear infinite }
 @keyframes spin{ to{ transform: rotate(360deg) } }

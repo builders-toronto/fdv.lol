@@ -6,7 +6,7 @@ import { adCard } from '../../ads/load.js';
 import { sparklineSVG } from './render/sparkline.js';
 import { pctChipsHTML } from './render/chips.js';
 import { searchTokensGlobal } from '../../data/dexscreener.js';
-import { initLibrary, createFavoriteButton } from '../../widgets/library.js';
+import { initLibrary, createSendFavoriteButton } from '../../widgets/library.js';
 
 // Addons and KPIs
 import './addons/three.js';
@@ -634,7 +634,7 @@ function patchKeyedGridAnimated(container, nextItems, keyFn = x => x.mint || x.i
       try {
         const top = el.querySelector('.top') || el;
         if (!top.querySelector(`[data-fav-btn][data-mint="${it.mint}"]`)) {
-          const favBtn = createFavoriteButton({
+          const favBtn = createSendFavoriteButton({
             mint: it.mint,
             symbol: it.symbol || '',
             name: it.name || '',
@@ -654,7 +654,7 @@ function patchKeyedGridAnimated(container, nextItems, keyFn = x => x.mint || x.i
       try {
         const top = el.querySelector('.top') || el;
         if (!top.querySelector(`[data-fav-btn][data-mint="${it.mint}"]`)) {
-          const favBtn = createFavoriteButton({
+          const favBtn = createSendFavoriteButton({
             mint: it.mint,
             symbol: it.symbol || '',
             name: it.name || '',

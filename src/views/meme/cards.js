@@ -184,10 +184,10 @@ export function coinCard(it) {
         <span class="t-symbol" data-symbol>${escAttr(it.symbol || '')}</span>
         <span class="badge" data-dex style="color:${escAttr(badgeColour())}">${escAttr((it.dex||'INIT').toUpperCase())}</span>
       </div>
-      <div class="addr"><a class="t-explorer" href="${escAttr(EXPLORER(it.mint))}" target="_blank" rel="noopener">Mint: ${escAttr(shortAddr(it.mint))}</a></div>
     </div>
     <div class="rec ${escAttr(it.recommendation || '')}" data-rec-text>${escAttr(it.recommendation || '')}</div>
   </div>
+  <div class="addr"><a class="t-explorer" href="${escAttr(EXPLORER(it.mint))}" target="_blank" rel="noopener">Mint: ${escAttr(shortAddr(it.mint))}</a></div>
 
   <div class="metrics">
     <div class="kv"><div class="k">Price</div><div class="v v-price">${it.priceUsd != null ? priceHTML(+it.priceUsd) : '—'}</div></div>
