@@ -24,7 +24,7 @@ import {
 import { loadAds, pickAd, adCard } from "../../ads/load.js";
 import { initSwap, createSwapButton, bindSwapButtons } from "../../widgets/swap.js";
 import { startProfileMetrics } from "../../analytics/shill.js"; 
-import { initLibrary, createFavoriteButton, bindFavoriteButtons } from "../../widgets/library.js";
+import { initLibrary, createSendFavoriteButton, bindFavoriteButtons } from "../../widgets/library.js";
 
 // Global sentinel for swap wiring
 const SWAP_BRIDGE = (window.__fdvSwapBridge = window.__fdvSwapBridge || { inited:false, wired:false });
@@ -196,7 +196,7 @@ export async function renderProfileView(input, { onBack } = {}) {
   try {
     const extra = elApp.querySelector(".profile__hero .extraFeat");
     if (extra && !extra.querySelector(`[data-fav-btn][data-mint="${mint}"]`)) {
-      const favBtn = createFavoriteButton({
+      const favBtn = createSendFavoriteButton({
         mint,
         symbol: t.symbol || "",
         name: t.name || "",

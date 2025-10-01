@@ -2,6 +2,7 @@ import { fetchTokenInfo } from "../data/dexscreener.js";
 
 const LS_KEY = "fdv_library_v1";
 const EVT = { CHANGE: "library:change" };
+const pendingFav = new Map(); // mint -> true while in-flight
 
 let CFG = {
   metricsBase: "https://fdv-lol-metrics.fdvlol.workers.dev/api/shill",
@@ -28,119 +29,49 @@ function ensureStyles() {
   if (document.getElementById("fdvLibraryCss")) return;
   const css = `
     .fdv-lib-btn {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        height: 36px;
-        padding: 0 10px;
-        border-radius: 10px;
-        background: transparent;
-        border: none;
-        font-weight: 700;
-        cursor: pointer;
-        transition: filter .15s ease, border-color .15s ease, background .15s ease;
+      display: inline-flex; align-items: center; gap: 8px;
+      height: 36px; padding: 0 10px; border-radius: 10px;
+      background: transparent; border: none; font-weight: 700;
+      cursor: pointer; transition: filter .15s ease, border-color .15s ease, background .15s ease;
     }
-    .fdv-lib-btn:hover {
-      filter: brightness(1.06);
-    }
-    .fdv-lib-heart {
-      display:inline-block;
-      font-size:16px;
-      line-height:1;
-    }
+    .fdv-lib-btn:hover { filter: brightness(1.06); }
+    .fdv-lib-heart { display:inline-block; font-size:16px; line-height:1; }
     .fdv-lib-count {
-      min-width: 20px; height: 20px; padding: 0 6px;
-      display:inline-flex; align-items:center; justify-content:center;
-      border-radius: 999px;
-      font-size: 12px; font-weight: 800;
-      background: rgba(26,255,213,.10);
-      border:1px solid rgba(26,255,213,.20);
-      color: var(--text);
+      min-width:20px; height:20px; padding:0 6px; display:inline-flex; align-items:center; justify-content:center;
+      border-radius:999px; font-size:12px; font-weight:800; background: rgba(26,255,213,.10);
+      border:1px solid rgba(26,255,213,.20); color: var(--text);
     }
-
     /* Modal */
-    .fdv-lib-backdrop {
-      position: fixed; inset: 0; z-index: 9998; display:none;
-      background: rgba(0,0,0,.45);
-      backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
-    }
+    .fdv-lib-backdrop { position: fixed; inset: 0; z-index: 9998; display:none; background: rgba(0,0,0,.45); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
     .fdv-lib-backdrop.show { display:block; }
-    .fdv-lib-modal {
-      position: fixed; z-index: 9999;
-      inset: 8% 50% auto 50%;
-      transform: translate(-50%, 0);
-      width: min(960px, 94vw);
-      max-height: 80vh; overflow: hidden;
-      border-radius: 14px;
-      background: linear-gradient(180deg, rgba(15,22,37,.96), rgba(15,22,37,.90));
-      border: 1px solid rgba(122,222,255,.16);
-      box-shadow: 0 24px 64px rgba(0,0,0,.55), inset 0 0 0 1px rgba(26,255,213,.05);
-      color: var(--text);
-      display: grid;
-      grid-template-rows: auto 1fr auto;
-    }
-    .fdv-lib-header {
-      display:flex; align-items:center; justify-content:space-between; gap:10px;
-      padding: 12px;
-      border-bottom: 1px solid rgba(122,222,255,.10);
-    }
-    .fdv-lib-title { font-size: 16px; font-weight: 800; }
-    .fdv-lib-close {
-      background: none; border: none; color: var(--text);
-      font-size: 22px; line-height: 1; cursor: pointer;
-    }
-    .fdv-lib-tabs { display:flex; gap:6px; padding: 10px 12px; }
-    .fdv-lib-tab {
-      padding: 8px 12px; border-radius: 10px; cursor: pointer;
-      border: 1px solid rgba(122,222,255,.12);
-      background: rgba(255,255,255,.05);
-      font-weight: 700;
-    }
-    .fdv-lib-tab[aria-selected="true"] {
-      border-color: rgba(26,255,213,.40);
-      box-shadow: inset 0 0 0 1px rgba(26,255,213,.16);
-    }
-    .fdv-lib-body { padding: 10px 12px 14px; overflow: auto; }
-    .fdv-lib-footer {
-      display:flex; justify-content:flex-end; gap:8px; padding: 10px 12px;
-      border-top: 1px solid rgba(122,222,255,.10);
-      background: linear-gradient(180deg, rgba(0,0,0,.00), rgba(0,0,0,.10));
-    }
-
-    /* Favorites grid */
-    .fdv-lib-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
-    }
+    .fdv-lib-modal { position: fixed; z-index: 9999; inset: 8% 50% auto 50%; transform: translate(-50%, 0); width: min(960px, 94vw);
+      max-height: 80vh; overflow: hidden; border-radius: 14px; background: linear-gradient(180deg, rgba(15,22,37,.96), rgba(15,22,37,.90));
+      border: 1px solid rgba(122,222,255,.16); box-shadow: 0 24px 64px rgba(0,0,0,.55), inset 0 0 0 1px rgba(26,255,213,.05);
+      color: var(--text); display: grid; grid-template-rows: auto 1fr auto; }
+    .fdv-lib-header { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px; border-bottom:1px solid rgba(122,222,255,.10); }
+    .fdv-lib-title { font-size:16px; font-weight:800; }
+    .fdv-lib-close { background:none; border:none; color:var(--text); font-size:22px; line-height:1; cursor:pointer; }
+    .fdv-lib-tabs { display:flex; gap:6px; padding:10px 12px; }
+    .fdv-lib-tab { padding:8px 12px; border-radius:10px; cursor:pointer; border:1px solid rgba(122,222,255,.12); background: rgba(255,255,255,.05); font-weight:700; }
+    .fdv-lib-tab[aria-selected="true"] { border-color: rgba(26,255,213,.40); box-shadow: inset 0 0 0 1px rgba(26,255,213,.16); }
+    .fdv-lib-body { padding:10px 12px 14px; overflow:auto; }
+    .fdv-lib-footer { display:flex; justify-content:flex-end; gap:8px; padding:10px 12px; border-top:1px solid rgba(122,222,255,.10); background: linear-gradient(180deg, rgba(0,0,0,.00), rgba(0,0,0,.10)); }
+    /* Grid */
+    .fdv-lib-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:10px; }
     @media (max-width: 900px){ .fdv-lib-grid { grid-template-columns: repeat(2, 1fr); } }
     @media (max-width: 560px){ .fdv-lib-grid { grid-template-columns: 1fr; } }
-
-    .fdv-lib-card {
-      display:flex; gap:10px; align-items:flex-start;
-      padding:10px; border-radius: 12px;
-      background: linear-gradient(180deg, rgba(14,16,27,.95), rgba(0,0,0,.80));
-      border:1px solid rgba(122,222,255,.12);
-    }
-    .fdv-lib-logo { width:36px; height:36px; border-radius: 10px; object-fit: cover; background: #0b111d; border: 1px solid rgba(122,222,255,.20); }
-    .fdv-lib-main { min-width: 0; flex: 1; display:flex; flex-direction:column; gap:6px; }
+    .fdv-lib-card { display:flex; gap:10px; align-items:flex-start; padding:10px; border-radius:12px; background: linear-gradient(180deg, rgba(14,16,27,.95), rgba(0,0,0,.80)); border:1px solid rgba(122,222,255,.12); }
+    .fdv-lib-logo { width:36px; height:36px; border-radius:10px; object-fit:cover; background:#0b111d; border:1px solid rgba(122,222,255,.20); }
+    .fdv-lib-main { min-width:0; flex:1; display:flex; flex-direction:column; gap:6px; }
     .fdv-lib-line1 { display:flex; align-items:center; gap:8px; min-width:0; }
-    .fdv-lib-sym { font-weight: 800; }
-    .fdv-lib-name { color: var(--muted); font-size: 12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .fdv-lib-actions { display:flex; align-items:center; gap: 8px; flex-wrap: wrap; }
-    .fdv-pill {
-      display:inline-flex; align-items:center; gap:6px; padding:3px 8px; border-radius: 999px;
-      background: rgba(148,163,184,.10); border:1px solid rgba(122,222,255,.14); font-size: 12px;
-    }
+    .fdv-lib-sym { font-weight:800; }
+    .fdv-lib-name { color:var(--muted); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .fdv-lib-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .fdv-pill { display:inline-flex; align-items:center; gap:6px; padding:3px 8px; border-radius:999px; background: rgba(148,163,184,.10); border:1px solid rgba(122,222,255,.14); font-size:12px; }
     .fdv-pill.link { cursor:pointer; background: rgba(123,241,255,.06); border-color: rgba(122,222,255,.22); color: var(--muted); }
-
-    /* Compare table */
-    .fdv-lib-table { width: 100%; border-collapse: collapse; }
-    .fdv-lib-table th, .fdv-lib-table td {
-      padding: 8px; text-align: left; border-bottom: 1px solid rgba(122,222,255,.10);
-    }
-    .fdv-up { color: #19c37d; }
-    .fdv-down { color: #ff6f6f; }
+    .fdv-lib-table { width:100%; border-collapse:collapse; }
+    .fdv-lib-table th, .fdv-lib-table td { padding:8px; text-align:left; border-bottom:1px solid rgba(122,222,255,.10); }
+    .fdv-up { color:#19c37d; } .fdv-down { color:#ff6f6f; }
   `;
   const st = document.createElement("style");
   st.id = "fdvLibraryCss";
@@ -162,6 +93,14 @@ function lockScroll(on) {
       b.style.paddingRight = "";
     }
   } catch {}
+}
+
+function setFavCount(mint, count) {
+  document.querySelectorAll(`[data-fav-send][data-mint="${CSS.escape(mint)}"] .fdv-lib-count`)
+    .forEach(el => { el.textContent = String(count); });
+  // legacy buttons, if any
+  document.querySelectorAll(`[data-fav-btn][data-mint="${CSS.escape(mint)}"] .fdv-lib-count`)
+    .forEach(el => { el.textContent = String(count); });
 }
 
 function btnSvgHeart() {
@@ -341,17 +280,14 @@ async function sendFavorite(mint, action) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        mint,
-        action,
-        path: location.pathname,
-        href: location.href,
-        referrer: document.referrer,
+        mint, action,
+        path: location.pathname, href: location.href, referrer: document.referrer,
       }),
     });
     const j = await r.json().catch(() => ({}));
     if (typeof j?.favorites === "number") return j.favorites;
   } catch {}
-  return null; 
+  return null;
 }
 async function fetchFavCount(mint) {
   try {
@@ -369,7 +305,7 @@ export function initLibrary() {
   if (!window.__fdvLibWired) {
     window.__fdvLibWired = true;
     document.addEventListener(EVT.CHANGE, () => {
-      document.querySelectorAll("[data-fav-btn]").forEach(async (btn) => {
+      document.querySelectorAll("[data-fav-send],[data-fav-btn]").forEach(async (btn) => {
         const mint = btn.getAttribute("data-mint");
         syncButtonState(btn, mint);
         const c = await fetchFavCount(mint);
@@ -396,33 +332,112 @@ export function openLibraryModal() {
 }
 
 export function favoriteButtonHTML({ mint, symbol = "", name = "", imageUrl = "", className = "fdv-lib-btn" }) {
-  return `<button type="button" class="${className}" data-fav-btn data-mint="${mint}" data-token-symbol="${symbol}" data-token-name="${name}" data-token-image="${imageUrl}">
-    <i class="fdv-lib-heart" aria-hidden="true"></i>
+  // Back-compat alias to the new send-favorite button
+  return sendFavoriteButtonHTML({ mint, symbol, name, imageUrl, className });
+}
+
+export function sendFavoriteButtonHTML({ mint, symbol = "", name = "", imageUrl = "", className = "fdv-lib-btn" }) {
+  return `<button type="button" class="${className}" data-fav-send data-mint="${mint}" data-token-symbol="${symbol}" data-token-name="${name}" data-token-image="${imageUrl}">
+    <span class="fdv-lib-heart" aria-hidden="true">❤️</span>
     <span class="fdv-lib-count">0</span>
   </button>`;
 }
 
-export function createFavoriteButton({ mint, symbol = "", name = "", imageUrl = "", className = "fdv-lib-btn" } = {}) {
+export function createSendFavoriteButton({ mint, symbol = "", name = "", imageUrl = "", className = "fdv-lib-btn" } = {}) {
   ensureStyles();
+  const sel = `[data-fav-send][data-mint="${CSS.escape(mint)}"],[data-fav-btn][data-mint="${CSS.escape(mint)}"]`;
+  const existing = document.querySelector(sel);
+  if (existing) {
+    existing.classList.add(className);
+    existing.setAttribute("data-fav-send", "");
+    existing.removeAttribute("data-fav-btn");
+    if (symbol) existing.dataset.tokenSymbol = symbol;
+    if (name) existing.dataset.tokenName = name;
+    if (imageUrl) existing.dataset.tokenImage = imageUrl;
+    wireSendFavoriteButton(existing);
+    return existing;
+  }
+
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = className;
-  btn.setAttribute("data-fav-btn", "");
+  btn.setAttribute("data-fav-send", "");
   btn.dataset.mint = mint;
   if (symbol) btn.dataset.tokenSymbol = symbol;
   if (name) btn.dataset.tokenName = name;
   if (imageUrl) btn.dataset.tokenImage = imageUrl;
 
-  btn.appendChild(btnSvgHeart());
-  const count = document.createElement("span");
-  count.className = "fdv-lib-count";
-  count.textContent = "0";
-  btn.appendChild(count);
+  wireSendFavoriteButton(btn);
+  return btn;
+}
 
+// Ensure a single wiring per element; upgrade legacy buttons in place
+function wireSendFavoriteButton(btn) {
+  if (btn.dataset.fdvlWired === "1") return;
+  btn.dataset.fdvlWired = "1";
+  if (!btn.querySelector(".fdv-lib-heart")) {
+    btn.prepend(btnSvgHeart());
+  }
+  let count = btn.querySelector(".fdv-lib-count");
+  if (!count) {
+    count = document.createElement("span");
+    count.className = "fdv-lib-count";
+    count.textContent = "0";
+    btn.appendChild(count);
+  }
+  const mint = btn.dataset.mint;
   syncButtonState(btn, mint);
-  // fetch and paint global count
   fetchFavCount(mint).then(c => { count.textContent = String(c); }).catch(()=>{});
-  btn.addEventListener("click", () => toggleFavorite(mint));
+  btn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (!mint || pendingFav.get(mint)) return;
+    pendingFav.set(mint, true);
+    btn.disabled = true;
+    // ensure token saved locally
+    if (!isFavorite(mint)) {
+      const symbol = btn.dataset.tokenSymbol || "";
+      const name = btn.dataset.tokenName || "";
+      const imageUrl = btn.dataset.tokenImage || "";
+      const s = load();
+      s.items[mint] = { mint, symbol, name, imageUrl, addedAt: Date.now() };
+      if (!s.order.includes(mint)) s.order.unshift(mint);
+      save(s);
+      emitChange();
+      syncButtonState(btn, mint);
+    }
+    const favs = await sendFavorite(mint, "add");
+    if (favs != null) setFavCount(mint, favs);
+    else setFavCount(mint, await fetchFavCount(mint));
+    pendingFav.delete(mint);
+    btn.disabled = false;
+  }, { once: false });
+}
+
+export function ensureSendFavoriteButton(container, opts) {
+  const sel = `[data-fav-send][data-mint="${CSS.escape(opts.mint)}"],[data-fav-btn][data-mint="${CSS.escape(opts.mint)}"]`;
+  const existing = container?.querySelector(sel);
+  if (existing) {
+    existing.setAttribute("data-fav-send", "");
+    existing.removeAttribute("data-fav-btn");
+    if (opts.symbol) existing.dataset.tokenSymbol = opts.symbol;
+    if (opts.name) existing.dataset.tokenName = opts.name;
+    if (opts.imageUrl) existing.dataset.tokenImage = opts.imageUrl;
+    wireSendFavoriteButton(existing);
+    return existing;
+  }
+  const btn = createSendFavoriteButton(opts);
+  if (container) container.appendChild(btn);
+  return btn;
+}
+
+export function createOpenLibraryButton({ label = "Favorites", className = "fdv-lib-btn" } = {}) {
+  ensureStyles();
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = className;
+  btn.setAttribute("data-open-library", "");
+  btn.textContent = label;
+  btn.addEventListener("click", (e) => { e.stopPropagation(); openLibraryModal(); });
   return btn;
 }
 
@@ -430,7 +445,7 @@ export function bindFavoriteButtons(root = document) {
   ensureStyles();
   // de-dup count hydration per mint
   const mints = new Set();
-  root.querySelectorAll("[data-fav-btn]").forEach((btn) => {
+  root.querySelectorAll("[data-fav-send],[data-fav-btn]").forEach((btn) => {
     const mint = btn.getAttribute("data-mint");
     syncButtonState(btn, mint);
     mints.add(mint);
@@ -446,8 +461,8 @@ export function bindFavoriteButtons(root = document) {
   // hydrate counts once per mint
   mints.forEach(async (mint) => {
     const c = await fetchFavCount(mint);
-    document.querySelectorAll(`[data-fav-btn][data-mint="${CSS.escape(mint)}"] .fdv-lib-count`)
-      .forEach((el) => { el.textContent = String(c); });
+    document.querySelectorAll(`[data-fav-send][data-mint="${CSS.escape(mint)}"],[data-fav-btn][data-mint="${CSS.escape(mint)}"]`)
+      .forEach((b) => { b.querySelector(".fdv-lib-count").textContent = String(c); });
   });
 
   root.addEventListener("click", (e) => {
@@ -477,8 +492,7 @@ function toggleFavorite(mint, { force } = {}) {
   const nextOn = (force == null) ? !exists : !!force;
 
   if (nextOn && !exists) {
-    // enrich from any button dataset on page
-    const anyBtn = document.querySelector(`[data-fav-btn][data-mint="${CSS.escape(mint)}"]`);
+    const anyBtn = document.querySelector(`[data-fav-send][data-mint="${CSS.escape(mint)}"]`);
     const symbol = anyBtn?.dataset?.tokenSymbol || "";
     const name = anyBtn?.dataset?.tokenName || "";
     const imageUrl = anyBtn?.dataset?.tokenImage || "";
@@ -492,28 +506,16 @@ function toggleFavorite(mint, { force } = {}) {
     save(s);
   }
 
-  // optimistic UI state
-  document.querySelectorAll(`[data-fav-btn][data-mint="${CSS.escape(mint)}"]`).forEach((btn) => {
+  document.querySelectorAll(`[data-fav-send][data-mint="${CSS.escape(mint)}"],[data-fav-btn][data-mint="${CSS.escape(mint)}"]`).forEach((btn) => {
     syncButtonState(btn, mint);
   });
-
-  // hit the metrics API using the new favorite endpoint
   (async () => {
     const action = nextOn ? "add" : "remove";
     const favs = await sendFavorite(mint, action);
     if (favs != null) {
-      // use server-returned total if available
-      document.querySelectorAll(`[data-fav-btn][data-mint="${CSS.escape(mint)}"]`).forEach((btn) => {
-        const el = btn.querySelector(".fdv-lib-count");
-        if (el) el.textContent = String(favs);
-      });
+      setFavCount(mint, favs);
     } else {
-      // fallback to GET favcount
-      const c = await fetchFavCount(mint);
-      document.querySelectorAll(`[data-fav-btn][data-mint="${CSS.escape(mint)}"]`).forEach((btn) => {
-        const el = btn.querySelector(".fdv-lib-count");
-        if (el) el.textContent = String(c);
-      });
+      setFavCount(mint, await fetchFavCount(mint));
     }
     emitChange();
   })();
