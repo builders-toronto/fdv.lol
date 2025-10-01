@@ -6,7 +6,7 @@ import { adCard } from '../../ads/load.js';
 import { sparklineSVG } from './render/sparkline.js';
 import { pctChipsHTML } from './render/chips.js';
 import { searchTokensGlobal } from '../../data/dexscreener.js';
-import { initLibrary, createSendFavoriteButton } from '../../widgets/library.js';
+import { initLibrary, createSendFavoriteButton, createOpenLibraryButton } from '../../widgets/library.js';
 
 // Addons and KPIs
 import './addons/three.js';
@@ -50,6 +50,27 @@ function ensureHeaderToolsStrip() {
   `;
   header.appendChild(strip);
   return strip;
+}
+
+function ensureOpenLibraryHeaderBtn() {
+  const header =
+    document.querySelector('.header .container') ||
+    document.querySelector('.header') ||
+    document.getElementById('header') ||
+    document.querySelector('header');
+  if (!header) return;
+
+  if (!document.getElementById('btnOpenLibrary')) {
+    const btn = createOpenLibraryButton({ label: '📖', className: 'fdv-lib-btn' });
+    btn.id = 'btnOpenLibrary';
+    const cs = window.getComputedStyle(header);
+    if (cs.position === 'static') header.style.position = 'relative';
+    btn.style.position = 'absolute';
+    btn.style.top = '8px';
+    btn.style.left = '8px';
+    btn.style.zIndex = '20';
+    header.appendChild(btn);
+  }
 }
 
 try { 
@@ -771,6 +792,8 @@ export function render(items, adPick, marquee) {
   _latestItems = Array.isArray(items) ? items : [];
   _latestAd = adPick || null;
   _latestMarquee = marquee || null;
+
+  ensureOpenLibraryHeaderBtn();
 
   // Push stream snapshot to KPI ingest (registry UI renders automatically)
   try { ingestSnapshot(Array.isArray(items) ? items : []); } catch {}
