@@ -178,8 +178,8 @@
 
 .profile__card__extra_metrics .table-scroll {
   overflow: hidden;
-  max-height: 0;
-  opacity: 0;
+  /* max-height: 0; */
+  /* opacity: 0; */
   transform: translateY(-4px);
   transition:
     max-height .28s ease,

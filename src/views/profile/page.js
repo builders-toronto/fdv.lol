@@ -24,9 +24,8 @@ import {
 import { loadAds, pickAd, adCard } from "../../ads/load.js";
 import { initSwap, createSwapButton, bindSwapButtons } from "../../widgets/swap.js";
 import { startProfileMetrics } from "../../analytics/shill.js"; 
-import { initLibrary, createSendFavoriteButton, bindFavoriteButtons } from "../../widgets/library.js";
+import { createSendFavoriteButton, createOpenLibraryButton, bindFavoriteButtons } from "../../widgets/library.js";
 
-// Global sentinel for swap wiring
 const SWAP_BRIDGE = (window.__fdvSwapBridge = window.__fdvSwapBridge || { inited:false, wired:false });
 
 // Wire Safari-safe toggle for extra metrics (once)
@@ -141,11 +140,10 @@ export async function renderProfileView(input, { onBack } = {}) {
 
   renderShell({ mount: elApp, mint, adHtml });
 
-  // Init Library widget once (uses new /favorite and /favcount endpoints)
   try {
-    initLibrary({ metricsBase: "/api/shill" });
     bindFavoriteButtons(document);
   } catch {}
+
 
   // Ensure Share button is tagged for metrics (copy_mint)
   try {
@@ -193,6 +191,21 @@ export async function renderProfileView(input, { onBack } = {}) {
   if (media) media.innerHTML = `<img class="logo" src="${logo}" alt="">`;
   const title = elApp.querySelector(".profile__hero .title");
   if (title) title.textContent = t.symbol || "Token";
+  try {
+    const backBox = elApp.querySelector(".profile__hero .backBox");
+    if (backBox) {
+      let openBtn = document.getElementById("btnOpenLibrary") || backBox.querySelector('[data-open-library]');
+      if (!openBtn) {
+        openBtn = createOpenLibraryButton({ label: "📖", className: "btn btn-ghost" });
+        openBtn.id = "btnOpenLibrary";
+      } else {
+        if (!openBtn.id) openBtn.id = "btnOpenLibrary";
+      }
+      if (openBtn.parentElement !== backBox) backBox.prepend(openBtn);
+      openBtn.style.border = "none";
+      openBtn.style.fontSize = "1.4em";
+    }
+  } catch {}
   try {
     const extra = elApp.querySelector(".profile__hero .extraFeat");
     if (extra && !extra.querySelector(`[data-fav-btn][data-mint="${mint}"]`)) {
