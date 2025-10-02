@@ -111,13 +111,27 @@ function btnSvgHeart() {
 }
 
 function ensureModal() {
-  if (document.querySelector("[data-lib-backdrop]")) return;
+  // Allow reopening after close: if a backdrop exists without a modal, remove it and recreate.
+  let backdrop = document.querySelector("[data-lib-backdrop]");
+  const existingModal = document.getElementById("fdvLibModal");
+  if (backdrop && existingModal) {
+    // Already open; just ensure visible & scroll locked
+    backdrop.classList.add("show");
+    lockScroll(true);
+    return;
+  }
+  if (backdrop && !existingModal) {
+    // Stale backdrop from a previous session; remove so we can recreate cleanly
+    backdrop.remove();
+    backdrop = null;
+  }
 
-  const backdrop = document.createElement("div");
+  backdrop = document.createElement("div");
   backdrop.className = "fdv-lib-backdrop";
   backdrop.setAttribute("data-lib-backdrop", "");
 
   const modal = document.createElement("div");
+  modal.id = "fdvLibModal";
   modal.className = "fdv-lib-modal";
   modal.setAttribute("role", "dialog");
   modal.setAttribute("aria-modal", "true");
@@ -143,9 +157,17 @@ function ensureModal() {
   document.body.appendChild(backdrop);
   document.body.appendChild(modal);
 
-  const closeAll = () => { backdrop.classList.remove("show"); modal.remove(); lockScroll(false); };
-  backdrop.addEventListener("click", closeAll);
+  const closeAll = () => {
+    try { modal.remove(); } catch {}
+    try { backdrop.remove(); } catch {}
+    lockScroll(false);
+  };
+
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) closeAll(); });
   modal.querySelectorAll("[data-lib-close]").forEach(b => b.addEventListener("click", closeAll));
+  document.addEventListener("keydown", function escOnce(ev) {
+    if (ev.key === "Escape") { closeAll(); document.removeEventListener("keydown", escOnce); }
+  });
 
   modal.querySelectorAll("[data-lib-tab]").forEach(tab => {
     tab.addEventListener("click", () => {

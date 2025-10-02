@@ -54,21 +54,13 @@ function ensureHeaderToolsStrip() {
 
 function ensureOpenLibraryHeaderBtn() {
   const header =
-    document.querySelector('.header .container') ||
-    document.querySelector('.header') ||
-    document.getElementById('header') ||
-    document.querySelector('header');
+    document.querySelector('.header .container .superFeat');
   if (!header) return;
 
   if (!document.getElementById('btnOpenLibrary')) {
-    const btn = createOpenLibraryButton({ label: '📖', className: 'fdv-lib-btn' });
+    const btn = createOpenLibraryButton({ label: '📚 Library', className: 'fdv-lib-btn' });
     btn.id = 'btnOpenLibrary';
     const cs = window.getComputedStyle(header);
-    if (cs.position === 'static') header.style.position = 'relative';
-    btn.style.position = 'absolute';
-    btn.style.top = '8px';
-    btn.style.left = '8px';
-    btn.style.zIndex = '20';
     header.appendChild(btn);
   }
 }
