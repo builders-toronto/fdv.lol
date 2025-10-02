@@ -196,7 +196,7 @@ export async function renderProfileView(input, { onBack } = {}) {
     if (backBox) {
       let openBtn = document.getElementById("btnOpenLibrary") || backBox.querySelector('[data-open-library]');
       if (!openBtn) {
-        openBtn = createOpenLibraryButton({ label: "📖", className: "btn btn-ghost" });
+        openBtn = createOpenLibraryButton({ label: "📚", className: "btn btn-ghost" });
         openBtn.id = "btnOpenLibrary";
       } else {
         if (!openBtn.id) openBtn.id = "btnOpenLibrary";
