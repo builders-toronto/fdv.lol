@@ -89,3 +89,64 @@ export function iconFor(platform){
       return svg(`<path ${stroke} d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z"/><path ${stroke} d="M3.6 9h16.8M3.6 15h16.8M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/>`);
   }
 }
+
+// Build socials HTML
+export function buildSocialLinksHtml(token, mint) {
+  const out = [];
+  const seen = new Set();
+
+  // Helper to push normalised
+  const push = (obj) => {
+    const norm = normalizeSocial(obj);
+    if (!norm) return;
+    const key = norm.platform + "|" + norm.href;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(norm);
+  };
+
+  // Array form if exists
+  if (Array.isArray(token.socials)) {
+    token.socials.forEach(s => push(s));
+  }
+
+  // Common direct fields (handles or urls)
+  const direct = {
+    x: token.x || token.twitter || token.twitterHandle,
+    telegram: token.telegram || token.tg,
+    discord: token.discord,
+    github: token.github,
+    website: token.website || token.site || token.url,
+    docs: token.docs
+  };
+  Object.entries(direct).forEach(([platform, val]) => {
+    if (!val) return;
+    // If it's a URL wrap; else treat as handle
+    if (/^https?:\/\//i.test(val)) {
+      push({ platform, url: val });
+    } else {
+      push({ platform, handle: val });
+    }
+  });
+
+  // Fallback X search link (always last) if no direct x link
+  const hasX = out.some(s => s.platform === "x");
+  if (!hasX) {
+    out.push({
+      platform: "x",
+      href: xSearchUrl(token.symbol, token.name, mint),
+      fallbackSearch: true
+    });
+  }
+
+  if (!out.length) return "";
+
+  return out.map(s => {
+    const href = s.href;
+    const ico = iconFor(s.platform);
+    const title = (s.platform === "x" && s.fallbackSearch)
+      ? "Search on X"
+      : s.platform.charAt(0).toUpperCase() + s.platform.slice(1);
+    return `<a class="social-link iconbtn" href="${href}" target="_blank" rel="noopener noreferrer nofollow" aria-label="${title}" title="${title}">${ico}</a>`;
+  }).join("");
+}

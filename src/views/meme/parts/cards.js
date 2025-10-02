@@ -2,7 +2,7 @@ import { createSendFavoriteButton } from '../../widgets/library.js';
 import { sparklineSVG } from '../render/sparkline.js';
 import { pctChipsHTML } from '../render/chips.js';
 import { EXPLORER, FALLBACK_LOGO, JUP_SWAP, shortAddr } from '../../../config/env.js';
-import { normalizeSocial, iconFor, xSearchUrl } from '../../../data/socials.js';
+import { buildSocialLinksHtml } from '../../../data/socials.js';
 import { normalizeWebsite } from '../../../data/normalize.js';
 import { fmtUsd } from '../../../utils/tools.js';
 import { formatPriceParts } from '../../../lib/formatPrice.js'; 
@@ -121,31 +121,7 @@ export function coinCard(it) {
   const links = [];
   if (website) uniqPush(links, { platform: 'website', href: website });
 
-  const normalizedSocials = (Array.isArray(it.socials) ? it.socials : [])
-    .map(normalizeSocial)
-    .filter(Boolean);
-
-  for (const s of normalizedSocials) {
-    if (links.length >= 3) break;
-    uniqPush(links, s);
-  }
-
-  let socialsHtml = '';
-  if (links.length) {
-    socialsHtml = links.map(s =>
-      `<a class="iconbtn" href="${s.href}" target="_blank" rel="noopener nofollow"
-          aria-label="${s.platform}" data-tooltip="${s.platform}">
-          ${iconFor(s.platform)}
-       </a>`
-    ).join('');
-  } else {
-    const xUrl = xSearchUrl(it.symbol, it.name, it.mint);
-    socialsHtml =
-      `<a class="iconbtn" href="${xUrl}" target="_blank" rel="noopener nofollow"
-          aria-label="Search on X" data-tooltip="Search ${it.symbol ? '$'+it.symbol.toUpperCase() : 'on X'}">
-          ${iconFor('x')}
-       </a>`;
-  }
+  let socialsHtml = buildSocialLinksHtml(it, it.mint);
 
   const micro = `
     <div class="micro" data-micro>

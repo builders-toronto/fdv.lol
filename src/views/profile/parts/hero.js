@@ -2,6 +2,7 @@ import { createSendFavoriteButton, createOpenLibraryButton } from "../../widgets
 import { wireNavigation, wireCopy } from "../render/interactions.js";
 import { FALLBACK_LOGO } from "../../../config/env.js";
 import { createSwapButton } from "../../widgets/swap.js";
+import { buildSocialLinksHtml } from "../../../data/socials.js";
 
 export function initHero({ token, scored, mint, onBack }) {
   const elApp = document.getElementById("app");
@@ -48,6 +49,13 @@ export function initHero({ token, scored, mint, onBack }) {
       });
       extra.prepend(favBtn);
     }
+  } catch {}
+
+  // Social icons (idempotent; rebuild only if mint changed)
+  try {
+    const socials = elApp.querySelector(".profile__links");
+    socials.innerHTML = buildSocialLinksHtml(token, mint);
+    socials.dataset.mint = mint;
   } catch {}
 
   // Headline trade button
