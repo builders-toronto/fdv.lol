@@ -7,8 +7,6 @@ import { renderPairsTable } from "../render/pairsTable.js";
 import { setupStatsCollapse, setupExtraMetricsToggle, wireStatsResizeAutoShortLabels } from "../render/interactions.js";
 import { mountLivePriceLine, updateLivePriceLine, updateLivePriceAnchors } from "../render/liveLine.js";
 
-
-
 const PAIRS_SIG_MAX = 30;
 
 function pairsSignature(pairs) {
@@ -21,20 +19,25 @@ function pairsSignature(pairs) {
 
 export function initStatsAndCharts({ token, scored, BUY_RULES, FDV_LIQ_PENALTY }) {
   const gridEl = document.getElementById("statsGrid");
-  buildStatsGrid(gridEl);
-  wireStatsResizeAutoShortLabels(gridEl);
-  setupStatsCollapse(gridEl);
-  let buttonExisty = document.querySelector(".extra-metrics-toggle");
-  if (!buttonExisty) {
+  if (!gridEl) return null;
+
+  // Idempotent struct initialisadfsdwwf
+  const firstInit = !gridEl.dataset.inited;
+  if (firstInit) {
+    buildStatsGrid(gridEl);
+    wireStatsResizeAutoShortLabels(gridEl);
+    setupStatsCollapse(gridEl);
     setupExtraMetricsToggle(document.querySelector(".profile__card__extra_metrics"));
+    gridEl.dataset.inited = "1";
   }
-  // Hero badge
+
+  // Hero badge (cheap update)
   const badgeWrap = document.querySelector(".profile__hero .row");
-  if (badgeWrap) {
+  if (badgeWrap && firstInit) {
     badgeWrap.innerHTML = `<span class="badge ${cssReco(scored.recommendation)}">${scored.recommendation}</span>`;
   }
 
-  // Stats initial
+  // Stats values (always refresh)
   setStatPrice(gridEl, token.priceUsd, { maxFrac: 9, minFrac: 1 });
   setStat(gridEl, 1, fmtMoney(token.liquidityUsd));
   setStat(gridEl, 2, fmtMoney(token.fdv ?? token.marketCap));
@@ -77,23 +80,32 @@ export function initStatsAndCharts({ token, scored, BUY_RULES, FDV_LIQ_PENALTY }
   setStatStatusByKey(gridEl, "bs24", { ok: TX_OK });
   setStatStatusByKey(gridEl, "buyratio", { ok: BUYR_OK });
 
-  // Recommendation panel
-  const statsCollapseBtn = document.querySelector(".profile__stats-toggle");
-  mountRecommendationPanel(statsCollapseBtn, { scored, token, checks: { LIQFDV_OK, VLIQR_OK, BUYR_OK } });
-
-  // Charts
-  const mom = [token.change5m, token.change1h, token.change6h, token.change24h].map(x => (Number.isFinite(x) ? Math.max(0, x) : 0));
-  renderBarChart(document.getElementById("momBars"), mom, { height: 72, max: Math.max(5, ...mom), labels: ["5m","1h","6h","24h"] });
-  const vols = [token.v5mTotal, token.v1hTotal, token.v6hTotal, token.v24hTotal].map(x => (Number.isFinite(x) ? x : 0));
-  renderBarChart(document.getElementById("volBars"), vols, { height: 72, labels: ["5m","1h","6h","24h"] });
-
-  if (pairsBody) {
-    pairsBody.dataset.pairsSig = pairsSignature(token.pairs);
-    pairsBody.dataset.pairsRenderedAt = String(Date.now());
+  // Recommendation panel only mounts once
+  if (firstInit) {
+    const statsCollapseBtn = document.querySelector(".profile__stats-toggle");
+    mountRecommendationPanel(statsCollapseBtn, { scored, token, checks: { LIQFDV_OK, VLIQR_OK, BUYR_OK } });
   }
-  renderPairsTable(pairsBody, token.pairs);
-  
-  // Live price line seed
+
+  // Charts: rebuild only once; update logic can be added later if needed
+  if (firstInit) {
+    const mom = [token.change5m, token.change1h, token.change6h, token.change24h].map(x => (Number.isFinite(x) ? Math.max(0, x) : 0));
+    renderBarChart(document.getElementById("momBars"), mom, { height: 72, max: Math.max(5, ...mom), labels: ["5m","1h","6h","24h"] });
+    const vols = [token.v5mTotal, token.v1hTotal, token.v6hTotal, token.v24hTotal].map(x => (Number.isFinite(x) ? x : 0));
+    renderBarChart(document.getElementById("volBars"), vols, { height: 72, labels: ["5m","1h","6h","24h"] });
+  }
+
+  // Pairs table (skip expensive rebuild if signature unchanged)
+  const pairsBody = document.getElementById("pairsBody") || document.querySelector("[data-pairs-body]");
+  if (pairsBody) {
+    const sig = pairsSignature(token.pairs);
+    if (pairsBody.dataset.pairsSig !== sig) {
+      renderPairsTable(pairsBody, token.pairs);
+      pairsBody.dataset.pairsSig = sig;
+      pairsBody.dataset.pairsRenderedAt = String(Date.now());
+    }
+  }
+
+  // Live price line (idempotent)
   let liveWrap = document.getElementById("livePriceWrap");
   if (!liveWrap) {
     liveWrap = document.createElement("div");
@@ -121,7 +133,7 @@ export function initStatsAndCharts({ token, scored, BUY_RULES, FDV_LIQ_PENALTY }
     updateLivePriceLine(liveWrap, +token.priceUsd, Date.now());
   }
 
-  return { gridEl, liveWrap };
+  return { gridEl, liveWrap, firstInit };
 }
 
 function ageFmt(ms) {

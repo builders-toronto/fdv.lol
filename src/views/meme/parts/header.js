@@ -27,6 +27,7 @@ export function ensureOpenLibraryHeaderBtn(createOpenLibraryButton) {
   if (!document.getElementById('btnOpenLibrary')) {
     const btn = createOpenLibraryButton({ label: '📚 Library', className: 'fdv-lib-btn' });
     btn.id = 'btnOpenLibrary';
+    btn.style.marginBottom = "15px";
     header.appendChild(btn);
   }
 }

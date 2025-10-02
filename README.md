@@ -46,4 +46,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the **fastest, simplest, and most trusted memecoin radar on Solana**.  
 
-optimize page loads refactor  (defer non-critical work, caching, parallel ads)
+optimize page load bugs fix 1

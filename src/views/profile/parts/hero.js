@@ -28,8 +28,10 @@ export function initHero({ token, scored, mint, onBack }) {
         openBtn.id = "btnOpenLibrary";
       }
       if (openBtn.parentElement !== backBox) backBox.prepend(openBtn);
+      openBtn.className = "btn btn-ghost";
       openBtn.style.border = "none";
       openBtn.style.fontSize = "1.4em";
+      openBtn.style.marginBottom = "15px";
     }
   } catch {}
 
