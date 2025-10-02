@@ -29,7 +29,7 @@ function ensureStyles() {
   if (document.getElementById("fdvLibraryCss")) return;
   const css = `
     .fdv-lib-btn {
-      display: inline-flex; align-items: center; gap: 8px;
+      display: inline-flex; align-items: center; gap: 8px;margin-bottom: 15px;
       height: 36px; padding: 0 10px; border-radius: 10px;
       background: transparent; border: none; font-weight: 700;
       cursor: pointer; transition: filter .15s ease, border-color .15s ease, background .15s ease;

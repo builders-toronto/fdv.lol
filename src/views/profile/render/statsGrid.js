@@ -41,6 +41,8 @@ const PRICE_IDX = STAT_DEF.findIndex(d => d.key === "price");
 
 export function buildStatsGrid(container) {
   if (!container) return;
+  // check if already built
+  if (container.querySelector(".recoPanel")) return;
   const frag = document.createDocumentFragment();
   for (const s of STAT_DEF) {
     const card = document.createElement('div');

@@ -67,7 +67,7 @@ export async function renderProfileView(input, { onBack } = {}) {
     }
   })();
 
-  renderShell({ mount: elApp, mint, adHtml: "" });
+  renderShell({ mount: elApp, mint, adHtml: await adsPromise });
 
   let raw;
   try {
