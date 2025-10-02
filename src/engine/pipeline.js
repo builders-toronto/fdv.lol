@@ -10,7 +10,7 @@ import { readCache, writeCache } from '../utils/tools.js';
 import { enrichMissingInfo } from '../data/normalize.js';
 import { loadAds, pickAd } from '../ads/load.js';
 
-//TODO: it takes a minute to load because I dont have the time to fix this right meow
+//TODO: refactor prototype 2
 
 const num = (x, d = 0) => {
   const n = Number(x);

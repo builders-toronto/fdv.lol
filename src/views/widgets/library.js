@@ -1,4 +1,4 @@
-import { fetchTokenInfo } from "../data/dexscreener.js";
+import { fetchTokenInfo } from "../../data/dexscreener.js";
 
 const LS_KEY = "fdv_library_v1";
 const EVT = { CHANGE: "library:change" };

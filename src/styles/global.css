@@ -154,6 +154,8 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
 }
 
 #stimeDerived {
+  text-align: center;
+  font-weight: 600;
   font-size: 0.6em;
   padding: 5px;
 }
