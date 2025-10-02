@@ -1,5 +1,13 @@
 import { fmtMoney, fmtPct, escAttr, esc } from "../formatters.js";
 
+function pairsSignature(pairs) {
+  if (!Array.isArray(pairs) || !pairs.length) return "";
+  return pairs
+    .slice(0, 30)
+    .map(p => `${p.dexId || ""}:${p.pairAddress || p.address || p.mint || ""}`)
+    .join("|") + `|len=${pairs.length}`;
+}
+
 export function renderPairsTable(body, pairs) {
   if (!body) return;
   if (!pairs?.length) {
