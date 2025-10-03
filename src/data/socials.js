@@ -57,7 +57,8 @@ export function normalizeSocial(s){
 }
 
 export function iconFor(platform){
-  const svg = (d)=>`<svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden="true">${d}</svg>`;
+  // Make icons scale with text by using 1em (was fixed 10px). Keeps backward look (parent can size via font-size).
+  const svg = (d)=>`<svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">${d}</svg>`;
   const stroke = `stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"`;
 
   switch((platform||'').toLowerCase()){
@@ -85,6 +86,9 @@ export function iconFor(platform){
       return svg(`<path ${stroke} d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12V8l-4-6z"/><path ${stroke} d="M14 2v6h6"/>`);
     case 'website':
       return svg(`<circle ${stroke} cx="12" cy="12" r="10"/><path ${stroke} d="M2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20"/>`);
+    case 'search':
+      // Improved: pure stroke, centered, larger lens, angled handle; scales with font size
+      return svg(`<circle ${stroke} cx="11" cy="11" r="6.2"/><path ${stroke} d="m16.8 16.8 4.2 4.2"/>`);
     default:
       return svg(`<path ${stroke} d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z"/><path ${stroke} d="M3.6 9h16.8M3.6 15h16.8M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/>`);
   }
@@ -129,11 +133,12 @@ export function buildSocialLinksHtml(token, mint) {
     }
   });
 
-  // Fallback X search link (always last) if no direct x link
-  const hasX = out.some(s => s.platform === "x");
-  if (!hasX) {
+  // Fallback search link (magnifying glass) if no explicit X/Twitter link
+  const hasX = out.some(s => s.platform === "x" || s.platform === "twitter");
+  const hasSearch = out.some(s => s.platform === "search");
+  if (!hasX && !hasSearch) {
     out.push({
-      platform: "x",
+      platform: "search",
       href: xSearchUrl(token.symbol, token.name, mint),
       fallbackSearch: true
     });
@@ -144,7 +149,7 @@ export function buildSocialLinksHtml(token, mint) {
   return out.map(s => {
     const href = s.href;
     const ico = iconFor(s.platform);
-    const title = (s.platform === "x" && s.fallbackSearch)
+    const title = s.fallbackSearch
       ? "Search on X"
       : s.platform.charAt(0).toUpperCase() + s.platform.slice(1);
     return `<a class="social-link iconbtn" href="${href}" target="_blank" rel="noopener noreferrer nofollow" aria-label="${title}" title="${title}">${ico}</a>`;
