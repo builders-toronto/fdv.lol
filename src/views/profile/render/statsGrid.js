@@ -1,6 +1,94 @@
 import { esc } from "../formatters.js";
 import { formatPriceParts } from "../../../lib/formatPrice.js";
 
+function computePumpKpi5Min(token) {
+  const c5 = Number.isFinite(token.change5m) ? token.change5m : 0;
+  const c1 = Number.isFinite(token.change1h) ? token.change1h : 0;
+  const vr5 = Number.isFinite(token.v5mTotal) ? token.v5mTotal : 0;
+  const vr1h = Number.isFinite(token.v1hTotal) && token.v1hTotal > 0 ? token.v1hTotal : 0;
+  const buyRatio = Number.isFinite(token.buySell24h) ? token.buySell24h : 0;
+
+  // Volume acceleration (project 5m to 1h vs actual 1h)
+  const accel = vr1h > 0 ? Math.min(3, (vr5 * 12) / vr1h) : (vr5 > 0 ? 1 : 0);
+
+  // Score components (tunable weights)
+  const score =
+    (c5 / 6) +          // ~1 when 5m change ~6%
+    (c1 / 25) +         // ~1 when 1h change ~25%
+    (accel - 1) +       // 0 when neutral, up to 2 when 3x
+    Math.max(0, (buyRatio - 0.55) * 2); // boosts if >55% buys
+
+  const isPumping =
+    c5 > 3 &&           // basic short-term move
+    c1 > 8 &&           // sustained
+    accel > 1.15 &&     // real acceleration
+    score >= 1.4;
+
+  let tag = "Calm";
+  let cls = "pill--neutral";
+  if (isPumping) {
+    tag = "🔥 Pumping";
+    cls = "pill--warn";
+  } else if (score >= 1) {
+    tag = "Warming";
+    cls = "pill--info";
+  }
+
+  const html = `<span class="pill ${cls}" title="Score ${score.toFixed(2)} | accel ${(accel).toFixed(2)} | buys ${(buyRatio*100).toFixed(1)}%">${tag}</span>`;
+  return { isPumping, score, html };
+}
+
+function computePumpKpi1Hour(token) {
+  const c1  = Number.isFinite(token.change1h) ? token.change1h : 0;
+  const c6  = Number.isFinite(token.change6h) ? token.change6h : 0;
+  const v1  = Number.isFinite(token.v1hTotal) ? token.v1hTotal : 0;
+  const v6  = Number.isFinite(token.v6hTotal) && token.v6hTotal > 0 ? token.v6hTotal : 0;
+  const buyRatio = Number.isFinite(token.buySell24h) ? token.buySell24h : 0;
+
+  // Volume acceleration: project 1h over 6h vs actual 6h (normalized)
+  const accel = v6 > 0 ? Math.min(3, (v1 * 6) / v6) : (v1 > 0 ? 1 : 0);
+
+  // Score: emphasize sustained move + acceleration
+  const score =
+    (c1 / 20) +             // ~1 at +20% 1h
+    (c6 / 60) +             // ~1 at +60% 6h
+    (accel - 1) +           // 0 baseline, up to +2
+    Math.max(0, (buyRatio - 0.55) * 1.5); // lighter buy ratio weight we need this for 1h
+
+  // Pumping if strong 1h move, sustained, accelerating, decent buy ratio
+
+  const isPumping =
+    c1 > 10 &&              // strong last hour
+    accel > 1.1 &&          // accelerating
+    score >= 1.5;
+
+  let tag = "Calm";
+  let cls = "pill--neutral";
+  if (isPumping) {
+    tag = "🔥 Pumping";
+    cls = "pill--warn";
+  } else if (score >= 1) {
+    tag = "Warming";
+    cls = "pill--info";
+  }
+
+  const html = `<span class="pill ${cls}" title="1h Score ${score.toFixed(2)} | accel ${accel.toFixed(2)} | buys ${(buyRatio*100).toFixed(1)}%">${tag}</span>`;
+  return { isPumping, score, html };
+}
+
+export function updatePumpKpis(container, token) {
+  if (!container) return;
+  const defs = [...container.querySelectorAll(".stat")];
+  const idx5m = defs.findIndex(el => el.getAttribute("data-stat") === "pump5m");
+  const idx1h = defs.findIndex(el => el.getAttribute("data-stat") === "pump1h");
+  const p5 = computePumpKpi5Min(token);
+  const p1 = computePumpKpi1Hour(token);
+  if (idx5m >= 0) setStatHtml(container, idx5m, p5.html);
+  if (idx1h >= 0) setStatHtml(container, idx1h, p1.html);
+  return { pump5m: p5, pump1h: p1 };
+}
+
+
 function toDecimalString(v) {
   if (v == null) return "0.0";
   let s = String(v).trim();
@@ -21,6 +109,19 @@ function toDecimalString(v) {
   }
 }
 
+export function setPumpStatus(container, { pump5m, pump1h }) {
+  const setStatus = (key, ok) => {
+    const el = container.querySelector(`.stat[data-stat="${key}"] .status`);
+    if (!el) return;
+    el.classList.remove("ok","bad");
+    if (ok === true) el.classList.add("ok");
+    else if (ok === false) el.classList.add("bad");
+  };
+  setStatus("pump5m", pump5m?.isPumping);
+  setStatus("pump1h", pump1h?.isPumping);
+}
+
+
 const STAT_DEF = [
   { key: "price",    label: "Price (USD)", short: "Price" },
   { key: "liq",      label: "Liquidity",   short: "Liq" },
@@ -35,14 +136,14 @@ const STAT_DEF = [
   { key: "age",      label: "Age",         short: "Age" },
   { key: "bs24",     label: "24h Buys/Sells", short: "B/S 24" },
   { key: "buyratio", label: "Buy Ratio 24h",  short: "Buy%" },
+  { key: "pump5m",   label: "Pump (5m)",      short: "P5m" },
+  { key: "pump1h",   label: "Pump (1h)",      short: "P1h" }
 ];
 
 const PRICE_IDX = STAT_DEF.findIndex(d => d.key === "price");
 
 export function buildStatsGrid(container) {
   if (!container) return;
-  // check if already built
-  if (container.querySelector(".recoPanel")) return;
   const frag = document.createDocumentFragment();
   for (const s of STAT_DEF) {
     const card = document.createElement('div');
