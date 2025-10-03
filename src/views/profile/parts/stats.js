@@ -1,4 +1,4 @@
-import { buildStatsGrid, setStat, setStatHtml, setStatPrice } from "../render/statsGrid.js";
+import { buildStatsGrid, setStat, setStatHtml, setStatPrice, updatePumpKpis, setPumpStatus } from "../render/statsGrid.js";
 import { setStatStatusByKey } from "../render/statuses.js";
 import { renderBarChart } from "../render/charts.js";
 import mountRecommendationPanel from "../render/recommendation.js";
@@ -21,8 +21,9 @@ export function initStatsAndCharts({ token, scored, BUY_RULES, FDV_LIQ_PENALTY }
   const gridEl = document.getElementById("statsGrid");
   if (!gridEl) return null;
 
-  // Idempotent struct initialisadfsdwwf
+  // Idempotent struct initialization
   const firstInit = !gridEl.dataset.inited;
+  // Check first init twice to avoid
   if (firstInit) {
     buildStatsGrid(gridEl);
     wireStatsResizeAutoShortLabels(gridEl);
@@ -51,6 +52,9 @@ export function initStatsAndCharts({ token, scored, BUY_RULES, FDV_LIQ_PENALTY }
   setStat(gridEl, 10, ageFmt(token.ageMs));
   setStat(gridEl, 11, `${fmtNum(token.tx24h.buys)} / ${fmtNum(token.tx24h.sells)}`);
   setStat(gridEl, 12, Number.isFinite(token.buySell24h) ? `${(token.buySell24h * 100).toFixed(1)}% buys` : "—");
+  // is a token pumping volume?
+  const pumpKpis = updatePumpKpis(gridEl, token);
+  setPumpStatus(gridEl, pumpKpis);
 
   // Status flags
   const LIQ_OK = Number.isFinite(token.liquidityUsd) && token.liquidityUsd >= BUY_RULES.liq;
@@ -84,10 +88,6 @@ export function initStatsAndCharts({ token, scored, BUY_RULES, FDV_LIQ_PENALTY }
   if (firstInit) {
     const statsCollapseBtn = document.querySelector(".profile__stats-toggle");
     mountRecommendationPanel(statsCollapseBtn, { scored, token, checks: { LIQFDV_OK, VLIQR_OK, BUYR_OK } });
-  }
-
-  // Charts: rebuild only once; update logic can be added later if needed
-  if (firstInit) {
     const mom = [token.change5m, token.change1h, token.change6h, token.change24h].map(x => (Number.isFinite(x) ? Math.max(0, x) : 0));
     renderBarChart(document.getElementById("momBars"), mom, { height: 72, max: Math.max(5, ...mom), labels: ["5m","1h","6h","24h"] });
     const vols = [token.v5mTotal, token.v1hTotal, token.v6hTotal, token.v24hTotal].map(x => (Number.isFinite(x) ? x : 0));

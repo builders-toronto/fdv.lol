@@ -113,7 +113,7 @@
     background: var(--fdv-surface);
     color: var(--text);
     -webkit-text-fill-color: currentColor;
-    border: 1px solid var(--fdv-primary);
+    /* border: 1px solid var(--fdv-primary); */
     border-radius: var(--r);
     padding: 12px 14px;
     font-size: var(--step-0);
@@ -124,7 +124,7 @@
 .shill__card .in[aria-invalid="true"]{ border-color: color-mix(in oklab, var(--danger) 60%, var(--border)) }
 .shill__card .in[aria-invalid="true"]:focus-visible{ box-shadow: 0 0 0 .2rem color-mix(in oklab, var(--danger) 40%, transparent) }
 :where(.btn){ -webkit-tap-highlight-color: transparent; will-change: transform; backface-visibility:hidden; translate:0; cursor:pointer; user-select:none }
-.shill__card .btn{ font-size: var(--step-0); margin-inline-start:8px; border-radius: var(--r); font-weight:800; letter-spacing:.2px; padding:.72em 1.05em; border:1px solid var(--accent); transition: transform .14s ease, box-shadow .14s ease, background .14s ease, filter .14s ease }
+.shill__card .btn{ font-size: var(--step-0); margin-inline-start:8px; border-radius: var(--r); font-weight:800; letter-spacing:.2px; padding:.72em 1.05em; transition: transform .14s ease, box-shadow .14s ease, background .14s ease, filter .14s ease }
 @media (max-width:640px){ .shill__card .btn{ margin-inline-start:1px; margin-block-end:15px; margin-block-start: 15px; } }
 .shill__card .btn:hover{ transform: translateY(-1px); box-shadow: var(--shadow-2) }
 .shill__card .btn:active{ transform: translateY(0) scale(.99) }
