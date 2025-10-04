@@ -222,6 +222,7 @@ async function loadJupList({ signal } = {}) {
     })).filter(t => t.mint);
   }, { ttl: JUP_LIST_TTL_MS });
 }
+
 async function provJupiterListSearch(query, { signal, limit = 12 } = {}) {
   const name = 'jupiter';
   const q = (query || '').trim().toLowerCase();

@@ -1,3 +1,5 @@
+import { formatPriceParts, toDecimalString } from "../../../lib/formatPrice.js";
+
 function mqItemHTML(t, tokenHref) {
   const mint = t.mint || '';
   const sym  = t.symbol || '';
@@ -7,12 +9,14 @@ function mqItemHTML(t, tokenHref) {
   const priceTxt = (p == null) ? '' :
     (p >= 1 ? `$${p.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
             : `$${p.toFixed(6)}`);
+  const dec = toDecimalString(p);
+  const price = formatPriceParts(dec, { maxFrac: 6, minFrac: 2 }).text;
   return `
     <a class="mq-item" href="${tokenHref(mint)}" title="${name}">
       <img class="mq-logo" src="${logo}" alt="" />
       <span class="mq-sym">${sym || '—'}</span>
       <span class="mq-name">${name || ''}</span>
-      ${priceTxt ? `<span class="mq-price">${priceTxt}</span>` : ''}
+      ${priceTxt ? `<span class="mq-price">${price}</span>` : ''}
     </a>
   `;
 }

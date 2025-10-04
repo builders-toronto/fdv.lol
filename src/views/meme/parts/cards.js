@@ -5,7 +5,7 @@ import { EXPLORER, FALLBACK_LOGO, JUP_SWAP, shortAddr } from '../../../config/en
 import { buildSocialLinksHtml } from '../../../data/socials.js';
 import { normalizeWebsite } from '../../../data/normalize.js';
 import { fmtUsd } from '../../../utils/tools.js';
-import { formatPriceParts } from '../../../lib/formatPrice.js'; 
+import { formatPriceParts, toDecimalString } from '../../../lib/formatPrice.js'; 
 
 function escAttr(v) {
   const s = String(v ?? '');
@@ -14,27 +14,6 @@ function escAttr(v) {
     .replaceAll('"', '&quot;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;');
-}
-
-// Normalize to plain decimal (handles 1e-9)
-function toDecimalString(v) {
-  if (v == null) return "0.0";
-  let s = String(v).trim();
-  if (/^[+-]?\d+(\.\d+)?$/.test(s)) return s.includes(".") ? s : s + ".0";
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "0.0";
-  if (Math.abs(n) >= 1) return n.toString().includes(".") ? n.toString() : n.toString() + ".0";
-  const m = n.toExponential().match(/^([+-]?\d(?:\.\d+)?)[eE]([+-]\d+)$/);
-  if (!m) return "0.0";
-  const coef = m[1].replace(".", "").replace(/^-/, "");
-  const exp = parseInt(m[2], 10);
-  if (exp >= 0) {
-    const pad = exp - (m[1].split(".")[1]?.length || 0);
-    return coef + (pad > 0 ? "0".repeat(pad) : "");
-  } else {
-    const k = -exp - 1;
-    return "0." + "0".repeat(k) + coef;
-  }
 }
 
 // Price HTML with tiny counter for sub-unit values
