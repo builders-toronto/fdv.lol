@@ -1,4 +1,5 @@
 import { fetchTokenInfo } from "../../data/dexscreener.js";
+import { throttleGlobalStream, releaseGlobalStreamThrottle, isGlobalStreamThrottled } from "../../engine/pipeline.js";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
@@ -177,7 +178,7 @@ function _collectHardDataFromEl(el) {
   return { mint, pairUrl, tokenHydrate, priority, relay, timeoutMs };
 }
 
-// TODO: wait for phantom
+// TODO: wait for phantom. phantom isPhantom elPhantasmo.
 function _openPhantomDeepLink({ outputMint, pairUrl }) {
   const appUrl = location.origin;
   const ref = `https://phantom.app/ul/v1/connect?app_url=${encodeURIComponent(appUrl)}`;
@@ -1029,15 +1030,30 @@ function _openModal(){
   _clearLog();
   _refreshModalChrome();
   try { document.dispatchEvent(new CustomEvent("swap:open")); } catch {}
+  // Pause pipeline (only mark if we caused it)
+  try {
+    if (!isGlobalStreamThrottled()) {
+      throttleGlobalStream("swap_modal");
+      _modalPausedPipeline = true;
+    }
+  } catch {}
   _verifySessionWithUi(false).catch(()=>{});
   _lockPageScroll(true);
   _watchKeyboardViewport(true);
   setTimeout(()=>{ _el("[data-swap-amount]")?.focus(); }, 30);
 }
+
 function _closeModal(){
   const bd=_el("[data-swap-backdrop]");
   if (bd) bd.classList.remove("show");
   _clearLog();
+  // Resume pipeline only if we paused it
+  try {
+    if (_modalPausedPipeline) {
+      releaseGlobalStreamThrottle();
+      _modalPausedPipeline = false;
+    }
+  } catch {}
   _lockPageScroll(false);
   _watchKeyboardViewport(false);
 }
@@ -1150,7 +1166,7 @@ export function initSwapSystem() {
     jupiterBase: "https://lite-api.jup.ag",
     rpcUrl: "https://solana-rpc-proxy.fdvlol.workers.dev/", 
 
-    platformFeeBps: 5,         // 0.05% don't go over this, people dont like that!
+    platformFeeBps: 5,         // 0.05% 
     defaultSlippageBps: 50,     
 
     tokenDecimals: {

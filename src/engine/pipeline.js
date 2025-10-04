@@ -12,6 +12,65 @@ import { loadAds, pickAd } from '../ads/load.js';
 
 //TODO: refactor prototype 2
 
+let _globalStreamThrottle = { active: false, reason: '', until: 0, created: 0 };
+let _globalThrottleTimer = null;
+
+function _isThrottleActive() {
+  if (!_globalStreamThrottle.active) return false;
+  if (_globalStreamThrottle.until && Date.now() > _globalStreamThrottle.until) {
+    _clearThrottleInternal();
+    return false;
+  }
+  return true;
+}
+function _emitThrottleEvent() {
+  try {
+    if (typeof window !== 'undefined' && window.dispatchEvent) {
+      window.dispatchEvent(new CustomEvent('fdv:stream-throttle', {
+        detail: { ..._globalStreamThrottle }
+      }));
+    }
+  } catch {}
+}
+function _clearThrottleInternal() {
+  _globalStreamThrottle = { active: false, reason: '', until: 0, created: 0 };
+  if (_globalThrottleTimer) {
+    clearTimeout(_globalThrottleTimer);
+    _globalThrottleTimer = null;
+  }
+  _emitThrottleEvent();
+}
+
+export function throttleGlobalStream(reason = 'manual', ms = 0) {
+  _globalStreamThrottle = {
+    active: true,
+    reason: String(reason || 'manual'),
+    until: ms > 0 ? Date.now() + ms : 0,
+    created: Date.now()
+  };
+  if (_globalThrottleTimer) clearTimeout(_globalThrottleTimer);
+  if (ms > 0) {
+    _globalThrottleTimer = setTimeout(() => {
+      _clearThrottleInternal();
+    }, ms + 25);
+  }
+  try { stopPipelineStream(); } catch {}
+  _emitThrottleEvent();
+}
+export function releaseGlobalStreamThrottle() {
+  _clearThrottleInternal();
+}
+export function getGlobalStreamThrottle() {
+  _isThrottleActive(); 
+  return { ..._globalStreamThrottle, active: _isThrottleActive() };
+}
+export function isGlobalStreamThrottled() {
+  return _isThrottleActive();
+}
+
+export const pauseAllStreams = throttleGlobalStream;
+export const resumeAllStreams = releaseGlobalStreamThrottle;
+
 const num = (x, d = 0) => {
   const n = Number(x);
   return Number.isFinite(n) ? n : d;
@@ -320,6 +379,10 @@ let CURRENT_RUN = null; // track the active run
 export async function pipeline({ force = false, stream = true, timeboxMs = 8_000, onUpdate } = {}) {
   onUpdate = typeof onUpdate === 'function' ? onUpdate : () => {};
 
+  if (_isThrottleActive()) {
+    stream = false;
+  }
+
   // Abort any previous run so its stream/timers stop immediately
   if (CURRENT_RUN?.abort) { try { CURRENT_RUN.abort(); } catch {} }
 
@@ -333,17 +396,6 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
     for (const fn of cleaners) { try { fn(); } catch {} }
     cleaners.clear();
   });
-
-  const setSafeInterval = (fn, ms) => {
-    const id = setInterval(() => { if (!ac.signal.aborted) fn(); }, ms);
-    onAbort(() => clearInterval(id));
-    return id;
-  };
-  const setSafeTimeout = (fn, ms) => {
-    const id = setTimeout(() => { if (!ac.signal.aborted) fn(); }, ms);
-    onAbort(() => clearTimeout(id));
-    return id;
-  };
 
   // ads 
   const adsPromise = loadAds().catch(() => null).then(ads => {
