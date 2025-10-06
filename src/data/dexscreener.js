@@ -1,5 +1,5 @@
 import { MEME_KEYWORDS } from '../config/env.js'
-import { getJSON } from '../utils/tools.js';
+import { getJSON } from '../core/tools.js';
 import { swrFetch } from '../core/fetcher.js';
 
 // TODO: be nicer to dexscreener

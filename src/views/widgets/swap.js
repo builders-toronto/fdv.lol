@@ -319,7 +319,6 @@ async function ensureRpcSession(force = false) {
   const run = (async () => {
     try {
       let r = await fetch(`${base}/session`, { method: "POST" });
-      console.log("session resp", r);
       if (r.status === 401) {
         const chalHdr = r.headers.get("x-pow-chal");
         const bits = +(r.headers.get("x-pow-bits") || 18);

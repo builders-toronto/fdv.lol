@@ -3,7 +3,7 @@ import { sparklineSVG } from '../render/sparkline.js';
 import { pctChipsHTML } from '../render/chips.js';
 import { EXPLORER, FALLBACK_LOGO, JUP_SWAP, shortAddr } from '../../../config/env.js';
 import { buildSocialLinksHtml } from '../../../lib/socialBuilder.js';
-import { fmtUsd, normalizeWebsite } from '../../../utils/tools.js';
+import { fmtUsd, normalizeWebsite } from '../../../core/tools.js';
 import { formatPriceParts, toDecimalString } from '../../../lib/formatPrice.js'; 
 
 function escAttr(v) {

@@ -1,3 +1,5 @@
+import { FDV_METRICS_BASE } from "../../config/env.js";
+
 export async function renderShillLeaderboardView({ mint } = {}) {
   const root = document.getElementById("app");
   const header = document.querySelector('.header');
@@ -45,8 +47,6 @@ export async function renderShillLeaderboardView({ mint } = {}) {
   `;
   ensureLeaderboardModalRoot();
 
-  // State
-  const METRICS_BASE = String(window.__metricsBase || "https://fdv-lol-metrics.fdvlol.workers.dev").replace(/\/+$/,"");
   const agg = new Map();         // slug -> row
   const seen = new Set();
   const MAX_SEEN = 200000;
@@ -325,7 +325,7 @@ export async function renderShillLeaderboardView({ mint } = {}) {
     let cursor = "";
     const since = sevenDaysAgo();
     for (let i = 0; i < 10; i++) {
-      const url = `${METRICS_BASE}/api/shill/slugs?mint=${encodeURIComponent(mint)}&limit=2000&cursor=${encodeURIComponent(cursor)}&active=1&since=${encodeURIComponent(since)}`;
+      const url = `${FDV_METRICS_BASE}/api/shill/slugs?mint=${encodeURIComponent(mint)}&limit=2000&cursor=${encodeURIComponent(cursor)}&active=1&since=${encodeURIComponent(since)}`;
       const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) break;
       const j = await res.json();
@@ -451,7 +451,7 @@ export async function renderShillLeaderboardView({ mint } = {}) {
     if (!autoRefreshEnabled || useCsv) return;
     tailAbort = new AbortController();
     const since = sevenDaysAgo();
-    const url = `${METRICS_BASE}/api/shill/ndjson?mint=${encodeURIComponent(mint)}&since=${encodeURIComponent(since)}&tail=1`;
+    const url = `${FDV_METRICS_BASE}/api/shill/ndjson?mint=${encodeURIComponent(mint)}&since=${encodeURIComponent(since)}&tail=1`;
     const headers = { "Accept": "application/x-ndjson,application/json;q=0.5,*/*;q=0.1" };
     try {
       const res = await fetch(url, { cache: "no-store", headers, signal: tailAbort.signal });
@@ -493,7 +493,7 @@ export async function renderShillLeaderboardView({ mint } = {}) {
 
       const since = sevenDaysAgo();
       const headers = { "Accept": "application/x-ndjson,application/json;q=0.5,*/*;q=0.1" };
-      const url = `${METRICS_BASE}/api/shill/ndjson?mint=${encodeURIComponent(mint)}&since=${encodeURIComponent(since)}`;
+      const url = `${FDV_METRICS_BASE}/api/shill/ndjson?mint=${encodeURIComponent(mint)}&since=${encodeURIComponent(since)}`;
       const res = await fetch(url, { cache: "no-store", headers });
       if (res.ok && res.body) await readNdjsonStream(res.body);
 
@@ -521,7 +521,7 @@ export async function renderShillLeaderboardView({ mint } = {}) {
       for (const v of base.values()) agg.set(v.slug, v);
 
       const since = sevenDaysAgo();
-      const url = `${METRICS_BASE}/api/shill/csv?mint=${encodeURIComponent(mint)}&since=${encodeURIComponent(since)}`;
+      const url = `${FDV_METRICS_BASE}/api/shill/csv?mint=${encodeURIComponent(mint)}&since=${encodeURIComponent(since)}`;
       const res = await fetch(url, { cache: "no-store" });
       if (res.ok && res.body) await readCsvStream(res.body);
 
@@ -709,34 +709,92 @@ async function openMetricsModal({ mint, slug, owner = "" }) {
   }
 }
 
-// Pull summary from metrics worker
 async function fetchSummaryForSlug({ mint, slug, timeoutMs = 3000 }) {
-  const METRICS_BASE = String(window.__metricsBase || "https://fdv-lol-metrics.fdvlol.workers.dev").replace(/\/+$/,"");
-  const u = `${METRICS_BASE}/api/shill/summary?mint=${encodeURIComponent(mint)}&slug=${encodeURIComponent(slug)}`;
+  const u = `${FDV_METRICS_BASE}/api/shill/summary?mint=${encodeURIComponent(mint)}&slug=${encodeURIComponent(slug)}`;
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
     const res = await fetch(u, { cache: "no-store", signal: ctl.signal });
     if (!res.ok) return null;
     const j = await res.json();
-    return j?.stats || j || null;
+    return j; // now returns the raw summary with events/referrers/paths
   } finally {
     clearTimeout(t);
   }
 }
 
+function normalizeSummary(summary) {
+  if (!summary || typeof summary !== "object") return {};
+  const ev = summary.events || {};
+  const cnt = (name) => ev[name]?.count || 0;
+  const valSum = (name) => ev[name]?.valueSum || 0;
+
+  // scroll_depth: approximate max using avg (or valueSum/count) since we only stored sums
+  let scrollDepthMax = 0;
+  if (ev.scroll_depth) {
+    const avg = ev.scroll_depth.avg || (ev.scroll_depth.valueSum
+      ? ev.scroll_depth.valueSum / Math.max(1, ev.scroll_depth.count)
+      : 0);
+    scrollDepthMax = Math.round(avg);
+  }
+
+  return {
+    // core
+    views: cnt("view"),
+    tradeClicks: cnt("trade_click"),
+    swapStarts: cnt("swap_start"),
+    walletConnects: cnt("wallet_connect"),
+    timeMs: valSum("time_ms"),
+
+    // swap funnel
+    swapQuotes: cnt("swap_quote"),
+    swapsSent: cnt("swap_sent"),
+    swapsConfirmed: cnt("swap_confirmed"),
+
+    // verification
+    verifyStart: cnt("verify_start"),
+    verifyOk: cnt("verify_ok"),
+    verifyFail: cnt("verify_fail"),
+
+    // engagement
+    openSwapModal: cnt("open_swap_modal"),
+    copyClicks: cnt("copy_mint"),
+    shareClicks: cnt("share_click"),
+    externalClicks: cnt("external_click"),
+    buttonClicks: cnt("button_click"),
+    refreshClicks: cnt("refresh_click"),
+    streamToggles: cnt("stream_toggle"),
+    sortChanges: cnt("sort_change"),
+    searches: cnt("search"),
+    suggestionClicks: cnt("suggestion_click"),
+    scrollDepthMax,
+
+    // pass through top refs/paths
+    topReferrers: summary.referrers || [],
+    topPaths: summary.paths || [],
+
+    _raw: summary
+  };
+}
+
 function renderMetricsContent({ slug, mint, s }) {
+  // If new format (has events), normalize it
+  if (s && s.events) {
+    s = normalizeSummary(s);
+  }
+
   const N = (v) => Number(v || 0);
   const pct = (num, den) => {
     const n = N(num), d = N(den);
     if (!d) return "—";
-    return `${Math.round((n/d)*1000)/10}%`;
+    return `${Math.round((n / d) * 1000) / 10}%`;
   };
-  const t = (ms)=> {
-    const s = Math.round((ms||0)/1000);
-    const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
+  const t = (ms) => {
+    const secs = Math.round((ms || 0) / 1000);
+    const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
     return `${h}h ${m}m`;
   };
+
   const safe = {
     views: N(s.views), tradeClicks: N(s.tradeClicks), swapStarts: N(s.swapStarts),
     walletConnects: N(s.walletConnects), timeMs: N(s.timeMs),
@@ -746,6 +804,8 @@ function renderMetricsContent({ slug, mint, s }) {
     externalClicks: N(s.externalClicks), buttonClicks: N(s.buttonClicks), refreshClicks: N(s.refreshClicks),
     streamToggles: N(s.streamToggles), sortChanges: N(s.sortChanges), searches: N(s.searches),
     suggestionClicks: N(s.suggestionClicks), scrollDepthMax: N(s.scrollDepthMax),
+    topReferrers: Array.isArray(s.topReferrers) ? s.topReferrers : [],
+    topPaths: Array.isArray(s.topPaths) ? s.topPaths : []
   };
 
   const avgDwell = safe.views ? Math.round(safe.timeMs / safe.views) : 0;
@@ -760,6 +820,9 @@ function renderMetricsContent({ slug, mint, s }) {
     overallConfirmRate: pct(safe.swapsConfirmed, safe.views),
     avgDwell: t(avgDwell),
   };
+
+  const refList = safe.topReferrers.slice(0,10).map(r => `<li><span>${r.ref || r.domain || "(referrer)"}</span><span>${r.count}</span></li>`).join("");
+  const pathList = safe.topPaths.slice(0,10).map(p => `<li><span>${p.path || "(path)"}</span><span>${p.count}</span></li>`).join("");
 
   return `
     <div class="lbm-grid" style="grid-template-columns: 1.2fr .8fr;">
@@ -788,6 +851,7 @@ function renderMetricsContent({ slug, mint, s }) {
           <li><span>Verify ok</span><span>${safe.verifyOk}</span></li>
           <li><span>Verify fail</span><span>${safe.verifyFail}</span></li>
           <li><span>Dwell (total)</span><span>${t(safe.timeMs)}</span></li>
+          <li><span>Max scroll depth</span><span>${safe.scrollDepthMax}%</span></li>
         </ul>
       </div>
     </div>
@@ -801,18 +865,16 @@ function renderMetricsContent({ slug, mint, s }) {
           <li><span>Share clicks</span><span>${safe.shareClicks}</span></li>
           <li><span>External clicks</span><span>${safe.externalClicks}</span></li>
           <li><span>Buttons clicked</span><span>${safe.buttonClicks}</span></li>
-        </ul>
-      </div>
-      <div class="lbm-list">
-        <h5>Page interactions</h5>
-        <ul>
           <li><span>Refresh clicks</span><span>${safe.refreshClicks}</span></li>
           <li><span>Stream toggles</span><span>${safe.streamToggles}</span></li>
           <li><span>Sort changes</span><span>${safe.sortChanges}</span></li>
           <li><span>Searches</span><span>${safe.searches}</span></li>
           <li><span>Suggestion clicks</span><span>${safe.suggestionClicks}</span></li>
-          <li><span>Max scroll depth</span><span>${safe.scrollDepthMax}%</span></li>
         </ul>
+      </div>
+      <div class="lbm-list">
+        <h5>Top referrers</h5>
+        <ul>${refList || "<li><span>None</span><span>0</span></li>"}</ul>
       </div>
     </div>
   `;

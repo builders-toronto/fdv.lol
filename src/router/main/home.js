@@ -3,7 +3,7 @@ import { renderProfileView } from "../../views/profile/page.js";
 import { render } from '../../views/meme/page.js';
 import { renderShillContestView } from "../../views/shill/page.js"; 
 import { renderShillLeaderboardView } from "../../views/shill/leaderboard.js"; // ← add
-import { hideLoading } from '../../utils/tools.js';
+import { hideLoading } from '../../core/tools.js';
 
 let HOME_INTERVAL = null;
 

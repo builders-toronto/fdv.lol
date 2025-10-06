@@ -1,5 +1,5 @@
 import { MEME_REGEX, CACHE_KEY, nz } from '../config/env.js';
-import { swrFetch } from '../core/fetcher.js';
+import { swrFetch } from './fetcher.js';
 
 const elLoader = document.getElementById('loader');
 

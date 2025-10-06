@@ -108,7 +108,7 @@ export function initHero({ token, scored, mint, onBack }) {
       a.className = "btn btn-ghost";
       a.setAttribute("data-link", "");
       a.href = `/shill?mint=${encodeURIComponent(mint)}`;
-      a.textContent = "Promote";
+      a.textContent = "Metrics";
       actions.appendChild(a);
     }
   } catch {}
