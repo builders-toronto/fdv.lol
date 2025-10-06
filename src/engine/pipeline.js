@@ -6,8 +6,8 @@ import {
 } from '../data/feeds.js';
 import { scoreAndRecommend } from '../core/calculate.js';
 import { elMetaBase, elTimeDerived } from '../views/meme/page.js'; 
-import { readCache, writeCache } from '../utils/tools.js';
-import { enrichMissingInfo } from '../data/normalize.js';
+import { readCache } from '../utils/tools.js';
+import { enrichMissingInfo } from '../data/dexscreener.js';
 import { loadAds, pickAd } from '../ads/load.js';
 
 //TODO: refactor prototype 2

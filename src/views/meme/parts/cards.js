@@ -2,9 +2,8 @@ import { createSendFavoriteButton } from '../../widgets/library.js';
 import { sparklineSVG } from '../render/sparkline.js';
 import { pctChipsHTML } from '../render/chips.js';
 import { EXPLORER, FALLBACK_LOGO, JUP_SWAP, shortAddr } from '../../../config/env.js';
-import { buildSocialLinksHtml } from '../../../data/socials.js';
-import { normalizeWebsite } from '../../../data/normalize.js';
-import { fmtUsd } from '../../../utils/tools.js';
+import { buildSocialLinksHtml } from '../../../lib/socialBuilder.js';
+import { fmtUsd, normalizeWebsite } from '../../../utils/tools.js';
 import { formatPriceParts, toDecimalString } from '../../../lib/formatPrice.js'; 
 
 function escAttr(v) {

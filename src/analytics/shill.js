@@ -1,7 +1,5 @@
-const METRICS_BASE = (typeof window !== "undefined" && window.__metricsBase)
-  ? String(window.__metricsBase).replace(/\/+$/,"")
-  : "https://fdv-lol-metrics.fdvlol.workers.dev";
-
+import { FDV_METRICS_BASE } from "../config/env.js";
+ 
 const LINKS_KEY = "fdv.shill.links";   
 const STATS_KEY = "fdv.shill.stats";   
 const SESS_KEY  = "fdv.shill.session"; 
@@ -108,7 +106,7 @@ async function _sendEvent({ mint, slug, event, value = 1, keepalive = false }) {
 
     const walletId = _ownerForSlug(slugOk);
 
-    const url = `${METRICS_BASE}/api/shill/event`;
+    const url = `${FDV_METRICS_BASE}/api/shill/event`;
     const payload = {
       mint: mintOk,
       slug: slugOk,
@@ -136,7 +134,7 @@ async function _fetchSummary({ mint, slug, timeoutMs = 2500 }) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const res = await fetch(`${METRICS_BASE}/api/shill/summary?mint=${encodeURIComponent(mintOk)}&slug=${encodeURIComponent(slugOk)}`, {
+    const res = await fetch(`${FDV_METRICS_BASE}/api/shill/summary?mint=${encodeURIComponent(mintOk)}&slug=${encodeURIComponent(slugOk)}`, {
       signal: ctl.signal,
       cache: "no-store"
     });
@@ -153,13 +151,13 @@ async function _fetchSummary({ mint, slug, timeoutMs = 2500 }) {
 export function downloadShillCSV(mint) {
   const m = _sanitizeMint(mint);
   if (!m) return;
-  const u = `${METRICS_BASE}/api/shill/csv?mint=${encodeURIComponent(m)}`;
+  const u = `${FDV_METRICS_BASE}/api/shill/csv?mint=${encodeURIComponent(m)}`;
   window.open(u, "_blank", "noopener");
 }
 
 export async function pingMetrics() {
   try {
-    const res = await fetch(`${METRICS_BASE}/diag`, { cache: "no-store" });
+    const res = await fetch(`${FDV_METRICS_BASE}/diag`, { cache: "no-store" });
     if (!res.ok) return false;
     const ct = res.headers.get("content-type") || "";
     if (ct.includes("application/json")) {
@@ -187,7 +185,7 @@ export async function makeShillShortlink({ mint, wallet_id, owner }) {
   }
   let slug = _slug();
 
-  const regRes = await fetch(`${METRICS_BASE}/api/shill/register`, {
+  const regRes = await fetch(`${FDV_METRICS_BASE}/api/shill/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ mint, wallet_id: walletId, slug })
@@ -405,6 +403,9 @@ export function startProfileMetrics({ mint }) {
   document.getElementById("stream")?.addEventListener("click", () => bump("stream_toggle", 1), { passive: true });
   document.getElementById("sort")?.addEventListener("change", () => bump("sort_change", 1), { passive: true });
 
+
+  document.querySelector(".fdv-lib-heart")?.addEventListener("click", () => bump("favorite_add", 1), { passive: true });
+
   // Search (if input exists on profile)
   const q = document.getElementById("q");
   if (q) {
@@ -444,7 +445,7 @@ export function startProfileMetrics({ mint }) {
 export async function mintShillSession() {
   if (!_analyticsEnabled()) return null;
   try {
-    const res = await _postJSON(`${METRICS_BASE}/api/shill/session`, {});
+    const res = await _postJSON(`${FDV_METRICS_BASE}/api/shill/session`, {});
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; }

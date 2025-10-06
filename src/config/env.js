@@ -1,4 +1,3 @@
-// 0) Generic accessors --------------------------------------------------------
 const has = (o, k) => o && Object.prototype.hasOwnProperty.call(o, k);
 
 const ENV =
@@ -7,7 +6,6 @@ const ENV =
   (typeof window !== 'undefined' && (window.ENV || window.__ENV__)) ||
   {}; // last resort
 
-// Allow URL overrides like ?liq=5000&vol24=75000&change1h=0.5&fdv_liq_ratio=40
 let URLQ = {};
 try {
   if (typeof window !== 'undefined' && window.location && window.location.search) {
@@ -15,7 +13,6 @@ try {
   }
 } catch { /* noop */ }
 
-// getEnv: tries (URL → ENV → fallback). Supports multiple keys/aliases.
 function getEnv(keys, fallback) {
   const list = Array.isArray(keys) ? keys : [keys];
   for (const k of list) {
@@ -29,7 +26,7 @@ function getEnv(keys, fallback) {
 
 export const toNum = (v, fallback = 0) => {
   if (v == null) return fallback;
-  if (typeof v === 'string') v = v.replace(/[%_,\s]/g, ''); // "50%", "50_000" -> "50000"
+  if (typeof v === 'string') v = v.replace(/[%_,\s]/g, ''); 
   const num = Number(v);
   return Number.isFinite(num) ? num : fallback;
 };
@@ -57,10 +54,16 @@ export const FDV_LIQ_PENALTY = {
 export const BIRDEYE_API_KEY = "";
 
 export const SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com";
+export const FDV_METRICS_BASE = "https://fdv-lol-metrics.fdvlol.workers.dev";
+export const FDV_TURNSTILE_BASE = "https://solana-rpc-proxy.fdvlol.workers.dev";
+
+export const FDV_FEE_RECEIVER = "ENEKo7GEWM6jDTaHfN558bNHPodA9MB5azNiFvTK7ofm";
 
 export const JUP_SWAP   = (mint)=>`https://jup.ag/tokens/${encodeURIComponent(mint)}`;
 export const JUP_LIST_TTL_MS = 60 * 60 * 1000;
 export const EXPLORER   = (addr)=>`https://explorer.solana.com/address/${addr}`;
+
+
 export const FALLBACK_LOGO = (sym)=>"data:image/svg+xml;utf8,"+encodeURIComponent(
   `<svg xmlns='http://www.w3.org/2000/svg' width='38' height='38'>
      <rect width='100%' height='100%' fill='#0b111d'/>
@@ -68,6 +71,8 @@ export const FALLBACK_LOGO = (sym)=>"data:image/svg+xml;utf8,"+encodeURIComponen
            fill='#7bd7ff' font-family='Arial' font-size='12'>${(sym||'?').slice(0,5)}</text>
    </svg>`
 );
+
+
 export const ADS_CACHE_KEY = 'fdv-ads-cache-v1';
 export const ADS_CACHE_MS  = 5 * 60 * 1000;
 
@@ -95,3 +100,44 @@ export const MEME_KEYWORDS = [
   'toad','hamster','doge','shiba','giga',
   'sigma','baby','wife','husband',
 ];
+
+export const PRIVACY = `
+  <h2>Privacy Policy</h2>
+  <p>We do not run servers that store your browsing data. The app fetches public on-chain/market data directly in your browser. Basic, anonymized telemetry may be measured via static hosting (e.g., GitHub Pages/CDN logs). Do not share secrets.</p>
+
+  <h3>Data Sources</h3>
+  <ul>
+    <li>Public market APIs (e.g., price/liquidity/volume)</li>
+    <li>Static site hosting logs (aggregate)</li>
+    <li><em>Development-only (opt-in):</em> Microsoft Clarity (heatmaps/session replays) and an in-page click heatmap, used strictly to debug UX during development. These are disabled by default and never run in production unless explicitly enabled.</li>
+  </ul>
+
+  <h3>Cookies/Storage</h3>
+  <p>We may use localStorage/sessionStorage for caching UI preferences and response data to improve speed.</p>
+
+  <h3>Development-only telemetry</h3>
+  <p>Clarity and the in-page heatmap are used only during development to improve UX.</p>
+`;
+
+
+export const TOS = `
+  <h2>Terms of Service</h2>
+  <p>FDV.lol is an informational tool. It is <strong>not financial advice</strong>. Use at your own risk.</p>
+  <h3>Use</h3>
+  <ul>
+    <li>No scraping/abuse of rate-limited services.</li>
+    <li>No attempts to compromise the app or users.</li>
+    <li>Respect third-party API terms.</li>
+  </ul>
+  <h3>Warranty</h3>
+  <p>Provided “as is” without warranty. We do not guarantee accuracy or uptime.</p>
+`;
+
+export const AGREEMENT = `
+  <h2>Service Agreement</h2>
+  <p>By using FDV.lol you agree that the service may change or discontinue at any time without notice.</p>
+  <h3>Availability</h3>
+  <p>Service is best-effort. Maintenance, API rate limits, or upstream outages may impact functionality.</p>
+  <h3>Limitations</h3>
+  <p>We are not responsible for trading outcomes, lost funds, or third-party actions.</p>
+`;
