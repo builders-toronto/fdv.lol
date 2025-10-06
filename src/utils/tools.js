@@ -1,4 +1,5 @@
 import { MEME_REGEX, CACHE_KEY, nz } from '../config/env.js';
+import { swrFetch } from '../core/fetcher.js';
 
 const elLoader = document.getElementById('loader');
 
@@ -10,14 +11,33 @@ export function fmtUsd(x){
   return '$'+v.toFixed(2);
 }
 
-export async function getJSON(url, {timeout=8000}={}) {
-  const ctrl = new AbortController();
-  const id = setTimeout(()=>ctrl.abort(), timeout);
-  try{
-    const r = await fetch(url, {signal: ctrl.signal});
-    if(!r.ok) throw new Error(`HTTP ${r.status}`);
-    return await r.json();
-  } finally { clearTimeout(id); }
+export async function getJSON(
+  url,
+  {
+    timeout = 8000,
+    ttl = 15000,
+    cache = true,
+    mustFresh = false,
+    tag = 'json'
+  } = {}
+){
+  async function raw() {
+    const ctrl = new AbortController();
+    const id = setTimeout(()=>ctrl.abort(), timeout);
+    try{
+      const r = await fetch(url, { signal: ctrl.signal });
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.json();
+    } finally {
+      clearTimeout(id);
+    }
+  }
+  if (!cache) return raw();
+  return swrFetch(
+    `v1|json:${ttl}:${url}`,
+    raw,
+    { ttl, mustFresh, timeoutMs: timeout, tag }
+  );
 }
 
 export function isMemecoin(name,symbol, relax=false){
@@ -56,4 +76,11 @@ export async function fetchJsonNoThrow(url, { signal, headers } = {}) {
   } catch {
     return { ok: false, status: 0, json: null };
   }
+}
+
+export function normalizeWebsite(u){
+  if(!u) return null;
+  u = String(u).trim();
+  if(!/^https?:\/\//i.test(u)) u = 'https://' + u; 
+  try { return new URL(u).href; } catch { return null; }
 }

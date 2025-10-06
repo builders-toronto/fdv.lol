@@ -1,3 +1,5 @@
+import { PRIVACY, TOS, AGREEMENT } from "../../config/env.js";
+
 (function () {
   const CSS = `
   .legalBtn { cursor:pointer; }
@@ -34,47 +36,6 @@
   }
   `;
 
-  const PRIVACY_HTML = `
-    <h2>Privacy Policy</h2>
-    <p>We do not run servers that store your browsing data. The app fetches public on-chain/market data directly in your browser. Basic, anonymized telemetry may be measured via static hosting (e.g., GitHub Pages/CDN logs). Do not share secrets.</p>
-
-    <h3>Data Sources</h3>
-    <ul>
-      <li>Public market APIs (e.g., price/liquidity/volume)</li>
-      <li>Static site hosting logs (aggregate)</li>
-      <li><em>Development-only (opt-in):</em> Microsoft Clarity (heatmaps/session replays) and an in-page click heatmap, used strictly to debug UX during development. These are disabled by default and never run in production unless explicitly enabled.</li>
-    </ul>
-
-    <h3>Cookies/Storage</h3>
-    <p>We may use localStorage/sessionStorage for caching UI preferences and response data to improve speed.</p>
-
-    <h3>Development-only telemetry</h3>
-    <p>Clarity and the in-page heatmap are used only during development to improve UX.</p>
-  `;
-
-
-  const TOS_HTML = `
-    <h2>Terms of Service</h2>
-    <p>FDV.lol is an informational tool. It is <strong>not financial advice</strong>. Use at your own risk.</p>
-    <h3>Use</h3>
-    <ul>
-      <li>No scraping/abuse of rate-limited services.</li>
-      <li>No attempts to compromise the app or users.</li>
-      <li>Respect third-party API terms.</li>
-    </ul>
-    <h3>Warranty</h3>
-    <p>Provided “as is” without warranty. We do not guarantee accuracy or uptime.</p>
-  `;
-
-  const AGREEMENT_HTML = `
-    <h2>Service Agreement</h2>
-    <p>By using FDV.lol you agree that the service may change or discontinue at any time without notice.</p>
-    <h3>Availability</h3>
-    <p>Service is best-effort. Maintenance, API rate limits, or upstream outages may impact functionality.</p>
-    <h3>Limitations</h3>
-    <p>We are not responsible for trading outcomes, lost funds, or third-party actions.</p>
-  `;
-
   if (!document.getElementById('legal-modal-style')) {
     const style = document.createElement('style');
     style.id = 'legal-modal-style';
@@ -98,9 +59,9 @@
         <button class="legal-tab" role="tab" aria-selected="false" aria-controls="legal-agree"   id="tab-agreement">Service Agreement</button>
       </div>
       <div class="legal-modal__body">
-        <section class="legal-panel" id="legal-privacy"   role="tabpanel" aria-labelledby="tab-privacy"   aria-hidden="false">${PRIVACY_HTML}</section>
-        <section class="legal-panel" id="legal-tos"       role="tabpanel" aria-labelledby="tab-tos"       aria-hidden="true">${TOS_HTML}</section>
-        <section class="legal-panel" id="legal-agree"     role="tabpanel" aria-labelledby="tab-agreement" aria-hidden="true">${AGREEMENT_HTML}</section>
+        <section class="legal-panel" id="legal-privacy"   role="tabpanel" aria-labelledby="tab-privacy"   aria-hidden="false">${PRIVACY}</section>
+        <section class="legal-panel" id="legal-tos"       role="tabpanel" aria-labelledby="tab-tos"       aria-hidden="true">${TOS}</section>
+        <section class="legal-panel" id="legal-agree"     role="tabpanel" aria-labelledby="tab-agreement" aria-hidden="true">${AGREEMENT}</section>
       </div>
     </div>
     <div class="legal-modal__backdrop"></div>

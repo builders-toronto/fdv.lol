@@ -1,3 +1,4 @@
+import { FDV_FEE_RECEIVER, FDV_TURNSTILE_BASE } from "../../config/env.js";
 import { fetchTokenInfo } from "../../data/dexscreener.js";
 import { throttleGlobalStream, releaseGlobalStreamThrottle, isGlobalStreamThrottled } from "../../engine/pipeline.js";
 
@@ -6,7 +7,7 @@ const SOL_MINT = "So11111111111111111111111111111111111111112";
 const DEFAULTS = {
   jupiterBase: "https://lite-api.jup.ag",
 
-  rpcUrl: "https://solana-rpc-proxy.fdvlol.workers.dev",
+  rpcUrl: FDV_TURNSTILE_BASE,
   authPath: "/auth",
 
   turnstileSiteKey: "0x4AAAAAAB1-OXJYaV8q4rdX",
@@ -1157,14 +1158,14 @@ function _fmtAge(ms) {
 
 export function initSwapSystem() {
   initSwap({
-    feeReceiverWallet: "ENEKo7GEWM6jDTaHfN558bNHPodA9MB5azNiFvTK7ofm",
+    feeReceiverWallet: FDV_FEE_RECEIVER,
     feeAtas: {
       "So11111111111111111111111111111111111111112": "4FSwzXe544mW2BLYqAAjcyBmFFHYgMbnA1XUdtGUeST8", //WRAPPED SOL
       "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "BKWwTmwc7FDSRb82n5o76bycH3rKZ4Xqt87EjZ2rnUXB", //USDC
-    },
+    }, // always use wrapped SOL for fee
 
     jupiterBase: "https://lite-api.jup.ag",
-    rpcUrl: "https://solana-rpc-proxy.fdvlol.workers.dev/", 
+    rpcUrl: FDV_TURNSTILE_BASE, 
 
     platformFeeBps: 5,         // 0.05% 
     defaultSlippageBps: 50,     

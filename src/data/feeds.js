@@ -5,7 +5,7 @@ import {
   SOLANA_RPC_URL,            
 } from '../config/env.js';
 import { getJSON, fetchJsonNoThrow } from '../utils/tools.js';
-import { swrFetch } from '../engine/fetcher.js';
+import { swrFetch } from '../core/fetcher.js';
 import {
   searchTokensGlobal as dsSearch,
   fetchTokenInfo as dsFetchTokenInfo,
@@ -310,9 +310,28 @@ async function provSolanaRPCSearch(query, { signal } = {}) {
   }
 }
 
+let _geckoFailUntil = 0;
+let _geckoSeedStale = { ts: 0, data: [] };
+const GECKO_COOLDOWN_MS = 90_000;
+const GECKO_SEED_STALE_MAX_MS = 10 * 60_000; // 10m
+
+function geckoInCooldown() {
+  return Date.now() < _geckoFailUntil;
+}
+function geckoMarkFail() {
+  _geckoFailUntil = Date.now() + GECKO_COOLDOWN_MS;
+}
+
 
 async function geckoSeedTokens({ signal, limitTokens = 120 } = {}) {
   const name = 'gecko-seed';
+  if (geckoInCooldown()) {
+    // Serve stale if we have it
+    if (_geckoSeedStale.data.length && (Date.now() - _geckoSeedStale.ts) < GECKO_SEED_STALE_MAX_MS) {
+      return _geckoSeedStale.data;
+    }
+    return [];
+  }
   try {
     const headers = { accept: 'application/json;version=20230302' };
     const tUrl = 'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools';
@@ -324,12 +343,14 @@ async function geckoSeedTokens({ signal, limitTokens = 120 } = {}) {
     ]);
 
     const trendingPools = Array.isArray(tr?.json?.data) ? tr.json.data : [];
-    console.log(trendingPools);
-    
     const newPools      = Array.isArray(nw?.json?.data) ? nw.json.data : [];
-
-    
-    console.log(newPools);
+    if (!trendingPools.length && !newPools.length) {
+      geckoMarkFail();
+      health.onFailure(name);
+      // fallback stale
+      if (_geckoSeedStale.data.length) return _geckoSeedStale.data;
+      return [];
+    }
 
     if (!trendingPools.length && !newPools.length) { health.onFailure(name); return []; }
 
@@ -374,10 +395,13 @@ async function geckoSeedTokens({ signal, limitTokens = 120 } = {}) {
         sources: [tag],
       });
     }
+    _geckoSeedStale = { ts: Date.now(), data: out.slice() };
     health.onSuccess(name);
     return out;
   } catch {
+    geckoMarkFail();
     health.onFailure(name);
+    if (_geckoSeedStale.data.length) return _geckoSeedStale.data;
     return [];
   }
 }
@@ -385,7 +409,6 @@ async function geckoSeedTokens({ signal, limitTokens = 120 } = {}) {
 export async function getGeckoSeeds(opts = {}) {
   return geckoSeedTokens(opts);
 }
-
 
 function providerEntry(name, fn, baseDelay) {
   return {
@@ -399,7 +422,7 @@ function buildSearchProviders(stagger = []) {
   const list = [];
   if (BIRDEYE_API_KEY) list.push(providerEntry('birdeye', provBirdeyeSearch, stagger[1] ?? 150));
   list.push(providerEntry('dexscreener', provDexscreenerSearch, stagger[0] ?? 0));
-  list.push(providerEntry('jupiter',     provJupiterListSearch, stagger[2] ?? 280));
+  //list.push(providerEntry('jupiter',     provJupiterListSearch, stagger[2] ?? 280));
   list.push(providerEntry('solana-rpc',  provSolanaRPCSearch,   stagger[3] ?? 0));
   return list;
 }
@@ -540,31 +563,30 @@ export async function fetchTokenInfoMulti(mint, { signal } = {}) {
     if (ds && ds.mint) { health.onSuccess('dexscreener'); return { ...ds, _source: 'dexscreener' }; }
   } catch { health.onFailure('dexscreener'); }
 
-  try {
-    const url = `https://api.geckoterminal.com/api/v2/networks/solana/tokens/${encodeURIComponent(mint)}`;
-    const json = await withTimeout(sig => getJSON(url, {
-      signal: sig, headers: { accept: 'application/json;version=20230302' }
-    }), 8_000, signal);
-    const a = json?.data?.attributes || {};
 
-    console.log("fetch gecko multi", a);
-
-    const base = makeDexInfoSkeleton(mint);
-    base.symbol = a?.symbol || "";
-    base.name   = a?.name   || "";
-    base.imageUrl = a?.image_url || undefined;
-
-    base.priceUsd   = asNum(a?.price_usd);
-    base.change24h  = null;  
-    base.fdv        = asNum(a?.fdv_usd);
-
-    base.headlineDex = 'gecko';
-    base.headlineUrl = '';
-
-    const model = finalizeDexInfo(base);
-    health.onSuccess('geckoterminal');
-    return { ...model, _source: 'geckoterminal' };
-  } catch { health.onFailure('geckoterminal'); }
+    if (!geckoInCooldown()) {
+      try {
+        const url = `https://api.geckoterminal.com/api/v2/networks/solana/tokens/${encodeURIComponent(mint)}`;
+        const json = await withTimeout(sig => getJSON(url, {
+          signal: sig, timeout: 9000, ttl: 45_000, tag: 'gecko'
+        }), 10_000, signal);
+        const a = json?.data?.attributes || {};
+        // ...existing mapping...
+        const base = makeDexInfoSkeleton(mint);
+        base.symbol = a?.symbol || "";
+        base.name   = a?.name   || "";
+        base.imageUrl = a?.image_url || undefined;
+        base.priceUsd   = asNum(a?.price_usd);
+        base.fdv        = asNum(a?.fdv_usd);
+        base.headlineDex = 'gecko';
+        const model = finalizeDexInfo(base);
+        health.onSuccess('geckoterminal');
+        return { ...model, _source: 'geckoterminal' };
+      } catch {
+        geckoMarkFail();
+        health.onFailure('geckoterminal');
+      }
+    }
 
   if (BIRDEYE_API_KEY) {
     try {
@@ -781,7 +803,6 @@ export async function* streamFeeds({
   }
 }
 
-// Instant collector: quote pools + boosted tokens → normalized hits
 const SOL_CHAIN = 'solana';
 const MINT_SOL  = 'So11111111111111111111111111111111111111112';
 const MINT_USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
