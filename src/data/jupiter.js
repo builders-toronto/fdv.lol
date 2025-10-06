@@ -1,4 +1,4 @@
-import { getJSON } from '../utils/tools.js';
+import { getJSON } from '../core/tools.js';
 
 export async function fetchJupiterTokens() {
   try {

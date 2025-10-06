@@ -147,7 +147,15 @@ export async function renderShillContestView(input) {
       await renderList();
       updateLimitUI();
     } catch (e) {
-      if (e?.code === "LIMIT") { updateLimitUI(); } else { console.error(e); alert("Failed to create link. Please try again."); }
+      let noteMessage = document.querySelector(".shill__card .note");
+      if (e?.code === "LIMIT") { 
+        updateLimitUI();
+        noteMessage.textContent = "...";
+      } else {
+        console.error(e); 
+        noteMessage.textContent = "Service is temporarily unavailable.";
+        noteMessage.style.color = "#d3414d";
+      }
     }
   });
 
