@@ -629,3 +629,21 @@ svg.bars rect { fill: rgba(123,241,255,.8) }
     padding: 12px 14px;
   }
 }
+
+.fdv-mint-select{position:relative;display:flex;flex-direction:column;gap:4px}
+.fdv-mint-btn{display:flex;align-items:center;gap:8px;background:#111;border:1px solid var(--fdv-border,#2a2d33);
+  padding:6px 10px;border-radius:10px;cursor:pointer;font:inherit;color:inherit;width:100%;text-align:left}
+.fdv-mint-btn:focus{outline:2px solid #1d9bf0;outline-offset:2px}
+.fdv-mint-icon{width:24px;height:24px;border-radius:50%;object-fit:cover;background:#222}
+.fdv-mint-chevron{margin-left:auto;opacity:.55;font-size:11px}
+.fdv-mint-list{position:absolute;top:100%;left:0;right:0;z-index:50;max-height:260px;overflow:auto;
+  list-style:none;margin:4px 0 0;padding:4px;background:#0c0f13;border:1px solid #222;border-radius:12px;
+  display:flex;flex-direction:column;gap:2px}
+.fdv-mint-list[hidden]{display:none}
+.fdv-mint-opt{display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:8px;cursor:pointer;
+  font-size:14px;line-height:1.25}
+.fdv-mint-opt:hover,.fdv-mint-opt[aria-selected="true"]{background:#1b1f26}
+.fdv-mint-bal{margin-left:auto;font-size:12px;opacity:.7}
+.fdv-mint-sym{font-weight:600}
+.fdv-mint-opt-disabled{opacity:.65;cursor:default;font-style:italic}
+.fdv-mint-opt-disabled:hover{background:transparent}

@@ -6,6 +6,7 @@ import { ensureAddonsUI } from './addons/register.js';
 import { ingestSnapshot } from './addons/ingest.js';
 
 // Addons (KPI)
+import './addons/pumping.js';
 import './addons/three.js';
 import './addons/smq.js';
 import './addons/degen.js';
@@ -14,17 +15,12 @@ import './addons/das.js';
 
 import { initLibrary, createOpenLibraryButton } from '../widgets/library.js';
 
+import { initSearch, createOpenSearchButton } from '../widgets/search.js';
+
 import {
   initHeader,
   ensureOpenLibraryHeaderBtn
 } from './parts/header.js';
-
-import {
-  initSearch,
-  updateSuggestions,
-  syncSuggestionsAfterPaint,
-  getQueryValue
-} from './parts/search.js';
 
 import {
   ensureMarqueeSlot,
@@ -49,6 +45,12 @@ export const elCards    = document.getElementById('cards');
 export const elMetaBase = document.getElementById('metaBaseSpan');
 export const elQ        = document.getElementById('q');
 export const elSort     = document.getElementById('sort');
+
+// Fallback helper (search panel input may be injected later)
+function getQueryValue() {
+  return (document.getElementById('q')?.value || '').trim();
+}
+
 export const elTimeDerived = document.getElementById('stimeDerived');
 export const elRefresh = document.getElementById('refresh');
 export const elRelax = document.getElementById('relax');
@@ -286,7 +288,7 @@ function initInitialLoading() {
 }
 
 (function boot() {
-  try { initHeader(createOpenLibraryButton); } catch {}
+  try { initHeader(createOpenLibraryButton, createOpenSearchButton); } catch {}
   try { ensureAddonsUI(); } catch {}
   try { initLibrary(); } catch {}
 

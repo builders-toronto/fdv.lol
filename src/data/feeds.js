@@ -15,6 +15,11 @@ import {
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const REQUEST_TIMEOUT = 10_000;
 
+const RPC_MAX_CONCURRENT = 2;
+let _rpcInFlight = 0;
+let _rpcBlockUntil = 0;
+const RPC_RETRY_BACKOFF_MS = 60_000;
+
 function asNum(x) {
   const n = Number(x);
   return Number.isFinite(n) ? n : null;
@@ -263,20 +268,46 @@ const DEFAULT_RPC_POOL = [
 function getRpcUrl() { return SOLANA_RPC_URL || DEFAULT_RPC_POOL[0]; }
 
 async function rpcCall(method, params, { signal } = {}) {
+  const now = Date.now();
+  if (now < _rpcBlockUntil) {
+    throw new Error(`rpc_backoff:${Math.ceil((_rpcBlockUntil - now)/1000)}s`);
+  }
+
+  while (_rpcInFlight >= RPC_MAX_CONCURRENT) {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    await sleep(40);
+  }
+
+  _rpcInFlight += 1;
   const url = getRpcUrl();
   const body = { jsonrpc: '2.0', id: 1, method, params };
-  const fetcher = (sig) => fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: sig,
-  }).then(r => {
-    if (!r.ok) throw new Error(`rpc ${r.status}`);
-    return r.json();
-  });
-  const json = await withTimeout(fetcher, 8_000, signal);
-  if (json?.error) throw new Error(json.error?.message || 'rpc error');
-  return json?.result;
+  try {
+    const fetcher = (sig) => fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: sig,
+    }).then(async r => {
+      if (!r.ok) {
+        if (r.status === 403 || r.status === 429) {
+          _rpcBlockUntil = Date.now() + RPC_RETRY_BACKOFF_MS;
+        }
+        throw new Error(`rpc ${r.status}`);
+      }
+      return r.json();
+    });
+
+    const json = await withTimeout(fetcher, 8_000, signal);
+    if (json?.error) {
+      if (/rate/i.test(json.error?.message || "")) {
+        _rpcBlockUntil = Date.now() + RPC_RETRY_BACKOFF_MS;
+      }
+      throw new Error(json.error?.message || 'rpc error');
+    }
+    return json?.result;
+  } finally {
+    _rpcInFlight = Math.max(0, _rpcInFlight - 1);
+  }
 }
 
 async function provSolanaRPCSearch(query, { signal } = {}) {
@@ -312,11 +343,13 @@ async function provSolanaRPCSearch(query, { signal } = {}) {
 
 let _geckoFailUntil = 0;
 let _geckoSeedStale = { ts: 0, data: [] };
-const GECKO_COOLDOWN_MS = 90_000;
+const GECKO_COOLDOWN_MS = 5 * 60_000;
 const GECKO_SEED_STALE_MAX_MS = 10 * 60_000; // 10m
+const GECKO_MAX_CONCURRENT = 1;
+let _geckoInFlight = 0;
 
 function geckoInCooldown() {
-  return Date.now() < _geckoFailUntil;
+  return Date.now() < _geckoFailUntil || health.isDegraded('geckoterminal');
 }
 function geckoMarkFail() {
   _geckoFailUntil = Date.now() + GECKO_COOLDOWN_MS;
@@ -326,12 +359,18 @@ function geckoMarkFail() {
 async function geckoSeedTokens({ signal, limitTokens = 120 } = {}) {
   const name = 'gecko-seed';
   if (geckoInCooldown()) {
-    // Serve stale if we have it
     if (_geckoSeedStale.data.length && (Date.now() - _geckoSeedStale.ts) < GECKO_SEED_STALE_MAX_MS) {
       return _geckoSeedStale.data;
     }
     return [];
   }
+
+  while (_geckoInFlight >= GECKO_MAX_CONCURRENT) {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    await sleep(40);
+  }
+
+  _geckoInFlight += 1;
   try {
     const headers = { accept: 'application/json;version=20230302' };
     const tUrl = 'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools';
@@ -342,19 +381,23 @@ async function geckoSeedTokens({ signal, limitTokens = 120 } = {}) {
       withTimeout(sig => fetchJsonNoThrow(nUrl, { signal: sig, headers }), 8_000, signal),
     ]);
 
+    if ((tr?.status === 429) || (nw?.status === 429)) {
+      geckoMarkFail();
+      health.onFailure(name);
+      if (_geckoSeedStale.data.length) return _geckoSeedStale.data;
+      return [];
+    }
+
     const trendingPools = Array.isArray(tr?.json?.data) ? tr.json.data : [];
     const newPools      = Array.isArray(nw?.json?.data) ? nw.json.data : [];
     if (!trendingPools.length && !newPools.length) {
       geckoMarkFail();
       health.onFailure(name);
-      // fallback stale
       if (_geckoSeedStale.data.length) return _geckoSeedStale.data;
       return [];
     }
 
-    if (!trendingPools.length && !newPools.length) { health.onFailure(name); return []; }
-
-    const tagByMint = new Map(); 
+    const tagByMint = new Map();
     const mints = [];
     const seen  = new Set();
 
@@ -370,12 +413,31 @@ async function geckoSeedTokens({ signal, limitTokens = 120 } = {}) {
     for (const p of trendingPools) takePool(p, 'gecko-trending');
     for (const p of newPools)      takePool(p, 'gecko-new');
 
-    if (!mints.length) { health.onFailure(name); return []; }
+    if (!mints.length) {
+      geckoMarkFail();
+      health.onFailure(name);
+      if (_geckoSeedStale.data.length) return _geckoSeedStale.data;
+      return [];
+    }
 
     const batch = mints.slice(0, Math.min(100, limitTokens)).join(',');
     const tokUrl = `https://api.geckoterminal.com/api/v2/networks/solana/tokens/multi/${encodeURIComponent(batch)}`;
     const tokResp = await withTimeout(sig => fetchJsonNoThrow(tokUrl, { signal: sig, headers }), 8_000, signal);
+
+    if (tokResp?.status === 429) {
+      geckoMarkFail();
+      health.onFailure(name);
+      if (_geckoSeedStale.data.length) return _geckoSeedStale.data;
+      return [];
+    }
+
     const tokenRows = Array.isArray(tokResp?.json?.data) ? tokResp.json.data : [];
+    if (!tokenRows.length) {
+      geckoMarkFail();
+      health.onFailure(name);
+      if (_geckoSeedStale.data.length) return _geckoSeedStale.data;
+      return [];
+    }
 
     const out = [];
     for (const t of tokenRows) {
@@ -395,6 +457,7 @@ async function geckoSeedTokens({ signal, limitTokens = 120 } = {}) {
         sources: [tag],
       });
     }
+
     _geckoSeedStale = { ts: Date.now(), data: out.slice() };
     health.onSuccess(name);
     return out;
@@ -403,6 +466,8 @@ async function geckoSeedTokens({ signal, limitTokens = 120 } = {}) {
     health.onFailure(name);
     if (_geckoSeedStale.data.length) return _geckoSeedStale.data;
     return [];
+  } finally {
+    _geckoInFlight = Math.max(0, _geckoInFlight - 1);
   }
 }
 
@@ -429,11 +494,12 @@ function buildSearchProviders(stagger = []) {
 
 async function collectProviders({ providers, query, limit = 12, deadlineMs = 800, signal }) {
   const start = Date.now();
-  const seen = new Map(); 
+  const seen = new Map();
 
   const add = (arr, src) => {
     for (const r of arr || []) {
       if (!r?.mint) continue;
+      if (seen.size >= limit && seen.has(r.mint) === false) continue;
       const base = {
         mint: r.mint,
         symbol: r.symbol || '',
@@ -454,16 +520,19 @@ async function collectProviders({ providers, query, limit = 12, deadlineMs = 800
   for (const p of providers) {
     const task = (async () => {
       if (p.delayMs) await sleep(p.delayMs);
-      const out = await p.fn(query, { signal, limit });
+      if (signal?.aborted) return null;
+      const out = await p.fn(query, { signal, limit }).catch(() => []);
       add(out, p.name);
       return p.name;
-    })().catch(() => null).finally(() => inFlight.delete(task));
+    })().finally(() => inFlight.delete(task));
     inFlight.add(task);
   }
 
   while (Date.now() - start < deadlineMs && seen.size < limit && inFlight.size) {
     await Promise.race(inFlight);
   }
+
+  for (const pending of inFlight) pending.catch(() => null); // drain quietly
 
   const results = [...seen.values()];
   results.forEach(r => r._score = scoreBasic(r, query));
