@@ -60,7 +60,7 @@ let _sessionInFlight = null;                // dedupe concurrent solves
 let _verifyAnimTimer = null;
 let _verifyAnimStep = 0;
 
-
+let _walletTokens = []; // [{mint,symbol,decimals,uiAmount,logo,rawAmount}]
 
 function _startVerifyAnim() {
   const chip = _el("[data-captcha-state]");
@@ -87,6 +87,7 @@ function _stopVerifyAnim() {
 export function initSwap(userConfig = {}) {
   CFG = { ...DEFAULTS, ...userConfig };
   _ensureModalMounted();
+  _wireMintSelectorOnce();
 }
 
 export function createSwapButton({ mint, label = "Swap", className = "btn swapCoin" } = {}) {
@@ -125,18 +126,19 @@ export function openSwapModal({
 } = {}) {
   _state.inputMint = inputMint;
   _state.outputMint = outputMint;
-  _setModalFields({ inputMint, outputMint, amountUi, slippageBps });
 
+  _ensureModalMounted();
   _openModal();
 
-  if (tokenHydrate && tokenHydrate.mint) {
-    _applyTokenHydrate(tokenHydrate);
-  }
+  _setModalFields({ inputMint, outputMint, amountUi, slippageBps });
+
+  if (tokenHydrate && tokenHydrate.mint) _applyTokenHydrate(tokenHydrate);
   if (outputMint) {
     _loadTokenProfile(outputMint, { tokenHydrate, pairUrl, priority, relay, timeoutMs, noFetch });
   }
   _kickPreQuote();
 }
+
 
 function isLikelyMobile() {
   const coarse = typeof window !== "undefined" &&
@@ -266,10 +268,21 @@ function _handleSwapClickFromEl(el) {
   });
 }
 
+
+
+
 function _decimalsFor(mint) {
   if (mint === SOL_MINT) return 9;
-  return CFG.tokenDecimals[mint] ?? 6;
+  if (CFG.tokenDecimals[mint] != null) return CFG.tokenDecimals[mint];
+  // fallback search in loaded wallet tokens
+  const t = _walletTokens.find(x => x.mint === mint);
+  if (t) return t.decimals;
+  return 6;
 }
+
+
+
+
 function _uiToRaw(amountUi, mint) {
   const dec = _decimalsFor(mint);
   return Math.floor(Number(amountUi) * 10 ** dec);
@@ -424,6 +437,8 @@ async function _connectPhantom() {
       provider.on?.("disconnect", () => {
         _state.wallet = null;
         _state.pubkey = null;
+        _walletTokens = [];
+        _renderInputMintOptions();
         _log("Wallet disconnected", "warn");
         _refreshModalChrome();
       });
@@ -431,6 +446,8 @@ async function _connectPhantom() {
 
     CFG.onConnect?.(_state.pubkey.toBase58());
     _refreshModalChrome(); 
+    await _loadWalletTokens();       
+    _renderInputMintOptions();      
     try {
       document.dispatchEvent(new CustomEvent("swap:wallet-connect", {
         detail: { pubkey: _state.pubkey.toBase58(), wallet: "phantom" }
@@ -440,6 +457,173 @@ async function _connectPhantom() {
     _log(`Connect error: ${e.message || e}`, "err");
     CFG.onError?.("connect", e);
   }
+}
+
+async function _loadWalletTokens() {
+  _walletTokens = [];
+  try {
+    if (!_state.pubkey) return;
+    const { Connection, PublicKey } = await _loadWeb3();
+    const endpoint = CFG.rpcUrl.replace(/\/+$/,"");
+    const conn = new Connection(endpoint, "processed");
+    // SOL balance
+    const solLamports = await conn.getBalance(_state.pubkey).catch(()=>0);
+    const SOL_DEC = 9;
+    _walletTokens.push({
+      mint: SOL_MINT,
+      symbol: "SOL",
+      decimals: SOL_DEC,
+      rawAmount: solLamports,
+      uiAmount: solLamports / 10**SOL_DEC,
+      logo: "https://cdn.jsdelivr.net/gh/trustwallet/assets@master/blockchains/solana/info/logo.png"
+    });
+    // SPL tokens
+    const tokenProg = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+    const accs = await conn.getParsedTokenAccountsByOwner(_state.pubkey, { programId: tokenProg });
+    for (const a of accs.value) {
+      const info = a.account.data?.parsed?.info;
+      const amt = Number(info?.tokenAmount?.amount || 0);
+      const dec = Number(info?.tokenAmount?.decimals || 0);
+      if (amt <= 0) continue;
+      const mint = info?.mint;
+      const uiAmount = amt / 10**dec;
+      _walletTokens.push({
+        mint,
+        symbol: (info?.name || "").slice(0,8) || _short(mint),
+        decimals: dec,
+        rawAmount: amt,
+        uiAmount,
+        logo: null
+      });
+      // cache decimals
+      CFG.tokenDecimals[mint] = dec;
+    }
+    // Sort by USD significance unknown → sort by uiAmount descending
+    _walletTokens.sort((a,b)=> b.uiAmount - a.uiAmount);
+  } catch (e) {
+    _log("Token load failed: " + (e.message||e), "warn");
+  }
+  // Ensure at least SOL
+  if (!_walletTokens.find(t => t.mint === SOL_MINT)) {
+    _walletTokens.unshift({
+      mint: SOL_MINT, symbol:"SOL", decimals:9, uiAmount:0, rawAmount:0,
+      logo:"https://cdn.jsdelivr.net/gh/trustwallet/assets@master/blockchains/solana/info/logo.png"
+    });
+  }
+}
+
+function _renderInputMintOptions() {
+  const list   = _el("[data-swap-input-list]");
+  const btnSym = _el("[data-swap-input-symbol]");
+  const btnIcon= _el("[data-swap-input-icon]");
+  const input  = _el("[data-swap-input-mint]");
+  if (!list || !input) return;
+
+  list.innerHTML = "";
+
+  // No wallet connected → show prompt
+  const noWallet = !_state.pubkey;
+  if (noWallet) {
+    const li = document.createElement("li");
+    li.className = "fdv-mint-opt fdv-mint-opt-disabled";
+    li.setAttribute("role","option");
+    li.setAttribute("aria-disabled","true");
+    li.textContent = "Connect wallet to choose token";
+    li.addEventListener("click", () => {
+      // Auto-trigger connect
+      _el("[data-swap-connect]")?.click();
+      list.hidden = true;
+      const trig = _el("[data-swap-input-trigger]");
+      if (trig) trig.setAttribute("aria-expanded","false");
+    });
+    list.appendChild(li);
+    // Safe defaults
+    if (!input.value) input.value = SOL_MINT;
+    if (btnSym) btnSym.textContent = "SOL";
+    if (btnIcon) btnIcon.style.visibility = "hidden";
+    return;
+  }
+
+  // Wallet connected but no token accounts loaded yet
+  if (!_walletTokens.length) {
+    const li = document.createElement("li");
+    li.className = "fdv-mint-opt fdv-mint-opt-disabled";
+    li.setAttribute("role","option");
+    li.setAttribute("aria-disabled","true");
+    li.textContent = "Loading wallet tokens…";
+    list.appendChild(li);
+
+    if (!input.value) input.value = SOL_MINT;
+    if (btnSym) btnSym.textContent = "SOL";
+    if (btnIcon) btnIcon.style.visibility = "hidden";
+    return;
+  }
+
+  // Normal population
+  for (const tok of _walletTokens) {
+    const li = document.createElement("li");
+    li.className = "fdv-mint-opt";
+    li.setAttribute("role","option");
+    li.dataset.mint = tok.mint;
+    li.innerHTML = `
+      <img alt="" style="width:22px;height:22px;border-radius:50%;background:#222;object-fit:cover;"
+        src="${tok.logo || ""}" onerror="this.removeAttribute('src')" />
+      <span class="fdv-mint-sym">${tok.symbol || "—"}</span>
+      <span class="fdv-mint-bal">${tok.uiAmount.toLocaleString(undefined,{maximumFractionDigits:4})}</span>
+    `;
+    li.addEventListener("click", () => {
+      input.value = tok.mint;
+      _state.inputMint = tok.mint;
+      if (btnSym) btnSym.textContent = tok.symbol || "—";
+      if (btnIcon) {
+        if (tok.logo) { btnIcon.src = tok.logo; btnIcon.style.visibility="visible"; }
+        else { btnIcon.removeAttribute("src"); btnIcon.style.visibility="hidden"; }
+      }
+      list.hidden = true;
+      const trig = _el("[data-swap-input-trigger]");
+      if (trig) trig.setAttribute("aria-expanded","false");
+      _kickPreQuote();
+      _refreshModalChrome();
+    });
+    list.appendChild(li);
+  }
+  // Maintain / set current selection
+  if (input.value && _walletTokens.some(t => t.mint === input.value)) {
+    const cur = _walletTokens.find(t => t.mint === input.value);
+    if (btnSym) btnSym.textContent = cur.symbol;
+    if (btnIcon && cur.logo) { btnIcon.src = cur.logo; btnIcon.style.visibility="visible"; }
+  } else {
+    const first = _walletTokens[0];
+    input.value = first.mint;
+    if (btnSym) btnSym.textContent = first.symbol;
+    if (btnIcon && first.logo) { btnIcon.src = first.logo; btnIcon.style.visibility="visible"; }
+  }
+}
+function _wireMintSelectorOnce() {
+  if (window.__fdvMintSelWired) return;
+  window.__fdvMintSelWired = true;
+  document.addEventListener("click", (e) => {
+    const trigger = e.target.closest("[data-swap-input-trigger]");
+    const list = _el("[data-swap-input-list]");
+    if (trigger) {
+      if (!list) return;
+      const open = list.hidden;
+      if (open) _renderInputMintOptions();
+      list.hidden = !open;
+      trigger.setAttribute("aria-expanded", String(open));
+      if (open) {
+        // close on outside click
+        const closeOnce = (ev) => {
+          if (ev.target.closest("[data-input-mint-wrap]")) return;
+          list.hidden = true;
+          trigger.setAttribute("aria-expanded","false");
+          document.removeEventListener("click", closeOnce);
+        };
+        setTimeout(()=>document.addEventListener("click", closeOnce), 0);
+      }
+      return;
+    }
+  });
 }
 
 
@@ -689,8 +873,14 @@ const MODAL_HTML = `
 
         <div class="fdv-field">
           <label class="fdv-label">Pay (input mint)</label>
-          <div class="fdv-input">
-            <input data-swap-input-mint inputmode="text" spellcheck="false" value="${SOL_MINT}" />
+          <div class="fdv-input fdv-mint-select" data-input-mint-wrap>
+            <button type="button" class="fdv-mint-btn" data-swap-input-trigger aria-haspopup="listbox" aria-expanded="false">
+              <img class="fdv-mint-icon" src="https://cdn.jsdelivr.net/gh/trustwallet/assets@master/blockchains/solana/info/logo.png" data-swap-input-icon alt=""/> 
+              <span data-swap-input-symbol>SOL</span>
+              <span class="fdv-mint-chevron">▾</span>
+            </button>
+            <input data-swap-input-mint type="text" spellcheck="false" value="${SOL_MINT}" class="fdv-mint-hidden" />
+            <ul class="fdv-mint-list" data-swap-input-list role="listbox" tabindex="-1" hidden></ul>
           </div>
           <div class="fdv-help">Fees are taken from the <b>input</b> mint (ExactIn).</div>
         </div>
@@ -1026,6 +1216,7 @@ function _refreshModalChrome(){
 }
 
 function _openModal(){
+  _ensureModalMounted();
   _el("[data-swap-backdrop]")?.classList.add("show");
   _clearLog();
   _refreshModalChrome();
@@ -1059,10 +1250,14 @@ function _closeModal(){
 }
 
 function _setModalFields({ inputMint, outputMint, amountUi, slippageBps }) {
-  if (inputMint)  _el("[data-swap-input-mint]").value = inputMint;
-  if (outputMint) _el("[data-swap-output-mint]").value = outputMint;
-  if (amountUi != null) _el("[data-swap-amount]").value = amountUi;
-  _el("[data-swap-slip]").value = slippageBps ?? CFG.defaultSlippageBps ?? 50;
+  const inEl  = _el("[data-swap-input-mint]");
+  const outEl = _el("[data-swap-output-mint]");
+  const amtEl = _el("[data-swap-amount]");
+  const slpEl = _el("[data-swap-slip]");
+  if (inEl && inputMint)  inEl.value = inputMint;
+  if (outEl && outputMint) outEl.value = outputMint;
+  if (amtEl && amountUi != null) amtEl.value = amountUi;
+  if (slpEl) slpEl.value = slippageBps ?? CFG.defaultSlippageBps ?? 50;
 }
 
 function _el(sel){ return document.querySelector(sel); }

@@ -228,6 +228,9 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
   border-bottom:1px solid rgba(122,222,255,.15);
   z-index:5;
 }
+.superFeat {
+  display: flex; align-items:center; gap:8px; padding:6px 0; justify-content: space-between;
+}
 .container{max-width:1200px;margin:0 auto;padding:18px}
 h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
 .sub{color:var(--muted); font-size:.8rem}
@@ -458,8 +461,9 @@ input[type="checkbox"]:disabled{
 .name{color:var(--muted); font-size:.92rem}
 .addr{color:var(--muted); font-size:.82rem; padding:5px;}
 .badge{
-  border:1px solid rgba(26,255,213,.35); color:var(--neon); padding:2px 8px; border-radius:999px; font-size:.72rem;
-  background: rgba(26,255,213,.08)
+    color: var(--neon);
+    border-radius: 999px;
+    font-size: .72rem;
 }
 .metrics{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:10px 0 6px}
 .kv{background: rgba(123,241,255,.06); border:1px solid rgba(122,222,255,.16); border-radius:12px; padding:8px}
