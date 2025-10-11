@@ -3,6 +3,7 @@ import { registerAddon, setAddonData, runAddonsTick, ensureAddonsUI } from './re
 
 const ADDONS = new Map(); 
 let booted = false;
+let latestSnapshot = [];
 
 export function addKpiAddon(def, handlers) {
   if (!def || !def.id) return;
@@ -21,6 +22,10 @@ export function addKpiAddon(def, handlers) {
   }
 }
 
+export function getLatestSnapshot() {
+  return latestSnapshot;
+}
+
 function pushAll() {
   for (const [id, a] of ADDONS) {
     try {
@@ -35,9 +40,10 @@ function pushAll() {
 
 export function ingestSnapshot(items) {
   try {
-    if (Array.isArray(items) && items.length) {
+    latestSnapshot = Array.isArray(items) ? items : [];
+    if (latestSnapshot.length) {
       for (const [, a] of ADDONS) {
-        try { a.ingestSnapshot?.(items); } catch {}
+        try { a.ingestSnapshot?.(latestSnapshot); } catch {}
       }
     }
   } finally {
