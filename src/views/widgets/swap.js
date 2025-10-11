@@ -51,16 +51,22 @@ let _state = {
 
 let web3;
 
+let _modalPausedPipeline = false;
+
 
 let _rpcSession = { token: null, exp: 0 };  // epoch ms
 let _challengeOk = false;                   // UI state
 let _sessionInFlight = null;                // dedupe concurrent solves
+
+
 
 // Verify animation state
 let _verifyAnimTimer = null;
 let _verifyAnimStep = 0;
 
 let _walletTokens = []; // [{mint,symbol,decimals,uiAmount,logo,rawAmount}]
+let _walletReloadTimer = null;
+let _pendingConnLogged = false;
 
 function _startVerifyAnim() {
   const chip = _el("[data-captcha-state]");
@@ -112,7 +118,7 @@ export function bindSwapButtons(root = document) {
   });
 }
 
-export function openSwapModal({
+export async function openSwapModal({
   inputMint = _state.inputMint,
   outputMint,
   amountUi,
@@ -127,8 +133,8 @@ export function openSwapModal({
   _state.inputMint = inputMint;
   _state.outputMint = outputMint;
 
-  _ensureModalMounted();
-  _openModal();
+  const opened = await _openModal();
+  if (!opened) return;
 
   _setModalFields({ inputMint, outputMint, amountUi, slippageBps });
 
@@ -339,7 +345,7 @@ async function ensureRpcSession(force = false) {
           const chal = chalHdr.slice(3);
           _log("Verifying…");
           const nonceHex = await _solvePow(chal, bits);
-          _log("POW solved, acquiring session…");
+          _log("POW solved, session acquired");
           r = await fetch(`${base}/session`, { method: "POST", headers: { "x-pow": `v1:${chal}:${nonceHex}` } });
         }
       }
@@ -421,10 +427,17 @@ function _refreshChallengeChrome() {
 
 async function _connectPhantom() {
   try {
+    _log("Connecting to phantom…");
     const provider = window?.solana;
     if (!provider?.isPhantom) {
-      window.open("https://phantom.app", "_blank");
-      throw new Error("Phantom not found. Please install Phantom.");
+      const dexUrl = CFG.buildDexUrl({
+        outputMint: _state.outputMint || _state.token?.mint,
+        pairUrl: _state.token?.headlineUrl || _state.token?.headlineDex || null,
+      });
+      _log("Phantom not found. Opening Dexscreener instead.", "warn");
+      try { window.open(dexUrl, "_blank", "noopener"); } catch {}
+      _closeModal();
+      return;
     }
     const resp = await provider.connect();
     const { PublicKey } = await _loadWeb3();
@@ -459,25 +472,41 @@ async function _connectPhantom() {
   }
 }
 
-async function _loadWalletTokens() {
-  _walletTokens = [];
+
+
+async function _loadWalletTokens(isRetry = false) {
   try {
     if (!_state.pubkey) return;
+
+    // if (!_hasLiveSession()) {
+    //   const tok = await ensureRpcSession();
+    //   if (!tok) throw new Error("session_pending");
+    // }
+
     const { Connection, PublicKey } = await _loadWeb3();
     const endpoint = CFG.rpcUrl.replace(/\/+$/,"");
-    const conn = new Connection(endpoint, "processed");
-    // SOL balance
-    const solLamports = await conn.getBalance(_state.pubkey).catch(()=>0);
+    const conn = new Connection(endpoint, {
+      commitment: "processed",
+      fetchMiddleware: (url, options, fetchFn) => {
+        const headers = { ...(options.headers || {}) };
+        if (_rpcSession.token) headers["x-session"] = _rpcSession.token;
+        options.headers = headers;
+        return fetchFn(url, options);
+      },
+    });
+
+    const nextTokens = [];
+    const solLamports = await conn.getBalance(_state.pubkey).catch(() => 0);
     const SOL_DEC = 9;
-    _walletTokens.push({
+    nextTokens.push({
       mint: SOL_MINT,
       symbol: "SOL",
       decimals: SOL_DEC,
       rawAmount: solLamports,
-      uiAmount: solLamports / 10**SOL_DEC,
+      uiAmount: solLamports / 10 ** SOL_DEC,
       logo: "https://cdn.jsdelivr.net/gh/trustwallet/assets@master/blockchains/solana/info/logo.png"
     });
-    // SPL tokens
+
     const tokenProg = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
     const accs = await conn.getParsedTokenAccountsByOwner(_state.pubkey, { programId: tokenProg });
     for (const a of accs.value) {
@@ -486,28 +515,48 @@ async function _loadWalletTokens() {
       const dec = Number(info?.tokenAmount?.decimals || 0);
       if (amt <= 0) continue;
       const mint = info?.mint;
-      const uiAmount = amt / 10**dec;
-      _walletTokens.push({
+      const uiAmount = amt / 10 ** dec;
+      nextTokens.push({
         mint,
-        symbol: (info?.name || "").slice(0,8) || _short(mint),
+        symbol: (info?.name || "").slice(0, 8) || _short(mint),
         decimals: dec,
         rawAmount: amt,
         uiAmount,
         logo: null
       });
-      // cache decimals
       CFG.tokenDecimals[mint] = dec;
     }
-    // Sort by USD significance unknown → sort by uiAmount descending
-    _walletTokens.sort((a,b)=> b.uiAmount - a.uiAmount);
+
+    nextTokens.sort((a, b) => b.uiAmount - a.uiAmount);
+    _walletTokens = nextTokens;
+    _pendingConnLogged = false;
   } catch (e) {
-    _log("Token load failed: " + (e.message||e), "warn");
+    const msg = (e?.message || String(e || "")).toLowerCase();
+    const pending = /401|unauthorized|session_pending|pow/.test(msg);
+    if (pending) {
+      if (!_pendingConnLogged) {
+        _pendingConnLogged = true;
+        _log("Connection pending…", "warn");
+      }
+      if (!_walletReloadTimer) {
+        _walletReloadTimer = setTimeout(() => {
+          _walletReloadTimer = null;
+          if (_state.pubkey) _loadWalletTokens(true);
+        }, 1200);
+      }
+      return;
+    }
+    _log("We are unable to load your wallet tokens at this time.");
   }
-  // Ensure at least SOL
+
   if (!_walletTokens.find(t => t.mint === SOL_MINT)) {
     _walletTokens.unshift({
-      mint: SOL_MINT, symbol:"SOL", decimals:9, uiAmount:0, rawAmount:0,
-      logo:"https://cdn.jsdelivr.net/gh/trustwallet/assets@master/blockchains/solana/info/logo.png"
+      mint: SOL_MINT,
+      symbol: "SOL",
+      decimals: 9,
+      uiAmount: 0,
+      rawAmount: 0,
+      logo: "https://cdn.jsdelivr.net/gh/trustwallet/assets@master/blockchains/solana/info/logo.png"
     });
   }
 }
@@ -565,11 +614,12 @@ function _renderInputMintOptions() {
     li.className = "fdv-mint-opt";
     li.setAttribute("role","option");
     li.dataset.mint = tok.mint;
+    // <span class="fdv-mint-bal">${tok.uiAmount.toLocaleString(undefined,{maximumFractionDigits:4})}</span>
     li.innerHTML = `
       <img alt="" style="width:22px;height:22px;border-radius:50%;background:#222;object-fit:cover;"
         src="${tok.logo || ""}" onerror="this.removeAttribute('src')" />
       <span class="fdv-mint-sym">${tok.symbol || "—"}</span>
-      <span class="fdv-mint-bal">${tok.uiAmount.toLocaleString(undefined,{maximumFractionDigits:4})}</span>
+      <span class="fdv-mint-bal"></span>
     `;
     li.addEventListener("click", () => {
       input.value = tok.mint;
@@ -924,7 +974,7 @@ const MODAL_HTML = `
 
         <div class="fdv-note">
           <div class="fdv-note-title">Important Notes</div>
-          <div class="fdv-note-body"><p>Prototype version: 0.0.1</p></div>
+          <div class="fdv-note-body"><p>Prototype version: 0.0.2</p><p>Phantom RPC fallback</p></div>
         </div>
       </section>
 
@@ -1215,38 +1265,50 @@ function _refreshModalChrome(){
   }
 }
 
-function _openModal(){
+function _closeModal() {
+  const backdrop = _el("[data-swap-backdrop]");
+  if (!backdrop) return;
+  backdrop.classList.remove("show");
+
+  if (_modalPausedPipeline) {
+    try { releaseGlobalStreamThrottle("swap_modal"); } catch {}
+    _modalPausedPipeline = false;
+  }
+
+  _lockPageScroll(false);
+  _watchKeyboardViewport(false);
+  _clearLog();
+
+  // keep dropdown hidden next open
+  const list = _el("[data-swap-input-list]");
+  if (list) list.hidden = true;
+
+  try { document.dispatchEvent(new CustomEvent("swap:close")); } catch {}
+}
+
+async function _openModal(){
+  _log("Connecting system...");
   _ensureModalMounted();
   _el("[data-swap-backdrop]")?.classList.add("show");
-  _clearLog();
+  // _clearLog();
   _refreshModalChrome();
   try { document.dispatchEvent(new CustomEvent("swap:open")); } catch {}
-  // Pause pipeline (only mark if we caused it)
   try {
     if (!isGlobalStreamThrottled()) {
       throttleGlobalStream("swap_modal");
       _modalPausedPipeline = true;
     }
   } catch {}
-  _verifySessionWithUi(false).catch(()=>{});
+  try { await _verifySessionWithUi(false); } catch {}
+  if (!_state.wallet || !_state.pubkey) {
+    await _connectPhantom();
+    if (!_state.wallet || !_state.pubkey) return false;
+  }
+  _renderInputMintOptions();
   _lockPageScroll(true);
   _watchKeyboardViewport(true);
   setTimeout(()=>{ _el("[data-swap-amount]")?.focus(); }, 30);
-}
-
-function _closeModal(){
-  const bd=_el("[data-swap-backdrop]");
-  if (bd) bd.classList.remove("show");
-  _clearLog();
-  // Resume pipeline only if we paused it
-  try {
-    if (_modalPausedPipeline) {
-      releaseGlobalStreamThrottle();
-      _modalPausedPipeline = false;
-    }
-  } catch {}
-  _lockPageScroll(false);
-  _watchKeyboardViewport(false);
+  return true;
 }
 
 function _setModalFields({ inputMint, outputMint, amountUi, slippageBps }) {

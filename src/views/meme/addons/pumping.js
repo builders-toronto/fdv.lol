@@ -1,4 +1,4 @@
-import { addKpiAddon } from './ingest.js';
+import { addKpiAddon, getLatestSnapshot } from './ingest.js';
 
 export const PUMP_STORAGE_KEY     = 'pump_history_v1';
 export const PUMP_WINDOW_DAYS     = 1.5;       // short lookback favors immediacy
@@ -49,10 +49,20 @@ function prunePumpHistory(h) {
 
 function norm(n) { return Number.isFinite(n) ? Number(n) : 0; }
 export function ingestPumpingSnapshot(items) {
+  // console.log("ingesting pumping snapshot", items);
   const h = loadPumpHistory();
   const ts = Date.now();
   const arr = (Array.isArray(items) ? items : []).map(t => {
-    // normalize typical vendor field variants
+    const change = t.change ?? {};
+    const chgArr = Array.isArray(t._chg) ? t._chg : [];
+
+    const rawV5m = norm(t.v5mTotal ?? t.vol5mUsd ?? t.vol5mUSD ?? t?.volume?.m5);
+    const rawV1h = norm(t.v1hTotal ?? t.vol1hUsd ?? t.vol1hUSD ?? t?.volume?.h1);
+    const rawV6h = norm(t.v6hTotal ?? t.vol6hUsd ?? t.vol6hUSD ?? t?.volume?.h6);
+    const vol24h = norm(t.vol24hUsd ?? t.vol24hUSD ?? t?.volume?.h24);
+    const fallbackV1h = rawV1h > 0 ? rawV1h : (vol24h > 0 ? vol24h / 24 : 0);
+    const fallbackV6h = rawV6h > 0 ? rawV6h : (vol24h > 0 ? vol24h / 4 : (fallbackV1h > 0 ? fallbackV1h * 6 : 0));
+
     const kp = {
       mint     : t.mint || t.id,
       symbol   : t.symbol || '',
@@ -65,14 +75,15 @@ export function ingestPumpingSnapshot(items) {
       liqUsd   : norm(t.liqUsd   ?? t.liquidityUsd ?? t.liquidityUSD ?? t.liquidity),
 
       // % changes
-      change5m : norm(t.change5m ?? t.chg5m ?? (t?.change?.m5)),
-      change1h : norm(t.change1h ?? t.chg1h ?? (t?.change?.h1)),
-      change6h : norm(t.change6h ?? t.chg6h ?? (t?.change?.h6)),
+      change5m : norm(t.change5m ?? t.chg5m ?? change.m5 ?? chgArr[0]),
+      change1h : norm(t.change1h ?? t.chg1h ?? change.h1 ?? chgArr[1]),
+      change6h : norm(t.change6h ?? t.chg6h ?? change.h6 ?? chgArr[2]),
+      change24h: norm(t.change24h ?? t.chg24 ?? change.h24 ?? chgArr[3]),
 
       // short-horizon volumes (USD)
-      v5mTotal : norm(t.v5mTotal ?? t.vol5mUsd ?? t.vol5mUSD ?? t?.volume?.m5),
-      v1hTotal : norm(t.v1hTotal ?? t.vol1hUsd ?? t.vol1hUSD ?? t?.volume?.h1),
-      v6hTotal : norm(t.v6hTotal ?? t.vol6hUsd ?? t.vol6hUSD ?? t?.volume?.h6),
+      v5mTotal : rawV5m > 0 ? rawV5m : 0,
+      v1hTotal : fallbackV1h,
+      v6hTotal : fallbackV6h,
 
       // buy:sell ratio over 24h (0..1)
       buySell24h: (() => {
@@ -209,6 +220,7 @@ export function computePumpingLeaders(limit = 5) {
     out.push({ mint, pumpScore: Number(score.toFixed(2)), badge, kp: latest, meta });
   }
 
+
   out.sort((a,b)=> b.pumpScore - a.pumpScore);
   return out.slice(0, limit);
 }
@@ -226,11 +238,14 @@ function mapPumpingRows(agg) {
     chg1h    : it.kp?.change1h ?? 0,
     chg6h    : it.kp?.change6h ?? 0,
     v1hTotal : it.kp?.v1hTotal ?? 0,
-    buy24h   : it.kp?.buySell24h ?? 0,
-    tag      : it.badge,            // "🔥 Pumping" | "Warming" | "Calm"
+    chg24   : it.kp?.change24h ?? 0,
+    vol24      : it.badge,            // "🔥 Pumping" | "Warming" | "Calm"
     metric   : it.pumpScore         
   }));
 }
+
+let lastSnapshotRef = null;
+const currentLeaderMints = new Set();
 
 addKpiAddon(
   {
@@ -243,23 +258,23 @@ addKpiAddon(
   },
   {
     computePayload() {
-      const leaders = computePumpingLeaders(5);
+      const snapshot = getLatestSnapshot();
+      if (snapshot && snapshot.length && snapshot !== lastSnapshotRef) {
+        ingestPumpingSnapshot(snapshot);
+        lastSnapshotRef = snapshot;
+      }
+      const leaders = computePumpingLeaders(3);
+      const mints = leaders.map(l => l.mint);
+      const newEntries = mints.filter(m => !currentLeaderMints.has(m));
+      currentLeaderMints.clear();
+      mints.forEach(m => currentLeaderMints.add(m));
       return {
         title: 'Pumping Radar',
         metricLabel: 'PUMP',
         items: mapPumpingRows(leaders),
+        notify: newEntries.length ? { type: 'pumping', mints: newEntries } : null,
+        notifyToken: newEntries.length ? Date.now() : null,
       };
-    },
-    ingestSnapshot(items) {
-      ingestPumpingSnapshot(items);
     }
   }
 );
-
-export function renderPumpPill(row) {
-  const s   = Number(row?.metric || 0);
-  const tag = row?.tag || (s >= 1.6 ? '🔥 Pumping' : s >= 1.0 ? 'Warming' : 'Calm');
-  const cls = tag === '🔥 Pumping' ? 'pill--warn' : (tag === 'Warming' ? 'pill--info' : 'pill--neutral');
-  const title = `PUMP ${s.toFixed(2)} | 5m ${Number(row?.chg5m||0).toFixed(1)}% | 1h ${Number(row?.chg1h||0).toFixed(1)}% | buys ${(Number(row?.buy24h||0)*100).toFixed(1)}%`;
-  return `<span class="pill ${cls}" title="${title}">${tag}</span>`;
-}

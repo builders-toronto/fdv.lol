@@ -21,6 +21,14 @@ function ensureAddonStyles() {
       border-color: rgba(26,255,213,.45);
       filter: brightness(1.06);
     }
+    @keyframes addonBtnPulse {
+      0%   { box-shadow: 0 0 0 0 rgba(26,255,213,.55); transform: translateZ(0) scale(1); }
+      45%  { box-shadow: 0 0 0 6px rgba(26,255,213,.0); transform: translateZ(0) scale(1.04); }
+      100% { box-shadow: 0 0 0 10px rgba(26,255,213,.0); transform: translateZ(0) scale(1); }
+    }
+    .addon-btn--notify {
+      animation: addonBtnPulse .9s ease-out forwards;
+    }
 
     /* Panel and list */
     .addon-panel {
@@ -229,7 +237,7 @@ function ensureAddonUI(addon) {
   document.addEventListener('click', (e) => { if (!strip.contains(e.target)) setOpen(false); });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setOpen(false); });
 
-  return { wrap, panel, listEl: document.getElementById(listId), labelEl: document.getElementById(labelId) };
+  return { wrap, panel, listEl: document.getElementById(listId), labelEl: document.getElementById(labelId), toggleEl: document.getElementById(toggleId) };
 }
 
 function renderAddon(addon) {
@@ -239,6 +247,20 @@ function renderAddon(addon) {
   const st = STATE.get(addon.id) || {};
   const items = Array.isArray(st.items) ? st.items.slice(0, addon.limit || DEFAULT_LIMIT) : [];
   const metricLabel = st.metricLabel || addon.metricLabel || 'Score';
+
+  if (ui.toggleEl) {
+    if (st.notify && st.notifyToken) {
+      if (ui.toggleEl.dataset.notifyToken !== String(st.notifyToken)) {
+        ui.toggleEl.classList.remove('addon-btn--notify');
+        void ui.toggleEl.offsetHeight;
+        ui.toggleEl.classList.add('addon-btn--notify');
+        ui.toggleEl.dataset.notifyToken = String(st.notifyToken);
+      }
+    } else {
+      ui.toggleEl.classList.remove('addon-btn--notify');
+      delete ui.toggleEl.dataset.notifyToken;
+    }
+  }
 
   if (ui.labelEl && (addon.title || st.title || addon.label)) {
     ui.labelEl.textContent = st.title || addon.title || addon.label;
@@ -257,7 +279,7 @@ function renderAddon(addon) {
     const price = fmtPrice(row.priceUsd);
     const { txt: chTxt, cls: chCls } = pct(row.chg24);
     const liq = fmtMoney(row.liqUsd);
-    const vol = fmtMoney(row.vol24);
+    const vol = typeof row.vol24 === 'string' ? row.vol24 : fmtMoney(row.vol24);
     const pairUrl = row.pairUrl || '';
     const metricVal = Number.isFinite(Number(row.metric)) ? Number(row.metric) : (Number(row.score) || Number(row.smq) || null);
     const metricHtml = metricVal !== null ? `<span class="pill"><span class="k">${metricLabel}</span><b class="highlight">${metricVal}</b></span>` : '';
@@ -316,6 +338,8 @@ export function setAddonData(id, data) {
     title: data.title || prev.title,
     subtitle: data.subtitle || prev.subtitle,
     metricLabel: data.metricLabel || prev.metricLabel,
+    notify: data.notify ?? null,
+    notifyToken: data.notify ? (data.notifyToken ?? Date.now()) : null,
     ts: Date.now(),
   };
   STATE.set(id, next);

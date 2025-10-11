@@ -159,7 +159,7 @@ export function coinCard(it) {
     ${socialsHtml ? `<div class="actions" data-socials>${socialsHtml}</div>` : ''}
     <div class="btnWrapper">
       ${swapBtn}
-      <a class="btn" href="/token/${escAttr(it.mint)}" target="_blank" rel="noopener">More</a>
+      <a class="btn" href="/token/${escAttr(it.mint)}" target="_blank" rel="noopener" style="padding: 8px;">More</a>
     </div>
   </div>
 </article>`;
