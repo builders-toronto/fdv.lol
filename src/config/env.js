@@ -56,8 +56,11 @@ export const BIRDEYE_API_KEY = "";
 export const SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com";
 export const FDV_METRICS_BASE = "https://fdv-lol-metrics.fdvlol.workers.dev";
 export const FDV_TURNSTILE_BASE = "https://solana-rpc-proxy.fdvlol.workers.dev";
+export const FDV_FAV_ENDPOINT = "https://fdv-lol-metrics.fdvlol.workers.dev/api/shill/favleaderboard";
 
 export const FDV_FEE_RECEIVER = "ENEKo7GEWM6jDTaHfN558bNHPodA9MB5azNiFvTK7ofm";
+
+
 
 export const JUP_SWAP   = (mint)=>`https://jup.ag/tokens/${encodeURIComponent(mint)}`;
 export const JUP_LIST_TTL_MS = 60 * 60 * 1000;

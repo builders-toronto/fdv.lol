@@ -16,10 +16,12 @@ import './addons/das.js';
 import { initLibrary, createOpenLibraryButton } from '../widgets/library.js';
 
 import { initSearch, createOpenSearchButton } from '../widgets/search.js';
+import { initFavboard, createOpenFavboardButton } from '../widgets/favboard.js';
 
 import {
   initHeader,
-  ensureOpenLibraryHeaderBtn
+  ensureOpenLibraryHeaderBtn,
+  ensureFavboardHeaderBtn
 } from './parts/header.js';
 
 import {
@@ -183,6 +185,7 @@ export function render(items, adPick, marquee) {
   _latestMarquee = marquee || null;
 
   ensureOpenLibraryHeaderBtn();
+  ensureFavboardHeaderBtn();
   try { ingestSnapshot(_latestItems); } catch {}
   renderMarquee(_latestMarquee);
 
@@ -288,9 +291,10 @@ function initInitialLoading() {
 }
 
 (function boot() {
-  try { initHeader(createOpenLibraryButton, createOpenSearchButton); } catch {}
+  try { initHeader(createOpenLibraryButton, createOpenSearchButton, createOpenFavboardButton); } catch {}
   try { ensureAddonsUI(); } catch {}
   try { initLibrary(); } catch {}
+  try { initFavboard(); } catch {}
 
   initSearch(elQ, elQResults, elSearchWrap);
   ensureMarqueeSlot(elCards);

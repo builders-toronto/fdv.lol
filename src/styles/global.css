@@ -264,7 +264,12 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
   overflow-x: scroll;
 }
 .hdr-tools .tools-row { display:flex; align-items:center; gap:8px; padding:0 8px; }
-.hdr-tools .panel-row { display:block; padding:6px 8px 0; }
+.hdr-tools .panel-row {     
+  display: flex;
+  padding: 6px 8px 0;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center; }
 
 @media (max-width: 560px){
   .controls { gap: 8px; }
