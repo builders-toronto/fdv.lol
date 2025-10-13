@@ -1,35 +1,23 @@
 import {
-  MEME_KEYWORDS,
-  BIRDEYE_API_KEY,
-  JUP_LIST_TTL_MS,
-  SOLANA_RPC_URL,            
+  MEME_KEYWORDS         
 } from '../config/env.js';
 import { getJSON, fetchJsonNoThrow } from '../core/tools.js';
-import { swrFetch } from '../core/fetcher.js';
 import {
   searchTokensGlobal as dsSearch,
   fetchTokenInfo as dsFetchTokenInfo,
 } from './dexscreener.js';
 
+import { geckoSeedTokens } from './gecko.js';
+
+const MINT_SOL  = 'So11111111111111111111111111111111111111112';
+const MINT_USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const REQUEST_TIMEOUT = 10_000;
 
-const RPC_MAX_CONCURRENT = 2;
-let _rpcInFlight = 0;
-let _rpcBlockUntil = 0;
-const RPC_RETRY_BACKOFF_MS = 60_000;
-
 function asNum(x) {
   const n = Number(x);
   return Number.isFinite(n) ? n : null;
-}
-
-function looksLikeMint(s) {
-  if (!s) return false;
-  const x = String(s).trim();
-  if (x.length < 30 || x.length > 48) return false;
-  return /^[1-9A-HJ-NP-Za-km-z]+$/.test(x);
 }
 
 async function withTimeout(fn, ms = REQUEST_TIMEOUT, linkSignal) {
@@ -171,182 +159,10 @@ async function provDexscreenerSearch(query, { signal, limit = 12 } = {}) {
   }
 }
 
-// Birdeye search
-async function provBirdeyeSearch(query, { signal, limit = 12 } = {}) {
-  const name = 'birdeye';
-  if (!BIRDEYE_API_KEY) return [];
-  const key = `v1|be:search:${query}`;
-  try {
-    const res = await swrFetch(key, async () => {
-      const url = `https://public-api.birdeye.so/defi/v3/search?keyword=${encodeURIComponent(query)}&chain=solana`;
-      let json;
-      try {
-        json = await withTimeout(sig => getJSON(url, {
-          signal: sig, headers: { accept: 'application/json', 'X-API-KEY': BIRDEYE_API_KEY }
-        }), 8_000, signal);
-      } catch { return []; }
-      const arr = json?.data?.items || json?.data || [];
-      const out = [];
-      for (const t of arr) {
-        const mint = t?.address || t?.mint || t?.tokenAddress;
-        if (!mint) continue;
-        out.push({
-          mint,
-          symbol: t?.symbol || '',
-          name: t?.name || '',
-          priceUsd: asNum(t?.price || t?.usd_price),
-          bestLiq: asNum(t?.liquidity || t?.liquidity_usd),
-          dexId: 'birdeye',
-          url: '',
-          imageUrl: t?.logoURI || t?.logo || '',
-          sources: ['birdeye'],
-        });
-        if (out.length >= limit) break;
-      }
-      return out;
-    }, { ttl: 2 * 60_000 });
-    health.onSuccess(name);
-    return res;
-  } catch {
-    health.onFailure(name);
-    return [];
-  }
-}
-
-// Jupiter token list
-const JUP_LIST_URL = 'https://token.jup.ag/all';
-async function loadJupList({ signal } = {}) {
-  return swrFetch('v1|jup:list', async () => {
-    const data = await withTimeout(sig => getJSON(JUP_LIST_URL, { signal: sig }), 15_000, signal);
-    const arr = Array.isArray(data) ? data : Object.values(data || {});
-    return arr.map(t => ({
-      mint: t?.address || t?.mint || t?.id,
-      symbol: t?.symbol || '',
-      name: t?.name || '',
-      imageUrl: t?.logoURI || t?.logo || '',
-    })).filter(t => t.mint);
-  }, { ttl: JUP_LIST_TTL_MS });
-}
-
-async function provJupiterListSearch(query, { signal, limit = 12 } = {}) {
-  const name = 'jupiter';
-  const q = (query || '').trim().toLowerCase();
-  if (!q) return [];
-  try {
-    const list = await loadJupList({ signal });
-    const results = [];
-    for (const t of list) {
-      const sym = (t.symbol || '').toLowerCase();
-      const nam = (t.name || '').toLowerCase();
-      const mnt = (t.mint || '').toLowerCase();
-      let hit = false;
-      if (sym === q || nam === q || mnt === q) hit = true;
-      else if (sym.startsWith(q) || nam.startsWith(q)) hit = true;
-      else if (sym.includes(q) || nam.includes(q) || mnt.includes(q)) hit = true;
-      if (hit) {
-        results.push({
-          mint: t.mint, symbol: t.symbol, name: t.name,
-          imageUrl: t.imageUrl, priceUsd: null, bestLiq: null,
-          dexId: 'jup', url: '',
-          sources: ['jupiter'],
-        });
-        if (results.length >= limit) break;
-      }
-    }
-    health.onSuccess(name);
-    return results;
-  } catch {
-    health.onFailure(name);
-    return [];
-  }
-}
-
-// Solana RPC
-const DEFAULT_RPC_POOL = [
-  'https://api.mainnet-beta.solana.com',
-];
-function getRpcUrl() { return SOLANA_RPC_URL || DEFAULT_RPC_POOL[0]; }
-
-async function rpcCall(method, params, { signal } = {}) {
-  const now = Date.now();
-  if (now < _rpcBlockUntil) {
-    throw new Error(`rpc_backoff:${Math.ceil((_rpcBlockUntil - now)/1000)}s`);
-  }
-
-  while (_rpcInFlight >= RPC_MAX_CONCURRENT) {
-    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    await sleep(40);
-  }
-
-  _rpcInFlight += 1;
-  const url = getRpcUrl();
-  const body = { jsonrpc: '2.0', id: 1, method, params };
-  try {
-    const fetcher = (sig) => fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: sig,
-    }).then(async r => {
-      if (!r.ok) {
-        if (r.status === 403 || r.status === 429) {
-          _rpcBlockUntil = Date.now() + RPC_RETRY_BACKOFF_MS;
-        }
-        throw new Error(`rpc ${r.status}`);
-      }
-      return r.json();
-    });
-
-    const json = await withTimeout(fetcher, 8_000, signal);
-    if (json?.error) {
-      if (/rate/i.test(json.error?.message || "")) {
-        _rpcBlockUntil = Date.now() + RPC_RETRY_BACKOFF_MS;
-      }
-      throw new Error(json.error?.message || 'rpc error');
-    }
-    return json?.result;
-  } finally {
-    _rpcInFlight = Math.max(0, _rpcInFlight - 1);
-  }
-}
-
-async function provSolanaRPCSearch(query, { signal } = {}) {
-  const name = 'solana-rpc';
-  const q = (query || '').trim();
-  if (!looksLikeMint(q)) return [];
-  try {
-    const info = await rpcCall('getAccountInfo', [
-      q, { encoding: 'jsonParsed', commitment: 'processed' }
-    ], { signal });
-
-    const type = info?.value?.data?.parsed?.type;
-    if (type !== 'mint') { health.onSuccess(name); return []; }
-
-    let supply = null, decimals = null;
-    try {
-      const sup = await rpcCall('getTokenSupply', [q, { commitment: 'processed' }], { signal });
-      supply = asNum(sup?.value?.amount);
-      decimals = asNum(sup?.value?.decimals);
-    } catch {}
-
-    health.onSuccess(name);
-    return [{
-      mint: q, symbol: '', name: '', imageUrl: '',
-      priceUsd: null, bestLiq: null, dexId: 'solana', url: '',
-      supply, decimals, sources: ['solana-rpc'],
-    }];
-  } catch {
-    health.onFailure(name);
-    return [];
-  }
-}
-
 let _geckoFailUntil = 0;
-let _geckoSeedStale = { ts: 0, data: [] };
+
 const GECKO_COOLDOWN_MS = 5 * 60_000;
-const GECKO_SEED_STALE_MAX_MS = 10 * 60_000; // 10m
-const GECKO_MAX_CONCURRENT = 1;
-let _geckoInFlight = 0;
+
 
 function geckoInCooldown() {
   return Date.now() < _geckoFailUntil || health.isDegraded('geckoterminal');
@@ -355,125 +171,6 @@ function geckoMarkFail() {
   _geckoFailUntil = Date.now() + GECKO_COOLDOWN_MS;
 }
 
-
-async function geckoSeedTokens({ signal, limitTokens = 120 } = {}) {
-  const name = 'gecko-seed';
-  if (geckoInCooldown()) {
-    if (_geckoSeedStale.data.length && (Date.now() - _geckoSeedStale.ts) < GECKO_SEED_STALE_MAX_MS) {
-      return _geckoSeedStale.data;
-    }
-    return [];
-  }
-
-  while (_geckoInFlight >= GECKO_MAX_CONCURRENT) {
-    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    await sleep(40);
-  }
-
-  _geckoInFlight += 1;
-  try {
-    const headers = { accept: 'application/json;version=20230302' };
-    const tUrl = 'https://api.geckoterminal.com/api/v2/networks/solana/trending_pools';
-    const nUrl = 'https://api.geckoterminal.com/api/v2/networks/solana/new_pools';
-
-    const [tr, nw] = await Promise.all([
-      withTimeout(sig => fetchJsonNoThrow(tUrl, { signal: sig, headers }), 8_000, signal),
-      withTimeout(sig => fetchJsonNoThrow(nUrl, { signal: sig, headers }), 8_000, signal),
-    ]);
-
-    if ((tr?.status === 429) || (nw?.status === 429)) {
-      geckoMarkFail();
-      health.onFailure(name);
-      if (_geckoSeedStale.data.length) return _geckoSeedStale.data;
-      return [];
-    }
-
-    const trendingPools = Array.isArray(tr?.json?.data) ? tr.json.data : [];
-    const newPools      = Array.isArray(nw?.json?.data) ? nw.json.data : [];
-    if (!trendingPools.length && !newPools.length) {
-      geckoMarkFail();
-      health.onFailure(name);
-      if (_geckoSeedStale.data.length) return _geckoSeedStale.data;
-      return [];
-    }
-
-    const tagByMint = new Map();
-    const mints = [];
-    const seen  = new Set();
-
-    const takePool = (p, tag) => {
-      const a = p?.attributes || {};
-      const mint = a?.base_token_address || a?.base_token?.address || a?.token0_address;
-      if (!mint || seen.has(mint)) return;
-      seen.add(mint);
-      tagByMint.set(mint, tag);
-      mints.push(mint);
-    };
-
-    for (const p of trendingPools) takePool(p, 'gecko-trending');
-    for (const p of newPools)      takePool(p, 'gecko-new');
-
-    if (!mints.length) {
-      geckoMarkFail();
-      health.onFailure(name);
-      if (_geckoSeedStale.data.length) return _geckoSeedStale.data;
-      return [];
-    }
-
-    const batch = mints.slice(0, Math.min(100, limitTokens)).join(',');
-    const tokUrl = `https://api.geckoterminal.com/api/v2/networks/solana/tokens/multi/${encodeURIComponent(batch)}`;
-    const tokResp = await withTimeout(sig => fetchJsonNoThrow(tokUrl, { signal: sig, headers }), 8_000, signal);
-
-    if (tokResp?.status === 429) {
-      geckoMarkFail();
-      health.onFailure(name);
-      if (_geckoSeedStale.data.length) return _geckoSeedStale.data;
-      return [];
-    }
-
-    const tokenRows = Array.isArray(tokResp?.json?.data) ? tokResp.json.data : [];
-    if (!tokenRows.length) {
-      geckoMarkFail();
-      health.onFailure(name);
-      if (_geckoSeedStale.data.length) return _geckoSeedStale.data;
-      return [];
-    }
-
-    const out = [];
-    for (const t of tokenRows) {
-      const a = t?.attributes || {};
-      const addr = a?.address;
-      if (!addr) continue;
-      const tag = tagByMint.get(addr) || 'gecko-trending';
-      out.push({
-        mint: addr,
-        symbol: a?.symbol || '',
-        name: a?.name || '',
-        imageUrl: a?.image_url || '',
-        priceUsd: asNum(a?.price_usd),
-        bestLiq: null,
-        dexId: 'gecko',
-        url: '',
-        sources: [tag],
-      });
-    }
-
-    _geckoSeedStale = { ts: Date.now(), data: out.slice() };
-    health.onSuccess(name);
-    return out;
-  } catch {
-    geckoMarkFail();
-    health.onFailure(name);
-    if (_geckoSeedStale.data.length) return _geckoSeedStale.data;
-    return [];
-  } finally {
-    _geckoInFlight = Math.max(0, _geckoInFlight - 1);
-  }
-}
-
-export async function getGeckoSeeds(opts = {}) {
-  return geckoSeedTokens(opts);
-}
 
 function providerEntry(name, fn, baseDelay) {
   return {
@@ -485,10 +182,10 @@ function providerEntry(name, fn, baseDelay) {
 
 function buildSearchProviders(stagger = []) {
   const list = [];
-  if (BIRDEYE_API_KEY) list.push(providerEntry('birdeye', provBirdeyeSearch, stagger[1] ?? 150));
+  // if (BIRDEYE_API_KEY) list.push(providerEntry('birdeye', provBirdeyeSearch, stagger[1] ?? 150));
   list.push(providerEntry('dexscreener', provDexscreenerSearch, stagger[0] ?? 0));
   //list.push(providerEntry('jupiter',     provJupiterListSearch, stagger[2] ?? 280));
-  list.push(providerEntry('solana-rpc',  provSolanaRPCSearch,   stagger[3] ?? 0));
+  // list.push(providerEntry('solana-rpc',  provSolanaRPCSearch,   stagger[3] ?? 0));
   return list;
 }
 
@@ -657,55 +354,6 @@ export async function fetchTokenInfoMulti(mint, { signal } = {}) {
       }
     }
 
-  if (BIRDEYE_API_KEY) {
-    try {
-      const url = `https://public-api.birdeye.so/defi/token_overview?address=${encodeURIComponent(mint)}&chain=solana`;
-      const json = await withTimeout(sig => getJSON(url, {
-        signal: sig, headers: { accept: 'application/json', 'X-API-KEY': BIRDEYE_API_KEY }
-      }), 8_000, signal);
-      const d = json?.data || {};
-
-      const base = makeDexInfoSkeleton(mint);
-      base.symbol      = d?.symbol || "";
-      base.name        = d?.name   || "";
-      base.imageUrl    = d?.logo   || undefined;
-
-      base.priceUsd    = asNum(d?.price);
-      base.change24h   = asNum(d?.price_change_24h);
-      base.liquidityUsd= asNum(d?.liquidity);
-      base.fdv         = asNum(d?.fdv);
-      base.v24hTotal   = asNum(d?.v24h);
-
-      base.headlineDex = 'birdeye';
-      base.headlineUrl = '';
-
-      const model = finalizeDexInfo(base);
-      health.onSuccess('birdeye');
-      return { ...model, _source: 'birdeye' };
-    } catch { health.onFailure('birdeye'); }
-  }
-
-  try {
-    const info = await rpcCall('getAccountInfo', [mint, { encoding: 'jsonParsed', commitment: 'processed' }], { signal });
-    const isMint = info?.value?.data?.parsed?.type === 'mint';
-    if (!isMint) throw new Error('not a mint');
-
-    let decimals = null, supply = null;
-    try {
-      const sup = await rpcCall('getTokenSupply', [mint, { commitment: 'processed' }], { signal });
-      supply = asNum(sup?.value?.amount);
-      decimals = asNum(sup?.value?.decimals);
-    } catch {}
-
-    const base = makeDexInfoSkeleton(mint);
-    base.headlineDex = 'solana';
-    base.headlineUrl = '';
-
-    const model = finalizeDexInfo(base);
-    health.onSuccess('solana-rpc');
-    return { ...model, decimals, supply, _source: 'solana-rpc' };
-  } catch { health.onFailure('solana-rpc'); }
-
   throw new Error('No token info available from any provider');
 }
 
@@ -744,9 +392,6 @@ export async function fetchFeeds({
 } = {}) {
   const bag = new Map(); 
 
-
-
-
   if (includeGeckoSeeds) {
     try {
       const seeds = await geckoSeedTokens({ signal, limitTokens: 120 });
@@ -757,9 +402,6 @@ export async function fetchFeeds({
       }
     } catch {}
   }
-
-
-
 
   const terms = shuffle(keywords.map(k => `${prefix}${k}`));
   const providers = buildSearchProviders(stagger);
@@ -873,8 +515,7 @@ export async function* streamFeeds({
 }
 
 const SOL_CHAIN = 'solana';
-const MINT_SOL  = 'So11111111111111111111111111111111111111112';
-const MINT_USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
 
 async function dsPairsByToken(tokenAddress, { signal } = {}) {
   const url = `https://api.dexscreener.com/token-pairs/v1/${SOL_CHAIN}/${encodeURIComponent(tokenAddress)}`;
@@ -954,7 +595,6 @@ export async function collectInstantSolana({
 } = {}) {
   const bag = new Map();
 
-  // 1) Quote pools: get pairs for each quote mint (USDC, SOL by default)
   try {
     const results = await Promise.allSettled(
       quoteMints.map(q => dsPairsByToken(q, { signal }))
@@ -971,7 +611,6 @@ export async function collectInstantSolana({
     // why do you love me so much?
   }
 
-  // 2) Boosted tokens: fetch lists, resolve pairs via tokens/v1 in chunks
   try {
     const boosts = await dsBoostLists({ signal });
     const tokens = Array.from(new Set(boosts.map(b => b.tokenAddress))).slice(0, maxBoostedTokens);
@@ -993,7 +632,6 @@ export async function collectInstantSolana({
     // why do you love me so much?
   }
 
-  // 3) Rank and cap
   const out = [...bag.values()];
   out.forEach(r => r._score = scoreBasic(r, ''));
   out.sort((a, b) =>
