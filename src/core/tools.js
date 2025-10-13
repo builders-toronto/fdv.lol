@@ -1,6 +1,54 @@
 import { MEME_REGEX, CACHE_KEY, nz } from '../config/env.js';
 import { swrFetch } from './fetcher.js';
 
+class RateLimiter {
+  constructor({ rps = 1.5, burst = 6, minRps = 0.5, maxRps = 2.5 } = {}) {
+    this.capacity = burst;
+    this.tokens = burst;
+    this.rps = rps;
+    this.minRps = minRps;
+    this.maxRps = maxRps;
+    this.lastRefill = Date.now();
+    this.cooldownUntil = 0;
+  }
+  _refill() {
+    const now = Date.now();
+    const elapsed = (now - this.lastRefill) / 1000;
+    this.lastRefill = now;
+    this.tokens = Math.min(this.capacity, this.tokens + elapsed * this.rps);
+  }
+  async removeToken() {
+    while (true) {
+      this._refill();
+      const now = Date.now();
+      if (now < this.cooldownUntil) {
+        await sleep(this.cooldownUntil - now);
+        continue;
+      }
+      if (this.tokens >= 1) {
+        this.tokens -= 1;
+        return;
+      }
+      const waitMs = Math.max(5, (1 - this.tokens) / this.rps * 1000);
+      await sleep(waitMs);
+    }
+  }
+  on429(retryAfterMs = 0) {
+    this.rps = Math.max(this.minRps, this.rps * 0.65);
+    this.cooldownUntil = Math.max(this.cooldownUntil, Date.now() + Math.max(800, retryAfterMs));
+  }
+  onSuccess() {
+    this.rps = Math.min(this.maxRps, this.rps * 1.05);
+  }
+}
+
+const limiter = new RateLimiter({
+  rps: 1.5,
+  burst: 6,
+  minRps: 0.5,
+  maxRps: 2.5,
+});
+
 const elLoader = document.getElementById('loader');
 
 const REQUEST_TIMEOUT  = 10_000;
@@ -46,6 +94,10 @@ export async function getJSON(
   );
 }
 
+
+
+
+
 let pipelineApiPromise;
 async function getPipelineApi() {
   if (!pipelineApiPromise) {
@@ -54,28 +106,17 @@ async function getPipelineApi() {
   return pipelineApiPromise;
 }
 
+
+
+
+
 export async function fetchDS(url, { signal, ttl, priority = false } = {}) {
   const key = `${CACHE_VERSION}|dex:${url}`;
   const fetcher = priority
     ? () => getJSON(url, { signal, headers: { accept: 'application/json' } })
     : () => fetchWithRetries(url, { signal });
 
-  let releaseFn = null;
-
-  try {
-    if (priority) {
-      const pipeline = await getPipelineApi();
-      if (typeof pipeline?.throttleGlobalStream === "function") {
-        pipeline.throttleGlobalStream("dex-priority", 2000);
-        releaseFn = pipeline.releaseGlobalStreamThrottle?.bind(pipeline);
-      }
-    }
-    return swrFetch(key, fetcher, { ttl });
-  } finally {
-    try {
-      if (releaseFn) releaseFn();
-    } catch {}
-  }
+  return swrFetch(key, fetcher, { ttl });
 }
 
 async function fetchWithRetries(url, { signal } = {}) {

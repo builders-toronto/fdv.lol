@@ -176,7 +176,7 @@ export function ensureFavLeaderboard(container = document.body) {
           </tr>
         </thead>
         <tbody id="favboardTbody">
-          <tr><td colspan="10" class="favboard-empty">Open favorites to load data.</td></tr>
+          <tr><td colspan="10" class="favboard-empty"></td></tr>
         </tbody>
       </table>
     </div>
