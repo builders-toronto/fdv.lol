@@ -1,6 +1,5 @@
 import { FDV_FAV_ENDPOINT } from "../../config/env.js";
 import { fetchTokenInfo } from "../../data/dexscreener.js";
-import { throttleGlobalStream, releaseGlobalStreamThrottle, isGlobalStreamThrottled } from "../../engine/pipeline.js";
 
 const CACHE_KEY = "favboard_cache_v1";
 const CACHE_TTL_MS = 5 * 60_000;
@@ -18,36 +17,36 @@ const tokenMetaCache = new Map();
 (function injectFavStyles() {
   if (document.getElementById("favboard-css")) return;
   const css = `
-    .favboard-wrap{background:#090d12;border:1px solid #141b24;border-radius:16px;padding:18px;max-width:960px;margin:0 auto;box-shadow:0 12px 32px rgba(0,0,0,.35);}
-    .favboard-head{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;margin-bottom:16px;}
-    .favboard-title{font-size:1.25rem;font-weight:600;color:#e8f2ff;}
-    .favboard-refresh{background:#0f1621;border:1px solid #1e2a3a;color:#9ab7d2;padding:8px 14px;border-radius:10px;cursor:pointer;transition:.2s;}
-    .favboard-refresh:hover{border-color:#2ac3ff;color:#d8ecff;}
-    .favboard-status{font-size:.85rem;color:#6f859c;}
+    .favboard-wrap{background:var(--fdv-surface,#090d12);border:1px solid var(--fdv-border,#141b24);border-radius:16px;padding:18px;margin:0 auto;box-shadow:var(--shadow-2,0 12px 32px rgba(0,0,0,.35));}
+    .favboard-head{display:flex;flex-wrap:wrap;gap:var(--gap-2,12px);align-items:center;justify-content:space-between;margin-bottom:16px;}
+    .favboard-title{font-size:var(--step-1,1.25rem);font-weight:600;color:var(--text,#e8f2ff);}
+    .favboard-refresh{background:var(--fdv-bg,#0f1621);border:1px solid color-mix(in srgb,var(--accent2,#7bf1ff) 15%,transparent);color:var(--fdv-muted,#9ab7d2);padding:8px 14px;border-radius:10px;cursor:pointer;transition:.2s;}
+    .favboard-refresh:hover{border-color:var(--accent2,#7bf1ff);color:var(--text,#d8ecff);}
+    .favboard-status{font-size:.85rem;color:var(--fdv-muted,#6f859c);}
     .favboard-table{width:100%;border-collapse:collapse;margin-top:6px;min-width:640px;}
-    .favboard-table thead{background:linear-gradient(90deg,rgba(22,44,72,.4),rgba(13,23,35,.35));}
-    .favboard-table th{font-weight:600;text-align:left;font-size:.78rem;color:#a7c5e2;padding:10px 12px;border-bottom:1px solid #172231;text-transform:uppercase;letter-spacing:.05em;}
-    .favboard-table td{padding:11px 12px;border-bottom:1px solid #0f1721;font-size:.88rem;color:#d8e7fb;vertical-align:middle;}
+    .favboard-table thead{background:linear-gradient(90deg,color-mix(in srgb,var(--accent2,#7bf1ff) 20%,transparent),color-mix(in srgb,var(--accent,#1affd5) 14%,transparent));}
+    .favboard-table th{font-weight:600;text-align:left;font-size:.78rem;color:var(--fdv-muted,#a7c5e2);padding:10px 12px;border-bottom:1px solid var(--fdv-border,#172231);text-transform:uppercase;letter-spacing:.05em;}
+    .favboard-table td{padding:11px 12px;border-bottom:1px solid color-mix(in srgb,var(--fdv-border,#0f1721) 90%,transparent);font-size:.88rem;color:var(--text,#d8e7fb);vertical-align:middle;}
     .favboard-table tr:last-child td{border-bottom:none;}
-    .favboard-rank{font-weight:600;color:#8fd0ff;}
-    .favboard-logo{width:36px;height:36px;border-radius:11px;object-fit:cover;border:1px solid #1a2838;background:#0e1620;margin-right:10px;vertical-align:middle;}
+    .favboard-rank{font-weight:600;color:var(--accent2,#8fd0ff);}
+    .favboard-logo{width:36px;height:36px;border-radius:11px;object-fit:cover;border:1px solid color-mix(in srgb,var(--accent2,#1a2838) 35%,transparent);background:var(--fdv-bg,#0e1620);margin-right:10px;vertical-align:middle;}
     .favboard-name{display:flex;align-items:center;}
-    .favboard-name strong{color:#edf5ff;font-size:.92rem;}
-    .favboard-symbol{color:#7fa0c2;font-size:.78rem;margin-left:8px;text-transform:uppercase;letter-spacing:.03em;}
-    .favboard-mint{font-family:var(--mono-font,"JetBrains Mono",monospace);font-size:.75rem;color:#7a92ac;word-break:break-all;}
-    .favboard-pill{padding:4px 8px;border-radius:8px;background:#101b28;border:1px solid #1f2d3f;font-size:.78rem;color:#9ed9ff;display:inline-block;}
-    .favboard-pill.positive{background:#0f1d15;border-color:#205737;color:#95f5b7;}
-    .favboard-pill.negative{background:#1e1613;border-color:#5b2c1f;color:#ffb8a6;}
-    .favboard-link{color:#8fd0ff;text-decoration:none;}
+    .favboard-name strong{color:var(--text,#edf5ff);font-size:.92rem;}
+    .favboard-symbol{color:var(--fdv-muted,#7fa0c2);font-size:.78rem;margin-left:8px;text-transform:uppercase;letter-spacing:.03em;}
+    .favboard-mint{font-family:var(--mono-font,"JetBrains Mono",monospace);font-size:.75rem;color:color-mix(in srgb,var(--fdv-muted,#7a92ac) 85%,transparent);word-break:break-all;}
+    .favboard-pill{padding:4px 8px;border-radius:999px;background:color-mix(in srgb,var(--accent2,#101b28) 12%,transparent);border:1px solid color-mix(in srgb,var(--accent2,#1f2d3f) 25%,transparent);font-size:.78rem;color:var(--accent2,#9ed9ff);display:inline-block;}
+    .favboard-pill.positive{background:color-mix(in srgb,var(--ok,#1aff7a) 12%,transparent);border-color:color-mix(in srgb,var(--ok,#1aff7a) 32%,transparent);color:var(--ok,#95f5b7);}
+    .favboard-pill.negative{background:color-mix(in srgb,var(--danger,#ff4d6d) 12%,transparent);border-color:color-mix(in srgb,var(--danger,#ff4d6d) 32%,transparent);color:var(--danger,#ffb8a6);}
+    .favboard-link{color:var(--accent2,#8fd0ff);text-decoration:none;}
     .favboard-link:hover{text-decoration:underline;}
-    .favboard-empty{padding:24px;text-align:center;color:#6f859c;font-size:.9rem;}
-    .favboard-panel{position:relative;display:none;}
+    .favboard-empty{padding:24px;text-align:center;color:var(--fdv-muted,#6f859c);font-size:.9rem;}
+    .favboard-panel{position:relative;display:none; width:100%;}
     .favboard-panel[data-open="1"]{display:block;}
-    .favboard-panel .favboard-panel-box{background:#070c11;border:1px solid #162231;border-radius:18px;padding:18px;margin-top:14px;max-width:980px;box-shadow:0 12px 32px rgba(0,0,0,.6);}
+    .favboard-panel .favboard-panel-box{background:var(--fdv-bg,#070c11);border:1px solid var(--fdv-border,#162231);border-radius:18px;padding:18px;margin-top:14px;width:100%;box-shadow:var(--shadow-3,0 12px 32px rgba(0,0,0,.6));}
     .favboard-panel-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;}
-    .favboard-panel-header h3{margin:0;font-size:1.1rem;color:#e8f2ff;}
-    .favboard-close{background:#0f1621;border:1px solid #1e2a3a;color:#9ab7d2;padding:6px 10px;border-radius:10px;cursor:pointer;transition:.2s;}
-    .favboard-close:hover{border-color:#2ac3ff;color:#d8ecff;}
+    .favboard-panel-header h3{margin:0;font-size:1.1rem;color:var(--text,#e8f2ff);}
+    .favboard-close{background:var(--fdv-bg,#0f1621);border:1px solid color-mix(in srgb,var(--accent2,#1e2a3a) 25%,transparent);color:var(--fdv-muted,#9ab7d2);padding:6px 10px;border-radius:10px;cursor:pointer;transition:.2s;}
+    .favboard-close:hover{border-color:var(--accent2,#2ac3ff);color:var(--text,#d8ecff);}
     .favboard-scroll{overflow-x:auto;}
     @media (max-width:720px){
       .favboard-wrap{padding:14px;}
@@ -56,9 +55,9 @@ const tokenMetaCache = new Map();
       .favboard-table{border-collapse:separate;border-spacing:0 10px;min-width:0;}
       .favboard-table thead{display:none;}
       .favboard-table tbody{display:block;}
-      .favboard-table tr{display:block;background:#0b1119;border:1px solid #162231;border-radius:14px;padding:12px 12px 6px;margin-bottom: 25px;}
+      .favboard-table tr{display:block;background:color-mix(in srgb,var(--fdv-bg,#0b1119) 92%,transparent);border:1px solid color-mix(in srgb,var(--fdv-border,#162231) 75%,transparent);border-radius:14px;padding:12px 12px 6px;margin-bottom:25px;box-shadow:var(--shadow-1,0 8px 18px rgba(0,0,0,.28));}
       .favboard-table td{display:flex;justify-content:space-between;align-items:center;border-bottom:none;padding:6px 0;font-size:.82rem;}
-      .favboard-table td::before{content:attr(data-label);flex:0 0 42%;max-width:48%;color:#6f859c;text-transform:uppercase;letter-spacing:.06em;font-size:.72rem;}
+      .favboard-table td::before{content:attr(data-label);flex:0 0 42%;max-width:48%;color:var(--fdv-muted,#6f859c);text-transform:uppercase;letter-spacing:.06em;font-size:.72rem;}
       .favboard-name{flex-direction:row;align-items:center;}
       .favboard-table td[data-label="Token"]{padding-top:0;}
       .favboard-table td[data-label="Link"]{justify-content:space-between;padding-bottom:2px;}
@@ -157,7 +156,7 @@ export function ensureFavLeaderboard(container = document.body) {
   rootEl.innerHTML = `
     <div class="favboard-head">
       <h2 class="favboard-title">❤️ Fan Favorites</h2>
-      <div class="favboard-status">Loading leaderboard…</div>
+      <div class="favboard-status">Open the board to load favorites.</div>
       <button type="button" class="favboard-refresh">Refresh</button>
     </div>
     <div class="favboard-scroll">
@@ -177,7 +176,7 @@ export function ensureFavLeaderboard(container = document.body) {
           </tr>
         </thead>
         <tbody id="favboardTbody">
-          <tr><td colspan="11" class="favboard-empty">Loading…</td></tr>
+          <tr><td colspan="10" class="favboard-empty">Open favorites to load data.</td></tr>
         </tbody>
       </table>
     </div>
@@ -187,7 +186,6 @@ export function ensureFavLeaderboard(container = document.body) {
   statusEl = rootEl.querySelector(".favboard-status");
   refreshBtn.addEventListener("click", () => loadFavs(true));
   container.appendChild(rootEl);
-  loadFavs();
   return rootEl;
 }
 
@@ -199,35 +197,11 @@ async function loadFavs(force = false) {
   let payload = null;
   if (!force) payload = readCache();
 
-  let pausedByFavboard = false;
-  const tryPausePipeline = () => {
-    if (!isGlobalStreamThrottled()) {
-      throttleGlobalStream("favboard-fetch", 2000);
-      pausedByFavboard = true;
-    }
-  };
-  const resumePipeline = () => {
-    if (pausedByFavboard) {
-      releaseGlobalStreamThrottle();
-      pausedByFavboard = false;
-    }
-  };
-
   try {
     if (!payload) {
-      if (isGlobalStreamThrottled()) {
-        payload = readCache();
-        if (!payload) {
-          setStatus("Stream busy… please retry shortly.");
-          return;
-        }
-      } else {
-        tryPausePipeline();
-        payload = await fetchRemote();
-        if (payload) writeCache(payload);
-      }
+      payload = await fetchRemote();
+      if (payload) writeCache(payload);
     } else if (force) {
-      tryPausePipeline();
       const fresh = await fetchRemote();
       if (fresh) {
         payload = fresh;
@@ -237,7 +211,6 @@ async function loadFavs(force = false) {
   } catch (err) {
     setStatus(`Fetch failed: ${err?.message || err}`);
   } finally {
-    resumePipeline();
     isLoading = false;
   }
 

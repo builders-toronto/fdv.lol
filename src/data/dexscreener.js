@@ -1,22 +1,16 @@
 import { MEME_KEYWORDS } from '../config/env.js'
-import { getJSON } from '../core/tools.js';
-import { swrFetch } from '../core/fetcher.js';
+import { getJSON, fetchDS, fetchJsonNoThrow } from '../core/tools.js';
 
-// TODO: be nicer to dexscreener
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-function jitter(ms) { return Math.floor(ms * (0.5 + Math.random())); }
+
 
 const MAX_CONCURRENT   = 4;
 const START_SPACING_MS = 200;
-const REQUEST_TIMEOUT  = 10_000;
-const MAX_RETRIES      = 4;
-const BASE_BACKOFF_MS  = 600;
+
 
 const FETCH_TTL_MS_SEARCH = 2 * 60_000;  
 const FETCH_TTL_MS_TOKEN  = 10 * 60_000;  
-
-const CACHE_VERSION = 'v1';
 
 class RateLimiter {
   constructor({ rps = 0.8, burst = 3, minRps = 0.2, maxRps = 1.5 } = {}) {
@@ -65,61 +59,6 @@ const limiter = new RateLimiter({
   minRps: 0.25,
   maxRps: 1.2,
 });
-
-async function fetchWithRetries(url, { signal } = {}) {
-  let attempt = 0;
-
-  while (true) {
-    attempt++;
-
-    await limiter.removeToken();
-
-    const ac = new AbortController();
-    const to = setTimeout(() => ac.abort(new Error('timeout')), REQUEST_TIMEOUT);
-
-    const linkAbort = () => ac.abort(signal.reason);
-    if (signal) {
-      if (signal.aborted) ac.abort(signal.reason);
-      else signal.addEventListener('abort', linkAbort, { once: true });
-    }
-
-    try {
-      const data = await getJSON(url, { signal: ac.signal, headers: { accept: 'application/json' } });
-      clearTimeout(to);
-      limiter.onSuccess();
-      return data;
-    } catch (err) {
-      clearTimeout(to);
-
-      const isAbort = err?.name === 'AbortError' || /timeout/i.test(String(err?.message || ''));
-      const status = err?.status ?? (/\b(\d{3})\b/.exec(String(err?.message))?.[1] | 0);
-      const retryable = isAbort || status === 429 || (status >= 500 && status < 600);
-
-      if (!retryable || attempt > MAX_RETRIES) {
-        throw err;
-      }
-
-      let raMs = 0;
-      const retryAfter = err?.headers?.get?.('Retry-After');
-      if (retryAfter) {
-        const n = Number(retryAfter);
-        raMs = Number.isFinite(n) ? n * 1000 : 0;
-      }
-      limiter.on429(raMs);
-
-      const backoff = raMs || jitter(BASE_BACKOFF_MS * Math.pow(2, attempt - 1));
-      await sleep(backoff);
-    }
-  }
-}
-
-async function fetchDS(url, { signal, ttl, priority = false } = {}) {
-  const key = `${CACHE_VERSION}|dex:${url}`;
-  const fetcher = priority
-    ? () => getJSON(url, { signal, headers: { accept: 'application/json' } }) 
-    : () => fetchWithRetries(url, { signal });
-  return swrFetch(key, fetcher, { ttl });
-}
 
 async function mapWithLimit(items, limit, fn, { spacingMs = 0 } = {}) {
   const results = new Array(items.length);
@@ -453,4 +392,29 @@ export async function searchTokensGlobal(query, { signal, limit = 12 } = {}) {
 
   scored.sort((a,b) => b._score - a._score);
   return scored.slice(0, limit);
+}
+
+const SOL_CHAIN = 'solana';
+
+export async function dsPairsByToken(tokenAddress, { signal } = {}) {
+  const url = `https://api.dexscreener.com/token-pairs/v1/${SOL_CHAIN}/${encodeURIComponent(tokenAddress)}`;
+  const resp = await withTimeout(sig => fetchJsonNoThrow(url, { signal: sig }), 8_000, signal);
+  return Array.isArray(resp?.json) ? resp.json : [];
+}
+
+export async function dsPairsByTokensBatch(tokenAddressesCsv, { signal } = {}) {
+  const url = `https://api.dexscreener.com/tokens/v1/${SOL_CHAIN}/${encodeURIComponent(tokenAddressesCsv)}`;
+  const resp = await withTimeout(sig => fetchJsonNoThrow(url, { signal: sig }), 8_000, signal);
+  return Array.isArray(resp?.json) ? resp.json : [];
+}
+
+export async function dsBoostLists({ signal } = {}) {
+  const [latest, top] = await Promise.allSettled([
+    withTimeout(sig => fetchJsonNoThrow('https://api.dexscreener.com/token-boosts/latest/v1', { signal: sig }), 8_000, signal),
+    withTimeout(sig => fetchJsonNoThrow('https://api.dexscreener.com/token-boosts/top/v1',    { signal: sig }), 8_000, signal),
+  ]);
+  const arr = []
+    .concat(latest.status === 'fulfilled' ? (latest.value?.json || []) : [])
+    .concat(top.status === 'fulfilled'    ? (top.value?.json    || []) : []);
+  return arr.filter(x => (x?.chainId || '').toLowerCase() === SOL_CHAIN);
 }

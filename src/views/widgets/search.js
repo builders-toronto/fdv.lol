@@ -1,5 +1,4 @@
 import { searchTokensGlobal } from "../../data/dexscreener.js";
-import { throttleGlobalStream, releaseGlobalStreamThrottle, isGlobalStreamThrottled } from "../../engine/pipeline.js"; // new
 
 let abortCtl = null;
 let cache = new Map();          // query -> results[]
@@ -57,9 +56,8 @@ export function initSearch() {
   qEl.setAttribute("aria-haspopup","listbox");
 
   qEl.addEventListener("input", () => {
-    if (!isGlobalStreamThrottled?.()) throttleGlobalStream?.();
-    scheduleFetch();
-    bumpIdleTimer();
+     scheduleFetch();
+     bumpIdleTimer();
   });
   qEl.addEventListener("focus", () => {
     if (qEl.value.trim()) {
@@ -130,7 +128,6 @@ function openSearchPanel() {
   if (!wrapEl) ensurePanelDom();
   wrapEl.classList.add("open");
   isOpen = true;
-  throttleGlobalStream?.(); 
   if (qEl) {
     qEl.focus();
     qEl.select?.();
@@ -141,14 +138,13 @@ function closeSearchPanel() {
   isOpen = false;
   wrapEl?.classList.remove("open");
   hideList();
-  releaseGlobalStreamThrottle?.();
   clearIdleTimer();
 }
 
 function bumpIdleTimer() {
   clearIdleTimer();
   idleTimer = setTimeout(() => {
-    if (!isOpen) releaseGlobalStreamThrottle?.();
+    if (!isOpen) clearIdleTimer();
   }, IDLE_RELEASE_MS);
 }
 function clearIdleTimer(){ if (idleTimer) { clearTimeout(idleTimer); idleTimer = 0; } }
