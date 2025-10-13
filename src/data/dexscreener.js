@@ -8,57 +8,8 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 const MAX_CONCURRENT   = 4;
 const START_SPACING_MS = 200;
 
-
 const FETCH_TTL_MS_SEARCH = 2 * 60_000;  
 const FETCH_TTL_MS_TOKEN  = 10 * 60_000;  
-
-class RateLimiter {
-  constructor({ rps = 0.8, burst = 3, minRps = 0.2, maxRps = 1.5 } = {}) {
-    this.capacity = burst;
-    this.tokens = burst;
-    this.rps = rps;
-    this.minRps = minRps;
-    this.maxRps = maxRps;
-    this.lastRefill = Date.now();
-    this.cooldownUntil = 0;
-  }
-  _refill() {
-    const now = Date.now();
-    const elapsed = (now - this.lastRefill) / 1000;
-    this.lastRefill = now;
-    this.tokens = Math.min(this.capacity, this.tokens + elapsed * this.rps);
-  }
-  async removeToken() {
-    while (true) {
-      this._refill();
-      const now = Date.now();
-      if (now < this.cooldownUntil) {
-        await sleep(this.cooldownUntil - now);
-        continue;
-      }
-      if (this.tokens >= 1) {
-        this.tokens -= 1;
-        return;
-      }
-      const waitMs = Math.max(5, (1 - this.tokens) / this.rps * 1000);
-      await sleep(waitMs);
-    }
-  }
-  on429(retryAfterMs = 0) {
-    this.rps = Math.max(this.minRps, this.rps * 0.65);
-    this.cooldownUntil = Math.max(this.cooldownUntil, Date.now() + Math.max(800, retryAfterMs));
-  }
-  onSuccess() {
-    this.rps = Math.min(this.maxRps, this.rps * 1.05);
-  }
-}
-
-const limiter = new RateLimiter({
-  rps: 0.8,
-  burst: 3,
-  minRps: 0.25,
-  maxRps: 1.2,
-});
 
 async function mapWithLimit(items, limit, fn, { spacingMs = 0 } = {}) {
   const results = new Array(items.length);
