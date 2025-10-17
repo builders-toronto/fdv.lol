@@ -1,11 +1,11 @@
 import {
   MEME_KEYWORDS         
 } from '../config/env.js';
-import { getJSON, fetchJsonNoThrow } from '../core/tools.js';
+import { fetchJsonNoThrow } from '../core/tools.js';
 import {
   searchTokensGlobal as dsSearch,
-  fetchTokenInfo as dsFetchTokenInfo,
 } from './dexscreener.js';
+import { fetchJupiterTrendingModels } from './jupiter.js';
 
 import { geckoSeedTokens } from './gecko.js';
 
@@ -182,10 +182,7 @@ function providerEntry(name, fn, baseDelay) {
 
 function buildSearchProviders(stagger = []) {
   const list = [];
-  // if (BIRDEYE_API_KEY) list.push(providerEntry('birdeye', provBirdeyeSearch, stagger[1] ?? 150));
   list.push(providerEntry('dexscreener', provDexscreenerSearch, stagger[0] ?? 0));
-  //list.push(providerEntry('jupiter',     provJupiterListSearch, stagger[2] ?? 280));
-  // list.push(providerEntry('solana-rpc',  provSolanaRPCSearch,   stagger[3] ?? 0));
   return list;
 }
 
@@ -238,79 +235,79 @@ async function collectProviders({ providers, query, limit = 12, deadlineMs = 800
 }
 
 
-function makeDexInfoSkeleton(mint) {
-  return {
-    mint,
-    symbol: "",
-    name: "",
-    imageUrl: undefined,
-    headerUrl: undefined,
+// function makeDexInfoSkeleton(mint) {
+//   return {
+//     mint,
+//     symbol: "",
+//     name: "",
+//     imageUrl: undefined,
+//     headerUrl: undefined,
 
-    priceUsd: null,
-    priceNative: null,
+//     priceUsd: null,
+//     priceNative: null,
 
-    change5m: null,
-    change1h: null,
-    change6h: null,
-    change24h: null,
+//     change5m: null,
+//     change1h: null,
+//     change6h: null,
+//     change24h: null,
 
-    liquidityUsd: null,
-    liquidityBase: null,
-    liquidityQuote: null,
+//     liquidityUsd: null,
+//     liquidityBase: null,
+//     liquidityQuote: null,
 
-    fdv: null,
-    marketCap: null,
-    boostsActive: 0,
+//     fdv: null,
+//     marketCap: null,
+//     boostsActive: 0,
 
-    v5mTotal: null,
-    v1hTotal: null,
-    v6hTotal: null,
-    v24hTotal: null,
+//     v5mTotal: null,
+//     v1hTotal: null,
+//     v6hTotal: null,
+//     v24hTotal: null,
 
-    tx5m: { buys: 0, sells: 0 },
-    tx1h: { buys: 0, sells: 0 },
-    tx6h: { buys: 0, sells: 0 },
-    tx24h: { buys: 0, sells: 0 },
+//     tx5m: { buys: 0, sells: 0 },
+//     tx1h: { buys: 0, sells: 0 },
+//     tx6h: { buys: 0, sells: 0 },
+//     tx24h: { buys: 0, sells: 0 },
 
-    ageMs: null,
+//     ageMs: null,
 
-    headlineDex: "",
-    headlineUrl: "",
+//     headlineDex: "",
+//     headlineUrl: "",
 
-    websites: [],
-    socials: [],
+//     websites: [],
+//     socials: [],
 
-    pairs: [],
+//     pairs: [],
 
-    liqToFdvPct: null,
-    volToLiq24h: null,
-    buySell24h: null,
-  };
-}
+//     liqToFdvPct: null,
+//     volToLiq24h: null,
+//     buySell24h: null,
+//   };
+// }
 
-function finalizeDexInfo(model) {
-  const m = { ...model };
+// function finalizeDexInfo(model) {
+//   const m = { ...model };
 
-  // liqToFdvPct
-  if (Number.isFinite(m.liquidityUsd) && Number.isFinite(m.fdv) && m.fdv > 0) {
-    m.liqToFdvPct = (m.liquidityUsd / m.fdv) * 100;
-  } else {
-    m.liqToFdvPct = null;
-  }
+//   // liqToFdvPct
+//   if (Number.isFinite(m.liquidityUsd) && Number.isFinite(m.fdv) && m.fdv > 0) {
+//     m.liqToFdvPct = (m.liquidityUsd / m.fdv) * 100;
+//   } else {
+//     m.liqToFdvPct = null;
+//   }
 
-  if (Number.isFinite(m.v24hTotal) && Number.isFinite(m.liquidityUsd) && m.liquidityUsd > 0) {
-    m.volToLiq24h = m.v24hTotal / m.liquidityUsd;
-  } else {
-    m.volToLiq24h = null;
-  }
+//   if (Number.isFinite(m.v24hTotal) && Number.isFinite(m.liquidityUsd) && m.liquidityUsd > 0) {
+//     m.volToLiq24h = m.v24hTotal / m.liquidityUsd;
+//   } else {
+//     m.volToLiq24h = null;
+//   }
 
-  const buys = m?.tx24h?.buys ?? 0;
-  const sells = m?.tx24h?.sells ?? 0;
-  const tot = buys + sells;
-  m.buySell24h = tot > 0 ? (buys / tot) : null;
+//   const buys = m?.tx24h?.buys ?? 0;
+//   const sells = m?.tx24h?.sells ?? 0;
+//   const tot = buys + sells;
+//   m.buySell24h = tot > 0 ? (buys / tot) : null;
 
-  return m;
-}
+//   return m;
+// }
 
 
 export async function searchTokensGlobalMulti(query, {
@@ -323,38 +320,61 @@ export async function searchTokensGlobalMulti(query, {
   return await collectProviders({ providers, query, limit, deadlineMs, signal });
 }
 
-export async function fetchTokenInfoMulti(mint, { signal } = {}) {
-  try {
-    const ds = await withTimeout(sig => dsFetchTokenInfo(mint, { signal: sig }), 9_000, signal);
-    if (ds && ds.mint) { health.onSuccess('dexscreener'); return { ...ds, _source: 'dexscreener' }; }
-  } catch { health.onFailure('dexscreener'); }
+export async function fetchTokenInfoMulti(mints, { signal, batchSize = 50 } = {}) {
+  const out = new Map();
+  if (!Array.isArray(mints) || !mints.length) return out;
 
+  const ctrl = new AbortController();
+  if (signal) signal.addEventListener('abort', () => ctrl.abort(), { once: true });
+  const sig = ctrl.signal;
 
-    if (!geckoInCooldown()) {
-      try {
-        const url = `https://api.geckoterminal.com/api/v2/networks/solana/tokens/${encodeURIComponent(mint)}`;
-        const json = await withTimeout(sig => getJSON(url, {
-          signal: sig, timeout: 9000, ttl: 45_000, tag: 'gecko'
-        }), 10_000, signal);
-        const a = json?.data?.attributes || {};
-        // ...existing mapping...
-        const base = makeDexInfoSkeleton(mint);
-        base.symbol = a?.symbol || "";
-        base.name   = a?.name   || "";
-        base.imageUrl = a?.image_url || undefined;
-        base.priceUsd   = asNum(a?.price_usd);
-        base.fdv        = asNum(a?.fdv_usd);
-        base.headlineDex = 'gecko';
-        const model = finalizeDexInfo(base);
-        health.onSuccess('geckoterminal');
-        return { ...model, _source: 'geckoterminal' };
-      } catch {
-        geckoMarkFail();
-        health.onFailure('geckoterminal');
+  for (let i = 0; i < mints.length; i += batchSize) {
+    const chunk = mints.slice(i, i + batchSize).filter(Boolean);
+    if (!chunk.length) continue;
+    try {
+      const arr = await dsPairsByTokensBatch(chunk.join(','), { signal: sig });
+      for (const entry of arr || []) {
+        const token = entry?.token || entry;
+        const pairs = Array.isArray(entry?.pairs) ? entry.pairs : [];
+        const best = pairs.sort((a,b) => (b?.liquidity?.usd || 0) - (a?.liquidity?.usd || 0))[0] || null;
+        const mint = token?.address || token?.tokenAddress || token?.mint || entry?.tokenAddress;
+        if (!mint) continue;
+        out.set(mint, {
+          mint,
+          name: token?.name || '',
+          symbol: token?.symbol || '',
+          logoURI: token?.imageUrl || token?.logoURI || '',
+          priceUsd: Number(best?.priceUsd ?? token?.priceUsd ?? NaN),
+          liquidityUsd: Number(best?.liquidity?.usd ?? token?.liquidityUsd ?? NaN),
+          fdvUsd: Number(best?.fdv ?? token?.fdvUsd ?? token?.fdv ?? NaN),
+          change5m: Number(best?.priceChange?.m5 ?? NaN),
+          change1h: Number(best?.priceChange?.h1 ?? NaN),
+        });
       }
+    } catch {
+      // per-mint fallback via Dexscreener (still CORS-safe)
+      await Promise.all(chunk.map(async (mint) => {
+        try {
+          const pairs = await dsPairsByToken(mint, { signal: sig });
+          const best = (pairs || []).sort((a,b) => (b?.liquidity?.usd || 0) - (a?.liquidity?.usd || 0))[0];
+          if (!best) return;
+          const t = best?.baseToken || best?.quoteToken || {};
+          out.set(mint, {
+            mint,
+            name: t?.name || '',
+            symbol: t?.symbol || '',
+            logoURI: t?.image || '',
+            priceUsd: Number(best?.priceUsd ?? NaN),
+            liquidityUsd: Number(best?.liquidity?.usd ?? NaN),
+            fdvUsd: Number(best?.fdv ?? NaN),
+            change5m: Number(best?.priceChange?.m5 ?? NaN),
+            change1h: Number(best?.priceChange?.h1 ?? NaN),
+          });
+        } catch {}
+      }));
     }
-
-  throw new Error('No token info available from any provider');
+  }
+  return out;
 }
 
 export function getFeedHealth() {
@@ -380,6 +400,21 @@ function shuffle(arr) {
   return a;
 }
 
+function mapJupModelToHit(m) {
+  return {
+    mint: m.mint,
+    symbol: m.symbol || '',
+    name: m.name || '',
+    imageUrl: m.imageUrl || '',
+    priceUsd: asNum(m.priceUsd),
+    bestLiq: asNum(m.liquidityUsd),
+    change24h: asNum(m.change24h),
+    dexId: m.headlineDex || 'jup',
+    url: m.headlineUrl || '',
+    sources: ['jupiter'],
+  };
+}
+
 export async function fetchFeeds({
   keywords = MEME_KEYWORDS,
   prefix = 'solana ',
@@ -389,6 +424,7 @@ export async function fetchFeeds({
   signal,
   stagger = [0, 150, 280, 0], 
   includeGeckoSeeds = false,   
+  includeJupiter = true,
 } = {}) {
   const bag = new Map(); 
 
@@ -399,6 +435,18 @@ export async function fetchFeeds({
       for (const r of seeds) {
         const prev = bag.get(r.mint);
         bag.set(r.mint, prev ? dedupeMerge(prev, r) : r);
+      }
+    } catch {}
+  }
+
+  if (includeJupiter) {
+    try {
+      const jup = await fetchJupiterTrendingModels({ window: '5m', limit: 120, signal });
+      for (const m of jup) {
+        const hit = mapJupModelToHit(m);
+        if (!hit.mint) continue;
+        const prev = bag.get(hit.mint);
+        bag.set(hit.mint, prev ? dedupeMerge(prev, hit) : hit);
       }
     } catch {}
   }
@@ -444,9 +492,25 @@ export async function* streamFeeds({
   signal,
   stagger = [0, 150, 280, 0],
   includeGeckoSeeds = true,
+  includeJupiter = true,
 } = {}) {
   const seen = new Set();
 
+  if (includeJupiter) {
+    try {
+      const arr = await fetchJupiterTrendingModels({ window: '5m', limit: 120, signal });
+      const fresh = [];
+      for (const m of arr) {
+        const hit = mapJupModelToHit(m);
+        if (!hit?.mint || seen.has(hit.mint)) continue;
+        seen.add(hit.mint);
+        fresh.push(hit);
+      }
+      yield { source: 'jupiter', term: '(trending)', newItems: fresh };
+    } catch {
+      yield { source: 'jupiter', term: '(trending)', newItems: [] };
+    }
+  }
 
   if (includeGeckoSeeds) {
     try {
