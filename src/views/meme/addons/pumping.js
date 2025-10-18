@@ -139,7 +139,7 @@ const safeZ  = (x, m, s) => s > 0 ? (x - m) / s : 0;
 // numerically stable, and computationally efficient—accurately capturing genuine momentum
 //  without overreacting to random spikes.
 
-function computePumpingScoreForMint(records, nowTs) {
+export function computePumpingScoreForMint(records, nowTs) {
   if (!Array.isArray(records) || !records.length) return { score: 0, badge: 'Calm' };
 
   const cutoff = nowTs - PUMP_WINDOW_DAYS*24*3600*1000;
