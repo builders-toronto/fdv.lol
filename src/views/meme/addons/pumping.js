@@ -3,11 +3,14 @@ import { addKpiAddon, getLatestSnapshot } from './ingest.js';
 export const PUMP_STORAGE_KEY     = 'pump_history_v1';
 export const PUMP_WINDOW_DAYS     = 1.5;       // short lookback favors immediacy
 export const PUMP_SNAPSHOT_LIMIT  = 600;       // global cap
-export const PUMP_PER_MINT_CAP    = 96;        // ~8h @ 5min cadence
+export const PUMP_PER_MINT_CAP    = 96;        // ~8h @ 5min CADENCE
 export const PUMP_HALFLIFE_DAYS   = 0.6;       // fast decay (~14.4h half-life)
 export const PUMP_MIN_LIQ_USD     = 6000;      // hard floor to avoid illiquid spikes
 export const PUMP_MIN_VOL_1H_USD  = 1500;      // minimum 1h volume gate
 export const PUMP_MIN_PRICE_USD   = 0;         // keep 0 to allow low-priced tokens; raise if needed
+export const PUMP_BADGE_SCORE        = 1.45;   
+export const PUMP_BADGE_CHANGE1H_PCT = 8;      
+export const PUMP_BADGE_ACCEL5TO1    = 1.06;  
 const LN2 = Math.log(2);
 
 function loadPumpHistory() {
@@ -200,10 +203,18 @@ export function computePumpingScoreForMint(records, nowTs) {
 
   const score = Math.max(0, core) * (0.65 + 0.35 * liqScale);
 
-  // Badging
   let badge = 'Calm';
-  if (score >= 1.6 && change1h > 10 && accel5to1 > 1.12) badge = '🔥 Pumping';
-  else if (score >= 1.0) badge = 'Warming';
+  const strongScore = score >= 2.0; // loosen pump badge conditions a bit
+  if (
+    strongScore ||
+    (score >= PUMP_BADGE_SCORE &&
+     change1h >= PUMP_BADGE_CHANGE1H_PCT &&
+     accel5to1 >= PUMP_BADGE_ACCEL5TO1)
+  ) {
+    badge = '🔥 Pumping';
+  } else if (score >= 1.0) {
+    badge = 'Warming';
+  }
 
   return { score, badge, meta: { accel5to1, accel1to6, buy: buySell24h, zV1, liqScale, pMean } };
 }
