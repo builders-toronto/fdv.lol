@@ -51,7 +51,7 @@ let state = {
   ownerScanDisabled: false,
   ownerScanDisabledReason: "",
   // collapse state for <details>
-  collapsed: false,
+  collapsed: true,
 };
 let timer = null;
 let logEl, toggleEl, startBtn, stopBtn, mintEl;
@@ -1018,7 +1018,7 @@ export function initAutoWidget(container = document.body) {
         <button data-auto-unwind>End & Return</button>
     </div>
     <div class="fdv-grid">
-      <label>RPC URL<a href="https://chainstack.com/" target="_blank">(CORS)</a> <input data-auto-rpc placeholder="https://your-provider.example/solana?api-key=..."/></label>
+      <label><a href="https://chainstack.com/" target="_blank">RPC (CORS)</a> <input data-auto-rpc placeholder="https://your-provider.example/solana?api-key=..."/></label>
       <label>RPC Headers (JSON) <input data-auto-rpch placeholder='{"Authorization":"Bearer ..."}'/></label>
       <label>Auto Wallet <input data-auto-dep readonly placeholder="Generate to get address"/></label>
       <label>Deposit Balance <input data-auto-bal readonly/></label>
