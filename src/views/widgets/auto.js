@@ -65,6 +65,19 @@ let timer = null;
 let logEl, toggleEl, startBtn, stopBtn, mintEl;
 let depAddrEl, depBalEl, lifeEl, recvEl, buyPctEl, minBuyEl, maxBuyEl;
 
+function downloadTextFile(filename, text) {
+  const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    URL.revokeObjectURL(a.href);
+    a.remove();
+  }, 0);
+}
+
 
 function normalizePercent(v) {
   const x = Number(v);
@@ -1197,9 +1210,14 @@ export function initAutoWidget(container = document.body) {
                 </ul>
               </div>
             </div>
-            <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:10px;">
-              <button data-auto-modal-close>Got it</button>
+          <div style="display:flex; justify-content:space-between; gap:8px; margin-top:12px; flex-wrap:wrap;">
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <button data-auto-sec-copy-pub>Copy Public</button>
+              <button data-auto-sec-copy-skey>Copy Secret</button>
+              <button data-auto-sec-export>Export JSON</button>
             </div>
+            <button data-auto-secret-close>Close</button>
+          </div>
           </div>
         </div>
     </div>
@@ -1226,6 +1244,15 @@ export function initAutoWidget(container = document.body) {
   const helpBtn = wrap.querySelector("[data-auto-help]");
   const modalEl = wrap.querySelector("[data-auto-modal]");
   const modalCloseEls = wrap.querySelectorAll("[data-auto-modal-close]");
+  const secretBtn = wrap.querySelector("[data-auto-secret]");
+  const secretModalEl = wrap.querySelector("[data-auto-secret-modal]");
+  const secretCloseEls = wrap.querySelectorAll("[data-auto-secret-close]");
+  const secPubEl = wrap.querySelector("[data-auto-sec-pub]");
+  const secSkEl = wrap.querySelector("[data-auto-sec-skey]");
+  const secToggleEl = wrap.querySelector("[data-auto-sec-toggle]");
+  const secCopyPubBtn = wrap.querySelector("[data-auto-sec-copy-pub]");
+  const secCopySkBtn = wrap.querySelector("[data-auto-sec-copy-skey]");
+  const secExportBtn = wrap.querySelector("[data-auto-sec-export]");
   startBtn  = wrap.querySelector("[data-auto-start]");
   stopBtn   = wrap.querySelector("[data-auto-stop]");
   mintEl    = { value: "" }; // not used in auto-wallet mode
@@ -1254,6 +1281,43 @@ export function initAutoWidget(container = document.body) {
   modalCloseEls.forEach(btn => btn.addEventListener("click", () => { modalEl.style.display = "none"; }));
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && modalEl.style.display !== "none") modalEl.style.display = "none";
+  });
+
+  secretBtn.addEventListener("click", async () => {
+    try {
+      await ensureAutoWallet();
+      depAddrEl.value = state.autoWalletPub || depAddrEl.value;
+      secPubEl.value = state.autoWalletPub || "";
+      secSkEl.type = "password";
+      secSkEl.value = state.autoWalletSecret || "";
+      secretModalEl.style.display = "flex";
+    } catch (e) {
+      log(`Cannot open secret modal: ${e.message || e}`);
+    }
+  });
+  secretModalEl.addEventListener("click", (e) => { if (e.target === secretModalEl) secretModalEl.style.display = "none"; });
+  secretCloseEls.forEach(btn => btn.addEventListener("click", () => { secretModalEl.style.display = "none"; }));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && secretModalEl.style.display !== "none") secretModalEl.style.display = "none";
+  });
+  secToggleEl.addEventListener("click", () => {
+    const showing = secSkEl.type === "text";
+    secSkEl.type = showing ? "password" : "text";
+    secToggleEl.textContent = showing ? "Show" : "Hide";
+  });
+  secCopyPubBtn.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(secPubEl.value || ""); log("Public key copied"); } catch {}
+  });
+  secCopySkBtn.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(secSkEl.value || ""); log("Secret key copied"); } catch {}
+  });
+  secExportBtn.addEventListener("click", () => {
+    const payload = JSON.stringify({
+      publicKey: state.autoWalletPub || "",
+      secretKey: state.autoWalletSecret || ""
+    }, null, 2);
+    downloadTextFile(`fdv-auto-wallet-${(state.autoWalletPub||"").slice(0,6)}.json`, payload);
+    log("Exported wallet JSON");
   });
 
   rpcEl.addEventListener("change", () => {
