@@ -463,6 +463,9 @@ async function sweepAllToSolAndReturn() {
   }
   log("Unwind complete.");
   onToggle(false);
+  state.holdingsUi = 0;
+  state.avgEntryUsd = 0;
+  state.lastTradeTs = 0;
   state.endAt = 0;
   save();
 }
@@ -1013,7 +1016,7 @@ export function initAutoWidget(container = document.body) {
       <svg class="fdv-acc-caret" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
         <path d="M8 10l4 4 4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>
-      <span class="fdv-title">Auto Pump (v0.0.1)</span>
+      <span class="fdv-title">Auto Pump (v0.0.12)</span>
     </span>
   `;
 
@@ -1125,7 +1128,7 @@ export function initAutoWidget(container = document.body) {
     <div class="fdv-actions-right">
       <button data-auto-start>Start</button>
       <button data-auto-stop>Stop</button>
-      <button data-auto-reset>Reset</button>
+      <button data-auto-reset>Refresh</button>
     </div>
     </div>
   `;
@@ -1194,7 +1197,10 @@ export function initAutoWidget(container = document.body) {
     log("Address copied");
   });
   wrap.querySelector("[data-auto-unwind]").addEventListener("click", async () => {
-    try { await sweepAllToSolAndReturn(); } catch(e){ log(`Unwind failed: ${e.message||e}`); }
+    try { 
+      await sweepAllToSolAndReturn();
+      save();
+    } catch(e){ log(`Unwind failed: ${e.message||e}`); }
   });
 
   toggleEl.addEventListener("change", () => onToggle(toggleEl.checked));
@@ -1210,8 +1216,9 @@ export function initAutoWidget(container = document.body) {
     state.avgEntryUsd = 0;
     state.lastTradeTs = 0;
     state.endAt = 0;
+    fetchSolBalance(state.autoWalletPub).then(b => { depBalEl.value = `${b.toFixed(4)} SOL`; }).catch(()=>{});
     save();
-    log("Session stats reset");
+    log("Session stats refreshed");
   });
 
   const saveField = () => {
