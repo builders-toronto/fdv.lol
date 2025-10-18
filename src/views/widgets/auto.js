@@ -52,6 +52,8 @@ let state = {
   ownerScanDisabledReason: "",
   // collapse state for <details>
   collapsed: true,
+  // hold until new leader detected
+  holdUntilLeaderSwitch: true,
 };
 let timer = null;
 let logEl, toggleEl, startBtn, stopBtn, mintEl;
@@ -734,6 +736,7 @@ function shouldSell(pos, curSol) {
 
 let _inFlight = false;
 async function evalAndMaybeSellPositions() {
+  if (stat.holdUntilLeaderSwitch) return;
   if (_inFlight) return;
   const kp = await getAutoKeypair();
   if (!kp) return;
@@ -850,13 +853,24 @@ async function tick() {
 
   const didRotate = await switchToLeader(leaderMint);
 
-  if (didRotate) return; // wait until next tick to buy with settled SOL
+  if (didRotate) return; // wait until next tick
 
   if (state.lastTradeTs && (now() - state.lastTradeTs)/1000 < state.minSecsBetween) return;
 
   try {
     const kp = await getAutoKeypair();
     if (!kp) return;
+
+    await syncPositionsFromChain(kp.publicKey.toBase58());
+
+    const cur = state.positions[leaderMint];
+    const alreadyHoldingLeader =
+      Number(cur?.sizeUi || 0) > 0 || Number(cur?.costSol || 0) > 0;
+
+    if (state.holdUntilLeaderSwitch && alreadyHoldingLeader) {
+      log("Holding current leader. No additional buys.");
+      return;
+    }
 
     const solBal = await fetchSolBalance(kp.publicKey.toBase58());
     const feeReserve = Math.max(FEE_RESERVE_MIN, solBal * FEE_RESERVE_PCT);
@@ -907,7 +921,7 @@ async function tick() {
       pos.decimals = Number.isFinite(bal.decimals) ? bal.decimals : (pos.decimals ?? await getMintDecimals(leaderMint));
       pos.lastSeenAt = now();
     } catch {
-      
+      log("Failed to refresh position size after buy.");
     }
     state.positions[leaderMint] = pos;
     save();
