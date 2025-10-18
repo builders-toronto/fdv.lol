@@ -17,6 +17,9 @@ import { initLibrary, createOpenLibraryButton } from '../widgets/library.js';
 
 import { initSearch, createOpenSearchButton } from '../widgets/search.js';
 import { initFavboard, createOpenFavboardButton } from '../widgets/favboard.js';
+import { initAutoWidget } from '../widgets/auto.js';
+
+
 
 import {
   initHeader,
@@ -295,6 +298,10 @@ function initInitialLoading() {
   try { ensureAddonsUI(); } catch {}
   try { initLibrary(); } catch {}
   try { initFavboard(); } catch {}
+  try {
+    const host = document.getElementById('hdrToolsPanels') || document.body;
+    initAutoWidget(host);
+  } catch {}
 
   initSearch(elQ, elQResults, elSearchWrap);
   ensureMarqueeSlot(elCards);

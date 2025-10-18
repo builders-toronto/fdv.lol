@@ -1434,3 +1434,106 @@ export function initSwapSystem() {
 
   bindSwapButtons(document);
 }
+
+export async function autoSwap({
+  inputMint = SOL_MINT,
+  outputMint,
+  amountUi,
+  slippageBps = CFG.defaultSlippageBps,
+  priority = false,
+  relay,
+  timeoutMs = 15000,
+} = {}) {
+  if (!outputMint) throw new Error("autoSwap: outputMint required");
+  if (!Number(amountUi)) throw new Error("autoSwap: amountUi must be > 0");
+
+  // Ensure modal system bootstrapped (wallet/session utils, cfg, web3 loader)
+  if (!CFG?.rpcUrl) initSwap(); // safe re-init
+  if (!_state.wallet || !_state.pubkey) await _connectPhantom();
+  if (!_state.wallet || !_state.pubkey) throw new Error("Wallet not connected");
+
+  if (!_hasLiveSession()) {
+    const tok = await ensureRpcSession();
+    if (!tok) throw new Error("Session verify failed");
+  }
+
+  const { Connection, PublicKey } = await _loadWeb3();
+  const endpoint = CFG.rpcUrl.replace(/\/+$/,"");
+  const conn = new Connection(endpoint, {
+    commitment: "processed",
+    fetchMiddleware: (url, options, fetchFn) => {
+      const headers = { ...(options.headers || {}), "content-type": "application/json" };
+      if (_rpcSession.token) headers["x-session"] = _rpcSession.token;
+      options.headers = headers;
+      return fetchFn(url, options);
+    },
+  });
+
+  const feeAccount = CFG.feeAtas[inputMint] || null;
+  const platformFeeBps = feeAccount ? CFG.platformFeeBps : 0;
+
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(new Error("timeout")), timeoutMs);
+
+  try {
+    // Quote
+    const amount = _uiToRaw(amountUi, inputMint);
+    const q = new URL(`${CFG.jupiterBase}/swap/v1/quote`);
+    q.searchParams.set("inputMint", inputMint);
+    q.searchParams.set("outputMint", outputMint);
+    q.searchParams.set("amount", String(amount));
+    q.searchParams.set("slippageBps", String(slippageBps));
+    q.searchParams.set("restrictIntermediateTokens", "true");
+    if (platformFeeBps > 0) q.searchParams.set("platformFeeBps", String(platformFeeBps));
+
+    const qRes = await fetch(q.toString(), { signal: ac.signal });
+    if (!qRes.ok) throw new Error(`quote ${qRes.status}`);
+    const quote = await qRes.json();
+
+    // Fee ATA sanity (only when fee active)
+    if (platformFeeBps > 0) {
+      const info = await conn.getParsedAccountInfo(new PublicKey(feeAccount)).catch(() => null);
+      if (!info?.value) throw new Error("feeAccount not readable on RPC");
+      const parsed = info.value.data?.parsed;
+      const mint = parsed?.info?.mint;
+      const owner = parsed?.info?.owner;
+      if (mint !== inputMint) throw new Error(`feeAccount mint mismatch (${mint} != ${inputMint})`);
+      if (owner !== CFG.feeReceiverWallet) throw new Error("feeAccount owner mismatch");
+    }
+
+    // Build swap
+    const sRes = await fetch(`${CFG.jupiterBase}/swap/v1/swap`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({
+        quoteResponse: quote,
+        userPublicKey: _state.pubkey.toBase58(),
+        feeAccount: feeAccount || undefined,
+        dynamicComputeUnitLimit: true,
+        dynamicSlippage: { maxBps: slippageBps },
+      })
+    });
+    if (!sRes.ok) throw new Error(`swap ${sRes.status}`);
+    const { swapTransaction } = await sRes.json();
+    if (!swapTransaction) throw new Error("no swapTransaction");
+
+    // Sign & send (programmatic)
+    const raw = atob(swapTransaction);
+    const rawBytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) rawBytes[i] = raw.charCodeAt(i);
+
+    const { VersionedTransaction } = await _loadWeb3();
+    const vtx = VersionedTransaction.deserialize(rawBytes);
+    const signed = await _state.wallet.signTransaction(vtx);
+    const sig = await conn.sendRawTransaction(signed.serialize(), {
+      preflightCommitment: "processed",
+      skipPreflight: false,
+      minContextSlot: undefined,
+    });
+
+    try { document.dispatchEvent(new CustomEvent("swap:auto:sent", { detail: { sig, inputMint, outputMint, amountUi } })); } catch {}
+    return sig;
+  } finally {
+    clearTimeout(timer);
+  }
+}
