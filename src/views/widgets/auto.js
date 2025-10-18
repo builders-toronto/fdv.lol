@@ -31,6 +31,12 @@ let state = {
   holdingsUi: 0,
   avgEntryUsd: 0,
   lastTradeTs: 0,
+  trailPct: 6,                 
+  minProfitToTrailPct: 3,     
+  coolDownSecsAfterBuy: 60,    
+  minHoldSecs: 0,            
+  partialTpPct: 50,            
+  minQuoteIntervalMs: 10000,   
 
   // Auto wallet mode
   autoWalletPub: "",        
@@ -53,7 +59,7 @@ let state = {
   // collapse state for <details>
   collapsed: true,
   // hold until new leader detected
-  holdUntilLeaderSwitch: true,
+  holdUntilLeaderSwitch: false,
 };
 let timer = null;
 let logEl, toggleEl, startBtn, stopBtn, mintEl;
@@ -713,25 +719,50 @@ async function sweepNonSolToSolAtStart() {
 
 // TODO: refine sell logic with more parameters and further include KPI addons.
 
-function shouldSell(pos, curSol) {
+function shouldSell(pos, curSol, nowTs) {
   const cost = Number(pos.costSol || 0);
-  if (!Number.isFinite(curSol) || curSol <= 0) return { sell: false };
-  // Initialize HWM
-  const hwm = pos.hwmSol = Math.max(Number(pos.hwmSol || 0), curSol);
-  if (cost <= 0) return { sell: false }; // unknown basis; wait for a buy to set it
-  const pnlPct = ((curSol - cost) / Math.max(1e-9, cost)) * 100;
-  const tp = Number(state.takeProfitPct || 0);
-  const sl = Number(state.stopLossPct || 0);
-  // Hard stop-loss
-  if (pnlPct <= -sl) return { sell: true, reason: `Stop ${pnlPct.toFixed(2)}%` };
-  // Hard take-profit
-  if (pnlPct >= tp) return { sell: true, reason: `TP ${pnlPct.toFixed(2)}%` };
-  // Trailing stop after any profit: drawdown from high >= sl
-  if (hwm > cost) {
-    const drawdownPct = ((hwm - curSol) / hwm) * 100;
-    if (drawdownPct >= sl) return { sell: true, reason: `Trail -${drawdownPct.toFixed(2)}% from high` };
+  if (!Number.isFinite(curSol) || curSol <= 0) return { action: "none" };
+  if (cost <= 0) return { action: "none" };
+
+  const lastBuyAt = Number(pos.lastBuyAt || pos.acquiredAt || 0);
+  if (lastBuyAt && nowTs - lastBuyAt < (state.coolDownSecsAfterBuy|0) * 1000) {
+    return { action: "none", reason: "cooldown" };
   }
-  return { sell: false };
+  if (state.minHoldSecs > 0 && pos.acquiredAt && (nowTs - pos.acquiredAt) < state.minHoldSecs * 1000) {
+    return { action: "none", reason: "min-hold" };
+  }
+
+  pos.hwmSol = Math.max(Number(pos.hwmSol || 0), curSol);
+
+  const pnlPct = ((curSol - cost) / Math.max(1e-9, cost)) * 100;
+  const tp = Math.max(0, Number(state.takeProfitPct || 0));
+  const sl = Math.max(0, Number(state.stopLossPct || 0));
+  const trail = Math.max(0, Number(state.trailPct || 0));
+  const armTrail = Math.max(0, Number(state.minProfitToTrailPct || 0));
+  const partialPct = Math.min(100, Math.max(0, Number(state.partialTpPct || 0)));
+
+  if (sl > 0 && pnlPct <= -sl) return { action: "sell_all", reason: `Stop ${pnlPct.toFixed(2)}%` };
+
+
+
+
+  if (tp > 0 && pnlPct >= tp) {
+    if (partialPct > 0 && partialPct < 100) {
+      return { action: "sell_partial", pct: partialPct, reason: `TP ${pnlPct.toFixed(2)}% (${partialPct}%)` };
+    }
+    return { action: "sell_all", reason: `TP ${pnlPct.toFixed(2)}%` };
+  }
+
+
+
+  if (trail > 0 && pnlPct >= armTrail && pos.hwmSol > 0) {
+    const drawdownPct = ((pos.hwmSol - curSol) / pos.hwmSol) * 100;
+    if (drawdownPct >= trail) {
+      return { action: "sell_all", reason: `Trail -${drawdownPct.toFixed(2)}% from high` };
+    }
+  }
+
+  return { action: "none" };
 }
 
 
@@ -739,13 +770,17 @@ function shouldSell(pos, curSol) {
 
 let _inFlight = false;
 async function evalAndMaybeSellPositions() {
-  if (stat.holdUntilLeaderSwitch) return;
+  if (state.holdUntilLeaderSwitch) return;
   if (_inFlight) return;
+
   const kp = await getAutoKeypair();
   if (!kp) return;
+
   await syncPositionsFromChain(kp.publicKey.toBase58());
   const entries = Object.entries(state.positions || {});
   if (!entries.length) return;
+
+  const nowTs = now();
   for (const [mint, pos] of entries) {
     try {
       const sz = Number(pos.sizeUi || 0);
@@ -753,26 +788,61 @@ async function evalAndMaybeSellPositions() {
         log(`Skip sell eval for ${mint.slice(0,4)}… (no size)`);
         continue;
       }
-      log(`Evaluating sell for ${mint.slice(0,4)}… size ${sz.toFixed(6)}`);
-      const curSol = await quoteOutSol(mint, sz, pos.decimals);
-      pos.hwmSol = Math.max(Number(pos.hwmSol || 0), curSol);
-      const d = shouldSell(pos, curSol);
-      log(`Sell decision: ${d.sell ? "YES" : "NO"} (${d.reason || "criteria not met"})`);
-      if (!d.sell) continue;
+
+      let curSol = Number(pos.lastQuotedSol || 0);
+      const lastQ = Number(pos.lastQuotedAt || 0);
+      if (!lastQ || (nowTs - lastQ) > (state.minQuoteIntervalMs|0)) {
+        log(`Evaluating sell for ${mint.slice(0,4)}… size ${sz.toFixed(6)}`);
+        curSol = await quoteOutSol(mint, sz, pos.decimals);
+        pos.lastQuotedSol = curSol;
+        pos.lastQuotedAt = nowTs;
+      }
+
+      if (curSol < MIN_JUP_SOL_IN) {
+        log(`Skip sell eval ${mint.slice(0,4)}… (notional ${curSol.toFixed(6)} SOL < ${MIN_JUP_SOL_IN})`);
+        continue;
+      }
+
+      const d = shouldSell(pos, curSol, nowTs);
+      log(`Sell decision: ${d.action !== "none" ? d.action : "NO"} (${d.reason || "criteria not met"})`);
+      if (d.action === "none") continue;
+
       _inFlight = true;
-      await jupSwapWithKeypair({
-        signer: kp,
-        inputMint: mint,
-        outputMint: "So11111111111111111111111111111111111111112",
-        amountUi: pos.sizeUi,
-        slippageBps: state.slippageBps,
-      });
-      log(`Sold ${pos.sizeUi.toFixed(6)} ${mint.slice(0,4)}… -> ${curSol.toFixed(4)} SOL (${d.reason})`);
-      delete state.positions[mint];
-      save();
+      if (d.action === "sell_partial") {
+        const pct = Math.min(100, Math.max(1, Number(d.pct || 50)));
+        const sellUi = pos.sizeUi * (pct / 100);
+        await jupSwapWithKeypair({
+          signer: kp,
+          inputMint: mint,
+          outputMint: SOL_MINT,
+          amountUi: sellUi,
+          slippageBps: state.slippageBps,
+        });
+        log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… (${pct}% partial) -> ~${(curSol*(pct/100)).toFixed(4)} SOL (${d.reason})`);
+        // Pro-rate position accounting
+        const remainPct = 1 - (pct / 100);
+        pos.sizeUi = Math.max(0, pos.sizeUi - sellUi);
+        pos.costSol = Number(pos.costSol || 0) * remainPct;
+        pos.hwmSol = Number(pos.hwmSol || 0) * remainPct;
+        state.positions[mint] = pos;
+        save();
+      } else {
+        await jupSwapWithKeypair({
+          signer: kp,
+          inputMint: mint,
+          outputMint: SOL_MINT,
+          amountUi: pos.sizeUi,
+          slippageBps: state.slippageBps,
+        });
+        log(`Sold ${pos.sizeUi.toFixed(6)} ${mint.slice(0,4)}… -> ${curSol.toFixed(4)} SOL (${d.reason})`);
+        delete state.positions[mint];
+        save();
+      }
+
       _inFlight = false;
       state.lastTradeTs = now();
-      return;
+      save();
+      return; // handle one sell per tick
     } catch (e) {
       log(`Sell check failed for ${mint.slice(0,4)}…: ${e.message||e}`);
     } finally {
@@ -780,6 +850,13 @@ async function evalAndMaybeSellPositions() {
     }
   }
 }
+
+
+
+
+
+
+
 
 let _switchingLeader = false;
 async function switchToLeader(newMint) {
@@ -918,6 +995,7 @@ async function tick() {
     const pos = state.positions[leaderMint] || { costSol: 0, hwmSol: 0, acquiredAt: now() };
     pos.costSol = Number(pos.costSol || 0) + buySol;
     pos.hwmSol = Math.max(Number(pos.hwmSol || 0), buySol);
+    pos.lastBuyAt = now();
     try {
       const bal = await getAtaBalanceUi(kp.publicKey.toBase58(), leaderMint, pos.decimals);
       pos.sizeUi = Number(bal.sizeUi || 0);
@@ -1235,7 +1313,7 @@ export function initAutoWidget(container = document.body) {
   });
 
   toggleEl.checked = !!state.enabled;
-  holdEl.checked = !!state.holdUntilLeader;
+  holdEl.checked = !!state.holdUntilLeaderSwitch;
   startBtn.disabled = !!state.enabled;
   stopBtn.disabled = !state.enabled;
   if (state.enabled && !timer) timer = setInterval(tick, 5000);
