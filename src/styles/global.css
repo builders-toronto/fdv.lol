@@ -46,7 +46,6 @@
   --fdv-primary-fg:#0b0d12; 
   --fdv-phantom:#8a63d2;
   --fdv-surface: var(--fdv-surface, #0b1119);
-  --fdv-border: var(--fdv-border, #172231);
   --fdv-bg: var(--fdv-bg, #0f1621);
   --fdv-muted: var(--fdv-muted, #9ab7d2);
   --fdv-text: var(--text, #e8f2ff);
