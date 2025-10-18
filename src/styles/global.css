@@ -47,7 +47,6 @@
   --fdv-phantom:#8a63d2;
   --fdv-surface: var(--fdv-surface, #0b1119);
   --fdv-bg: var(--fdv-bg, #0f1621);
-  --fdv-muted: var(--fdv-muted, #9ab7d2);
   --fdv-text: var(--text, #e8f2ff);
   --fdv-primary: #2b90ff;
   --fdv-primary-700: #1e6fd4;
@@ -1035,7 +1034,6 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 
 /* Swap modal  v0.0.1*/
 
-
 .fdv-modal-backdrop{ position:fixed; inset:0; background:rgba(0,0,0,.55);
   display:none; align-items:center; justify-content:center; z-index:9999 }
 .fdv-modal-backdrop.show{ display:flex }
@@ -1322,7 +1320,7 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 .fdv-grid input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin: 0; }
 
 /* Buttons */
-.fdv-actions{ display:flex; flex-wrap:wrap; justify-content:flex-end; gap:10px; margin-top: 10px; margin-bottom:10px; }
+.fdv-actions{ display:flex; flex-wrap:wrap; justify-content:space-between; gap:10px; margin-top: 10px; margin-bottom:10px; }
 .fdv-actions button, .fdv-grid button{
   border: 1px solid var(--fdv-border);
   color: var(--fdv-text);
@@ -1347,7 +1345,7 @@ button[data-auto-unwind]{ color:#fff; }
 /* Toggle switch */
 .fdv-switch{ display:flex; align-items:center; gap:10px; }
 .fdv-switch input[type="checkbox"]{
-  position: absolute; inline-size: 0; block-size: 0; opacity: 0; pointer-events: none;
+  inline-size: 0; block-size: 0; opacity: 0; pointer-events: none;
 }
 .fdv-switch span{
   position: relative; display:inline-flex; align-items:center; gap:8px;
@@ -1393,7 +1391,7 @@ button[data-auto-unwind]{ color:#fff; }
 
 /* Head/actions wrap on small screens */
 @media (max-width: 740px){
-  .fdv-auto-head{ flex-wrap: wrap; }
+  /* .fdv-auto-head{ flex-wrap: wrap; } */
   .fdv-actions{ justify-content: flex-start; }
 }
 

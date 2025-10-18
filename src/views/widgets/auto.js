@@ -1021,15 +1021,19 @@ export function initAutoWidget(container = document.body) {
   body.className = "fdv-auto-body";
   body.innerHTML = `
     <div class="fdv-auto-head">
+      <label class="fdv-switch fdv-hold-leader" style="margin-left:12px;">
+        <input type="checkbox" data-auto-hold />
+        <span>Leader</span>
+      </label>
       <label class="fdv-switch">
         <input type="checkbox" data-auto-toggle />
         <span>Enabled</span>
       </label>
     </div>
     <div style="display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--fdv-border);padding-bottom:8px;margin-bottom:8px;">
-        <button data-auto-gen>Generate Wallet</button>
-        <button data-auto-copy>Copy Address</button>
-        <button data-auto-unwind>End & Return</button>
+      <button data-auto-gen>Generate Wallet</button>
+      <button data-auto-copy>Copy Address</button>
+      <button data-auto-unwind>End & Return</button>
     </div>
     <div class="fdv-grid">
       <label><a href="https://chainstack.com/" target="_blank">RPC (CORS)</a> <input data-auto-rpc placeholder="https://your-provider.example/solana?api-key=..."/></label>
@@ -1044,9 +1048,85 @@ export function initAutoWidget(container = document.body) {
     </div>
     <div class="fdv-log" data-auto-log></div>
     <div class="fdv-actions">
+    <div class="fdv-actions-left">
+        <button data-auto-help title="How the bot works">Help</button>
+        <div class="fdv-modal" data-auto-modal
+             style="display:none; position:fixed; width: 100%; inset:0; z-index:9999; background:rgba(0, 0, 0, 1); align-items:center; justify-content:center;">
+          <div class="fdv-modal-card"
+               style="background:var(--fdv-bg,#111); color:var(--fdv-fg,#fff); width:92%; max-width:720px; max-height:80vh; overflow:auto; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.5); padding:16px 20px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px;">
+              <h3 style="margin:0; font-size:16px;">Auto Pump Bot Guide</h3>
+            </div>
+            <div class="fdv-modal-body-tooltip" style="font-size:13px; line-height:1.5; gap:10px;">
+              <div>
+                <strong>What it does</strong>
+                <ul style="margin:6px 0 0 18px;">
+                  <li>Tracks Pumping Radar leaders and buys the top token.</li>
+                  <li>With “Leader” on, buys once and holds until the leader changes.</li>
+                  <li>On leader change, rotates non-leader tokens back to SOL, then buys the new leader next tick.</li>
+                </ul>
+              </div>
+              <div>
+                <strong>Quick start</strong>
+                <ol style="margin:6px 0 0 18px;">
+                  <li>Set a CORS-enabled RPC URL (and headers if required).</li>
+                  <li>Generate the auto wallet and fund it with SOL.</li>
+                  <li>Set a Recipient to receive funds on End & Return.</li>
+                  <li>Tune Buy %, Min/Max Buy, Slippage.</li>
+                  <li>Click Start. Bot ticks every 5s and respects the cooldown.</li>
+                </ol>
+              </div>
+              <div>
+                <strong>Sizing & reserves</strong>
+                <ul style="margin:6px 0 0 18px;">
+                  <li>Buy size = min(affordable, carry + desired). A small fee reserve is kept.</li>
+                  <li>If size is below router min, it carries over until large enough.</li>
+                </ul>
+              </div>
+              <div>
+                <strong>Safety</strong>
+                <ul style="margin:6px 0 0 18px;">
+                  <li>Optional TP/SL selling is paused when “Leader” hold is on.</li>
+                  <li>Owner scans may be disabled by your RPC plan; the bot adapts.</li>
+                </ul>
+              </div>
+              <div>
+                <strong>Unwind</strong>
+                <ul style="margin:6px 0 0 18px;">
+                  <li>“End & Return” sells tokens to SOL and sends SOL to Recipient (minus rent/fees).</li>
+                </ul>
+              </div>
+              <div>
+                <strong>Disclaimer</strong>
+                <p style="margin:6px 0 0 0;">
+                  This bot is provided "as is" without warranties of any kind. Trading cryptocurrencies involves significant risk,
+                  including the potential loss of your investment. Past performance is not indicative of future results.
+                  Always do your own research and consider your risk tolerance before using this bot.
+                </p>
+                <p><strong>By using this bot, you acknowledge and accept these risks.</strong></p>
+              </div>
+              <div>
+                <strong>Support development</strong>
+                <p style="margin:6px 0 0 0;">
+                  If you find this tool useful, consider supporting its development:
+                </p>
+                <ul style="margin:6px 0 0 18px;">
+                  <li>twitter: <code><a href="https://twitter.com/fdvlol" target="_blank">@fdvlol</a></code></li>
+                  <li>telegram: <code><a href="https://t.me/fdvlolgroup" target="_blank">fdvlolgroup</a></code></li>
+                </ul>
+              </div>
+            </div>
+            <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:10px;">
+              <button data-auto-modal-close>Got it</button>
+            </div>
+          </div>
+        </div>
+    </div>
+    <div class="fdv-actions-right">
       <button data-auto-start>Start</button>
       <button data-auto-stop>Stop</button>
       <button data-auto-reset>Reset</button>
+    </div>
     </div>
   `;
 
@@ -1061,6 +1141,10 @@ export function initAutoWidget(container = document.body) {
 
   logEl     = wrap.querySelector("[data-auto-log]");
   toggleEl  = wrap.querySelector("[data-auto-toggle]");
+  const holdEl  = wrap.querySelector("[data-auto-hold]");
+  const helpBtn = wrap.querySelector("[data-auto-help]");
+  const modalEl = wrap.querySelector("[data-auto-modal]");
+  const modalCloseEls = wrap.querySelectorAll("[data-auto-modal-close]");
   startBtn  = wrap.querySelector("[data-auto-start]");
   stopBtn   = wrap.querySelector("[data-auto-stop]");
   mintEl    = { value: "" }; // not used in auto-wallet mode
@@ -1083,6 +1167,13 @@ export function initAutoWidget(container = document.body) {
   buyPctEl.value  = (state.buyPct * 100).toFixed(2);
   minBuyEl.value  = state.minBuySol;
   maxBuyEl.value  = state.maxBuySol;
+
+  helpBtn.addEventListener("click", () => { modalEl.style.display = "flex"; });
+  modalEl.addEventListener("click", (e) => { if (e.target === modalEl) modalEl.style.display = "none"; });
+  modalCloseEls.forEach(btn => btn.addEventListener("click", () => { modalEl.style.display = "none"; }));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && modalEl.style.display !== "none") modalEl.style.display = "none";
+  });
 
   rpcEl.addEventListener("change", () => {
     setRpcUrl(rpcEl.value);
@@ -1107,6 +1198,11 @@ export function initAutoWidget(container = document.body) {
   });
 
   toggleEl.addEventListener("change", () => onToggle(toggleEl.checked));
+  holdEl.addEventListener("change", () => {
+    state.holdUntilLeaderSwitch = !!holdEl.checked;
+    save();
+    log(`Hold-until-leader: ${state.holdUntilLeaderSwitch ? "ON" : "OFF"}`);
+  });
   startBtn.addEventListener("click", () => onToggle(true));
   stopBtn.addEventListener("click", () => onToggle(false));
   wrap.querySelector("[data-auto-reset]").addEventListener("click", () => {
@@ -1132,6 +1228,7 @@ export function initAutoWidget(container = document.body) {
   });
 
   toggleEl.checked = !!state.enabled;
+  holdEl.checked = !!state.holdUntilLeader;
   startBtn.disabled = !!state.enabled;
   stopBtn.disabled = !state.enabled;
   if (state.enabled && !timer) timer = setInterval(tick, 5000);
