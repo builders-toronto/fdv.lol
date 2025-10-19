@@ -6,10 +6,14 @@ import { computePumpingLeaders } from "../meme/addons/pumping.js";
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 // Minimum SOL-in to avoid Jupiter 400s on tiny swaps 
 const MIN_JUP_SOL_IN = 0.00005;
+// Minimum SOL-out on sells to avoid dust/route failures
+const MIN_SELL_SOL_OUT = 0.0007;
 
 // Dynamic fee reserve for small balances
 const FEE_RESERVE_MIN = 0.0002;   // rent
 const FEE_RESERVE_PCT = 0.10;     // or 10% of balance
+
+const TX_FEE_BUFFER_LAMPORTS = 250_000
 
 
 // Read CFG from swap.js when available (jupiterBase, platformFeeBps, tokenDecimals)
@@ -18,6 +22,7 @@ async function getCfg() {
 }
 
 const LS_KEY = "fdv_auto_bot_v1";
+
 let state = {
   enabled: false,
   mint: "",
@@ -27,7 +32,7 @@ let state = {
   buyScore: 1.2,
   takeProfitPct: 12,
   stopLossPct: 8,
-  slippageBps: 50,
+  slippageBps: 250,
   holdingsUi: 0,
   avgEntryUsd: 0,
   lastTradeTs: 0,
@@ -57,6 +62,17 @@ let state = {
   carrySol: 0,         
   ownerScanDisabled: false,
   ownerScanDisabledReason: "",
+
+  // Multi buys
+  allowMultiBuy: true,  
+  multiBuyTopN: 2,  
+  multiBuyBatchMs: 6000,
+  dustExitEnabled: true,
+  dustMinSolOut: 0.0006,
+
+  // Cache
+  pendingGraceMs: 20000,
+
   // collapse state for <details>
   collapsed: true,
   // hold until new leader detected
@@ -65,6 +81,49 @@ let state = {
 let timer = null;
 let logEl, toggleEl, startBtn, stopBtn, mintEl;
 let depAddrEl, depBalEl, lifeEl, recvEl, buyPctEl, minBuyEl, maxBuyEl;
+
+
+const POSCACHE_KEY_PREFIX = "fdv_poscache_v1:";
+
+function loadPosCache(ownerPubkeyStr) {
+  if (localStorage.getItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr) === null) {
+    localStorage.setItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr, JSON.stringify({}));
+  }
+  try { return JSON.parse(localStorage.getItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr) || "{}") || {}; }
+  catch { return {}; }
+}
+function savePosCache(ownerPubkeyStr, data) {
+  console.log("saving to cache:", data);
+  try { localStorage.setItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr, JSON.stringify(data || {})); } catch {}
+}
+function updatePosCache(ownerPubkeyStr, mint, sizeUi, decimals) {
+  if (localStorage.getItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr) === null) {
+    localStorage.setItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr, JSON.stringify({}));
+  }
+  if (!ownerPubkeyStr || !mint) return;
+  const cache = loadPosCache(ownerPubkeyStr);
+  if (Number(sizeUi) > 0) {
+    cache[mint] = { sizeUi: Number(sizeUi), decimals: Number.isFinite(decimals) ? decimals : 6 };
+    savePosCache(ownerPubkeyStr, cache);
+  }
+}
+function removeFromPosCache(ownerPubkeyStr, mint) {
+  if (!ownerPubkeyStr || !mint) return;
+  const cache = loadPosCache(ownerPubkeyStr);
+  if (cache[mint]) { delete cache[mint]; savePosCache(ownerPubkeyStr, cache); }
+}
+function cacheToList(ownerPubkeyStr) {
+  const cache = loadPosCache(ownerPubkeyStr);
+  return Object.entries(cache).map(([mint, v]) => ({
+    mint,
+    sizeUi: Number(v?.sizeUi || 0),
+    decimals: Number.isFinite(v?.decimals) ? v.decimals : 6
+  })).filter(x => x.mint && x.sizeUi > 0);
+}
+
+async function safeGetDecimalsFast(mintStr) {
+  try { return await getMintDecimals(mintStr); } catch { return 6; }
+}
 
 function downloadTextFile(filename, text) {
   const blob = new Blob([text], { type: "application/json;charset=utf-8" });
@@ -78,7 +137,6 @@ function downloadTextFile(filename, text) {
     a.remove();
   }, 0);
 }
-
 
 function normalizePercent(v) {
   const x = Number(v);
@@ -99,6 +157,37 @@ async function getPlatformFeeBps() {
   const n = Number(cfg.platformFeeBps);
   return Number.isFinite(n) ? Math.max(0, n|0) : 0;
 }
+
+async function tokenAccountRentLamports() {
+  if (window._fdvAtaRentLamports) return window._fdvAtaRentLamports;
+  try {
+    const conn = await getConn();
+    window._fdvAtaRentLamports = await conn.getMinimumBalanceForRentExemption(165);
+  } catch {
+    window._fdvAtaRentLamports = 2_039_280;
+  }
+  return window._fdvAtaRentLamports;
+}
+
+async function requiredAtaLamportsForSwap(ownerPubkeyStr, inputMint, outputMint) {
+  let need = 0;
+  const rent = await tokenAccountRentLamports();
+
+  if (inputMint === SOL_MINT) {
+    const hasWsol = await ataExists(ownerPubkeyStr, SOL_MINT);
+    if (!hasWsol) need += rent;
+  } else {
+    const hasIn = await ataExists(ownerPubkeyStr, inputMint);
+    if (!hasIn) need += rent;
+  }
+
+  if (outputMint !== SOL_MINT) {
+    const hasOut = await ataExists(ownerPubkeyStr, outputMint);
+    if (!hasOut) need += rent;
+  }
+  return need;
+}
+
 async function loadSplToken() {
   if (window.splToken) return window.splToken;
   try {
@@ -106,23 +195,62 @@ async function loadSplToken() {
     window.splToken = m;
     return m;
   } catch {
-    // minimal fallback constants for ATA derivation (stable program IDs)
     const { PublicKey } = await loadWeb3();
     const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+    const TOKEN_2022_PROGRAM_ID = new PublicKey("TokenzQdBNb1KzYrNU3G1bqbp1VZr1z7jWmzuXyaS6uJ");
     const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
-    async function getAssociatedTokenAddress(mint, owner, allowOwnerOffCurve = false, programId = TOKEN_PROGRAM_ID, associatedTokenProgramId = ASSOCIATED_TOKEN_PROGRAM_ID) {
-      const seeds = [
-        owner.toBuffer(),
-        programId.toBuffer(),
-        mint.toBuffer(),
-      ];
+    async function getAssociatedTokenAddress(mint, owner, allowOwnerOffCurve = true, programId = TOKEN_PROGRAM_ID, associatedTokenProgramId = ASSOCIATED_TOKEN_PROGRAM_ID) {
+      const seeds = [ owner.toBuffer(), programId.toBuffer(), mint.toBuffer() ];
       const [addr] = await (await loadWeb3()).PublicKey.findProgramAddress(seeds, associatedTokenProgramId);
       return addr;
     }
-    const m = { TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddress };
+    const m = { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddress };
     window.splToken = m;
     return m;
   }
+}
+
+async function confirmSig(sig, { commitment = "confirmed", timeoutMs = 12000, pollMs = 300 } = {}) {
+  const conn = await getConn();
+  const start = now();
+  while (now() - start < timeoutMs) {
+    try {
+      const st = await conn.getSignatureStatuses([sig]);
+      const v = st?.value?.[0];
+      if (v?.confirmationStatus === "confirmed" || v?.confirmationStatus === "finalized") return true;
+    } catch {}
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+  return false;
+}
+
+async function waitForTokenCredit(ownerPubkeyStr, mintStr, { timeoutMs = 8000, pollMs = 300 } = {}) {
+  const conn = await getConn();
+  const start = now();
+
+  let decimals = 6;
+  try { decimals = await getMintDecimals(mintStr); } catch {}
+
+  let atas = [];
+  try { atas = await getOwnerAtas(ownerPubkeyStr, mintStr); } catch {}
+  if (!Array.isArray(atas) || atas.length === 0) {
+    return { sizeUi: 0, decimals };
+  }
+
+  while (now() - start < timeoutMs) {
+    for (const { ata } of atas) {
+      try {
+        const res = await conn.getTokenAccountBalance(ata);
+        if (res?.value) {
+          const ui = Number(res.value.uiAmount || 0);
+          const dec = Number.isFinite(res.value.decimals) ? res.value.decimals : undefined;
+          if (ui > 0) return { sizeUi: ui, decimals: Number.isFinite(dec) ? dec : decimals };
+        }
+      } catch {}
+    }
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+  return { sizeUi: 0, decimals };
 }
 async function getFeeAta(mintStr) {
   const feeRecv = await getFeeReceiver();
@@ -226,7 +354,7 @@ async function getConn() {
   const hdrKey = JSON.stringify(headers);
   if (_conn && _connUrl === url && _connHdrKey === hdrKey) return _conn;
   const { Connection } = await loadWeb3();
-  _conn = new Connection(url, { commitment: "processed", httpHeaders: headers });
+  _conn = new Connection(url, { commitment: "confirmed", httpHeaders: headers });
   _connUrl = url; _connHdrKey = hdrKey;
   log(`RPC connection ready -> ${url} ${redactHeaders(headers)}`);
   return _conn;
@@ -252,6 +380,9 @@ async function fetchSolBalance(pubkeyStr) {
 
 function load() {
   try { state = { ...state, ...(JSON.parse(localStorage.getItem(LS_KEY))||{}) }; } catch {}
+  state.slippageBps = Math.max(150, Number(state.slippageBps || 150) | 0);
+  state.minBuySol   = Math.max(MIN_JUP_SOL_IN, Number(state.minBuySol || MIN_JUP_SOL_IN));
+  save();
 }
 function save() {
   try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch {}
@@ -265,6 +396,21 @@ function log(msg) {
 }
 
 function now() { return Date.now(); }
+
+const _pkValidCache = new Map();
+async function isValidPubkeyStr(s) {
+  const key = String(s || "").trim();
+  if (!key) return false;
+  if (_pkValidCache.has(key)) return _pkValidCache.get(key);
+  let ok = false;
+  try {
+    const { PublicKey } = await loadWeb3();
+    new PublicKey(key);
+    ok = true;
+  } catch {}
+  _pkValidCache.set(key, ok);
+  return ok;
+}
 
 function logObj(label, obj) {
   try { log(`${label}: ${JSON.stringify(obj)}`); } catch {}
@@ -296,42 +442,153 @@ async function ensureAutoWallet() {
 async function jupFetch(path, opts) {
   const base = await getJupBase();
   const url = `${base}${path}`;
+  const isGet = !opts || String(opts.method || "GET").toUpperCase() === "GET";
+  const isQuote = isGet && /\/quote(\?|$)/.test(path);
+
+  const nowTs = Date.now();
+  const minGapMs = isQuote ? 250 : 120; // be gentler on /quote jupiter is sensitive. go smooth. ease your way in.
+  if (!window._fdvJupLastCall) window._fdvJupLastCall = 0;
+  const waitMs = Math.max(0, window._fdvJupLastCall + minGapMs - nowTs) + (isQuote ? Math.floor(Math.random()*80) : 0);
+  if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs));
+  window._fdvJupLastCall = Date.now();
+
+
+  if (isGet) {
+    if (!window._fdvJupInflight) window._fdvJupInflight = new Map();
+    const inflight = window._fdvJupInflight;
+    if (inflight.has(url)) return inflight.get(url);
+  }
+
+  if (isQuote) {
+    if (!window._fdvJupQuoteCache) window._fdvJupQuoteCache = new Map();
+    const cache = window._fdvJupQuoteCache;
+    const hit = cache.get(url);
+    if (hit && (Date.now() - hit.ts) < 1500) {
+      log(`JUP cache hit: ${url}`);
+      return new Response(JSON.stringify(hit.json), { status: 200, headers: { "content-type":"application/json" }});
+    }
+  }
+
   log(`JUP fetch: ${opts?.method || "GET"} ${url}`);
-  const res = await fetch(url, {
-    headers: { accept: "application/json", ...(opts?.headers||{}) },
-    ...opts,
-  });
-  log(`JUP resp: ${res.status} ${url}`);
-  return res;
+
+  async function doFetchWithRetry() {
+    let lastRes = null, lastBody = "";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await fetch(url, {
+        headers: { accept: "application/json", ...(opts?.headers||{}) },
+        ...opts,
+      });
+      lastRes = res;
+
+      // Save successful quotes into memo
+      if (res.ok && isQuote) {
+        try {
+          const json = await res.clone().json();
+          if (!window._fdvJupQuoteCache) window._fdvJupQuoteCache = new Map();
+          window._fdvJupQuoteCache.set(url, { ts: Date.now(), json });
+        } catch {}
+      }
+
+      if (res.status !== 429) {
+        if (!res.ok && isQuote && res.status === 400) {
+          try { lastBody = await res.clone().text(); } catch {}
+          if (/rate limit exceeded/i.test(lastBody)) {
+            const backoff = 300 * Math.pow(2, attempt) + Math.floor(Math.random()*120);
+            log(`JUP 400(rate-limit): backing off ${backoff}ms`);
+            await new Promise(r => setTimeout(r, backoff));
+            continue;
+          }
+        }
+        return res;
+      }
+      // 429 backoff
+      const backoff = 350 * Math.pow(2, attempt) + Math.floor(Math.random()*150);
+      log(`JUP 429: backing off ${backoff}ms`);
+      await new Promise(r => setTimeout(r, backoff));
+    }
+    return lastRes;
+  }
+
+  let p = doFetchWithRetry();
+  if (isGet) {
+    window._fdvJupInflight.set(url, p);
+    try {
+      const res = await p;
+      log(`JUP resp: ${res.status} ${url}`);
+      return res;
+    } finally {
+      window._fdvJupInflight.delete(url);
+    }
+  } else {
+    const res = await p;
+    log(`JUP resp: ${res.status} ${url}`);
+    return res;
+  }
 }
 
 async function quoteOutSol(inputMint, amountUi, inDecimals) {
-  // NaN issue patch bug fix
   if (!Number.isFinite(amountUi) || amountUi <= 0) {
     log("Valuation skip: zero size.");
     return 0;
   }
   const dec = Number.isFinite(inDecimals) ? inDecimals : await getMintDecimals(inputMint);
   const raw = Math.max(1, Math.floor(amountUi * Math.pow(10, dec)));
-  const q = new URL("/swap/v1/quote", "https://fdv.lol");
-  q.searchParams.set("inputMint", inputMint);
-  q.searchParams.set("outputMint", "So11111111111111111111111111111111111111112");
-  q.searchParams.set("amount", String(raw));
-  q.searchParams.set("slippageBps", String(state.slippageBps));
-  q.searchParams.set("restrictIntermediateTokens", "true");
-  logObj("Valuation quote params", { inputMint, amountUi, dec });
-  const res = await jupFetch(q.pathname + q.search);
-  if (!res.ok) throw new Error(`quote ${res.status}`);
-  const data = await res.json();
-  const outRaw = Number(data?.outAmount || 0);
-  log(`Valuation: ~${(outRaw/1e9).toFixed(6)} SOL`);
-  return outRaw > 0 ? outRaw / 1e9 : 0;
+  const slip = Math.max(150, Number(state.slippageBps || 150) | 0);
+
+  async function tryQuote(restrictIntermediates) {
+    const q = new URL("/swap/v1/quote", "https://fdv.lol");
+    q.searchParams.set("inputMint", inputMint);
+    q.searchParams.set("outputMint", SOL_MINT);
+    q.searchParams.set("amount", String(raw));
+    q.searchParams.set("slippageBps", String(slip));
+    q.searchParams.set("restrictIntermediateTokens", String(restrictIntermediates));
+    logObj("Valuation quote params", { inputMint, amountUi, dec, slippageBps: slip });
+    const res = await jupFetch(q.pathname + q.search);
+    if (res.ok) {
+      const data = await res.json();
+      const outRaw = Number(data?.outAmount || 0);
+      log(`Valuation: ~${(outRaw/1e9).toFixed(6)} SOL`);
+      return outRaw > 0 ? outRaw / 1e9 : 0;
+    } else {
+      const errTxt = await res.text().catch(() => "");
+      log(`Quote 400 body: ${errTxt || "(empty)"}`);
+      throw new Error(`quote ${res.status}`);
+    }
+  }
+
+
+
+  try {
+    return await tryQuote(true);
+  } catch {
+    try {
+      return await tryQuote(false);
+    } catch {
+      return 0;
+    }
+  }
+}
+
+async function executeSwapWithConfirm(opts, { retries = 2, confirmMs = 15000 } = {}) {
+  let slip = Math.max(150, Number(opts.slippageBps ?? state.slippageBps ?? 150) | 0);
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const sig = await jupSwapWithKeypair({ ...opts, slippageBps: slip });
+      const ok = await confirmSig(sig, { commitment: "confirmed", timeoutMs: confirmMs }).catch(() => false);
+      if (ok) return { ok: true, sig, slip };
+    } catch (e) {
+      log(`Swap attempt ${attempt+1} failed: ${e.message || e}`);
+    }
+    slip = Math.min(2000, Math.floor(slip * 1.6));
+    log(`Swap not confirmed; retrying with slippage=${slip} bps…`);
+  }
+  return { ok: false };
 }
 
 async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, slippageBps }) {
   const { PublicKey, VersionedTransaction } = await loadWeb3();
   const conn = await getConn();
-
+  const userPub = signer.publicKey.toBase58();
   const feeBps = await getPlatformFeeBps();
   const feeRecv = await getFeeReceiver();
   let feeAccount = null;
@@ -357,35 +614,80 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     }
   }
   const inDecimals = await getMintDecimals(inputMint);
+  const baseSlip = Math.max(150, Number(slippageBps ?? state.slippageBps ?? 150) | 0);
   const amountRaw = Math.max(1, Math.floor(amountUi * Math.pow(10, inDecimals)));
-  const q = new URL("/swap/v1/quote", "https://fdv.lol");
-  q.searchParams.set("inputMint", inputMint);
-  q.searchParams.set("outputMint", outputMint);
-  q.searchParams.set("amount", String(amountRaw));
-  q.searchParams.set("slippageBps", String(slippageBps));
-  q.searchParams.set("restrictIntermediateTokens", "true");
-  if (feeAccount && feeBps > 0) q.searchParams.set("platformFeeBps", String(feeBps)); // align with swap.js
 
+
+  const isSell = (inputMint !== SOL_MINT) && (outputMint === SOL_MINT);
+  let restrictIntermediates = isSell ? "false" : "true";
+  
+
+
+  function buildQuoteUrl({ outMint, slipBps, restrict }) {
+    const u = new URL("/swap/v1/quote", "https://fdv.lol");
+    u.searchParams.set("inputMint", inputMint);
+    u.searchParams.set("outputMint", outMint);
+    u.searchParams.set("amount", String(amountRaw));
+    u.searchParams.set("slippageBps", String(slipBps));
+    u.searchParams.set("restrictIntermediateTokens", String(restrict));
+    if (feeAccount && feeBps > 0) u.searchParams.set("platformFeeBps", String(feeBps)); // align with swap.js
+    return u;
+  }
+
+  const q = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: restrictIntermediates });
   logObj("Quote params", {
-    inputMint, outputMint, amountUi, inDecimals, slippageBps,
-    feeBps: feeAccount ? feeBps : 0
+    inputMint, outputMint, amountUi, inDecimals, slippageBps: baseSlip,
+    restrictIntermediateTokens: restrictIntermediates, feeBps: feeAccount ? feeBps : 0
   });
 
-  const qRes = await jupFetch(q.pathname + q.search);
-  if (!qRes.ok) throw new Error(`quote ${qRes.status}`);
-  const quote = await qRes.json();
-  logObj("Quote", { inAmount: quote?.inAmount, outAmount: quote?.outAmount, routePlanLen: quote?.routePlan?.length });
+  let quote;
+  {
+    const qRes = await jupFetch(q.pathname + q.search);
+    if (!qRes.ok) {
+      if (isSell) {
+        const alt = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: (restrictIntermediates === "false" ? "true" : "false") });
+        log(`Primary sell quote failed (${qRes.status}). Retrying with restrictIntermediateTokens=${alt.searchParams.get("restrictIntermediateTokens")} …`);
+        const qRes2 = await jupFetch(alt.pathname + alt.search);
+        if (!qRes2.ok) {
+          const body = await qRes2.text().catch(()=> "");
+          log(`Sell quote retry failed: ${body || qRes2.status}`);
+          throw new Error(`quote ${qRes2.status}`);
+        }
+        quote = await qRes2.json();
+      } else {
+        throw new Error(`quote ${qRes.status}`);
+      }
+    } else {
+      quote = await qRes.json();
+    }
+    logObj("Quote", { inAmount: quote?.inAmount, outAmount: quote?.outAmount, routePlanLen: quote?.routePlan?.length });
+  }
 
-  async function buildAndSend(useSharedAccounts = true) {
+  async function seedCacheIfBuy() {
+      if (inputMint === SOL_MINT && outputMint !== SOL_MINT) {
+        const estRaw = Number(quote?.outAmount || 0);
+        if (estRaw > 0) {
+          const dec = await safeGetDecimalsFast(outputMint);
+          const ui = estRaw / Math.pow(10, dec);
+          try {
+            updatePosCache(userPub, outputMint, ui, dec);
+            log(`Seeded cache for ${outputMint.slice(0,4)}… (~${ui.toFixed(6)})`);
+          } catch {}
+        }
+      }
+  }
+
+  async function buildAndSend(useSharedAccounts = true, asLegacy = false) {
+    const slipForBody = Math.max(0, Number(quote?.slippageBps || baseSlip));
     const body = {
       quoteResponse: quote,
-      userPublicKey: new PublicKey(signer.publicKey).toBase58(),
+      userPublicKey: signer.publicKey.toBase58(),
       wrapAndUnwrapSol: true,
       dynamicComputeUnitLimit: true,
       useSharedAccounts: !!useSharedAccounts,
-      asLegacyTransaction: false,
+      asLegacyTransaction: !!asLegacy,
       ...(feeAccount ? { feeAccount } : {}),
-      ...(slippageBps != null ? { dynamicSlippage: { maxBps: slippageBps } } : {}),
+      ...(slipForBody != null ? { dynamicSlippage: { maxBps: slipForBody } } : {}),
     };
     logObj("Swap body", { hasFee: !!feeAccount, feeBps: feeAccount ? feeBps : 0, useSharedAccounts: !!useSharedAccounts });
 
@@ -421,20 +723,70 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         const sim = await conn.simulateTransaction(vtx, { sigVerify: false, replaceRecentBlockhash: true });
         const logs = sim?.value?.logs || e?.logs || [];
         log(`Simulation logs:\n${(logs||[]).join("\n")}`);
+        // router cooldown on tiny/dust routes (0x1788/0x1789)
+        const hasDustErr = (logs || []).some(l => /0x1788|0x1789/i.test(String(l)));
+        if (hasDustErr) {
+          if (!window._fdvRouterHold) window._fdvRouterHold = new Map();
+          // hold for 2 minutes to avoid hammering dust routes
+          window._fdvRouterHold.set(inputMint, Date.now() + 120_000);
+        }
       } catch {}
       return { ok: false, code: "SEND_FAIL", msg: e.message || String(e) };
     }
   }
-  const first = await buildAndSend(true);
-  if (first.ok) return first.sig;
+  const first = await buildAndSend(false);
+  if (first.ok) { await seedCacheIfBuy(); return first.sig; }
   if (first.code === "NOT_SUPPORTED") {
-    log("Retrying without shared accounts …");
-    const second = await buildAndSend(false);
-    if (second.ok) return second.sig;
-    throw new Error(second.msg || "swap failed");
+    log("Retrying with shared accounts …");
+    const second = await buildAndSend(true);
+    if (second.ok) { await seedCacheIfBuy(); return second.sig; }
+  } else {
+    log("Primary swap failed. Fallback: shared accounts …");
+    const fallback = await buildAndSend(true);
+    if (fallback.ok) { await seedCacheIfBuy(); return fallback.sig; }
   }
-  throw new Error(first.msg || "swap failed");
+
+  if (isSell) {
+    try {
+      const slip2 = 2000;
+      const q2 = buildQuoteUrl({ outMint: outputMint, slipBps: slip2, restrict: "false" });
+      log(`Tiny-notional fallback: relax route, slip=${slip2} bps …`);
+      const r2 = await jupFetch(q2.pathname + q2.search);
+      if (r2.ok) {
+        quote = await r2.json();
+        const a = await buildAndSend(false);
+        if (a.ok) { await seedCacheIfBuy(); return a.sig; }
+        const b = await buildAndSend(true);
+        if (b.ok) { await seedCacheIfBuy(); return b.sig; }
+      }
+    } catch {}
+
+    try {
+      const a = await buildAndSend(false, true);
+      if (a.ok) { await seedCacheIfBuy(); return a.sig; }
+      const b = await buildAndSend(true, true);
+      if (b.ok) { await seedCacheIfBuy(); return b.sig; }
+    } catch {}
+
+    try {
+      const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+      const slip3 = 2000;
+      const q3 = buildQuoteUrl({ outMint: USDC, slipBps: slip3, restrict: "false" });
+      log("Tiny-notional fallback: route to USDC …");
+      const r3 = await jupFetch(q3.pathname + q3.search);
+      if (r3.ok) {
+        quote = await r3.json();
+        const a = await buildAndSend(false);
+        if (a.ok) return a.sig;
+        const b = await buildAndSend(true);
+        if (b.ok) return b.sig;
+      }
+    } catch {}
+  }
+
+  throw new Error("swap failed");
 }
+
 async function sweepAllToSolAndReturn() {
   const { PublicKey, SystemProgram, Transaction } = await loadWeb3();
   const signer = await getAutoKeypair();
@@ -490,129 +842,171 @@ async function sweepAllToSolAndReturn() {
   save();
 }
 
-function pickTopPumper() {
+let _buyBatchUntil = 0;
+
+
+function safeNum(v, def=0){ const n = Number(v); return Number.isFinite(n) ? n : def; }
+function scorePumpCandidate(it) {
+  // Robust field access
+  const kp = it?.kp || {};
+  const chg5m = safeNum(it?.change5m ?? kp.change5m, 0);
+  const chg1h = safeNum(it?.change1h ?? kp.change1h, 0);
+  const liq   = safeNum(it?.liqUsd   ?? kp.liqUsd,   0);
+  const v1h   = safeNum(it?.v1hTotal ?? kp.v1hTotal, 0);
+  const pScore= safeNum(it?.pumpScore ?? kp.pumpScore, 0);
+
+  // Logarithmic scaling for liquidity/volume to avoid domination by whales
+  const lLiq = Math.log1p(liq / 5000);     // ~soft-threshold near 5k
+  const lVol = Math.log1p(v1h / 1000);     // ~soft-threshold near 1k
+  const accel = chg1h > 0 ? (chg5m / chg1h) : (chg5m > 0 ? 2 : 0);
+
+  // Composite score (tuned weights)
+  const score =
+    0.35 * chg5m +
+    0.20 * chg1h +
+    0.20 * lVol +
+    0.10 * lLiq +
+    0.10 * accel +
+    0.05 * pScore;
+
+  return score;
+}
+function pickPumpCandidates(take = 1, poolN = 3) {
   try {
-    const top = computePumpingLeaders(1);
-    const mint = top?.[0]?.mint;
-    return mint || "";
-  } catch { return ""; }
+    const pool = (computePumpingLeaders(poolN) || []).map(it => ({
+      mint: it?.mint,
+      score: scorePumpCandidate(it),
+      liqUsd: safeNum(it?.liqUsd ?? it?.kp?.liqUsd, 0),
+      v1h: safeNum(it?.v1hTotal ?? it?.kp?.v1hTotal, 0),
+      chg5m: safeNum(it?.change5m ?? it?.kp?.change5m, 0),
+      chg1h: safeNum(it?.change1h ?? it?.kp?.change1h, 0),
+    })).filter(x => x.mint);
+    if (!pool.length) return [];
+    pool.sort((a,b) => b.score - a.score);
+    const top = pool[0]?.score ?? -Infinity;
+
+    const strong = pool.filter(x => x.score >= top * 0.85 && x.chg5m > 0);
+
+    const chosen = (strong.length ? strong : pool).slice(0, Math.max(1, take)).map(x => x.mint);
+    logObj("Pump picks", pool.slice(0, poolN));
+    return chosen;
+  } catch {
+    return [];
+  }
 }
 
-async function getOwnerAta(ownerPubkeyStr, mintStr) {
+function pickTopPumper() {
+  const picks = pickPumpCandidates(1, 3);
+  return picks[0] || "";
+}
+
+async function ataExists(ownerPubkeyStr, mintStr) {
+  try {
+    const ata = await getOwnerAta(ownerPubkeyStr, mintStr);
+    if (!ata) return false;
+    const conn = await getConn();
+    const ai = await conn.getAccountInfo(ata, "processed");
+    return !!ai;
+  } catch {
+    return false;
+  }
+}
+
+
+async function getOwnerAta(ownerPubkeyStr, mintStr, programIdOverride) {
   const { PublicKey } = await loadWeb3();
-  const { getAssociatedTokenAddress } = await loadSplToken();
-  const owner = new PublicKey(ownerPubkeyStr);
-  const mint = new PublicKey(mintStr);
-  return await getAssociatedTokenAddress(mint, owner, true);
+  const { getAssociatedTokenAddress, TOKEN_PROGRAM_ID } = await loadSplToken();
+  try {
+    const owner = new PublicKey(ownerPubkeyStr);
+    const mint = new PublicKey(mintStr);
+    const pid = programIdOverride || TOKEN_PROGRAM_ID;
+    return await getAssociatedTokenAddress(mint, owner, true, pid);
+  } catch {
+    // return a dummy impossible ATA to prevent throws upstream
+    return null;
+  }
+}
+
+async function getOwnerAtas(ownerPubkeyStr, mintStr) {
+  const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = await loadSplToken();
+  const out = [];
+  try {
+    const ata1 = await getOwnerAta(ownerPubkeyStr, mintStr, TOKEN_PROGRAM_ID);
+    if (ata1) out.push({ programId: TOKEN_PROGRAM_ID, ata: ata1 });
+  } catch {}
+  try {
+    if (TOKEN_2022_PROGRAM_ID) {
+      const ata2 = await getOwnerAta(ownerPubkeyStr, mintStr, TOKEN_2022_PROGRAM_ID);
+      if (ata2) out.push({ programId: TOKEN_2022_PROGRAM_ID, ata: ata2 });
+    }
+  } catch {}
+  return out;
 }
 
 async function getAtaBalanceUi(ownerPubkeyStr, mintStr, decimalsHint) {
   const conn = await getConn();
-  const ata = await getOwnerAta(ownerPubkeyStr, mintStr);
-  // Try lightweight balance RPC; if account missing, it's zero
-  const res = await conn.getTokenAccountBalance(ata).catch(() => null);
-  if (res?.value) {
-    return {
-      sizeUi: Number(res.value.uiAmount || 0),
-      decimals: Number.isFinite(res.value.decimals) ? res.value.decimals : (await getMintDecimals(mintStr)),
-      exists: true,
-    };
+  const atas = await getOwnerAtas(ownerPubkeyStr, mintStr);
+  let best = null;
+  for (const { ata } of atas) {
+    const res = await conn.getTokenAccountBalance(ata).catch(() => null);
+    if (res?.value) {
+      const sizeUi = Number(res.value.uiAmount || 0);
+      const decimals = Number.isFinite(res.value.decimals) ? res.value.decimals : (await getMintDecimals(mintStr));
+      if (sizeUi > 0) {
+        updatePosCache(ownerPubkeyStr, mintStr, sizeUi, decimals);
+        return { sizeUi, decimals, exists: true };
+      }
+      best = { sizeUi: 0, decimals: Number.isFinite(res.value.decimals) ? res.value.decimals : (await getMintDecimals(mintStr)), exists: true };
+    }
   }
-  const ai = await conn.getAccountInfo(ata, "processed").catch(() => null);
-  if (!ai) {
-    return {
-      sizeUi: 0,
-      decimals: Number.isFinite(decimalsHint) ? decimalsHint : (await getMintDecimals(mintStr)),
-      exists: false,
-    };
+  // Check existence only to report exists, but never clear cache on misses
+  let existsAny = false;
+  for (const { ata } of atas) {
+    const ai = await conn.getAccountInfo(ata, "processed").catch(() => null);
+    existsAny = existsAny || !!ai;
   }
-  return {
-    sizeUi: 0,
-    decimals: Number.isFinite(decimalsHint) ? decimalsHint : (await getMintDecimals(mintStr)),
-    exists: true,
-  };
+  const decimals = Number.isFinite(decimalsHint) ? decimalsHint : (await getMintDecimals(mintStr));
+  if (best) return best;
+  return { sizeUi: 0, decimals, exists: existsAny };
 }
 
 async function listOwnerSplPositions(ownerPubkeyStr) {
-  if (state.ownerScanDisabled) return [];
+  if (state.ownerScanDisabled) {
+    return cacheToList(ownerPubkeyStr);
+  }
   const { PublicKey } = await loadWeb3();
-  const { TOKEN_PROGRAM_ID } = await loadSplToken();
+  const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = await loadSplToken();
   const conn = await getConn();
-  const b64ToBytes = (b64) => {
-    const bin = atob(b64);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
-  };
-  const readU64LE = (bytes, offset) => {
-    let x = 0n;
-    for (let i = 0; i < 8; i++) x |= BigInt(bytes[offset + i]) << (8n * BigInt(i));
-    return x;
-  };
-  const parseTokenAccount = (u8) => {
-    const mintBytes = u8.slice(0, 32);
-    const amount = readU64LE(u8, 64);
-    return { mintBytes, amount };
-  };
-  const bytesToBase58 = async (u8) => {
-    const { bs58 } = await loadDeps();
-    return bs58.default.encode(u8);
-  };
 
   const out = [];
-
-  try {
-    const resp = await conn.getParsedTokenAccountsByOwner(
-      new PublicKey(ownerPubkeyStr),
-      { programId: TOKEN_PROGRAM_ID },
-      "processed"
-    );
-    for (const it of resp?.value || []) {
-      try {
+  const seen = new Set();
+  async function scan(programId) {
+    try {
+      const resp = await conn.getParsedTokenAccountsByOwner(new PublicKey(ownerPubkeyStr), { programId }, "processed");
+      for (const it of resp?.value || []) {
         const info = it?.account?.data?.parsed?.info;
         const mint = String(info?.mint || "");
         if (!mint || mint === SOL_MINT) continue;
-        const ta = info?.tokenAmount;
-        const ui = Number(ta?.uiAmount || 0);
-        const dec = Number(ta?.decimals);
-        if (ui > 0) out.push({ mint, sizeUi: ui, decimals: Number.isFinite(dec) ? dec : 6 });
-      } catch {}
-    }
-    return out;
-  } catch (e) {
-    if (isPlanUpgradeError(e)) { disableOwnerScans(e.message || e); return []; }
-    // Fall through to base64 path only for non-plan-limit errors
-    log(`Parsed owner scan error, trying raw decode: ${e.message || e}`);
-  }
-  try {
-    const resp = await conn.getTokenAccountsByOwner(
-      new PublicKey(ownerPubkeyStr),
-      { programId: TOKEN_PROGRAM_ID },
-      "processed"
-    );
-    const decCache = new Map();
-    for (const it of resp?.value || []) {
-      try {
-        const data = it?.account?.data?.[0]; // base64
-        if (!data) continue;
-        const u8 = b64ToBytes(data);
-        const { mintBytes, amount } = parseTokenAccount(u8);
-        const mint = await bytesToBase58(mintBytes);
-        if (!mint || mint === SOL_MINT) continue;
-        if (amount === 0n) continue;
-        let dec = decCache.get(mint);
-        if (!Number.isFinite(dec)) {
-          dec = await getMintDecimals(mint);
-          decCache.set(mint, dec);
+        const ta = info?.tokenAmount; const ui = Number(ta?.uiAmount || 0); const dec = Number(ta?.decimals);
+        if (ui > 0 && !seen.has(mint)) {
+          out.push({ mint, sizeUi: ui, decimals: Number.isFinite(dec) ? dec : 6 });
+          seen.add(mint);
         }
-        const ui = Number(amount) / Math.pow(10, dec);
-        if (ui > 0) out.push({ mint, sizeUi: ui, decimals: dec });
-      } catch {}
+      }
+      return true;
+    } catch (e) {
+      if (isPlanUpgradeError(e)) { disableOwnerScans(e.message || e); return false; }
+      log(`Parsed owner scan error (${programId.toBase58?.() || "unknown"}): ${e.message || e}`);
+      return false;
     }
-  } catch (e) {
-    if (isPlanUpgradeError(e)) { disableOwnerScans(e.message || e); return []; }
-    log(`Fallback owner scan error: ${e.message || e}`);
   }
+
+  let any = false;
+  if (TOKEN_PROGRAM_ID) any = (await scan(TOKEN_PROGRAM_ID)) || any;
+  if (TOKEN_2022_PROGRAM_ID) any = (await scan(TOKEN_2022_PROGRAM_ID)) || any;
+
+  if (!out.length) return cacheToList(ownerPubkeyStr);
+  for (const r of out) updatePosCache(ownerPubkeyStr, r.mint, r.sizeUi, r.decimals);
   return out;
 }
 
@@ -620,95 +1014,123 @@ async function syncPositionsFromChain(ownerPubkeyStr) {
   try {
     log("Syncing positions from chain (ATAs) …");
     const nowTs = now();
+
+    let scanned = [];
+    let seen = new Set();
     if (!state.ownerScanDisabled) {
-      const scanned = await listOwnerSplPositions(ownerPubkeyStr);
-      const seen = new Set(scanned.map(x => x.mint));
-      // up-sert balances from scan
+      scanned = await listOwnerSplPositions(ownerPubkeyStr);
+      seen = new Set(scanned.map(x => x.mint));
+
+      const cachedList = cacheToList(ownerPubkeyStr);
+      for (const c of cachedList) {
+        if (!seen.has(c.mint)) { scanned.push(c); seen.add(c.mint); }
+      }
+
       for (const { mint, sizeUi, decimals } of scanned) {
         const prev = state.positions[mint] || { costSol: 0, hwmSol: 0, acquiredAt: nowTs };
-        state.positions[mint] = {
+        const next = {
           ...prev,
           sizeUi: Number(sizeUi || 0),
           decimals: Number.isFinite(decimals) ? decimals : prev.decimals ?? 6,
           lastSeenAt: nowTs,
         };
-      }
-      for (const mint of Object.keys(state.positions || {})) {
-        if (mint === SOL_MINT) continue;
-        if (seen.has(mint)) continue;
-        try {
-          const b = await getAtaBalanceUi(ownerPubkeyStr, mint, state.positions[mint]?.decimals);
-          const amt = Number(b.sizeUi || 0);
-          if (amt <= 0) {
-            delete state.positions[mint];
-          } else {
-            state.positions[mint] = {
-              ...state.positions[mint],
-              sizeUi: amt,
-              decimals: b.decimals,
-              lastSeenAt: nowTs,
-            };
-          }
-        } catch {}
+        if (next.awaitingSizeSync && Number(next.sizeUi || 0) > 0) next.awaitingSizeSync = false;
+        state.positions[mint] = next;
       }
     } else {
-        for (const [mint, pos] of Object.entries(state.positions || {})) {
-          if (mint === SOL_MINT) continue;
-          if (pos.awaitingSizeSync) {
-            const sizeOk = Number(pos.sizeUi || 0) > 0;
-            const seenAfterBuy = Number(pos.lastSeenAt || 0) >= Number(pos.lastBuyAt || 0);
-            if (sizeOk && seenAfterBuy) {
-              pos.awaitingSizeSync = false;
-              state.positions[mint] = pos;
-            }
+      const cached = loadPosCache(ownerPubkeyStr);
+      for (const [mint, pos] of Object.entries(state.positions || {})) {
+        if (mint === SOL_MINT) continue;
+        if (pos.awaitingSizeSync) {
+          const c = cached[mint];
+          if (c && Number(c.sizeUi || 0) > 0) {
+            pos.sizeUi = Number(c.sizeUi);
+            pos.decimals = Number.isFinite(c.decimals) ? c.decimals : (pos.decimals ?? 6);
+            pos.lastSeenAt = nowTs;
+            pos.awaitingSizeSync = false;
+            state.positions[mint] = pos;
           }
         }
+      }
     }
+
+    for (const mint of Object.keys(state.positions || {})) {
+      if (mint === SOL_MINT) continue;
+      if (seen.has(mint)) continue;
+
+      const pos = state.positions[mint] || {};
+      let existsFlag = false;
+      try {
+        const b = await getAtaBalanceUi(ownerPubkeyStr, mint, pos.decimals);
+        existsFlag = !!b.exists;
+        const amt = Number(b.sizeUi || 0);
+        if (amt > 0) {
+          state.positions[mint] = {
+            ...pos,
+            sizeUi: amt,
+            decimals: b.decimals,
+            lastSeenAt: nowTs,
+            awaitingSizeSync: false,
+          };
+          continue;
+        }
+      } catch {}
+
+      const age = nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0);
+      const grace = Math.max(5_000, Number(state.pendingGraceMs || 20_000));
+      if (Number(pos.sizeUi || 0) <= 0 && age > grace) {
+        pos.awaitingSizeSync = false; // clear pending so buyCandidates can include this mint
+        state.positions[mint] = pos;
+      }
+
+      const pruneAfter = grace * 30; // ~10 minutes at default
+      if (Number(pos.sizeUi || 0) <= 0 && !existsFlag && age > pruneAfter) {
+        delete state.positions[mint];
+        removeFromPosCache(ownerPubkeyStr, mint);
+      }
+    }
+
     save();
   } catch (e) {
     log(`Sync failed: ${e.message || e}`);
   }
 }
+
 async function sweepNonSolToSolAtStart() {
   const kp = await getAutoKeypair();
-  if (!kp) {
-    log("Auto wallet not ready; skipping startup sweep.");
-    return;
-  }
+  if (!kp) { log("Auto wallet not ready; skipping startup sweep."); return; }
   log("Startup sweep: checking for non-SOL balances …");
   const tracked = Object.entries(state.positions || {})
     .filter(([m, p]) => m !== SOL_MINT && Number(p?.sizeUi || 0) > 0)
     .map(([mint, p]) => ({ mint, sizeUi: Number(p.sizeUi), decimals: Number(p.decimals || 6) }));
+  // Prefer scan
   const scanned = state.ownerScanDisabled ? [] : await listOwnerSplPositions(kp.publicKey.toBase58()).catch(()=>[]);
+  const cached = scanned.length ? [] : cacheToList(kp.publicKey.toBase58());
   const byMint = new Map();
   for (const p of tracked) byMint.set(p.mint, p);
   for (const p of scanned) byMint.set(p.mint, p);
+  for (const p of cached) byMint.set(p.mint, p);
   const items = Array.from(byMint.values());
-  if (!items.length) {
-    log("Startup sweep: no SPL balances to sell.");
-    return;
-  }
-  let sold = 0;
+  if (!items.length) { log("Startup sweep: no SPL balances to sell."); return; }
+ let sold = 0;
   for (const { mint, sizeUi, decimals } of items) {
     try {
-      // try to skip dust that wont hitr the route....
       const estSol = await quoteOutSol(mint, sizeUi, decimals).catch(() => 0);
-      if (estSol < MIN_JUP_SOL_IN) {
-        log(`Skip ${mint.slice(0,4)}… (est ${estSol.toFixed(6)} SOL < ${MIN_JUP_SOL_IN}).`);
+      const minNotional = Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN * 1.05);
+      if (estSol < minNotional) {
+        log(`Skip ${mint.slice(0,4)}… (est ${estSol.toFixed(6)} SOL < ${minNotional}).`);
         continue;
       }
-      await jupSwapWithKeypair({
-        signer: kp,
-        inputMint: mint,
-        outputMint: SOL_MINT,
-        amountUi: sizeUi,
-        slippageBps: state.slippageBps,
-      });
+
+      const res = await executeSwapWithConfirm({
+        signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sizeUi, slippageBps: state.slippageBps,
+      }, { retries: 2, confirmMs: 15000 });
+
+      if (!res.ok) throw new Error("route execution failed");
+
       log(`Startup sweep sold ${sizeUi.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
-      if (state.positions[mint]) {
-        delete state.positions[mint];
-        save();
-      }
+      if (state.positions[mint]) { delete state.positions[mint]; save(); }
+      removeFromPosCache(kp.publicKey.toBase58(), mint);
       sold++;
       await new Promise(r => setTimeout(r, 250));
     } catch (e) {
@@ -716,18 +1138,15 @@ async function sweepNonSolToSolAtStart() {
     }
   }
   log(`Startup sweep complete. Sold ${sold} token${sold===1?"":"s"}.`);
-  if (sold > 0) {
-    state.lastTradeTs = now();
-    save();
-  }
+  if (sold > 0) { state.lastTradeTs = now(); save(); }
 }
-
 
 
 
 // TODO: refine sell logic with more parameters and further include KPI addons.
 
 let _buyInFlight = false;
+let _sellEvalRunning = false;
 
 function shouldSell(pos, curSol, nowTs) {
   const sz = Number(pos.sizeUi || 0);
@@ -784,105 +1203,216 @@ function shouldSell(pos, curSol, nowTs) {
 
 
 let _inFlight = false;
+
+
 async function evalAndMaybeSellPositions() {
   if (state.holdUntilLeaderSwitch) return;
   if (_inFlight) return;
+  if (_sellEvalRunning) return;
+  _sellEvalRunning = true;
+  try {
+    const kp = await getAutoKeypair();
+    if (!kp) return;
 
-  const kp = await getAutoKeypair();
-  if (!kp) return;
+    await syncPositionsFromChain(kp.publicKey.toBase58());
+    const entries = Object.entries(state.positions || {});
+    if (!entries.length) return;
 
-  await syncPositionsFromChain(kp.publicKey.toBase58());
-  const entries = Object.entries(state.positions || {});
-  if (!entries.length) return;
-
-  const nowTs = now();
-  for (const [mint, pos] of entries) {
-    try {
-      const sz = Number(pos.sizeUi || 0);
-      if (sz <= 0) {
-        log(`Skip sell eval for ${mint.slice(0,4)}… (no size)`);
-        continue;
-      }
-
-      let curSol = Number(pos.lastQuotedSol || 0);
-      const lastQ = Number(pos.lastQuotedAt || 0);
-      if (!lastQ || (nowTs - lastQ) > (state.minQuoteIntervalMs|0)) {
-        log(`Evaluating sell for ${mint.slice(0,4)}… size ${sz.toFixed(6)}`);
-        curSol = await quoteOutSol(mint, sz, pos.decimals);
-        pos.lastQuotedSol = curSol;
-        pos.lastQuotedAt = nowTs;
-      }
-
-      const minNotional = MIN_JUP_SOL_IN * 1.05;
-      if (curSol < minNotional) {
-        log(`Skip sell eval ${mint.slice(0,4)}… (notional ${curSol.toFixed(6)} SOL < ${minNotional})`);
-        continue;
-      }
-
-      const d = shouldSell(pos, curSol, nowTs);
-      log(`Sell decision: ${d.action !== "none" ? d.action : "NO"} (${d.reason || "criteria not met"})`);
-      if (d.action === "none") continue;
-
-      _inFlight = true;
-      if (d.action === "sell_partial") {
-        const pct = Math.min(100, Math.max(1, Number(d.pct || 50)));
-
-        const sellUi = pos.sizeUi * (pct / 100);
-
-        const estSol = await quoteOutSol(mint, sellUi, pos.decimals).catch(() => 0);
-        if (estSol < minNotional) {
-          log(`Skip partial ${pct}% ${mint.slice(0,4)}… (est ${estSol.toFixed(6)} SOL < ${minNotional})`);
-          _inFlight = false;
+    const nowTs = now();
+    for (const [mint, pos] of entries) {
+      try {
+        const sz = Number(pos.sizeUi || 0);
+        if (sz <= 0) {
+          log(`Skip sell eval for ${mint.slice(0,4)}… (no size)`);
           continue;
         }
 
-        await jupSwapWithKeypair({
-          signer: kp,
-          inputMint: mint,
-          outputMint: SOL_MINT,
-          amountUi: sellUi,
-          slippageBps: state.slippageBps,
-        });
-        log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… (${pct}% partial) -> ~${estSol.toFixed(6)} SOL (${d.reason})`);
+        let curSol = Number(pos.lastQuotedSol || 0);
+        const lastQ = Number(pos.lastQuotedAt || 0);
+        if (!lastQ || (nowTs - lastQ) > (state.minQuoteIntervalMs|0)) {
+          log(`Evaluating sell for ${mint.slice(0,4)}… size ${sz.toFixed(6)}`);
+          curSol = await quoteOutSol(mint, sz, pos.decimals).catch(() => 0);
+          pos.lastQuotedSol = curSol;
+          pos.lastQuotedAt = nowTs;
+        }
 
-        // Pro-rate position accounting
-        const remainPct = 1 - (pct / 100);
-        pos.sizeUi = Math.max(0, pos.sizeUi - sellUi);
-        pos.costSol = Number(pos.costSol || 0) * remainPct;
-        pos.hwmSol = Number(pos.hwmSol || 0) * remainPct;
-        pos.hwmPx = Number(pos.hwmPx || 0); // keep px HWM; it auto-updates next eval
-        pos.lastSellAt = now();
-        state.positions[mint] = pos;
+        const baseMinNotional = Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN * 1.05);
+        const minNotional = baseMinNotional; // keep router-safe default
+        let d = null;
+
+        if (curSol < minNotional) {
+          // selling dust works... but only if enabled
+          d = shouldSell(pos, curSol, nowTs);
+          const dustMin = Math.max(MIN_SELL_SOL_OUT, Number(state.dustMinSolOut || 0));
+          if (!(state.dustExitEnabled && d.action === "sell_all" && curSol >= dustMin)) {
+            log(`Skip sell eval ${mint.slice(0,4)}… (notional ${curSol.toFixed(6)} SOL < ${minNotional})`);
+            continue;
+          } else {
+            log(`Dust exit enabled for ${mint.slice(0,4)}… (est ${curSol.toFixed(6)} SOL >= ${dustMin})`);
+          }
+        }
+
+        const decision = d || shouldSell(pos, curSol, nowTs);
+        log(`Sell decision: ${decision.action !== "none" ? decision.action : "NO"} (${decision.reason || "criteria not met"})`);
+        if (decision.action === "none") continue;
+
+        // Jupiter 0x1788 = cooldown
+        if (window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
+          const until = window._fdvRouterHold.get(mint);
+          log(`Router cooldown for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`);
+          continue;
+        }
+
+        _inFlight = true;
+        if (decision.action === "sell_partial") {
+          const pct = Math.min(100, Math.max(1, Number(decision.pct || 50)));
+          let sellUi = pos.sizeUi * (pct / 100);
+
+          try {
+            const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+            if (Number(b.sizeUi || 0) > 0) sellUi = Math.min(sellUi, Number(b.sizeUi));
+          } catch {}
+
+          const estSol = await quoteOutSol(mint, sellUi, pos.decimals).catch(() => 0);
+          if (estSol < minNotional) {
+            if (curSol >= minNotional) {
+              log(`Partial ${pct}% ${mint.slice(0,4)}… below min (${estSol.toFixed(6)} SOL < ${minNotional}). Escalating to full sell …`);
+              let sellUi2 = pos.sizeUi;
+              try {
+                const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+                if (Number(b.sizeUi || 0) > 0) sellUi2 = Number(b.sizeUi);
+              } catch {}
+
+              const res2 = await executeSwapWithConfirm({
+                signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi2, slippageBps: state.slippageBps,
+              }, { retries: 1, confirmMs: 15000 });
+
+              if (!res2.ok) {
+                log(`Sell not confirmed for ${mint.slice(0,4)}… Keeping position.`);
+                _inFlight = false;
+                continue;
+              }
+
+              let remainUi2 = 0;
+              try {
+                const b2 = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+                remainUi2 = Number(b2.sizeUi || 0);
+              } catch {}
+              if (remainUi2 > 1e-9) {
+                pos.sizeUi = remainUi2;
+                pos.lastSellAt = now();
+                updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+                save();
+                log(`Post-sell balance remains ${remainUi2.toFixed(6)} ${mint.slice(0,4)}… (keeping position)`);
+              } else {
+                log(`Sold ${sellUi2.toFixed(6)} ${mint.slice(0,4)}… -> ${curSol.toFixed(6)} SOL (partial<min => full)`);
+                delete state.positions[mint];
+                removeFromPosCache(kp.publicKey.toBase58(), mint);
+                save();
+              }
+
+              state.lastTradeTs = now();
+              _inFlight = false;
+              save();
+              return; // one sell per tick
+            } else {
+              log(`Skip partial ${pct}% ${mint.slice(0,4)}… (est ${estSol.toFixed(6)} SOL < ${minNotional})`);
+              _inFlight = false;
+              continue;
+            }
+          }
+
+          const res = await executeSwapWithConfirm({
+            signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: state.slippageBps,
+          }, { retries: 1, confirmMs: 15000 });
+
+          if (!res.ok) {
+            log(`Sell not confirmed for ${mint.slice(0,4)}… (partial). Keeping position.`);
+            _inFlight = false;
+            continue;
+          }
+
+          log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… (${pct}% partial) -> ~${estSol.toFixed(6)} SOL (${d.reason})`);
+
+          const remainPct = 1 - (pct / 100);
+          pos.sizeUi = Math.max(0, pos.sizeUi - sellUi);
+          pos.costSol = Number(pos.costSol || 0) * remainPct;
+          pos.hwmSol = Number(pos.hwmSol || 0) * remainPct;
+          pos.hwmPx = Number(pos.hwmPx || 0);
+          pos.lastSellAt = now();
+
+          try {
+            const b2 = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+            pos.sizeUi = Number(b2.sizeUi || pos.sizeUi || 0);
+            pos.decimals = Number.isFinite(b2.decimals) ? b2.decimals : pos.decimals;
+          } catch {}
+          updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+          save();
+        } else {
+          let sellUi = pos.sizeUi;
+          try {
+            const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+            if (Number(b.sizeUi || 0) > 0) sellUi = Number(b.sizeUi);
+          } catch {}
+
+          const res = await executeSwapWithConfirm({
+            signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: state.slippageBps,
+          }, { retries: 1, confirmMs: 15000 });
+
+          if (!res.ok) {
+            log(`Sell not confirmed for ${mint.slice(0,4)}… Keeping position.`);
+            _inFlight = false;
+            continue;
+          }
+
+          let remainUi = 0;
+          try {
+            const b2 = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+            remainUi = Number(b2.sizeUi || 0);
+          } catch {}
+          if (remainUi > 1e-9) {
+            pos.sizeUi = remainUi;
+            pos.lastSellAt = now();
+            updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+            save();
+            log(`Post-sell balance remains ${remainUi.toFixed(6)} ${mint.slice(0,4)}… (keeping position)`);
+          } else {
+            log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ${curSol.toFixed(6)} SOL (${d.reason})`);
+            delete state.positions[mint];
+            removeFromPosCache(kp.publicKey.toBase58(), mint);
+            save();
+          }
+        }
+
+        state.lastTradeTs = now();
+        _inFlight = false;
         save();
-      } else {
-        await jupSwapWithKeypair({
-          signer: kp,
-          inputMint: mint,
-          outputMint: SOL_MINT,
-          amountUi: pos.sizeUi,
-          slippageBps: state.slippageBps,
-        });
-        log(`Sold ${pos.sizeUi.toFixed(6)} ${mint.slice(0,4)}… -> ${curSol.toFixed(6)} SOL (${d.reason})`);
-        delete state.positions[mint];
-        save();
+        return; // one sell per tick
+      } catch (e) {
+        log(`Sell check failed for ${mint.slice(0,4)}…: ${e.message||e}`);
+      } finally {
+        _inFlight = false;
       }
-
-      state.lastTradeTs = now();
-      _inFlight = false;
-      save();
-      return; // one sell per tick
-    } catch (e) {
-      log(`Sell check failed for ${mint.slice(0,4)}…: ${e.message||e}`);
-    } finally {
-      _inFlight = false;
     }
+  } finally {
+    _sellEvalRunning = false;
   }
 }
 
 let _switchingLeader = false;
+
+
+
 async function switchToLeader(newMint) {
   const prev = state.currentLeaderMint || "";
   if (!newMint || newMint === prev) return false;
+
+  // Guard leader mint
+  if (!(await isValidPubkeyStr(newMint))) {
+    log(`Leader mint invalid, ignoring: ${String(newMint).slice(0,6)}…`);
+    return false;
+  }
+
   if (_switchingLeader) return false;
   const kp = await getAutoKeypair();
   if (!kp) return false;
@@ -890,7 +1420,20 @@ async function switchToLeader(newMint) {
   try {
     log(`Leader changed: ${prev ? prev.slice(0,4) + "…" : "(none)"} -> ${newMint.slice(0,4)}…`);
     await syncPositionsFromChain(kp.publicKey.toBase58());
-    const mints = Object.keys(state.positions || {}).filter(m => m !== SOL_MINT && m !== newMint);
+
+    // Filter out invalid/stale mints up-front
+    const allMints = Object.keys(state.positions || {}).filter(m => m !== SOL_MINT && m !== newMint);
+    const mints = [];
+    for (const m of allMints) {
+      if (await isValidPubkeyStr(m)) {
+        mints.push(m);
+      } else {
+        log(`Pruning invalid mint from positions: ${String(m).slice(0,6)}…`);
+        delete state.positions[m];
+        removeFromPosCache(kp.publicKey.toBase58(), m);
+      }
+    }
+
     let rotated = 0;
     for (const mint of mints) {
       try {
@@ -902,7 +1445,7 @@ async function switchToLeader(newMint) {
           continue;
         }
         const estSol = await quoteOutSol(mint, uiAmt, state.positions[mint]?.decimals).catch(() => 0);
-        const minNotional = MIN_JUP_SOL_IN * 1.05;
+        const minNotional = Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN * 1.05);
         if (estSol < minNotional) {
           log(`Skip rotation for ${mint.slice(0,4)}… (est ${estSol.toFixed(6)} SOL < ${minNotional})`);
           continue;
@@ -922,7 +1465,7 @@ async function switchToLeader(newMint) {
         log(`Rotate sell failed ${mint.slice(0,4)}…: ${e.message || e}`);
       }
     }
-    log(`Rotation complete. Sold ${rotated} tokens.`);
+    log(`Rotation complete. Sold ${rotated} token${rotated===1?"":"s"}.`);
     state.currentLeaderMint = newMint;
     save();
     if (rotated > 0) {
@@ -951,19 +1494,22 @@ async function tick() {
 
   log("Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!");
 
-  if (_buyInFlight || _inFlight || _switchingLeader) return; 
+  if (_buyInFlight || _inFlight || _switchingLeader) return;
 
-  const leaderMint = pickTopPumper();
+  const picks = state.allowMultiBuy
+    ? pickPumpCandidates(Math.max(1, state.multiBuyTopN|0), 3)
+    : [pickTopPumper()].filter(Boolean);
+  if (!picks.length) return;
 
-  if (!leaderMint) return;
+  log(`Pump picks: ${picks.map(m=>m.slice(0,4)+"…").join(", ")}`);
 
-  log(`Top pumper: ${leaderMint.slice(0,4)}…`);
+  if (state.holdUntilLeaderSwitch) {
+    const didRotate = await switchToLeader(picks[0]);
+    if (didRotate) return;
+  }
 
-  const didRotate = await switchToLeader(leaderMint);
-
-  if (didRotate) return; // wait until next tick
-
-  if (state.lastTradeTs && (now() - state.lastTradeTs)/1000 < state.minSecsBetween) return;
+  const withinBatch = state.allowMultiBuy && now() <= _buyBatchUntil;
+  if (state.lastTradeTs && (now() - state.lastTradeTs)/1000 < state.minSecsBetween && !withinBatch) return;
 
   try {
     const kp = await getAutoKeypair();
@@ -971,75 +1517,147 @@ async function tick() {
 
     await syncPositionsFromChain(kp.publicKey.toBase58());
 
-    const cur = state.positions[leaderMint];
-    const alreadyHoldingLeader =
-      Number(cur?.sizeUi || 0) > 0 || Number(cur?.costSol || 0) > 0;
-
+    const cur = state.positions[picks[0]];
+    const alreadyHoldingLeader = Number(cur?.sizeUi || 0) > 0 || Number(cur?.costSol || 0) > 0;
     if (state.holdUntilLeaderSwitch && alreadyHoldingLeader) {
       log("Holding current leader. No additional buys.");
       return;
     }
 
     const solBal = await fetchSolBalance(kp.publicKey.toBase58());
-
-    const feeReserve = Math.max(FEE_RESERVE_MIN, solBal * FEE_RESERVE_PCT);
-
-    const affordable = Math.max(0, solBal - feeReserve);
-
-    const desired = Math.min(state.maxBuySol, Math.max(state.minBuySol, solBal * state.buyPct));
-
+    const feeReserve   = Math.max(FEE_RESERVE_MIN, solBal * FEE_RESERVE_PCT);
+    const affordable   = Math.max(0, solBal - feeReserve);
+    const desired      = Math.min(state.maxBuySol, Math.max(state.minBuySol, solBal * state.buyPct));
     const minThreshold = Math.max(state.minBuySol, MIN_JUP_SOL_IN);
+    let plannedTotal   = Math.min(affordable, Math.min(state.maxBuySol, state.carrySol + desired));
 
-    let planned = Math.min(affordable, Math.min(state.maxBuySol, state.carrySol + desired));
-    logObj("Buy sizing", { solBal: Number(solBal).toFixed(6), feeReserve, affordable, desired, carry: state.carrySol, planned, minThreshold });
-    if (planned < minThreshold) {
+    logObj("Buy sizing (pre-split)", { solBal: Number(solBal).toFixed(6), feeReserve, affordable, desired, carry: state.carrySol, plannedTotal, minThreshold });
+
+    const buyCandidates = picks.filter(m => {
+      const pos = state.positions[m];
+      const sz0 = Number(pos?.sizeUi || 0) <= 0;
+      const notPending = !pos?.awaitingSizeSync;
+      return sz0 && notPending;
+    });
+    if (!buyCandidates.length) { log("All picks already held or pending. Skipping buys."); return; }
+
+    if (plannedTotal < minThreshold) {
       state.carrySol += desired;
       save();
       log(`Accumulating. Carry=${state.carrySol.toFixed(6)} SOL (< ${minThreshold} min).`);
       return;
     }
-    const buySol = planned;
 
-    _buyInFlight = true; 
+    _buyInFlight = true;
 
-    await jupSwapWithKeypair({
-      signer: kp,
-      inputMint: "So11111111111111111111111111111111111111112",
-      outputMint: leaderMint,
-      amountUi: buySol,
-      slippageBps: state.slippageBps,
-    });
+    let solLamports = Math.floor(solBal * 1e9);
+    const feeReserveLamports = Math.floor(feeReserve * 1e9);
+    let remainingLamports = Math.max(0, solLamports - feeReserveLamports);
+    let remaining = plannedTotal;
+    let spent = 0;
+    let buysDone = 0;
 
-    state.carrySol = Math.max(0, state.carrySol + desired - buySol);
+    for (let i = 0; i < buyCandidates.length; i++) {
+      const mint = buyCandidates[i];
+      const left = buyCandidates.length - i;
+      const target = Math.max(minThreshold, remaining / left);
 
-    const prevSize = Number(state.positions[leaderMint]?.sizeUi || 0);
-    const pos = state.positions[leaderMint] || { costSol: 0, hwmSol: 0, acquiredAt: now() };
-    pos.costSol = Number(pos.costSol || 0) + buySol;
-    pos.hwmSol = Math.max(Number(pos.hwmSol || 0), buySol);
-    pos.lastBuyAt = now();
-    pos.awaitingSizeSync = true; // DEFER sells until we see refreshed size
-    try {
-      const bal = await getAtaBalanceUi(kp.publicKey.toBase58(), leaderMint, pos.decimals);
-      pos.sizeUi = Number(bal.sizeUi || 0);
-      pos.decimals = Number.isFinite(bal.decimals) ? bal.decimals : (pos.decimals ?? await getMintDecimals(leaderMint));
-      pos.lastSeenAt = now();
-      if (Number(pos.sizeUi || 0) > 0 && Number(pos.sizeUi || 0) !== prevSize) pos.awaitingSizeSync = false;
-    } catch {
-      log("Failed to refresh position size after buy.");
+      const reqRent = await requiredAtaLamportsForSwap(kp.publicKey.toBase58(), SOL_MINT, mint);
+      const candidateBudgetLamports = Math.max(0, remainingLamports - reqRent - TX_FEE_BUFFER_LAMPORTS);
+      const targetLamports = Math.floor(target * 1e9);
+      let buyLamports = Math.min(targetLamports, Math.floor(remaining * 1e9), candidateBudgetLamports);
+
+      const minInLamports = Math.floor(MIN_JUP_SOL_IN * 1e9);
+      if (buyLamports < minInLamports) {
+        if (reqRent > 0) {
+          const needSol = (reqRent + minInLamports + TX_FEE_BUFFER_LAMPORTS - remainingLamports) / 1e9;
+          log(`Skip ${mint.slice(0,4)}… (insufficient to fund ATAs). Need ~${Math.max(0, needSol).toFixed(6)} SOL more.`);
+        } else {
+          log(`Skip ${mint.slice(0,4)}… (buy < router min ${MIN_JUP_SOL_IN}).`);
+        }
+        continue;
+      }
+
+      const buySol = buyLamports / 1e9;
+
+      const sig = await jupSwapWithKeypair({
+        signer: kp,
+        inputMint: SOL_MINT,
+        outputMint: mint,
+        amountUi: buySol,
+        slippageBps: state.slippageBps,
+      });
+
+      await confirmSig(sig, { commitment: "confirmed", timeoutMs: 12000 });
+
+      remainingLamports = Math.max(0, remainingLamports - buyLamports - reqRent);
+      remaining = remainingLamports / 1e9;
+
+      const prevPos  = state.positions[mint];
+      const prevSize = Number(prevPos?.sizeUi || 0);
+      const pos = prevPos || { costSol: 0, hwmSol: 0, acquiredAt: now() };
+
+      let credit = { sizeUi: 0, decimals: Number.isFinite(pos.decimals) ? pos.decimals : 6 };
+      try {
+        credit = await waitForTokenCredit(kp.publicKey.toBase58(), mint, { timeoutMs: 8000, pollMs: 300 });
+      } catch (e) {
+        log(`Token credit wait failed: ${e.message || e}`);
+        try { credit.decimals = await getMintDecimals(mint); } catch {}
+      }
+
+      pos.costSol = Number(pos.costSol || 0) + buySol;
+      pos.hwmSol = Math.max(Number(pos.hwmSol || 0), buySol);
+      pos.lastBuyAt = now();
+      pos.awaitingSizeSync = true;
+
+      if (credit.sizeUi > 0) {
+        pos.sizeUi = credit.sizeUi;
+        pos.decimals = credit.decimals;
+        pos.lastSeenAt = now();
+        if (Number(pos.sizeUi || 0) !== prevSize) pos.awaitingSizeSync = false;
+        updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+      } else {
+        try {
+          const bal = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+          pos.sizeUi = Number(bal.sizeUi || 0);
+          pos.decimals = Number.isFinite(bal.decimals) ? bal.decimals : (pos.decimals ?? await getMintDecimals(mint));
+          pos.lastSeenAt = now();
+          if (Number(pos.sizeUi || 0) > 0 && Number(pos.sizeUi || 0) !== prevSize) pos.awaitingSizeSync = false;
+          updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+        } catch { log(`Failed to refresh size after buy for ${mint.slice(0,4)}…`); }
+        if (!Number(pos.sizeUi || 0)) {
+          const seeded = loadPosCache(kp.publicKey.toBase58())[mint];
+          if (seeded && Number(seeded.sizeUi || 0) > 0) {
+            pos.sizeUi = Number(seeded.sizeUi);
+            pos.decimals = Number.isFinite(seeded.decimals) ? seeded.decimals : (pos.decimals ?? 6);
+            pos.lastSeenAt = now();
+          }
+        }
+      }
+
+      state.positions[mint] = pos;
+      save();
+
+      spent += buySol;
+      buysDone++;
+      _buyBatchUntil = now() + (state.multiBuyBatchMs|0);
+
+      log(`Bought ~${buySol.toFixed(4)} SOL -> ${mint.slice(0,4)}…`);
+      await new Promise(r => setTimeout(r, 150));
+      if (remaining < minThreshold) break;
     }
-    state.positions[leaderMint] = pos;
-    save();
 
-    log(`Bought ~${buySol.toFixed(4)} SOL -> ${leaderMint.slice(0,4)}…`);
-    state.lastTradeTs = now();
-    save();
+    state.carrySol = Math.max(0, state.carrySol + desired - spent);
+    if (buysDone > 0) {
+      state.lastTradeTs = now();
+      save();
+    }
   } catch (e) {
     log(`Buy failed: ${e.message||e}`);
   } finally {
     _buyInFlight = false;
   }
 }
-
 let _starting = false;
 async function startAutoAsync() {
   if (_starting) return;
@@ -1119,7 +1737,7 @@ export function initAutoWidget(container = document.body) {
       <svg class="fdv-acc-caret" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
         <path d="M8 10l4 4 4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>
-      <span class="fdv-title">Auto Pump (v0.0.12)</span>
+      <span class="fdv-title">Auto Pump (v0.0.13)</span>
     </span>
   `;
 
@@ -1128,7 +1746,7 @@ export function initAutoWidget(container = document.body) {
   body.innerHTML = `
     <div class="fdv-auto-head">
       <label class="fdv-switch fdv-hold-leader" style="margin-left:12px;">
-        <input type="checkbox" data-auto-hold />
+        <input type="checkbox" data-auto-hold disabled />
         <span>Leader</span>
       </label>
       <label class="fdv-switch">
@@ -1222,9 +1840,9 @@ export function initAutoWidget(container = document.body) {
                 </ul>
               </div>
             </div>
-            <div style="display:flex; justify-content:space-between; gap:8px; margin-top:12px; flex-wrap:wrap;">
+            <div style="display:flex; justify-content:space-between; gap:8px; margin-top:22px; flex-wrap:wrap;">
               <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                <button data-auto-sec-export>Export JSON</button>
+                <button data-auto-sec-export>Export Wallet.json</button>
               </div>
               <button data-auto-modal-close>Close</button>
             </div>
