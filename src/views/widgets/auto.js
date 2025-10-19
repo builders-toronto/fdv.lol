@@ -1,7 +1,7 @@
 import { FDV_FEE_RECEIVER } from "../../config/env.js";
 import { computePumpingLeaders } from "../meme/addons/pumping.js";
 
-
+// Dust orders and minimums are blocked due to Jupiter route failures and 400 errors.
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 // Minimum SOL-in to avoid Jupiter 400s on tiny swaps 
@@ -15,6 +15,18 @@ const FEE_RESERVE_PCT = 0.10;     // or 10% of balance
 
 const TX_FEE_BUFFER_LAMPORTS = 250_000
 
+const UI_LIMITS = {
+  BUY_PCT_MIN: 0.01,  // 1%
+  BUY_PCT_MAX: 0.50,  // 50%
+  MIN_BUY_SOL_MIN: Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN), // ≥ router-safe sell floor
+  MIN_BUY_SOL_MAX: 1,    // cap min order size at 1 SOL
+  MAX_BUY_SOL_MIN: Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN),
+  MAX_BUY_SOL_MAX: 5,    // cap max order size at 5 SOL
+  LIFE_MINS_MIN: 0,
+  LIFE_MINS_MAX: 10080,  // 7 days
+};
+
+function clamp(n, lo, hi) { const x = Number(n); return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : lo; }
 
 // Read CFG from swap.js when available (jupiterBase, platformFeeBps, tokenDecimals)
 async function getCfg() {
@@ -65,7 +77,7 @@ let state = {
 
   // Multi buys
   allowMultiBuy: true,  
-  multiBuyTopN: 2,  
+  multiBuyTopN: 1,  
   multiBuyBatchMs: 6000,
   dustExitEnabled: true,
   dustMinSolOut: 0.0006,
@@ -93,7 +105,7 @@ function loadPosCache(ownerPubkeyStr) {
   catch { return {}; }
 }
 function savePosCache(ownerPubkeyStr, data) {
-  console.log("saving to cache:", data);
+  // console.log("saving to cache:", data);
   try { localStorage.setItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr, JSON.stringify(data || {})); } catch {}
 }
 function updatePosCache(ownerPubkeyStr, mint, sizeUi, decimals) {
@@ -1528,7 +1540,7 @@ async function tick() {
     const feeReserve   = Math.max(FEE_RESERVE_MIN, solBal * FEE_RESERVE_PCT);
     const affordable   = Math.max(0, solBal - feeReserve);
     const desired      = Math.min(state.maxBuySol, Math.max(state.minBuySol, solBal * state.buyPct));
-    const minThreshold = Math.max(state.minBuySol, MIN_JUP_SOL_IN);
+    const minThreshold = Math.max(state.minBuySol, MIN_SELL_SOL_OUT);
     let plannedTotal   = Math.min(affordable, Math.min(state.maxBuySol, state.carrySol + desired));
 
     logObj("Buy sizing (pre-split)", { solBal: Number(solBal).toFixed(6), feeReserve, affordable, desired, carry: state.carrySol, plannedTotal, minThreshold });
@@ -1737,7 +1749,7 @@ export function initAutoWidget(container = document.body) {
       <svg class="fdv-acc-caret" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
         <path d="M8 10l4 4 4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>
-      <span class="fdv-title">Auto Pump (v0.0.13)</span>
+      <span class="fdv-title">Auto Pump (v0.0.14)</span>
     </span>
   `;
 
@@ -1765,10 +1777,10 @@ export function initAutoWidget(container = document.body) {
       <label>Auto Wallet <input data-auto-dep readonly placeholder="Generate to get address"/></label>
       <label>Deposit Balance <input data-auto-bal readonly/></label>
       <label>Recipient (SOL) <input data-auto-recv placeholder="Your wallet address"/></label>
-      <label>Lifetime (mins) <input data-auto-life type="number" step="1"/></label>
-      <label>Buy % of SOL <input data-auto-buyp type="number" step="0.1"/></label>
-      <label>Min Buy (SOL) <input data-auto-minbuy type="number" step="0.0001"/></label>
-      <label>Max Buy (SOL) <input data-auto-maxbuy type="number" step="0.0001"/></label>
+      <label>Lifetime (mins) <input data-auto-life type="number" step="1" min="${UI_LIMITS.LIFE_MINS_MIN}" max="${UI_LIMITS.LIFE_MINS_MAX}"/></label>
+      <label>Buy % of SOL <input data-auto-buyp type="number" step="0.1" min="${UI_LIMITS.BUY_PCT_MIN*100}" max="${UI_LIMITS.BUY_PCT_MAX*100}"/></label>
+      <label>Min Buy (SOL) <input data-auto-minbuy type="number" step="0.0001" min="${UI_LIMITS.MIN_BUY_SOL_MIN}" max="${UI_LIMITS.MIN_BUY_SOL_MAX}"/></label>
+      <label>Max Buy (SOL) <input data-auto-maxbuy type="number" step="0.0001" min="${UI_LIMITS.MAX_BUY_SOL_MIN}" max="${UI_LIMITS.MAX_BUY_SOL_MAX}"/></label>
     </div>
     <div class="fdv-log" data-auto-log></div>
     <div class="fdv-actions">
@@ -1994,11 +2006,27 @@ export function initAutoWidget(container = document.body) {
   });
 
   const saveField = () => {
-    state.recipientPub  = recvEl.value.trim();
-    state.lifetimeMins  = parseInt(lifeEl.value || "0", 10);
-    state.buyPct        = Math.max(0, normalizePercent(buyPctEl.value));
-    state.minBuySol     = Math.max(0, Number(minBuyEl.value));
-    state.maxBuySol     = Math.max(0, Number(maxBuyEl.value));
+    const life = clamp(parseInt(lifeEl.value || "0", 10), UI_LIMITS.LIFE_MINS_MIN, UI_LIMITS.LIFE_MINS_MAX);
+    state.lifetimeMins = life;
+    lifeEl.value = String(life);
+
+    const rawPct = normalizePercent(buyPctEl.value);
+    const pct = clamp(rawPct, UI_LIMITS.BUY_PCT_MIN, UI_LIMITS.BUY_PCT_MAX);
+    state.buyPct = pct;
+    buyPctEl.value = (pct * 100).toFixed(2);
+
+    let minBuy = clamp(Number(minBuyEl.value || 0), UI_LIMITS.MIN_BUY_SOL_MIN, UI_LIMITS.MIN_BUY_SOL_MAX);
+    let maxBuy = clamp(Number(maxBuyEl.value || 0), UI_LIMITS.MAX_BUY_SOL_MIN, UI_LIMITS.MAX_BUY_SOL_MAX);
+
+    if (maxBuy < minBuy) maxBuy = minBuy;
+
+    state.minBuySol = minBuy;
+    state.maxBuySol = maxBuy;
+
+    minBuyEl.value = String(minBuy);
+    maxBuyEl.min = String(minBuy);
+    maxBuyEl.value = String(maxBuy);
+
     save();
   };
   [recvEl, lifeEl, buyPctEl, minBuyEl, maxBuyEl].forEach(el => {
