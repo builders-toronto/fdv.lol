@@ -13,4 +13,4 @@
 !/robots.txt
 
 .DS_Store
-Thumbs.db
+Thumbs.db/src/views/widgets/*.log
