@@ -46,4 +46,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the **fastest, simplest, and most trusted memecoin radar on Solana**.  
 
-fix(auto): repair DOM—separate Help and Wallet Secret modals, guard listeners; add Secret button; default hold-until-leader=ON
+fix(auto): prevent double-buys; DEFER sells until size sync; stabilize TP/SL PnL
