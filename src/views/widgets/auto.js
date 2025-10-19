@@ -652,23 +652,17 @@ async function syncPositionsFromChain(ownerPubkeyStr) {
         } catch {}
       }
     } else {
-      for (const mint of Object.keys(state.positions || {})) {
-        if (mint === SOL_MINT) continue;
-        try {
-          const b = await getAtaBalanceUi(ownerPubkeyStr, mint, state.positions[mint]?.decimals);
-          const amt = Number(b.sizeUi || 0);
-          if (amt <= 0) {
-            delete state.positions[mint];
-          } else {
-            state.positions[mint] = {
-              ...state.positions[mint],
-              sizeUi: amt,
-              decimals: b.decimals,
-              lastSeenAt: nowTs,
-            };
+        for (const [mint, pos] of Object.entries(state.positions || {})) {
+          if (mint === SOL_MINT) continue;
+          if (pos.awaitingSizeSync) {
+            const sizeOk = Number(pos.sizeUi || 0) > 0;
+            const seenAfterBuy = Number(pos.lastSeenAt || 0) >= Number(pos.lastBuyAt || 0);
+            if (sizeOk && seenAfterBuy) {
+              pos.awaitingSizeSync = false;
+              state.positions[mint] = pos;
+            }
           }
-        } catch {}
-      }
+        }
     }
     save();
   } catch (e) {
@@ -733,11 +727,15 @@ async function sweepNonSolToSolAtStart() {
 
 // TODO: refine sell logic with more parameters and further include KPI addons.
 
+let _buyInFlight = false;
+
 function shouldSell(pos, curSol, nowTs) {
   const sz = Number(pos.sizeUi || 0);
   const cost = Number(pos.costSol || 0);
   if (!Number.isFinite(curSol) || curSol <= 0) return { action: "none" };
   if (cost <= 0 || sz <= 0) return { action: "none" };
+
+  if (pos.awaitingSizeSync) return { action: "none", reason: "awaiting-size-sync" };
 
   const lastBuyAt = Number(pos.lastBuyAt || pos.acquiredAt || 0);
   if (lastBuyAt && nowTs - lastBuyAt < (state.coolDownSecsAfterBuy|0) * 1000) {
@@ -753,10 +751,8 @@ function shouldSell(pos, curSol, nowTs) {
     return { action: "none", reason: "min-hold" };
   }
 
-  const pxNow = curSol / sz;    
-
-  const pxCost = cost / sz;     
-
+  const pxNow = curSol / sz;
+  const pxCost = cost / sz;
   pos.hwmPx = Math.max(Number(pos.hwmPx || 0) || pxNow, pxNow);
 
   const pnlPct   = ((pxNow - pxCost) / Math.max(1e-12, pxCost)) * 100;
@@ -766,9 +762,7 @@ function shouldSell(pos, curSol, nowTs) {
   const armTrail = Math.max(0, Number(state.minProfitToTrailPct || 0));
   const partialPct = Math.min(100, Math.max(0, Number(state.partialTpPct || 0)));
 
-
   if (sl > 0 && pnlPct <= -sl) return { action: "sell_all", reason: `SL ${pnlPct.toFixed(2)}%` };
-
 
   if (tp > 0 && pnlPct >= tp) {
     if (partialPct > 0 && partialPct < 100) {
@@ -832,7 +826,7 @@ async function evalAndMaybeSellPositions() {
       _inFlight = true;
       if (d.action === "sell_partial") {
         const pct = Math.min(100, Math.max(1, Number(d.pct || 50)));
-        
+
         const sellUi = pos.sizeUi * (pct / 100);
 
         const estSol = await quoteOutSol(mint, sellUi, pos.decimals).catch(() => 0);
@@ -957,6 +951,8 @@ async function tick() {
 
   log("Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!");
 
+  if (_buyInFlight || _inFlight || _switchingLeader) return; 
+
   const leaderMint = pickTopPumper();
 
   if (!leaderMint) return;
@@ -985,24 +981,17 @@ async function tick() {
     }
 
     const solBal = await fetchSolBalance(kp.publicKey.toBase58());
+
     const feeReserve = Math.max(FEE_RESERVE_MIN, solBal * FEE_RESERVE_PCT);
+
     const affordable = Math.max(0, solBal - feeReserve);
+
     const desired = Math.min(state.maxBuySol, Math.max(state.minBuySol, solBal * state.buyPct));
+
     const minThreshold = Math.max(state.minBuySol, MIN_JUP_SOL_IN);
 
-
     let planned = Math.min(affordable, Math.min(state.maxBuySol, state.carrySol + desired));
-
-
-    logObj("Buy sizing", {
-      solBal: Number(solBal).toFixed(6),
-      feeReserve,
-      affordable,
-      desired,
-      carry: state.carrySol,
-      planned,
-      minThreshold
-    });
+    logObj("Buy sizing", { solBal: Number(solBal).toFixed(6), feeReserve, affordable, desired, carry: state.carrySol, planned, minThreshold });
     if (planned < minThreshold) {
       state.carrySol += desired;
       save();
@@ -1011,9 +1000,7 @@ async function tick() {
     }
     const buySol = planned;
 
-    if (desired < minThreshold * 0.1) {
-      log(`Buy % very small at ${(state.buyPct*100).toFixed(3)}%. Increase or lower Min Buy.`);
-    }
+    _buyInFlight = true; 
 
     await jupSwapWithKeypair({
       signer: kp,
@@ -1025,18 +1012,18 @@ async function tick() {
 
     state.carrySol = Math.max(0, state.carrySol + desired - buySol);
 
-
-
-
+    const prevSize = Number(state.positions[leaderMint]?.sizeUi || 0);
     const pos = state.positions[leaderMint] || { costSol: 0, hwmSol: 0, acquiredAt: now() };
     pos.costSol = Number(pos.costSol || 0) + buySol;
     pos.hwmSol = Math.max(Number(pos.hwmSol || 0), buySol);
     pos.lastBuyAt = now();
+    pos.awaitingSizeSync = true; // DEFER sells until we see refreshed size
     try {
       const bal = await getAtaBalanceUi(kp.publicKey.toBase58(), leaderMint, pos.decimals);
       pos.sizeUi = Number(bal.sizeUi || 0);
       pos.decimals = Number.isFinite(bal.decimals) ? bal.decimals : (pos.decimals ?? await getMintDecimals(leaderMint));
       pos.lastSeenAt = now();
+      if (Number(pos.sizeUi || 0) > 0 && Number(pos.sizeUi || 0) !== prevSize) pos.awaitingSizeSync = false;
     } catch {
       log("Failed to refresh position size after buy.");
     }
@@ -1048,6 +1035,8 @@ async function tick() {
     save();
   } catch (e) {
     log(`Buy failed: ${e.message||e}`);
+  } finally {
+    _buyInFlight = false;
   }
 }
 
