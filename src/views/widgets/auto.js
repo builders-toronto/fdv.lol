@@ -7,13 +7,19 @@ const SOL_MINT = "So11111111111111111111111111111111111111112";
 // Minimum SOL-in to avoid Jupiter 400s on tiny swaps 
 const MIN_JUP_SOL_IN = 0.00005;
 // Minimum SOL-out on sells to avoid dust/route failures
-const MIN_SELL_SOL_OUT = 0.0007;
+const MIN_SELL_SOL_OUT = 0.002;
 
 // Dynamic fee reserve for small balances
 const FEE_RESERVE_MIN = 0.0002;   // rent
 const FEE_RESERVE_PCT = 0.10;     // or 10% of balance
 
 const TX_FEE_BUFFER_LAMPORTS = 250_000
+
+const SELL_TX_FEE_BUFFER_LAMPORTS = 400_000; 
+const EXTRA_TX_BUFFER_LAMPORTS     = 150_000;  
+const MIN_OPERATING_SOL            = 0.005;    
+const ROUTER_COOLDOWN_MS           = 60_000;
+
 
 const UI_LIMITS = {
   BUY_PCT_MIN: 0.01,  // 1%
@@ -80,7 +86,7 @@ let state = {
   multiBuyTopN: 1,  
   multiBuyBatchMs: 6000,
   dustExitEnabled: true,
-  dustMinSolOut: 0.0006,
+  dustMinSolOut: 0.004,
 
   // Cache
   pendingGraceMs: 20000,
@@ -441,6 +447,74 @@ function copyLog() {
 
 function now() { return Date.now(); }
 
+function setRouterHold(mint, ms = ROUTER_COOLDOWN_MS) {
+  if (!mint) return;
+  if (!window._fdvRouterHold) window._fdvRouterHold = new Map();
+  const until = now() + Math.max(5_000, ms|0);
+  window._fdvRouterHold.set(mint, until);
+  try { log(`Router cooldown set for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`); } catch {}
+}
+
+let _solPxCache = { ts: 0, usd: 0 };
+async function getSolUsd() {
+  const t = Date.now();
+  if (_solPxCache.usd > 0 && (t - _solPxCache.ts) < 60_000) return _solPxCache.usd;
+  try {
+    const res = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd", { headers: { accept: "application/json" }});
+    const j = await res.json();
+    const px = Number(j?.solana?.usd || 0);
+    if (Number.isFinite(px) && px > 0) {
+      _solPxCache = { ts: t, usd: px };
+      return px;
+    }
+  } catch {}
+  return _solPxCache.usd || 0;
+}
+function fmtUsd(n) {
+  const x = Number(n || 0);
+  if (!Number.isFinite(x)) return "$0.00";
+  return "$" + x.toFixed(x >= 100 ? 0 : x >= 10 ? 2 : 3);
+}
+
+// Compute how much SOL we can spend on buys without risking exit ability
+async function computeSpendCeiling(ownerPubkeyStr, { solBalHint } = {}) {
+  const solBal = Number.isFinite(solBalHint) ? solBalHint : await fetchSolBalance(ownerPubkeyStr);
+  const solLamports = Math.floor(solBal * 1e9);
+
+  // Base reserve: rent/fees cushion
+  const baseReserveLamports = Math.max(
+    Math.floor(FEE_RESERVE_MIN * 1e9),
+    Math.floor(solLamports * FEE_RESERVE_PCT)
+  );
+
+  // How many open SPL positions might we need to sell?
+  const posCount = Object.entries(state.positions || {})
+    .filter(([m, p]) => m !== SOL_MINT && Number(p?.sizeUi || 0) > 0).length;
+
+  // Reserve tx fees to sell each current position once
+  const sellResLamports = posCount * (SELL_TX_FEE_BUFFER_LAMPORTS + EXTRA_TX_BUFFER_LAMPORTS);
+
+  // Keep a minimal operating runway at all times
+  const minRunwayLamports = Math.floor(MIN_OPERATING_SOL * 1e9);
+
+  const totalResLamports = Math.max(minRunwayLamports, baseReserveLamports + sellResLamports);
+
+  const spendableLamports = Math.max(0, solLamports - totalResLamports);
+  const spendableSol = spendableLamports / 1e9;
+
+  return {
+    spendableSol,
+    reserves: {
+      solBal,
+      baseReserveLamports,
+      sellResLamports,
+      minRunwayLamports,
+      totalResLamports,
+      posCount,
+    }
+  };
+}
+
 const _pkValidCache = new Map();
 async function isValidPubkeyStr(s) {
   const key = String(s || "").trim();
@@ -620,7 +694,15 @@ async function executeSwapWithConfirm(opts, { retries = 2, confirmMs = 15000 } =
       const ok = await confirmSig(sig, { commitment: "confirmed", timeoutMs: confirmMs }).catch(() => false);
       if (ok) return { ok: true, sig, slip };
     } catch (e) {
-      log(`Swap attempt ${attempt+1} failed: ${e.message || e}`);
+      const msg = String(e?.message || e || "");
+      log(`Swap attempt ${attempt+1} failed: ${msg}`);
+      if (/ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|BELOW_MIN_NOTIONAL|0x1788/i.test(msg)) {
+        // On sell failures, set per-mint cooldown
+        if (opts?.inputMint && opts?.outputMint === SOL_MINT && opts.inputMint !== SOL_MINT) {
+          setRouterHold(opts.inputMint, ROUTER_COOLDOWN_MS);
+        }
+        return { ok: false, noRoute: true, msg };
+      }
     }
     slip = Math.min(2000, Math.floor(slip * 1.6));
     log(`Swap not confirmed; retrying with slippage=${slip} bps…`);
@@ -725,18 +807,30 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     }
   }
 
-  if (haveQuote) {
+if (haveQuote) {
+    // Skip tiny sells outright (no retries/fallbacks)
+    if (isSell) {
+      const outRaw = Number(quote?.outAmount || 0); // lamports
+      const minOutLamports = Math.floor(Math.max(MIN_SELL_SOL_OUT, Number(state.dustMinSolOut || 0)) * 1e9);
+      if (!Number.isFinite(outRaw) || outRaw <= 0 || outRaw < minOutLamports) {
+        log(`Sell below minimum; skipping (${(outRaw/1e9).toFixed(6)} SOL < ${(minOutLamports/1e9).toFixed(6)})`);
+        throw new Error("BELOW_MIN_NOTIONAL");
+      }
+    }
     const first = await buildAndSend(false);
     if (first.ok) { await seedCacheIfBuy(); return first.sig; }
     if (first.code === "NOT_SUPPORTED") {
-      log("Retrying with shared accounts …");
+      log("Retrying once with shared accounts …");
       const second = await buildAndSend(true);
       if (second.ok) { await seedCacheIfBuy(); return second.sig; }
-    } else {
-      log("Primary swap failed. Fallback: shared accounts …");
-      const fallback = await buildAndSend(true);
-      if (fallback.ok) { await seedCacheIfBuy(); return fallback.sig; }
+      // If still not supported, stop
+      throw new Error(second?.code || "swap failed");
     }
+    // Stop immediately on router dust/cooldown/no-route; no permutations
+    if (/ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE/i.test(String(first?.code || first?.msg || ""))) {
+      throw new Error(first.code || "ROUTER_DUST");
+    }
+    throw new Error(first?.code || first?.msg || "swap failed");
   }
 
   async function seedCacheIfBuy() {
@@ -814,19 +908,160 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       log(`Swap sent: ${sig}`);
       return { ok: true, sig };
     } catch (e) {
-      log(`Swap send failed: ${e.message || e}. Simulating…`);
+      log(`Swap send failed. NO_ROUTES/ROUTER_DUST. export help/wallet.json to recover dust funds. Simulating…`);
       try {
         const sim = await conn.simulateTransaction(vtx, { sigVerify: false, replaceRecentBlockhash: true });
         const logs = sim?.value?.logs || e?.logs || [];
-        log(`Simulation logs:\n${(logs||[]).join("\n")}`);
-        // detect dust/cooldown signatures, but do not set global holds
+        // log(`Simulation logs:\n${(logs||[]).join("\n")}`);
         const hasDustErr = (logs || []).some(l => /0x1788|0x1789/i.test(String(l)));
+        // Surface router dust immediately
         return { ok: false, code: hasDustErr ? "ROUTER_DUST" : "SEND_FAIL", msg: e.message || String(e) };
       } catch {
         return { ok: false, code: "SEND_FAIL", msg: e.message || String(e) };
       }
     }
   }
+
+  async function manualBuildAndSend(useSharedAccounts = true, asLegacy = false) {
+    const { PublicKey, Transaction, TransactionInstruction, TransactionMessage, VersionedTransaction } = await loadWeb3();
+
+    async function reQuoteIfLegacy() {
+      if (!asLegacy) return;
+      try {
+        const qLegacy = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: restrictIntermediates, asLegacy: true });
+        const qResL = await jupFetch(qLegacy.pathname + qLegacy.search);
+        if (qResL.ok) {
+          quote = await qResL.json();
+          log("Re-quoted for legacy (manual).");
+        } else {
+          const body = await qResL.text().catch(()=> "");
+          log(`Legacy quote (manual) failed (${qResL.status}): ${body || "(empty)"}`);
+        }
+      } catch (e) { log(`Legacy re-quote (manual) error: ${e.message || e}`); }
+    }
+
+    try {
+      await reQuoteIfLegacy();
+
+      const body = {
+        quoteResponse: quote,
+        userPublicKey: signer.publicKey.toBase58(),
+        wrapAndUnwrapSol: true,
+        dynamicComputeUnitLimit: true,
+        useSharedAccounts: !!useSharedAccounts,
+        asLegacyTransaction: !!asLegacy,
+        ...(feeAccount ? { feeAccount } : {}),
+      };
+      logObj("Swap-instructions body", { hasFee: !!feeAccount, feeBps: feeAccount ? feeBps : 0, useSharedAccounts: !!useSharedAccounts, asLegacy: !!asLegacy });
+
+      const iRes = await jupFetch(`/swap/v1/swap-instructions`, {
+        method: "POST",
+        headers: { "Content-Type":"application/json", accept: "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!iRes.ok) {
+        const errTxt = await iRes.text().catch(()=> "");
+        log(`Swap-instructions error: ${errTxt || iRes.status}`);
+        return { ok: false, code: "", msg: `swap-instructions ${iRes.status}` };
+      }
+
+      const {
+        computeBudgetInstructions = [],
+        setupInstructions = [],
+        swapInstruction,
+        cleanupInstructions = [],
+        addressLookupTableAddresses = [],
+      } = await iRes.json();
+
+      function decodeData(d) {
+        if (!d) return new Uint8Array();
+        if (d instanceof Uint8Array) return d;
+        if (Array.isArray(d)) return new Uint8Array(d);
+        if (typeof d === "string") {
+          const raw = atob(d);
+          const b = new Uint8Array(raw.length);
+          for (let i=0;i<raw.length;i++) b[i] = raw.charCodeAt(i);
+          return b;
+        }
+        return new Uint8Array();
+      }
+      function toIx(ix) {
+        if (!ix) return null;
+        const pid = new PublicKey(ix.programId);
+        const keys = (ix.accounts || []).map(a => {
+          if (typeof a === "string") return { pubkey: new PublicKey(a), isSigner: false, isWritable: false };
+          const pk = a.pubkey || a.pubKey || a.address || a;
+          return { pubkey: new PublicKey(pk), isSigner: !!a.isSigner, isWritable: !!a.isWritable };
+        });
+        const data = decodeData(ix.data);
+        return new TransactionInstruction({ programId: pid, keys, data });
+      }
+
+      const ixs = [
+        ...computeBudgetInstructions.map(toIx).filter(Boolean),
+        ...setupInstructions.map(toIx).filter(Boolean),
+        toIx(swapInstruction),
+        ...cleanupInstructions.map(toIx).filter(Boolean),
+      ].filter(Boolean);
+
+      if (asLegacy) {
+        const tx = new Transaction();
+        tx.feePayer = signer.publicKey;
+        const { blockhash } = await conn.getLatestBlockhash("processed");
+        tx.recentBlockhash = blockhash;
+        for (const ix of ixs) tx.add(ix);
+        tx.sign(signer);
+        try {
+          const sig = await conn.sendRawTransaction(tx.serialize(), { preflightCommitment: "processed" });
+          log(`Swap (manual legacy) sent: ${sig}`);
+          return { ok: true, sig };
+        } catch (e) {
+          log(`Manual legacy send failed: ${e.message || e}. Simulating…`);
+          try {
+            const sim = await conn.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true });
+            const logs = sim?.value?.logs || e?.logs || [];
+            log(`Simulation logs:\n${(logs||[]).join("\n")}`);
+          } catch {}
+          return { ok: false, code: "SEND_FAIL", msg: e.message || String(e) };
+        }
+      } else {
+        const lookups = [];
+        for (const addr of addressLookupTableAddresses || []) {
+          try {
+            const lut = await conn.getAddressLookupTable(new PublicKey(addr));
+            if (lut?.value) lookups.push(lut.value);
+          } catch {}
+        }
+        const { blockhash } = await conn.getLatestBlockhash("processed");
+        const msg = new TransactionMessage({
+          payerKey: signer.publicKey,
+          recentBlockhash: blockhash,
+          instructions: ixs,
+        }).compileToV0Message(lookups);
+        const vtx = new VersionedTransaction(msg);
+        vtx.sign([signer]);
+        try {
+          const sig = await conn.sendRawTransaction(vtx.serialize(), { preflightCommitment: "processed" });
+          log(`Swap (manual v0) sent: ${sig}`);
+          return { ok: true, sig };
+        } catch (e) {
+          log(`Manual v0 send failed: ${e.message || e}. Simulating…`);
+          try {
+            const sim = await conn.simulateTransaction(vtx, { sigVerify: false, replaceRecentBlockhash: true });
+            const logs = sim?.value?.logs || e?.logs || [];
+            log(`Simulation logs:\n${(logs||[]).join("\n")}`);
+            const hasDustErr = (logs || []).some(l => /0x1788|0x1789/i.test(String(l)));
+            return { ok: false, code: hasDustErr ? "ROUTER_DUST" : "SEND_FAIL", msg: e.message || String(e) };
+          } catch {
+            return { ok: false, code: "SEND_FAIL", msg: e.message || String(e) };
+          }
+        }
+      }
+    } catch (e) {
+      return { ok: false, code: "", msg: e.message || String(e) };
+    }
+  }
+
   const first = await buildAndSend(false);
   if (first.ok) { await seedCacheIfBuy(); return first.sig; }
   if (first.code === "NOT_SUPPORTED") {
@@ -838,7 +1073,24 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     const fallback = await buildAndSend(true);
     if (fallback.ok) { await seedCacheIfBuy(); return fallback.sig; }
   }
-if (isSell) {
+
+  {
+    log("Swap API failed - trying manual build/sign …");
+    const tries = [
+      () => manualBuildAndSend(false, false),
+      () => manualBuildAndSend(true, false),
+      () => manualBuildAndSend(false, true),
+      () => manualBuildAndSend(true, true),
+    ];
+    for (const t of tries) {
+      try {
+        const r = await t();
+        if (r?.ok) { await seedCacheIfBuy(); return r.sig; }
+      } catch {}
+    }
+  }
+
+  if (isSell) {
     try {
       const slip2 = 2000;
       const rFlag = restrictAllowed ? "false" : "true";
@@ -976,6 +1228,8 @@ let _buyBatchUntil = 0;
 
 
 function safeNum(v, def=0){ const n = Number(v); return Number.isFinite(n) ? n : def; }
+
+
 function scorePumpCandidate(it) {
   // Robust field access
   const kp = it?.kp || {};
@@ -1001,6 +1255,7 @@ function scorePumpCandidate(it) {
 
   return score;
 }
+
 function pickPumpCandidates(take = 1, poolN = 3) {
   try {
     const pool = (computePumpingLeaders(poolN) || []).map(it => ({
@@ -1089,7 +1344,6 @@ async function getAtaBalanceUi(ownerPubkeyStr, mintStr, decimalsHint) {
       best = { sizeUi: 0, decimals: Number.isFinite(res.value.decimals) ? res.value.decimals : (await getMintDecimals(mintStr)), exists: true };
     }
   }
-  // Check existence only to report exists, but never clear cache on misses
   let existsAny = false;
   for (const { ata } of atas) {
     const ai = await conn.getAccountInfo(ata, "processed").catch(() => null);
@@ -1142,81 +1396,37 @@ async function listOwnerSplPositions(ownerPubkeyStr) {
 
 async function syncPositionsFromChain(ownerPubkeyStr) {
   try {
-    log("Syncing positions from chain (ATAs) …");
+    log("Syncing positions from cache …");
     const nowTs = now();
 
-    let scanned = [];
-    let seen = new Set();
-    if (!state.ownerScanDisabled) {
-      scanned = await listOwnerSplPositions(ownerPubkeyStr);
-      seen = new Set(scanned.map(x => x.mint));
+    const cachedListRaw = cacheToList(ownerPubkeyStr);
+    const cachedList = [];
+    for (const it of cachedListRaw) {
+      const ok = await isValidPubkeyStr(it.mint).catch(()=>false);
+      if (ok) cachedList.push(it);
+      else {
+        log(`Cache mint invalid, pruning: ${String(it.mint).slice(0,6)}…`);
+        removeFromPosCache(ownerPubkeyStr, it.mint);
+      }
+    }
+    const cachedSet = new Set(cachedList.map(x => x.mint));
 
-      const cachedList = cacheToList(ownerPubkeyStr);
-      for (const c of cachedList) {
-        if (!seen.has(c.mint)) { scanned.push(c); seen.add(c.mint); }
-      }
-
-      for (const { mint, sizeUi, decimals } of scanned) {
-        const prev = state.positions[mint] || { costSol: 0, hwmSol: 0, acquiredAt: nowTs };
-        const next = {
-          ...prev,
-          sizeUi: Number(sizeUi || 0),
-          decimals: Number.isFinite(decimals) ? decimals : prev.decimals ?? 6,
-          lastSeenAt: nowTs,
-        };
-        if (next.awaitingSizeSync && Number(next.sizeUi || 0) > 0) next.awaitingSizeSync = false;
-        state.positions[mint] = next;
-      }
-    } else {
-      const cached = loadPosCache(ownerPubkeyStr);
-      for (const [mint, pos] of Object.entries(state.positions || {})) {
-        if (mint === SOL_MINT) continue;
-        if (pos.awaitingSizeSync) {
-          const c = cached[mint];
-          if (c && Number(c.sizeUi || 0) > 0) {
-            pos.sizeUi = Number(c.sizeUi);
-            pos.decimals = Number.isFinite(c.decimals) ? c.decimals : (pos.decimals ?? 6);
-            pos.lastSeenAt = nowTs;
-            pos.awaitingSizeSync = false;
-            state.positions[mint] = pos;
-          }
-        }
-      }
+    for (const { mint, sizeUi, decimals } of cachedList) {
+      const prev = state.positions[mint] || { costSol: 0, hwmSol: 0, acquiredAt: nowTs };
+      const next = {
+        ...prev,
+        sizeUi: Number(sizeUi || 0),
+        decimals: Number.isFinite(decimals) ? decimals : (prev.decimals ?? 6),
+        lastSeenAt: nowTs,
+      };
+      if (next.awaitingSizeSync && Number(next.sizeUi || 0) > 0) next.awaitingSizeSync = false;
+      state.positions[mint] = next;
     }
 
     for (const mint of Object.keys(state.positions || {})) {
       if (mint === SOL_MINT) continue;
-      if (seen.has(mint)) continue;
-
-      const pos = state.positions[mint] || {};
-      let existsFlag = false;
-      try {
-        const b = await getAtaBalanceUi(ownerPubkeyStr, mint, pos.decimals);
-        existsFlag = !!b.exists;
-        const amt = Number(b.sizeUi || 0);
-        if (amt > 0) {
-          state.positions[mint] = {
-            ...pos,
-            sizeUi: amt,
-            decimals: b.decimals,
-            lastSeenAt: nowTs,
-            awaitingSizeSync: false,
-          };
-          continue;
-        }
-      } catch {}
-
-      const age = nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0);
-      const grace = Math.max(5_000, Number(state.pendingGraceMs || 20_000));
-      if (Number(pos.sizeUi || 0) <= 0 && age > grace) {
-        pos.awaitingSizeSync = false; // clear pending so buyCandidates can include this mint
-        state.positions[mint] = pos;
-      }
-
-      const pruneAfter = grace * 30; // ~10 minutes at default
-      if (Number(pos.sizeUi || 0) <= 0 && !existsFlag && age > pruneAfter) {
+      if (!cachedSet.has(mint)) {
         delete state.positions[mint];
-        removeFromPosCache(ownerPubkeyStr, mint);
       }
     }
 
@@ -1229,20 +1439,25 @@ async function syncPositionsFromChain(ownerPubkeyStr) {
 async function sweepNonSolToSolAtStart() {
   const kp = await getAutoKeypair();
   if (!kp) { log("Auto wallet not ready; skipping startup sweep."); return; }
-  log("Startup sweep: checking for non-SOL balances …");
-  const tracked = Object.entries(state.positions || {})
-    .filter(([m, p]) => m !== SOL_MINT && Number(p?.sizeUi || 0) > 0)
-    .map(([mint, p]) => ({ mint, sizeUi: Number(p.sizeUi), decimals: Number(p.decimals || 6) }));
-  // Prefer scan
-  const scanned = state.ownerScanDisabled ? [] : await listOwnerSplPositions(kp.publicKey.toBase58()).catch(()=>[]);
-  const cached = scanned.length ? [] : cacheToList(kp.publicKey.toBase58());
-  const byMint = new Map();
-  for (const p of tracked) byMint.set(p.mint, p);
-  for (const p of scanned) byMint.set(p.mint, p);
-  for (const p of cached) byMint.set(p.mint, p);
-  const items = Array.from(byMint.values());
-  if (!items.length) { log("Startup sweep: no SPL balances to sell."); return; }
- let sold = 0;
+  log("Startup sweep: checking cached SPL balances …");
+
+  const owner = kp.publicKey.toBase58();
+  const cached = cacheToList(owner);
+  if (!cached.length) { log("Startup sweep: no SPL balances in cache."); return; }
+
+  const items = [];
+  for (const it of cached) {
+    const ok = await isValidPubkeyStr(it.mint).catch(()=>false);
+    if (ok) items.push(it);
+    else {
+      log(`Cache mint invalid, pruning: ${String(it.mint).slice(0,6)}…`);
+      removeFromPosCache(owner, it.mint);
+    }
+  }
+
+  if (!items.length) { log("Startup sweep: no valid cached SPL balances."); return; }
+
+  let sold = 0;
   for (const { mint, sizeUi, decimals } of items) {
     try {
       const estSol = await quoteOutSol(mint, sizeUi, decimals).catch(() => 0);
@@ -1260,17 +1475,17 @@ async function sweepNonSolToSolAtStart() {
 
       log(`Startup sweep sold ${sizeUi.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
       if (state.positions[mint]) { delete state.positions[mint]; save(); }
-      removeFromPosCache(kp.publicKey.toBase58(), mint);
+      removeFromPosCache(owner, mint);
       sold++;
       await new Promise(r => setTimeout(r, 250));
     } catch (e) {
       log(`Startup sweep sell failed ${mint.slice(0,4)}…: ${e.message || e}`);
     }
   }
+
   log(`Startup sweep complete. Sold ${sold} token${sold===1?"":"s"}.`);
   if (sold > 0) { state.lastTradeTs = now(); save(); }
 }
-
 
 
 // TODO: refine sell logic with more parameters and further include KPI addons.
@@ -1351,6 +1566,11 @@ async function evalAndMaybeSellPositions() {
     const nowTs = now();
     for (const [mint, pos] of entries) {
       try {
+        if (window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
+          const until = window._fdvRouterHold.get(mint);
+          log(`Router cooldown for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`);
+          continue;
+        }
         const sz = Number(pos.sizeUi || 0);
         if (sz <= 0) {
           log(`Skip sell eval for ${mint.slice(0,4)}… (no size)`);
@@ -1478,40 +1698,41 @@ async function evalAndMaybeSellPositions() {
           } catch {}
           updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
           save();
-        } else {
-          let sellUi = pos.sizeUi;
-          try {
-            const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
-            if (Number(b.sizeUi || 0) > 0) sellUi = Number(b.sizeUi);
-          } catch {}
-
-          const res = await executeSwapWithConfirm({
-            signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: state.slippageBps,
-          }, { retries: 1, confirmMs: 15000 });
-
-          if (!res.ok) {
-            log(`Sell not confirmed for ${mint.slice(0,4)}… Keeping position.`);
-            _inFlight = false;
-            continue;
-          }
-
-          let remainUi = 0;
-          try {
-            const b2 = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
-            remainUi = Number(b2.sizeUi || 0);
-          } catch {}
-          if (remainUi > 1e-9) {
-            pos.sizeUi = remainUi;
-            pos.lastSellAt = now();
-            updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
-            save();
-            log(`Post-sell balance remains ${remainUi.toFixed(6)} ${mint.slice(0,4)}… (keeping position)`);
           } else {
-            log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ${curSol.toFixed(6)} SOL (${d.reason})`);
-            delete state.positions[mint];
-            removeFromPosCache(kp.publicKey.toBase58(), mint);
-            save();
-          }
+            let sellUi = pos.sizeUi;
+            try {
+              const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+              if (Number(b.sizeUi || 0) > 0) sellUi = Number(b.sizeUi);
+            } catch {}
+
+            const res = await executeSwapWithConfirm({
+              signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: state.slippageBps,
+            }, { retries: 1, confirmMs: 15000 });
+
+            if (!res.ok) {
+              log(`Sell not confirmed for ${mint.slice(0,4)}… Keeping position.`);
+              _inFlight = false;
+              continue;
+            }
+
+            let remainUi = 0;
+            try {
+              const b2 = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+              remainUi = Number(b2.sizeUi || 0);
+            } catch {}
+            if (remainUi > 1e-9) {
+              pos.sizeUi = remainUi;
+              pos.lastSellAt = now();
+              updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+              save();
+              log(`Post-sell balance remains ${remainUi.toFixed(6)} ${mint.slice(0,4)}… (keeping position)`);
+            } else {
+              const reason = (decision && decision.reason) ? decision.reason : "done";
+              log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ${curSol.toFixed(6)} SOL (${reason})`);
+              delete state.positions[mint];
+              removeFromPosCache(kp.publicKey.toBase58(), mint);
+              save();
+            }
         }
 
         state.lastTradeTs = now();
@@ -1537,7 +1758,6 @@ async function switchToLeader(newMint) {
   const prev = state.currentLeaderMint || "";
   if (!newMint || newMint === prev) return false;
 
-  // Guard leader mint
   if (!(await isValidPubkeyStr(newMint))) {
     log(`Leader mint invalid, ignoring: ${String(newMint).slice(0,6)}…`);
     return false;
@@ -1551,7 +1771,6 @@ async function switchToLeader(newMint) {
     log(`Leader changed: ${prev ? prev.slice(0,4) + "…" : "(none)"} -> ${newMint.slice(0,4)}…`);
     await syncPositionsFromChain(kp.publicKey.toBase58());
 
-    // Filter out invalid/stale mints up-front
     const allMints = Object.keys(state.positions || {}).filter(m => m !== SOL_MINT && m !== newMint);
     const mints = [];
     for (const m of allMints) {
@@ -1567,7 +1786,13 @@ async function switchToLeader(newMint) {
     let rotated = 0;
     for (const mint of mints) {
       try {
+        if (window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
+          const until = window._fdvRouterHold.get(mint);
+          log(`Router cooldown (rotate) for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`);
+          continue;
+        }
         const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, state.positions[mint]?.decimals);
+  
         const uiAmt = Number(b.sizeUi || 0);
         if (uiAmt <= 0) {
           log(`No balance to rotate for ${mint.slice(0,4)}…`);
@@ -1626,20 +1851,22 @@ async function tick() {
 
   if (_buyInFlight || _inFlight || _switchingLeader) return;
 
-  const picks = state.allowMultiBuy
-    ? pickPumpCandidates(Math.max(1, state.multiBuyTopN|0), 3)
-    : [pickTopPumper()].filter(Boolean);
+  const leaderMode = !!state.holdUntilLeaderSwitch;
+  const picks = leaderMode
+    ? [pickTopPumper()].filter(Boolean)
+    : (state.allowMultiBuy
+        ? pickPumpCandidates(Math.max(1, state.multiBuyTopN|0), 3)
+        : [pickTopPumper()].filter(Boolean));
   if (!picks.length) return;
 
-  log(`Pump picks: ${picks.map(m=>m.slice(0,4)+"…").join(", ")}`);
-
-  if (state.holdUntilLeaderSwitch) {
+  let ignoreCooldownForLeaderBuy = false;
+  if (leaderMode && picks[0]) {
     const didRotate = await switchToLeader(picks[0]);
-    if (didRotate) return;
+    if (didRotate) ignoreCooldownForLeaderBuy = true;
   }
 
   const withinBatch = state.allowMultiBuy && now() <= _buyBatchUntil;
-  if (state.lastTradeTs && (now() - state.lastTradeTs)/1000 < state.minSecsBetween && !withinBatch) return;
+  if (state.lastTradeTs && (now() - state.lastTradeTs)/1000 < state.minSecsBetween && !withinBatch && !ignoreCooldownForLeaderBuy) return;
 
   try {
     const kp = await getAutoKeypair();
@@ -1649,20 +1876,27 @@ async function tick() {
 
     const cur = state.positions[picks[0]];
     const alreadyHoldingLeader = Number(cur?.sizeUi || 0) > 0 || Number(cur?.costSol || 0) > 0;
-    if (state.holdUntilLeaderSwitch && alreadyHoldingLeader) {
+    if (leaderMode && alreadyHoldingLeader) {
       log("Holding current leader. No additional buys.");
       return;
     }
 
     const solBal = await fetchSolBalance(kp.publicKey.toBase58());
-    const feeReserve   = Math.max(FEE_RESERVE_MIN, solBal * FEE_RESERVE_PCT);
-    const affordable   = Math.max(0, solBal - feeReserve);
+    const ceiling = await computeSpendCeiling(kp.publicKey.toBase58(), { solBalHint: solBal });
+
     const desired      = Math.min(state.maxBuySol, Math.max(state.minBuySol, solBal * state.buyPct));
     const minThreshold = Math.max(state.minBuySol, MIN_SELL_SOL_OUT);
-    let plannedTotal   = Math.min(affordable, Math.min(state.maxBuySol, state.carrySol + desired));
+    let plannedTotal   = Math.min(ceiling.spendableSol, Math.min(state.maxBuySol, state.carrySol + desired));
 
-    logObj("Buy sizing (pre-split)", { solBal: Number(solBal).toFixed(6), feeReserve, affordable, desired, carry: state.carrySol, plannedTotal, minThreshold });
+    logObj("Buy sizing (pre-split)", {
+      solBal: Number(solBal).toFixed(6),
+      spendable: Number(ceiling.spendableSol).toFixed(6),
+      posCount: ceiling.reserves.posCount,
+      reservesSol: (ceiling.reserves.totalResLamports/1e9).toFixed(6),
+      minThreshold
+    });
 
+    // In leader mode, only the single top pick can be a buy candidate.
     const buyCandidates = picks.filter(m => {
       const pos = state.positions[m];
       const sz0 = Number(pos?.sizeUi || 0) <= 0;
@@ -1674,22 +1908,21 @@ async function tick() {
     if (plannedTotal < minThreshold) {
       state.carrySol += desired;
       save();
-      log(`Accumulating. Carry=${state.carrySol.toFixed(6)} SOL (< ${minThreshold} min).`);
+      log(`Accumulating. Carry=${state.carrySol.toFixed(6)} SOL (< ${minThreshold} min or spend ceiling).`);
       return;
     }
 
     _buyInFlight = true;
 
-    let solLamports = Math.floor(solBal * 1e9);
-    const feeReserveLamports = Math.floor(feeReserve * 1e9);
-    let remainingLamports = Math.max(0, solLamports - feeReserveLamports);
-    let remaining = plannedTotal;
+    let remainingLamports = Math.floor(ceiling.spendableSol * 1e9);
+    let remaining = remainingLamports / 1e9;
     let spent = 0;
     let buysDone = 0;
 
-    for (let i = 0; i < buyCandidates.length; i++) {
+    const loopN = leaderMode ? 1 : buyCandidates.length;
+    for (let i = 0; i < loopN; i++) {
       const mint = buyCandidates[i];
-      const left = buyCandidates.length - i;
+      const left = Math.max(1, loopN - i);
       const target = Math.max(minThreshold, remaining / left);
 
       const reqRent = await requiredAtaLamportsForSwap(kp.publicKey.toBase58(), SOL_MINT, mint);
@@ -1773,6 +2006,9 @@ async function tick() {
       _buyBatchUntil = now() + (state.multiBuyBatchMs|0);
 
       log(`Bought ~${buySol.toFixed(4)} SOL -> ${mint.slice(0,4)}…`);
+
+      if (leaderMode) break;
+
       await new Promise(r => setTimeout(r, 150));
       if (remaining < minThreshold) break;
     }
@@ -1806,7 +2042,7 @@ async function startAutoAsync() {
     } catch (e) {
       log(`RPC preflight failed: ${e.message || e}`);
       state.enabled = false;
-      toggleEl.checked = false;
+      if (toggleEl) toggleEl.value = "no";
       startBtn.disabled = false;
       stopBtn.disabled = true;
       save();
@@ -1829,13 +2065,13 @@ async function startAutoAsync() {
 
 function onToggle(on) {
    state.enabled = !!on;
-   toggleEl.checked = state.enabled;
+   if (toggleEl) toggleEl.value = state.enabled ? "yes" : "no";
    startBtn.disabled = state.enabled;
    stopBtn.disabled = !state.enabled;
    if (state.enabled && !currentRpcUrl()) {
      log("Configure a CORS-enabled Solana RPC URL before starting.");
      state.enabled = false;
-     toggleEl.checked = false;
+     if (toggleEl) toggleEl.value = "no";
      startBtn.disabled = false;
      stopBtn.disabled = true;
      save();
@@ -1875,19 +2111,26 @@ export function initAutoWidget(container = document.body) {
   body.className = "fdv-auto-body";
   body.innerHTML = `
     <div class="fdv-auto-head">
-      <label class="fdv-switch fdv-hold-leader" style="margin-left:12px;">
-        <input type="checkbox" data-auto-hold disabled/>
-        <span>Leader</span>
-      </label>
-      <label class="fdv-switch">
-        <input type="checkbox" data-auto-toggle />
-        <span>Enabled</span>
-      </label>
     </div>
-    <div style="display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--fdv-border);padding-bottom:8px;margin-bottom:8px;">
+    <div style="display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--fdv-border);padding-bottom:8px;margin-bottom:8px; position:relative;">
       <button data-auto-gen>Generate</button>
       <button data-auto-copy>Address</button>
       <button data-auto-unwind>Return</button>
+      <button data-auto-wallet>Wallet</button>
+      <div data-auto-wallet-menu
+           style="display:none; position:absolute; top:38px; left:0; z-index:999; min-width:520px; max-width:92vw;
+                  background:var(--fdv-bg,#111); color:var(--fdv-fg,#fff); border:1px solid var(--fdv-border,#333);
+                  border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,.5); padding:10px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
+          <strong>Wallet Holdings</strong>
+          <button data-auto-dump style="background:#7f1d1d;color:#fff;border:1px solid #a11;padding:6px 10px;border-radius:6px;">Dump Wallet</button>
+        </div>
+        <div data-auto-wallet-sol style="font-size:12px; opacity:0.9; margin-bottom:6px;">SOL: …</div>
+        <div data-auto-wallet-list style="display:flex; flex-direction:column; gap:6px; max-height:40vh; overflow:auto;">
+          <div style="opacity:0.7;">Loading…</div>
+        </div>
+        <div data-auto-wallet-totals style="margin-top:8px; font-weight:600;">Total: …</div>
+      </div>
     </div>
     <div class="fdv-grid">
       <label><a href="https://chainstack.com/" target="_blank">RPC (CORS)</a> <input data-auto-rpc placeholder="https://your-provider.example/solana?api-key=..."/></label>
@@ -1899,6 +2142,24 @@ export function initAutoWidget(container = document.body) {
       <label>Buy % of SOL <input data-auto-buyp type="number" step="0.1" min="${UI_LIMITS.BUY_PCT_MIN*100}" max="${UI_LIMITS.BUY_PCT_MAX*100}"/></label>
       <label>Min Buy (SOL) <input data-auto-minbuy type="number" step="0.0001" min="${UI_LIMITS.MIN_BUY_SOL_MIN}" max="${UI_LIMITS.MIN_BUY_SOL_MAX}"/></label>
       <label>Max Buy (SOL) <input data-auto-maxbuy type="number" step="0.0001" min="${UI_LIMITS.MAX_BUY_SOL_MIN}" max="${UI_LIMITS.MAX_BUY_SOL_MAX}"/></label>
+      <label style="margin-left:12px;">Hold Leader
+        <select data-auto-hold>
+          <option value="no">No</option>
+          <option value="yes">Yes</option>
+        </select>
+      </label>
+      <label>Try to sell dust
+        <select data-auto-dust>
+          <option value="no">No</option>
+          <option value="yes">Yes</option>
+        </select>
+      </label>
+      <label>Enabled
+        <select data-auto-toggle disabled>
+          <option value="no">No</option>
+          <option value="yes">Yes</option>
+        </select>
+      </label>
     </div>
     <div class="fdv-log" data-auto-log style="position:relative;">
     </div>
@@ -2001,6 +2262,7 @@ export function initAutoWidget(container = document.body) {
   logEl     = wrap.querySelector("[data-auto-log]");
   toggleEl  = wrap.querySelector("[data-auto-toggle]");
   const holdEl  = wrap.querySelector("[data-auto-hold]");
+  const dustEl  = wrap.querySelector("[data-auto-dust]");
   const helpBtn = wrap.querySelector("[data-auto-help]");
   const modalEl = wrap.querySelector("[data-auto-modal]");
   const modalCloseEls = wrap.querySelectorAll("[data-auto-modal-close]");
@@ -2016,19 +2278,17 @@ export function initAutoWidget(container = document.body) {
   minBuyEl  = wrap.querySelector("[data-auto-minbuy]");
   maxBuyEl  = wrap.querySelector("[data-auto-maxbuy]");
 
-  // TODO: add more UI for advanced settings export/import
-  // const secretBtn = wrap.querySelector("[data-auto-secret]");
-  // const secretModalEl = wrap.querySelector("[data-auto-secret-modal]");
-  // const secretCloseEls = wrap.querySelectorAll("[data-auto-secret-close]");
-  // const secPubEl = wrap.querySelector("[data-auto-sec-pub]");
-  // const secSkEl = wrap.querySelector("[data-auto-sec-skey]");
-  // const secToggleEl = wrap.querySelector("[data-auto-sec-toggle]");
-  // const secCopyPubBtn = wrap.querySelector("[data-auto-sec-copy-pub]");
-  // const secCopySkBtn = wrap.querySelector("[data-auto-sec-copy-skey]");
   const secExportBtn = wrap.querySelector("[data-auto-sec-export]");
   const rpcEl = wrap.querySelector("[data-auto-rpc]");
   const rpchEl = wrap.querySelector("[data-auto-rpch]");
   const copyLogBtn = wrap.querySelector("[data-auto-log-copy]");
+
+  const walletBtn      = wrap.querySelector("[data-auto-wallet]");
+  const walletMenuEl   = wrap.querySelector("[data-auto-wallet-menu]");
+  const walletListEl   = wrap.querySelector("[data-auto-wallet-list]");
+  const walletTotalsEl = wrap.querySelector("[data-auto-wallet-totals]");
+  const walletSolEl    = wrap.querySelector("[data-auto-wallet-sol]");
+  const dumpBtn        = wrap.querySelector("[data-auto-dump]");
 
   rpcEl.value   = currentRpcUrl();
   try { rpchEl.value = JSON.stringify(currentRpcHeaders() || {}); } catch { rpchEl.value = "{}"; }
@@ -2046,37 +2306,122 @@ export function initAutoWidget(container = document.body) {
     if (e.key === "Escape" && modalEl.style.display !== "none") modalEl.style.display = "none";
   });
 
-  // secretBtn.addEventListener("click", async () => {
-  //   try {
-  //     await ensureAutoWallet();
-  //     depAddrEl.value = state.autoWalletPub || depAddrEl.value;
-  //     secPubEl.value = state.autoWalletPub || "";
-  //     secSkEl.type = "password";
-  //     secSkEl.value = state.autoWalletSecret || "";
-  //     secretModalEl.style.display = "flex";
-  //   } catch (e) {
-  //     log(`Cannot open secret modal: ${e.message || e}`);
-  //   }
-  // });
-  // secretModalEl.addEventListener("click", (e) => { if (e.target === secretModalEl) secretModalEl.style.display = "none"; });
-  // secretCloseEls.forEach(btn => btn.addEventListener("click", () => { secretModalEl.style.display = "none"; }));
-  // document.addEventListener("keydown", (e) => {
-  //   if (e.key === "Escape" && secretModalEl.style.display !== "none") secretModalEl.style.display = "none";
-  // });
-  // secToggleEl.addEventListener("click", () => {
-  //   const showing = secSkEl.type === "text";
-  //   secSkEl.type = showing ? "password" : "text";
-  //   secToggleEl.textContent = showing ? "Show" : "Hide";
-  // });
-  // secCopyPubBtn.addEventListener("click", async () => {
-  //   try { await navigator.clipboard.writeText(secPubEl.value || ""); log("Public key copied"); } catch {}
-  // });
-  // secCopySkBtn.addEventListener("click", async () => {
-  //   try { await navigator.clipboard.writeText(secSkEl.value || ""); log("Secret key copied"); } catch {}
-  // });
   if (copyLogBtn) {
     copyLogBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); copyLog(); });
   }
+
+  async function renderWalletMenu() {
+    try {
+      const kp = await getAutoKeypair();
+      if (!kp) {
+        walletListEl.innerHTML = `<div style="opacity:.7">Generate your auto wallet to view holdings.</div>`;
+        walletSolEl.textContent = `SOL: 0.0000 (—)`;
+        walletTotalsEl.textContent = `Total: $0.00`;
+        return;
+      }
+
+      const owner = kp.publicKey.toBase58();
+
+      const solBal = await fetchSolBalance(owner).catch(()=>0);
+      const solUsdPx = await getSolUsd();
+      walletSolEl.textContent = `SOL: ${Number(solBal).toFixed(6)} (${solUsdPx>0?fmtUsd(solBal*solUsdPx):"—"})`;
+
+      const cachedEntries = cacheToList(owner); // [{ mint, sizeUi, decimals }]
+      const entries = cachedEntries.filter(it => it.mint !== SOL_MINT && Number(it.sizeUi||0) > 0);
+
+      if (!entries.length) {
+        walletListEl.innerHTML = `<div style="opacity:.7">No coins held.</div>`;
+        walletTotalsEl.textContent = `Total: ${fmtUsd(solBal * solUsdPx)} (${solBal.toFixed(6)} SOL)`;
+        return;
+      }
+
+      walletListEl.innerHTML = "";
+      let totalUsd = solBal * solUsdPx;
+      let totalSol = solBal;
+
+      if (!window._fdvWalletQuoteCache) window._fdvWalletQuoteCache = new Map();
+      const qCache = window._fdvWalletQuoteCache;
+      const minGap = Math.max(5_000, Number(state.minQuoteIntervalMs || 10_000));
+
+      for (const { mint, sizeUi, decimals } of entries) {
+        const row = document.createElement("div");
+        row.style.display = "grid";
+        row.style.gridTemplateColumns = "1fr auto auto auto";
+        row.style.gap = "8px";
+        row.style.alignItems = "center";
+        row.style.fontSize = "12px";
+        row.innerHTML = `
+          <div><code>${mint.slice(0,4)}…${mint.slice(-4)}</code></div>
+          <div title="Token amount">Amt: ${Number(sizeUi||0).toFixed(6)}</div>
+          <div data-sol>~SOL: …</div>
+          <div data-usd>USD: …</div>
+        `;
+        walletListEl.appendChild(row);
+
+        const cacheKey = `${owner}:${mint}:${Number(sizeUi).toFixed(9)}`;
+        let estSol = 0;
+        try {
+          const hit = qCache.get(cacheKey);
+          if (hit && (now() - hit.ts) < minGap) {
+            estSol = Number(hit.sol || 0) || 0;
+          } else {
+            estSol = await quoteOutSol(mint, Number(sizeUi||0), decimals).catch(()=>0);
+            qCache.set(cacheKey, { ts: now(), sol: estSol });
+          }
+        } catch { estSol = 0; }
+
+        const solCell = row.querySelector("[data-sol]");
+        const usdCell = row.querySelector("[data-usd]");
+        solCell.textContent = `~SOL: ${estSol.toFixed(6)}`;
+        const usd = estSol * solUsdPx;
+        usdCell.textContent = `USD: ${solUsdPx>0?fmtUsd(usd):"—"}`;
+
+        totalSol += estSol;
+        totalUsd += usd;
+      }
+
+      walletTotalsEl.textContent = `Total: ${fmtUsd(totalUsd)} (${totalSol.toFixed(6)} SOL)`;
+    } catch (e) {
+      walletListEl.innerHTML = `<div style="color:#f66;">${e.message || e}</div>`;
+    }
+  }
+
+  let walletOpen = false;
+  function closeWalletMenu() {
+    walletOpen = false;
+    walletMenuEl.style.display = "none";
+  }
+  walletBtn.addEventListener("click", async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    walletOpen = !walletOpen;
+    if (walletOpen) {
+      await renderWalletMenu();
+      walletMenuEl.style.display = "block";
+    } else {
+      closeWalletMenu();
+    }
+  });
+  document.addEventListener("click", (e) => {
+    if (!walletOpen) return;
+    const t = e.target;
+    if (t === walletBtn || walletMenuEl.contains(t)) return;
+    closeWalletMenu();
+  });
+
+  dumpBtn.addEventListener("click", async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (!state.recipientPub) {
+      log("Set Recipient before dumping wallet.");
+      return;
+    }
+    try {
+      await sweepAllToSolAndReturn();
+      closeWalletMenu();
+    } catch (err) {
+      log(`Dump failed: ${err.message || err}`);
+    }
+  });
+
   secExportBtn.addEventListener("click", () => {
     const payload = JSON.stringify({
       publicKey: state.autoWalletPub || "",
@@ -2111,11 +2456,16 @@ export function initAutoWidget(container = document.body) {
     } catch(e){ log(`Unwind failed: ${e.message||e}`); }
   });
 
-  toggleEl.addEventListener("change", () => onToggle(toggleEl.checked));
+  toggleEl.addEventListener("change", () => onToggle(toggleEl.value === "yes"));
   holdEl.addEventListener("change", () => {
-    state.holdUntilLeaderSwitch = !!holdEl.checked;
+    state.holdUntilLeaderSwitch = (holdEl.value === "yes");
     save();
     log(`Hold-until-leader: ${state.holdUntilLeaderSwitch ? "ON" : "OFF"}`);
+  });
+  dustEl.addEventListener("change", () => {
+    state.dustExitEnabled = (dustEl.value === "yes");
+    save();
+    log(`Dust sells: ${state.dustExitEnabled ? "ON" : "OFF"}`);
   });
   startBtn.addEventListener("click", () => onToggle(true));
   stopBtn.addEventListener("click", () => onToggle(false));
@@ -2158,8 +2508,9 @@ export function initAutoWidget(container = document.body) {
     el.addEventListener("change", saveField);
   });
 
-  toggleEl.checked = !!state.enabled;
-  holdEl.checked = !!state.holdUntilLeaderSwitch;
+  toggleEl.value = state.enabled ? "yes" : "no";
+  holdEl.value = state.holdUntilLeaderSwitch ? "yes" : "no";
+  dustEl.value = state.dustExitEnabled ? "yes" : "no";
   startBtn.disabled = !!state.enabled;
   stopBtn.disabled = !state.enabled;
   if (state.enabled && !timer) timer = setInterval(tick, 5000);
