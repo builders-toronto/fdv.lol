@@ -1331,6 +1331,7 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
   transition: transform .08s ease, background-color .15s ease, border-color .15s ease, box-shadow .15s ease;
   user-select: none;
 }
+
 .fdv-actions button:hover, .fdv-grid button:hover{ border-color: color-mix(in srgb, var(--fdv-text) 18%, var(--fdv-border)); }
 .fdv-actions button:active, .fdv-grid button:active{ transform: translateY(1px); }
 .fdv-actions button:disabled, .fdv-grid button:disabled{ opacity:.6; cursor:not-allowed; }
@@ -1391,8 +1392,7 @@ button[data-auto-unwind]{ color:#fff; }
 
 /* Head/actions wrap on small screens */
 @media (max-width: 740px){
-  /* .fdv-auto-head{ flex-wrap: wrap; } */
-  .fdv-actions{ justify-content: flex-start; }
+  .fdv-actions{ .fdv-actions button{ padding: 7px 7px; flex:1; } }
 }
 
 /* Reduce motion */
