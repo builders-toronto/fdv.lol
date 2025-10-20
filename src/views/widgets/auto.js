@@ -407,6 +407,38 @@ function log(msg) {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
+function copyLog() {
+  if (!logEl) return false;
+  try {
+    const lines = Array.from(logEl.children)
+      .filter(n => n && n.tagName === "DIV")
+      .map(n => n.textContent || "");
+    const text = lines.join("\n");
+    if (!text) { log("Log is empty."); return false; }
+    navigator.clipboard.writeText(text)
+      .then(() => log("Log copied to clipboard"))
+      .catch(() => {
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed";
+          ta.style.left = "-9999px";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          ta.remove();
+          log("Log copied to clipboard");
+        } catch {
+          log("Copy failed");
+        }
+      });
+    return true;
+  } catch {
+    log("Copy failed");
+    return false;
+  }
+}
+
 function now() { return Date.now(); }
 
 const _pkValidCache = new Map();
@@ -546,6 +578,8 @@ async function quoteOutSol(inputMint, amountUi, inDecimals) {
   const dec = Number.isFinite(inDecimals) ? inDecimals : await getMintDecimals(inputMint);
   const raw = Math.max(1, Math.floor(amountUi * Math.pow(10, dec)));
   const slip = Math.max(150, Number(state.slippageBps || 150) | 0);
+  const base = await getJupBase();
+  const isLite = /lite-api\.jup\.ag/i.test(base);
 
   async function tryQuote(restrictIntermediates) {
     const q = new URL("/swap/v1/quote", "https://fdv.lol");
@@ -553,7 +587,7 @@ async function quoteOutSol(inputMint, amountUi, inDecimals) {
     q.searchParams.set("outputMint", SOL_MINT);
     q.searchParams.set("amount", String(raw));
     q.searchParams.set("slippageBps", String(slip));
-    q.searchParams.set("restrictIntermediateTokens", String(restrictIntermediates));
+    q.searchParams.set("restrictIntermediateTokens", String(isLite ? true : restrictIntermediates));
     logObj("Valuation quote params", { inputMint, amountUi, dec, slippageBps: slip });
     const res = await jupFetch(q.pathname + q.search);
     if (res.ok) {
@@ -568,16 +602,13 @@ async function quoteOutSol(inputMint, amountUi, inDecimals) {
     }
   }
 
-
-
   try {
     return await tryQuote(true);
   } catch {
-    try {
-      return await tryQuote(false);
-    } catch {
+      if (!isLite) {
+        try { return await tryQuote(false); } catch {}
+      }
       return 0;
-    }
   }
 }
 
@@ -629,20 +660,26 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
   const baseSlip = Math.max(150, Number(slippageBps ?? state.slippageBps ?? 150) | 0);
   const amountRaw = Math.max(1, Math.floor(amountUi * Math.pow(10, inDecimals)));
 
+  const baseUrl = await getJupBase();
+  const isLite = /lite-api\.jup\.ag/i.test(baseUrl);
+  const restrictAllowed = !isLite;
+
 
   const isSell = (inputMint !== SOL_MINT) && (outputMint === SOL_MINT);
   let restrictIntermediates = isSell ? "false" : "true";
   
 
 
-  function buildQuoteUrl({ outMint, slipBps, restrict }) {
+  function buildQuoteUrl({ outMint, slipBps, restrict, asLegacy = false, amountOverrideRaw }) {
     const u = new URL("/swap/v1/quote", "https://fdv.lol");
+    const amt = Number.isFinite(amountOverrideRaw) ? amountOverrideRaw : amountRaw;
     u.searchParams.set("inputMint", inputMint);
     u.searchParams.set("outputMint", outMint);
-    u.searchParams.set("amount", String(amountRaw));
+    u.searchParams.set("amount", String(amt));
     u.searchParams.set("slippageBps", String(slipBps));
-    u.searchParams.set("restrictIntermediateTokens", String(restrict));
-    if (feeAccount && feeBps > 0) u.searchParams.set("platformFeeBps", String(feeBps)); // align with swap.js
+    u.searchParams.set("restrictIntermediateTokens", String(isLite ? true : (restrict === "false" ? false : true)));
+    if (feeAccount && feeBps > 0) u.searchParams.set("platformFeeBps", String(feeBps));
+    if (asLegacy) u.searchParams.set("asLegacyTransaction", "true");
     return u;
   }
 
@@ -653,26 +690,53 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
   });
 
   let quote;
+  let haveQuote = false;
   {
-    const qRes = await jupFetch(q.pathname + q.search);
-    if (!qRes.ok) {
-      if (isSell) {
-        const alt = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: (restrictIntermediates === "false" ? "true" : "false") });
-        log(`Primary sell quote failed (${qRes.status}). Retrying with restrictIntermediateTokens=${alt.searchParams.get("restrictIntermediateTokens")} …`);
-        const qRes2 = await jupFetch(alt.pathname + alt.search);
-        if (!qRes2.ok) {
-          const body = await qRes2.text().catch(()=> "");
-          log(`Sell quote retry failed: ${body || qRes2.status}`);
-          throw new Error(`quote ${qRes2.status}`);
+    try {
+      const qRes = await jupFetch(q.pathname + q.search);
+      if (!qRes.ok) {
+        if (isSell) {
+          const altRestrict = (restrictIntermediates === "false" ? "true" : (restrictAllowed ? "false" : "true"));
+          const alt = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: altRestrict });
+          log(`Primary sell quote failed (${qRes.status}). Retrying with restrictIntermediateTokens=${alt.searchParams.get("restrictIntermediateTokens")} …`);
+          const qRes2 = await jupFetch(alt.pathname + alt.search);
+          if (qRes2.ok) {
+            quote = await qRes2.json();
+            haveQuote = true;
+          } else {
+            const body = await qRes2.text().catch(()=> "");
+            log(`Sell quote retry failed: ${body || qRes2.status}`);
+            haveQuote = false; // defer to split fallbacks
+          }
+        } else {
+          throw new Error(`quote ${qRes.status}`);
         }
-        quote = await qRes2.json();
       } else {
-        throw new Error(`quote ${qRes.status}`);
+        quote = await qRes.json();
+        haveQuote = true;
       }
-    } else {
-      quote = await qRes.json();
+      if (haveQuote) {
+        logObj("Quote", { inAmount: quote?.inAmount, outAmount: quote?.outAmount, routePlanLen: quote?.routePlan?.length });
+      }
+    } catch (e) {
+      if (!isSell) throw e;
+      haveQuote = false;
+      log(`Sell quote error; will try split fallbacks: ${e.message || e}`);
     }
-    logObj("Quote", { inAmount: quote?.inAmount, outAmount: quote?.outAmount, routePlanLen: quote?.routePlan?.length });
+  }
+
+  if (haveQuote) {
+    const first = await buildAndSend(false);
+    if (first.ok) { await seedCacheIfBuy(); return first.sig; }
+    if (first.code === "NOT_SUPPORTED") {
+      log("Retrying with shared accounts …");
+      const second = await buildAndSend(true);
+      if (second.ok) { await seedCacheIfBuy(); return second.sig; }
+    } else {
+      log("Primary swap failed. Fallback: shared accounts …");
+      const fallback = await buildAndSend(true);
+      if (fallback.ok) { await seedCacheIfBuy(); return fallback.sig; }
+    }
   }
 
   async function seedCacheIfBuy() {
@@ -690,7 +754,27 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
   }
 
   async function buildAndSend(useSharedAccounts = true, asLegacy = false) {
-    const slipForBody = Math.max(0, Number(quote?.slippageBps || baseSlip));
+    if (asLegacy) {
+      try {
+        const qLegacy = buildQuoteUrl({
+          outMint: outputMint,
+          slipBps: baseSlip,
+          restrict: restrictIntermediates, // keep same, forced true on lite
+          asLegacy: true
+        });
+        const qResL = await jupFetch(qLegacy.pathname + qLegacy.search);
+        if (!qResL.ok) {
+          const body = await qResL.text().catch(()=> "");
+          log(`Legacy quote failed (${qResL.status}): ${body || "(empty)"}`);
+        } else {
+          quote = await qResL.json();
+          log("Re-quoted for legacy transaction.");
+        }
+      } catch (e) {
+        log(`Legacy re-quote error: ${e.message || e}`);
+      }
+    }
+
     const body = {
       quoteResponse: quote,
       userPublicKey: signer.publicKey.toBase58(),
@@ -699,9 +783,9 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       useSharedAccounts: !!useSharedAccounts,
       asLegacyTransaction: !!asLegacy,
       ...(feeAccount ? { feeAccount } : {}),
-      ...(slipForBody != null ? { dynamicSlippage: { maxBps: slipForBody } } : {}),
+
     };
-    logObj("Swap body", { hasFee: !!feeAccount, feeBps: feeAccount ? feeBps : 0, useSharedAccounts: !!useSharedAccounts });
+    logObj("Swap body", { hasFee: !!feeAccount, feeBps: feeAccount ? feeBps : 0, useSharedAccounts: !!useSharedAccounts, asLegacy: !!asLegacy });
 
     const sRes = await jupFetch(`/swap/v1/swap`, {
       method: "POST",
@@ -735,15 +819,12 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         const sim = await conn.simulateTransaction(vtx, { sigVerify: false, replaceRecentBlockhash: true });
         const logs = sim?.value?.logs || e?.logs || [];
         log(`Simulation logs:\n${(logs||[]).join("\n")}`);
-        // router cooldown on tiny/dust routes (0x1788/0x1789)
+        // detect dust/cooldown signatures, but do not set global holds
         const hasDustErr = (logs || []).some(l => /0x1788|0x1789/i.test(String(l)));
-        if (hasDustErr) {
-          if (!window._fdvRouterHold) window._fdvRouterHold = new Map();
-          // hold for 2 minutes to avoid hammering dust routes
-          window._fdvRouterHold.set(inputMint, Date.now() + 120_000);
-        }
-      } catch {}
-      return { ok: false, code: "SEND_FAIL", msg: e.message || String(e) };
+        return { ok: false, code: hasDustErr ? "ROUTER_DUST" : "SEND_FAIL", msg: e.message || String(e) };
+      } catch {
+        return { ok: false, code: "SEND_FAIL", msg: e.message || String(e) };
+      }
     }
   }
   const first = await buildAndSend(false);
@@ -757,18 +838,18 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     const fallback = await buildAndSend(true);
     if (fallback.ok) { await seedCacheIfBuy(); return fallback.sig; }
   }
-
-  if (isSell) {
+if (isSell) {
     try {
       const slip2 = 2000;
-      const q2 = buildQuoteUrl({ outMint: outputMint, slipBps: slip2, restrict: "false" });
+      const rFlag = restrictAllowed ? "false" : "true";
+      const q2 = buildQuoteUrl({ outMint: outputMint, slipBps: slip2, restrict: rFlag });
       log(`Tiny-notional fallback: relax route, slip=${slip2} bps …`);
       const r2 = await jupFetch(q2.pathname + q2.search);
       if (r2.ok) {
         quote = await r2.json();
-        const a = await buildAndSend(false);
+        const a = await buildAndSend(false, true);
         if (a.ok) { await seedCacheIfBuy(); return a.sig; }
-        const b = await buildAndSend(true);
+        const b = await buildAndSend(true, true);
         if (b.ok) { await seedCacheIfBuy(); return b.sig; }
       }
     } catch {}
@@ -776,14 +857,15 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     try {
       const a = await buildAndSend(false, true);
       if (a.ok) { await seedCacheIfBuy(); return a.sig; }
-      const b = await buildAndSend(true, true);
+      const b = await buildAndSend(true);
       if (b.ok) { await seedCacheIfBuy(); return b.sig; }
     } catch {}
 
     try {
       const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
       const slip3 = 2000;
-      const q3 = buildQuoteUrl({ outMint: USDC, slipBps: slip3, restrict: "false" });
+      const rFlag = restrictAllowed ? "false" : "true";
+      const q3 = buildQuoteUrl({ outMint: USDC, slipBps: slip3, restrict: rFlag });
       log("Tiny-notional fallback: route to USDC …");
       const r3 = await jupFetch(q3.pathname + q3.search);
       if (r3.ok) {
@@ -794,6 +876,42 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         if (b.ok) return b.sig;
       }
     } catch {}
+
+    try {
+      const fractions = [0.7, 0.5, 0.33, 0.25, 0.2];
+      const slipSplit = 2000;
+      for (const f of fractions) {
+        const partRaw = Math.max(1, Math.floor(amountRaw * f));
+        if (partRaw <= 0) continue;
+
+        const restrictOptions = restrictAllowed ? ["false", "true"] : ["true"];
+        for (const restrict of restrictOptions) {
+          const qP = buildQuoteUrl({ outMint: outputMint, slipBps: slipSplit, restrict, amountOverrideRaw: partRaw });
+          log(`Split-sell quote f=${f} restrict=${restrict} slip=${slipSplit}…`);
+          const rP = await jupFetch(qP.pathname + qP.search);
+          if (!rP.ok) continue;
+
+          quote = await rP.json();
+          const tries = [
+            () => buildAndSend(false, false),
+            () => buildAndSend(true, false),
+            () => buildAndSend(false, true),
+            () => buildAndSend(true, true),
+          ];
+          for (const t of tries) {
+            try {
+              const res = await t();
+              if (res?.ok) {
+                log(`Split-sell succeeded at ${Math.round(f*100)}% of position.`);
+                return res.sig;
+              }
+            } catch {}
+          }
+        }
+      }
+    } catch (e) {
+      log(`Split-sell fallback error: ${e.message || e}`);
+    }
   }
 
   throw new Error("swap failed");
@@ -1268,6 +1386,7 @@ async function evalAndMaybeSellPositions() {
         log(`Sell decision: ${decision.action !== "none" ? decision.action : "NO"} (${decision.reason || "criteria not met"})`);
         if (decision.action === "none") continue;
 
+
         // Jupiter 0x1788 = cooldown
         if (window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
           const until = window._fdvRouterHold.get(mint);
@@ -1317,12 +1436,12 @@ async function evalAndMaybeSellPositions() {
                 save();
                 log(`Post-sell balance remains ${remainUi2.toFixed(6)} ${mint.slice(0,4)}… (keeping position)`);
               } else {
-                log(`Sold ${sellUi2.toFixed(6)} ${mint.slice(0,4)}… -> ${curSol.toFixed(6)} SOL (partial<min => full)`);
+                const reason = (decision && decision.reason) ? decision.reason : "done";
+                log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ${curSol.toFixed(6)} SOL (${reason})`);
                 delete state.positions[mint];
                 removeFromPosCache(kp.publicKey.toBase58(), mint);
                 save();
               }
-
               state.lastTradeTs = now();
               _inFlight = false;
               save();
@@ -1344,8 +1463,7 @@ async function evalAndMaybeSellPositions() {
             continue;
           }
 
-          log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… (${pct}% partial) -> ~${estSol.toFixed(6)} SOL (${d.reason})`);
-
+          log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ${curSol.toFixed(6)} SOL (${(decision && decision.reason) ? decision.reason : "done"})`);
           const remainPct = 1 - (pct / 100);
           pos.sizeUi = Math.max(0, pos.sizeUi - sellUi);
           pos.costSol = Number(pos.costSol || 0) * remainPct;
@@ -1758,7 +1876,7 @@ export function initAutoWidget(container = document.body) {
   body.innerHTML = `
     <div class="fdv-auto-head">
       <label class="fdv-switch fdv-hold-leader" style="margin-left:12px;">
-        <input type="checkbox" data-auto-hold disabled />
+        <input type="checkbox" data-auto-hold disabled/>
         <span>Leader</span>
       </label>
       <label class="fdv-switch">
@@ -1767,9 +1885,9 @@ export function initAutoWidget(container = document.body) {
       </label>
     </div>
     <div style="display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--fdv-border);padding-bottom:8px;margin-bottom:8px;">
-      <button data-auto-gen>Generate Wallet</button>
-      <button data-auto-copy>Copy Address</button>
-      <button data-auto-unwind>End & Return</button>
+      <button data-auto-gen>Generate</button>
+      <button data-auto-copy>Address</button>
+      <button data-auto-unwind>Return</button>
     </div>
     <div class="fdv-grid">
       <label><a href="https://chainstack.com/" target="_blank">RPC (CORS)</a> <input data-auto-rpc placeholder="https://your-provider.example/solana?api-key=..."/></label>
@@ -1782,10 +1900,12 @@ export function initAutoWidget(container = document.body) {
       <label>Min Buy (SOL) <input data-auto-minbuy type="number" step="0.0001" min="${UI_LIMITS.MIN_BUY_SOL_MIN}" max="${UI_LIMITS.MIN_BUY_SOL_MAX}"/></label>
       <label>Max Buy (SOL) <input data-auto-maxbuy type="number" step="0.0001" min="${UI_LIMITS.MAX_BUY_SOL_MIN}" max="${UI_LIMITS.MAX_BUY_SOL_MAX}"/></label>
     </div>
-    <div class="fdv-log" data-auto-log></div>
+    <div class="fdv-log" data-auto-log style="position:relative;">
+    </div>
     <div class="fdv-actions">
     <div class="fdv-actions-left">
         <button data-auto-help title="How the bot works">Help</button>
+        <button data-auto-log-copy title="Copy log">Log</button>
         <div class="fdv-modal" data-auto-modal
              style="display:none; position:fixed; width: 100%; inset:0; z-index:9999; background:rgba(0, 0, 0, 1); align-items:center; justify-content:center;">
           <div class="fdv-modal-card"
@@ -1908,6 +2028,7 @@ export function initAutoWidget(container = document.body) {
   const secExportBtn = wrap.querySelector("[data-auto-sec-export]");
   const rpcEl = wrap.querySelector("[data-auto-rpc]");
   const rpchEl = wrap.querySelector("[data-auto-rpch]");
+  const copyLogBtn = wrap.querySelector("[data-auto-log-copy]");
 
   rpcEl.value   = currentRpcUrl();
   try { rpchEl.value = JSON.stringify(currentRpcHeaders() || {}); } catch { rpchEl.value = "{}"; }
@@ -1953,6 +2074,9 @@ export function initAutoWidget(container = document.body) {
   // secCopySkBtn.addEventListener("click", async () => {
   //   try { await navigator.clipboard.writeText(secSkEl.value || ""); log("Secret key copied"); } catch {}
   // });
+  if (copyLogBtn) {
+    copyLogBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); copyLog(); });
+  }
   secExportBtn.addEventListener("click", () => {
     const payload = JSON.stringify({
       publicKey: state.autoWalletPub || "",
