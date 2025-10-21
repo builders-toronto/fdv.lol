@@ -5,7 +5,7 @@ import { computePumpingLeaders } from "../meme/addons/pumping.js";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 // Minimum SOL-in to avoid Jupiter 400s on tiny swaps 
-const MIN_JUP_SOL_IN = 0.00005;
+const MIN_JUP_SOL_IN = 0.0005;
 // Minimum SOL-out on sells to avoid dust/route failures
 const MIN_SELL_SOL_OUT = 0.002;
 
@@ -21,6 +21,11 @@ const MIN_OPERATING_SOL            = 0.005;
 const ROUTER_COOLDOWN_MS           = 60_000;
 
 
+const FEE_ATAS = {
+  [SOL_MINT]: "4FSwzXe544mW2BLYqAAjcyBmFFHYgMbnA1XUdtGUeST8", 
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "BKWwTmwc7FDSRb82n5o76bycH3rKZ4Xqt87EjZ2rnUXB", 
+};
+
 const UI_LIMITS = {
   BUY_PCT_MIN: 0.01,  // 1%
   BUY_PCT_MAX: 0.50,  // 50%
@@ -34,9 +39,35 @@ const UI_LIMITS = {
 
 function clamp(n, lo, hi) { const x = Number(n); return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : lo; }
 
-// Read CFG from swap.js when available (jupiterBase, platformFeeBps, tokenDecimals)
-async function getCfg() {
-  try { return (await import("./swap.js"))?.CFG || {}; } catch { return {}; }
+function now() { return Date.now(); }
+
+function fmtUsd(n) {
+  const x = Number(n || 0);
+  if (!Number.isFinite(x)) return "$0.00";
+  return "$" + x.toFixed(x >= 100 ? 0 : x >= 10 ? 2 : 3);
+}
+
+function safeNum(v, def=0){ const n = Number(v); return Number.isFinite(n) ? n : def; }
+
+function isPlanUpgradeError(e) {
+  const s = String(e?.message || e || "");
+  return /403/.test(s) || /-32602/.test(s) || /plan upgrade/i.test(s);
+}
+
+function log(msg) {
+  if (!logEl) return;
+  const d = document.createElement("div");
+  d.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function logObj(label, obj) {
+  try { log(`${label}: ${JSON.stringify(obj)}`); } catch {}
+}
+function redactHeaders(hdrs) {
+  const keys = Object.keys(hdrs || {});
+  return keys.length ? `{headers: ${keys.join(", ")}}` : "{}";
 }
 
 const LS_KEY = "fdv_auto_bot_v1";
@@ -57,10 +88,12 @@ let state = {
   trailPct: 6,                 
   minProfitToTrailPct: 3,     
   coolDownSecsAfterBuy: 60,    
-  minHoldSecs: 0,            
+  minHoldSecs: 0,  
+  maxHoldSecs: 50,           
   partialTpPct: 50,            
   minQuoteIntervalMs: 10000, 
   sellCooldownMs: 20000,  
+  staleMinsToDeRisk: 4, 
 
   // Auto wallet mode
   autoWalletPub: "",        
@@ -88,18 +121,108 @@ let state = {
   dustExitEnabled: true,
   dustMinSolOut: 0.004,
 
+  // Safeties
+  seedBuyCache: true,
+
   // Cache
-  pendingGraceMs: 20000,
+  pendingGraceMs: 60000,
 
   // collapse state for <details>
   collapsed: true,
   // hold until new leader detected
   holdUntilLeaderSwitch: false,
 };
+// init global user interface
 let timer = null;
 let logEl, toggleEl, startBtn, stopBtn, mintEl;
 let depAddrEl, depBalEl, lifeEl, recvEl, buyPctEl, minBuyEl, maxBuyEl;
 
+let _starting = false;
+
+let _switchingLeader = false;
+
+let _inFlight = false;
+
+let _buyInFlight = false;
+
+let _sellEvalRunning = false;
+
+let _buyBatchUntil = 0;
+
+const _pkValidCache = new Map();
+
+let _pendingCredits = new Map(); 
+
+let _lastOwnerReconTs = 0;
+
+function _pcKey(owner, mint) { return `${owner}:${mint}`; }
+
+function enqueuePendingCredit({ owner, mint, addCostSol = 0, decimalsHint = 6, basePos = {} }) {
+  if (!owner || !mint) return;
+  const nowTs = now();
+  const until = nowTs + Math.max(5000, Number(state.pendingGraceMs || 20000));
+  const key = _pcKey(owner, mint);
+  const prev = _pendingCredits.get(key);
+  const add = Number(addCostSol || 0);
+  _pendingCredits.set(key, {
+    owner, mint,
+    addCostSol: (Number(prev?.addCostSol || 0) + add),
+    decimalsHint: Number.isFinite(decimalsHint) ? decimalsHint : (prev?.decimalsHint ?? 6),
+    basePos: Object.assign({}, basePos || {}, { awaitingSizeSync: true }),
+    startedAt: prev?.startedAt || nowTs,
+    until,
+    lastTriedAt: 0,
+  });
+  log(`Queued pending credit watch for ${mint.slice(0,4)}… for up to ${(state.pendingGraceMs/1000|0)}s.`);
+}
+
+async function processPendingCredits() {
+  if (!_pendingCredits || _pendingCredits.size === 0) return;
+  const nowTs = now();
+  for (const [key, entry] of Array.from(_pendingCredits.entries())) {
+    if (!entry || nowTs > entry.until) {
+      _pendingCredits.delete(key);
+      continue;
+    }
+    if (entry.lastTriedAt && (nowTs - entry.lastTriedAt) < 300) continue;
+    try {
+      entry.lastTriedAt = nowTs;
+      const bal = await getAtaBalanceUi(entry.owner, entry.mint, entry.decimalsHint);
+      let sizeUi = Number(bal.sizeUi || 0);
+      let dec = Number.isFinite(bal.decimals) ? bal.decimals : (entry.decimalsHint ?? 6);
+
+      if (sizeUi <= 0) {
+        try {
+          const list = await listOwnerSplPositions(entry.owner);
+          const found = list.find(x => x.mint === entry.mint);
+          if (found && Number(found.sizeUi || 0) > 0) {
+            sizeUi = Number(found.sizeUi);
+            dec = Number.isFinite(found.decimals) ? found.decimals : dec;
+          }
+        } catch {}
+      }
+
+      if (sizeUi > 0) {
+        const prevPos = state.positions[entry.mint] || entry.basePos || { costSol: 0, hwmSol: 0, acquiredAt: now() };
+        const pos = {
+          ...prevPos,
+          sizeUi,
+          decimals: dec,
+          costSol: Number(prevPos.costSol || 0) + Number(entry.addCostSol || 0),
+          hwmSol: Math.max(Number(prevPos.hwmSol || 0), Number(entry.addCostSol || 0)),
+          lastBuyAt: now(),
+          lastSeenAt: now(),
+          awaitingSizeSync: false,
+        };
+        state.positions[entry.mint] = pos;
+        updatePosCache(entry.owner, entry.mint, sizeUi, dec);
+        save();
+        log(`Credit detected for ${entry.mint.slice(0,4)}… synced to cache.`);
+        _pendingCredits.delete(key);
+      }
+    } catch {}
+  }
+}
 
 const POSCACHE_KEY_PREFIX = "fdv_poscache_v1:";
 
@@ -107,12 +230,21 @@ function loadPosCache(ownerPubkeyStr) {
   if (localStorage.getItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr) === null) {
     localStorage.setItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr, JSON.stringify({}));
   }
-  try { return JSON.parse(localStorage.getItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr) || "{}") || {}; }
-  catch { return {}; }
+  try {
+    let posCache = JSON.parse(localStorage.getItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr) || "{}") || {}
+    log(`Loaded position cache for ${ownerPubkeyStr.slice(0,4)}… with ${Object.keys(posCache).length} entries.`);
+    return posCache;
+  } catch {
+    return {};
+  }
 }
 function savePosCache(ownerPubkeyStr, data) {
-  // console.log("saving to cache:", data);
-  try { localStorage.setItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr, JSON.stringify(data || {})); } catch {}
+  try {
+    localStorage.setItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr, JSON.stringify(data || {}));
+    log(`Saved position cache for ${ownerPubkeyStr.slice(0,4)}… with ${Object.keys(data||{}).length} entries.`);
+  } catch {
+    log(`Failed to save position cache for ${ownerPubkeyStr.slice(0,4)}…`);
+  }
 }
 function updatePosCache(ownerPubkeyStr, mint, sizeUi, decimals) {
   if (localStorage.getItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr) === null) {
@@ -123,20 +255,24 @@ function updatePosCache(ownerPubkeyStr, mint, sizeUi, decimals) {
   if (Number(sizeUi) > 0) {
     cache[mint] = { sizeUi: Number(sizeUi), decimals: Number.isFinite(decimals) ? decimals : 6 };
     savePosCache(ownerPubkeyStr, cache);
+    log(`Updated position cache for ${ownerPubkeyStr.slice(0,4)}… mint ${mint.slice(0,4)}… size ${sizeUi}`);
   }
 }
 function removeFromPosCache(ownerPubkeyStr, mint) {
   if (!ownerPubkeyStr || !mint) return;
   const cache = loadPosCache(ownerPubkeyStr);
   if (cache[mint]) { delete cache[mint]; savePosCache(ownerPubkeyStr, cache); }
+  log(`Removed from position cache for ${ownerPubkeyStr.slice(0,4)}… mint ${mint.slice(0,4)}…`);
 }
 function cacheToList(ownerPubkeyStr) {
   const cache = loadPosCache(ownerPubkeyStr);
-  return Object.entries(cache).map(([mint, v]) => ({
+  const objOfCache = Object.entries(cache).map(([mint, v]) => ({
     mint,
     sizeUi: Number(v?.sizeUi || 0),
     decimals: Number.isFinite(v?.decimals) ? v.decimals : 6
   })).filter(x => x.mint && x.sizeUi > 0);
+  log(`Position cache to list for ${ownerPubkeyStr.slice(0,4)}… ${objOfCache.length} entries.`);
+  return objOfCache;
 }
 
 async function safeGetDecimalsFast(mintStr) {
@@ -162,18 +298,31 @@ function normalizePercent(v) {
   return x > 1 ? x / 100 : x;
 }
 
+async function getCfg() {
+  try { return (await import("./swap.js"))?.CFG || {}; } catch { return {}; }
+}
+
 async function getJupBase() {
   const cfg = await getCfg();
   return String(cfg.jupiterBase || "https://lite-api.jup.ag").replace(/\/+$/,"");
 }
+
 async function getFeeReceiver() {
   const cfg = await getCfg();
-  return String(FDV_FEE_RECEIVER || "");
+  const fromEnv = String(FDV_FEE_RECEIVER || "").trim();
+  if (fromEnv) return fromEnv;
+  const fromCfg =
+    String(
+      cfg.platformFeeReceiver ||
+      cfg.feeReceiver ||
+      cfg.FDV_FEE_RECEIVER ||
+      ""
+    ).trim();
+  return fromCfg;
 }
-async function getPlatformFeeBps() {
-  const cfg = await getCfg();
-  const n = Number(cfg.platformFeeBps);
-  return Number.isFinite(n) ? Math.max(0, n|0) : 0;
+ 
+function getPlatformFeeBps() {
+  return 5; // 0.05%
 }
 
 async function tokenAccountRentLamports() {
@@ -251,36 +400,61 @@ async function waitForTokenCredit(ownerPubkeyStr, mintStr, { timeoutMs = 8000, p
 
   let atas = [];
   try { atas = await getOwnerAtas(ownerPubkeyStr, mintStr); } catch {}
-  if (!Array.isArray(atas) || atas.length === 0) {
-    return { sizeUi: 0, decimals };
-  }
-
+  // If no ATAs yet, we'll still loop and fall back to owner scan
   while (now() - start < timeoutMs) {
-    for (const { ata } of atas) {
-      try {
-        const res = await conn.getTokenAccountBalance(ata);
-        if (res?.value) {
-          const ui = Number(res.value.uiAmount || 0);
-          const dec = Number.isFinite(res.value.decimals) ? res.value.decimals : undefined;
+    // Check known ATAs first
+    if (Array.isArray(atas) && atas.length) {
+      for (const { ata } of atas) {
+        try {
+          const res = await conn.getTokenAccountBalance(ata, "processed");
+          if (res?.value) {
+            const ui = Number(res.value.uiAmount || 0);
+            const dec = Number.isFinite(res.value.decimals) ? res.value.decimals : undefined;
+            if (ui > 0) return { sizeUi: ui, decimals: Number.isFinite(dec) ? dec : decimals };
+          }
+        } catch {}
+      }
+    }
+    try {
+      const { PublicKey } = await loadWeb3();
+      const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = await loadSplToken();
+      const ownerPk = new PublicKey(ownerPubkeyStr);
+      const tryScan = async (pid) => {
+        if (!pid) return null;
+        const resp = await conn.getParsedTokenAccountsByOwner(ownerPk, { programId: pid }, "processed");
+        for (const it of resp?.value || []) {
+          const info = it?.account?.data?.parsed?.info;
+          if (String(info?.mint || "") !== mintStr) continue;
+          const ta = info?.tokenAmount;
+          const ui = Number(ta?.uiAmount || 0);
+          const dec = Number(ta?.decimals);
           if (ui > 0) return { sizeUi: ui, decimals: Number.isFinite(dec) ? dec : decimals };
         }
-      } catch {}
-    }
+        return null;
+      };
+      const hit1 = await tryScan(TOKEN_PROGRAM_ID);
+      const hit2 = hit1 || await tryScan(TOKEN_2022_PROGRAM_ID);
+      if (hit2 && Number(hit2.sizeUi || 0) > 0) return hit2;
+    } catch {}
     await new Promise(r => setTimeout(r, pollMs));
+    // Refresh ATAs once mid-loop
+    try { if (!atas || !atas.length) atas = await getOwnerAtas(ownerPubkeyStr, mintStr); } catch {}
   }
   return { sizeUi: 0, decimals };
 }
-async function getFeeAta(mintStr) {
-  const feeRecv = await getFeeReceiver();
-  if (!feeRecv) return null;
-  const { PublicKey } = await loadWeb3();
-  const { getAssociatedTokenAddress } = await loadSplToken();
-  try {
-    const mint = new PublicKey(mintStr);
-    const owner = new PublicKey(feeRecv);
-    return await getAssociatedTokenAddress(mint, owner, true);
-  } catch { return null; }
-}
+
+
+// async function getFeeAta(mintStr) {
+//   const feeRecv = await getFeeReceiver();
+//   if (!feeRecv) return null;
+//   const { PublicKey } = await loadWeb3();
+//   const { getAssociatedTokenAddress } = await loadSplToken();
+//   try {
+//     const mint = new PublicKey(mintStr);
+//     const owner = new PublicKey(feeRecv);
+//     return await getAssociatedTokenAddress(mint, owner, true);
+//   } catch { return null; }
+// }
 
 // async function resolveExistingFeeAta(mintStr) {
 //   const ata = await getFeeAta(mintStr);
@@ -396,57 +570,6 @@ async function fetchSolBalance(pubkeyStr) {
   return lamports / 1e9;
 }
 
-function load() {
-  try { state = { ...state, ...(JSON.parse(localStorage.getItem(LS_KEY))||{}) }; } catch {}
-  state.slippageBps = Math.max(150, Number(state.slippageBps || 150) | 0);
-  state.minBuySol   = Math.max(MIN_JUP_SOL_IN, Number(state.minBuySol || MIN_JUP_SOL_IN));
-  save();
-}
-function save() {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch {}
-}
-function log(msg) {
-  if (!logEl) return;
-  const d = document.createElement("div");
-  d.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-  logEl.appendChild(d);
-  logEl.scrollTop = logEl.scrollHeight;
-}
-
-function copyLog() {
-  if (!logEl) return false;
-  try {
-    const lines = Array.from(logEl.children)
-      .filter(n => n && n.tagName === "DIV")
-      .map(n => n.textContent || "");
-    const text = lines.join("\n");
-    if (!text) { log("Log is empty."); return false; }
-    navigator.clipboard.writeText(text)
-      .then(() => log("Log copied to clipboard"))
-      .catch(() => {
-        try {
-          const ta = document.createElement("textarea");
-          ta.value = text;
-          ta.style.position = "fixed";
-          ta.style.left = "-9999px";
-          document.body.appendChild(ta);
-          ta.select();
-          document.execCommand("copy");
-          ta.remove();
-          log("Log copied to clipboard");
-        } catch {
-          log("Copy failed");
-        }
-      });
-    return true;
-  } catch {
-    log("Copy failed");
-    return false;
-  }
-}
-
-function now() { return Date.now(); }
-
 function setRouterHold(mint, ms = ROUTER_COOLDOWN_MS) {
   if (!mint) return;
   if (!window._fdvRouterHold) window._fdvRouterHold = new Map();
@@ -470,31 +593,21 @@ async function getSolUsd() {
   } catch {}
   return _solPxCache.usd || 0;
 }
-function fmtUsd(n) {
-  const x = Number(n || 0);
-  if (!Number.isFinite(x)) return "$0.00";
-  return "$" + x.toFixed(x >= 100 ? 0 : x >= 10 ? 2 : 3);
-}
 
-// Compute how much SOL we can spend on buys without risking exit ability
 async function computeSpendCeiling(ownerPubkeyStr, { solBalHint } = {}) {
   const solBal = Number.isFinite(solBalHint) ? solBalHint : await fetchSolBalance(ownerPubkeyStr);
   const solLamports = Math.floor(solBal * 1e9);
 
-  // Base reserve: rent/fees cushion
   const baseReserveLamports = Math.max(
     Math.floor(FEE_RESERVE_MIN * 1e9),
     Math.floor(solLamports * FEE_RESERVE_PCT)
   );
 
-  // How many open SPL positions might we need to sell?
   const posCount = Object.entries(state.positions || {})
     .filter(([m, p]) => m !== SOL_MINT && Number(p?.sizeUi || 0) > 0).length;
 
-  // Reserve tx fees to sell each current position once
   const sellResLamports = posCount * (SELL_TX_FEE_BUFFER_LAMPORTS + EXTRA_TX_BUFFER_LAMPORTS);
 
-  // Keep a minimal operating runway at all times
   const minRunwayLamports = Math.floor(MIN_OPERATING_SOL * 1e9);
 
   const totalResLamports = Math.max(minRunwayLamports, baseReserveLamports + sellResLamports);
@@ -515,7 +628,6 @@ async function computeSpendCeiling(ownerPubkeyStr, { solBalHint } = {}) {
   };
 }
 
-const _pkValidCache = new Map();
 async function isValidPubkeyStr(s) {
   const key = String(s || "").trim();
   if (!key) return false;
@@ -528,14 +640,6 @@ async function isValidPubkeyStr(s) {
   } catch {}
   _pkValidCache.set(key, ok);
   return ok;
-}
-
-function logObj(label, obj) {
-  try { log(`${label}: ${JSON.stringify(obj)}`); } catch {}
-}
-function redactHeaders(hdrs) {
-  const keys = Object.keys(hdrs || {});
-  return keys.length ? `{headers: ${keys.join(", ")}}` : "{}";
 }
 
 async function getAutoKeypair() {
@@ -569,7 +673,6 @@ async function jupFetch(path, opts) {
   const waitMs = Math.max(0, window._fdvJupLastCall + minGapMs - nowTs) + (isQuote ? Math.floor(Math.random()*80) : 0);
   if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs));
   window._fdvJupLastCall = Date.now();
-
 
   if (isGet) {
     if (!window._fdvJupInflight) window._fdvJupInflight = new Map();
@@ -714,28 +817,14 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
   const { PublicKey, VersionedTransaction } = await loadWeb3();
   const conn = await getConn();
   const userPub = signer.publicKey.toBase58();
-  const feeBps = await getPlatformFeeBps();
-  const feeRecv = await getFeeReceiver();
+  const feeBps = Number(getPlatformFeeBps() || 0);
   let feeAccount = null;
-
-  if (feeBps > 0 && feeRecv) {
-    try {
-      const ataPk = await getFeeAta(inputMint); 
-      if (ataPk) {
-        // Verify it exists and matches expected owner/mint
-        const info = await conn.getParsedAccountInfo(new PublicKey(ataPk)).catch(() => null);
-        const parsed = info?.value?.data?.parsed?.info;
-        const ataOwner = parsed?.owner;
-        const ataMint = parsed?.mint;
-        if (info?.value && ataOwner === feeRecv && ataMint === inputMint) {
-          feeAccount = ataPk.toBase58 ? ataPk.toBase58() : String(ataPk);
-          log(`Fee enabled: ATA ${feeAccount} (mint=${inputMint.slice(0,4)}…) @ ${feeBps} bps`);
-        } else {
-          log("Fee ATA invalid or missing on-chain for input mint. Skipping fee for this swap.");
-        }
-      }
-    } catch {
-      log("Fee ATA lookup failed. Skipping fee for this swap.");
+  if (feeBps > 0) {
+    feeAccount = FEE_ATAS[inputMint] || null;
+    if (feeAccount) {
+      log(`Fee enabled: ATA ${feeAccount.slice(0,4)}… @ ${feeBps} bps`);
+    } else {
+      log("No hardcoded fee ATA for input mint; fees not collected this swap.");
     }
   }
   const inDecimals = await getMintDecimals(inputMint);
@@ -807,7 +896,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     }
   }
 
-if (haveQuote) {
+  if (haveQuote) {
     // Skip tiny sells outright (no retries/fallbacks)
     if (isSell) {
       const outRaw = Number(quote?.outAmount || 0); // lamports
@@ -817,34 +906,134 @@ if (haveQuote) {
         throw new Error("BELOW_MIN_NOTIONAL");
       }
     }
+
+    const isRouteErr = (codeOrMsg) => /ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|0x1788/i.test(String(codeOrMsg||""));
+    let sawRouteDust = false;
+
     const first = await buildAndSend(false);
     if (first.ok) { await seedCacheIfBuy(); return first.sig; }
-    if (first.code === "NOT_SUPPORTED") {
-      log("Retrying once with shared accounts …");
-      const second = await buildAndSend(true);
-      if (second.ok) { await seedCacheIfBuy(); return second.sig; }
-      // If still not supported, stop
-      throw new Error(second?.code || "swap failed");
-    }
-    // Stop immediately on router dust/cooldown/no-route; no permutations
-    if (/ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE/i.test(String(first?.code || first?.msg || ""))) {
-      throw new Error(first.code || "ROUTER_DUST");
-    }
-    throw new Error(first?.code || first?.msg || "swap failed");
-  }
+    if (isRouteErr(first?.code || first?.msg)) sawRouteDust = true;
 
-  async function seedCacheIfBuy() {
-      if (inputMint === SOL_MINT && outputMint !== SOL_MINT) {
-        const estRaw = Number(quote?.outAmount || 0);
-        if (estRaw > 0) {
-          const dec = await safeGetDecimalsFast(outputMint);
-          const ui = estRaw / Math.pow(10, dec);
+    const second = await buildAndSend(true);
+    if (second.ok) { await seedCacheIfBuy(); return second.sig; }
+    if (isRouteErr(second?.code || second?.msg)) sawRouteDust = true;
+
+    const strictSeq = [
+      () => manualBuildAndSend(false, false),
+      () => manualBuildAndSend(true,  false),
+      () => manualBuildAndSend(false, true),
+      () => manualBuildAndSend(true,  true),
+    ];
+    for (const t of strictSeq) {
+      try {
+        const r = await t();
+        if (r?.ok) { await seedCacheIfBuy(); return r.sig; }
+        if (isRouteErr(r?.code || r?.msg)) sawRouteDust = true;
+      } catch {}
+    }
+
+    try {
+      const slipUp = Math.min(2000, Math.max(baseSlip, Math.floor(baseSlip * 3)));
+      const alt = buildQuoteUrl({ outMint: outputMint, slipBps: slipUp, restrict: restrictIntermediates, asLegacy: false });
+      const qAlt = await jupFetch(alt.pathname + alt.search);
+      if (qAlt.ok) {
+        quote = await qAlt.json();
+        log(`Re-quoted with slip=${slipUp} bps.`);
+        const seq2 = [
+          () => buildAndSend(false, false),
+          () => buildAndSend(true,  false),
+          () => buildAndSend(false, true),
+          () => buildAndSend(true,  true),
+          () => manualBuildAndSend(false, false),
+          () => manualBuildAndSend(true,  false),
+          () => manualBuildAndSend(false, true),
+          () => manualBuildAndSend(true,  true),
+        ];
+        for (const t of seq2) {
           try {
-            updatePosCache(userPub, outputMint, ui, dec);
-            log(`Seeded cache for ${outputMint.slice(0,4)}… (~${ui.toFixed(6)})`);
+            const r = await t();
+            if (r?.ok) { await seedCacheIfBuy(); return r.sig; }
+            if (isRouteErr(r?.code || r?.msg)) sawRouteDust = true;
           } catch {}
         }
       }
+    } catch {}
+
+    // 4) SELL-specific alternates (USDC route and splits) before giving up
+    if (isSell) {
+      try {
+        const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        const slip3 = 2000;
+        const rFlag = restrictAllowed ? "false" : "true";
+        const q3 = buildQuoteUrl({ outMint: USDC, slipBps: slip3, restrict: rFlag });
+        log("Strict fallback: route to USDC …");
+        const r3 = await jupFetch(q3.pathname + q3.search);
+        if (r3.ok) {
+          quote = await r3.json();
+          for (const t of [() => buildAndSend(false), () => buildAndSend(true), () => manualBuildAndSend(false), () => manualBuildAndSend(true)]) {
+            try { const r = await t(); if (r?.ok) return r.sig; } catch {}
+          }
+        }
+      } catch {}
+
+      try {
+        const fractions = [0.7, 0.5, 0.33, 0.25, 0.2];
+        const slipSplit = 2000;
+        for (const f of fractions) {
+          const partRaw = Math.max(1, Math.floor(amountRaw * f));
+          if (partRaw <= 0) continue;
+          const restrictOptions = restrictAllowed ? ["false", "true"] : ["true"];
+          for (const restrict of restrictOptions) {
+            const qP = buildQuoteUrl({ outMint: outputMint, slipBps: slipSplit, restrict, amountOverrideRaw: partRaw });
+            log(`Strict split-sell f=${f} restrict=${restrict} slip=${slipSplit} …`);
+            const rP = await jupFetch(qP.pathname + qP.search);
+            if (!rP.ok) continue;
+            quote = await rP.json();
+            const tries = [
+              () => buildAndSend(false, false),
+              () => buildAndSend(true,  false),
+              () => manualBuildAndSend(false, false),
+              () => manualBuildAndSend(true,  false),
+              () => buildAndSend(false, true),
+              () => buildAndSend(true,  true),
+              () => manualBuildAndSend(false, true),
+              () => manualBuildAndSend(true,  true),
+            ];
+            for (const t of tries) {
+              try {
+                const res = await t();
+                if (res?.ok) { log(`Split-sell succeeded at ${Math.round(f*100)}% of position.`); return res.sig; }
+                if (isRouteErr(res?.code || res?.msg)) sawRouteDust = true;
+              } catch {}
+            }
+          }
+        }
+      } catch {}
+    }
+
+    // All fallbacks failed
+    if (isSell && sawRouteDust) setRouterHold(inputMint, ROUTER_COOLDOWN_MS);
+    throw new Error(sawRouteDust ? "ROUTER_DUST" : "swap failed");
+  }
+
+  async function seedCacheIfBuy() {
+    if (inputMint === SOL_MINT && outputMint !== SOL_MINT) {
+      const estRaw = Number(quote?.outAmount || 0);
+      if (estRaw > 0) {
+        const dec = await safeGetDecimalsFast(outputMint);
+        const ui = estRaw / Math.pow(10, dec);
+        try {
+          updatePosCache(userPub, outputMint, ui, dec);
+          log(`Seeded cache for ${outputMint.slice(0,4)}… (~${ui.toFixed(6)})`);
+        } catch {}
+        // Fire-and-forget: reconcile state and pick up on-chain credit as it lands
+        setTimeout(() => {
+          Promise.resolve()
+            .then(() => syncPositionsFromChain(userPub).catch(()=>{}))
+            .then(() => processPendingCredits().catch(()=>{}));
+        }, 0);
+      }
+    }
   }
 
   async function buildAndSend(useSharedAccounts = true, asLegacy = false) {
@@ -876,8 +1065,7 @@ if (haveQuote) {
       dynamicComputeUnitLimit: true,
       useSharedAccounts: !!useSharedAccounts,
       asLegacyTransaction: !!asLegacy,
-      ...(feeAccount ? { feeAccount } : {}),
-
+      ...(feeAccount && feeBps > 0 ? { feeAccount, platformFeeBps: feeBps } : {}),
     };
     logObj("Swap body", { hasFee: !!feeAccount, feeBps: feeAccount ? feeBps : 0, useSharedAccounts: !!useSharedAccounts, asLegacy: !!asLegacy });
 
@@ -904,8 +1092,10 @@ if (haveQuote) {
     const vtx = VersionedTransaction.deserialize(rawBytes);
     vtx.sign([signer]);
     try {
-      const sig = await conn.sendRawTransaction(vtx.serialize(), { preflightCommitment: "processed" });
+      const sig = await conn.sendRawTransaction(vtx.serialize(), { preflightCommitment: "processed", maxRetries: 3 });
       log(`Swap sent: ${sig}`);
+      // add to cache
+      // _pendingCredits?.set(sig, { type: "swap", vtx });
       return { ok: true, sig };
     } catch (e) {
       log(`Swap send failed. NO_ROUTES/ROUTER_DUST. export help/wallet.json to recover dust funds. Simulating…`);
@@ -950,7 +1140,7 @@ if (haveQuote) {
         dynamicComputeUnitLimit: true,
         useSharedAccounts: !!useSharedAccounts,
         asLegacyTransaction: !!asLegacy,
-        ...(feeAccount ? { feeAccount } : {}),
+        ...(feeAccount && feeBps > 0 ? { feeAccount, platformFeeBps: feeBps } : {}),
       };
       logObj("Swap-instructions body", { hasFee: !!feeAccount, feeBps: feeAccount ? feeBps : 0, useSharedAccounts: !!useSharedAccounts, asLegacy: !!asLegacy });
 
@@ -1012,7 +1202,7 @@ if (haveQuote) {
         for (const ix of ixs) tx.add(ix);
         tx.sign(signer);
         try {
-          const sig = await conn.sendRawTransaction(tx.serialize(), { preflightCommitment: "processed" });
+          const sig = await conn.sendRawTransaction(tx.serialize(), { preflightCommitment: "processed", maxRetries: 3 });
           log(`Swap (manual legacy) sent: ${sig}`);
           return { ok: true, sig };
         } catch (e) {
@@ -1041,7 +1231,7 @@ if (haveQuote) {
         const vtx = new VersionedTransaction(msg);
         vtx.sign([signer]);
         try {
-          const sig = await conn.sendRawTransaction(vtx.serialize(), { preflightCommitment: "processed" });
+          const sig = await conn.sendRawTransaction(vtx.serialize(), { preflightCommitment: "processed", maxRetries: 3 });
           log(`Swap (manual v0) sent: ${sig}`);
           return { ok: true, sig };
         } catch (e) {
@@ -1113,21 +1303,39 @@ if (haveQuote) {
       if (b.ok) { await seedCacheIfBuy(); return b.sig; }
     } catch {}
 
-    try {
-      const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-      const slip3 = 2000;
-      const rFlag = restrictAllowed ? "false" : "true";
-      const q3 = buildQuoteUrl({ outMint: USDC, slipBps: slip3, restrict: rFlag });
-      log("Tiny-notional fallback: route to USDC …");
-      const r3 = await jupFetch(q3.pathname + q3.search);
-      if (r3.ok) {
-        quote = await r3.json();
-        const a = await buildAndSend(false);
-        if (a.ok) return a.sig;
-        const b = await buildAndSend(true);
-        if (b.ok) return b.sig;
-      }
-    } catch {}
+      try {
+        const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        const slip3 = 2000;
+        const rFlag = restrictAllowed ? "false" : "true";
+        const q3 = buildQuoteUrl({ outMint: USDC, slipBps: slip3, restrict: rFlag });
+        log("Strict fallback: route to USDC, then dump USDC->SOL …");
+        const r3 = await jupFetch(q3.pathname + q3.search);
+        if (r3.ok) {
+          quote = await r3.json();
+          const sendFns = [() => buildAndSend(false), () => buildAndSend(true), () => manualBuildAndSend(false), () => manualBuildAndSend(true)];
+          for (const send of sendFns) {
+            try {
+              const r = await send();
+              if (r?.ok) {
+                const sig1 = r.sig;
+                try { await confirmSig(sig1, { commitment: "confirmed", timeoutMs: 12000 }); } catch {}
+                // Wait for USDC credit then swap USDC -> SOL
+                try { await waitForTokenCredit(userPub, USDC, { timeoutMs: 12000, pollMs: 300 }); } catch {}
+                let usdcUi = 0;
+                try { const b = await getAtaBalanceUi(userPub, USDC, 6); usdcUi = Number(b.sizeUi || 0); } catch {}
+                if (usdcUi > 0) {
+                  const back = await executeSwapWithConfirm({
+                    signer, inputMint: USDC, outputMint: SOL_MINT, amountUi: usdcUi, slippageBps: state.slippageBps,
+                  }, { retries: 1, confirmMs: 15000 });
+                  if (back.ok) return back.sig;
+                  log("USDC->SOL dump failed after fallback; keeping USDC.");
+                }
+                return sig1;
+              }
+            } catch {}
+          }
+        }
+      } catch {}
 
     try {
       const fractions = [0.7, 0.5, 0.33, 0.25, 0.2];
@@ -1223,12 +1431,6 @@ async function sweepAllToSolAndReturn() {
   state.endAt = 0;
   save();
 }
-
-let _buyBatchUntil = 0;
-
-
-function safeNum(v, def=0){ const n = Number(v); return Number.isFinite(n) ? n : def; }
-
 
 function scorePumpCandidate(it) {
   // Robust field access
@@ -1333,7 +1535,7 @@ async function getAtaBalanceUi(ownerPubkeyStr, mintStr, decimalsHint) {
   const atas = await getOwnerAtas(ownerPubkeyStr, mintStr);
   let best = null;
   for (const { ata } of atas) {
-    const res = await conn.getTokenAccountBalance(ata).catch(() => null);
+    const res = await conn.getTokenAccountBalance(ata, "processed").catch(() => null);
     if (res?.value) {
       const sizeUi = Number(res.value.uiAmount || 0);
       const decimals = Number.isFinite(res.value.decimals) ? res.value.decimals : (await getMintDecimals(mintStr));
@@ -1352,6 +1554,29 @@ async function getAtaBalanceUi(ownerPubkeyStr, mintStr, decimalsHint) {
   const decimals = Number.isFinite(decimalsHint) ? decimalsHint : (await getMintDecimals(mintStr));
   if (best) return best;
   return { sizeUi: 0, decimals, exists: existsAny };
+}
+
+async function reconcileFromOwnerScan(ownerPubkeyStr) {
+  try {
+    const nowTs = now();
+    if (nowTs - _lastOwnerReconTs < 5000) return;
+    _lastOwnerReconTs = nowTs;
+
+    const list = await listOwnerSplPositions(ownerPubkeyStr); // also updates cache
+    if (!Array.isArray(list) || !list.length) return;
+    for (const { mint, sizeUi, decimals } of list) {
+      if (!mint || Number(sizeUi || 0) <= 0) continue;
+      const prev = state.positions[mint] || { costSol: 0, hwmSol: 0, acquiredAt: nowTs };
+      state.positions[mint] = {
+        ...prev,
+        sizeUi: Number(sizeUi),
+        decimals: Number.isFinite(decimals) ? decimals : (prev.decimals ?? 6),
+        lastSeenAt: nowTs,
+        awaitingSizeSync: false,
+      };
+    }
+    save();
+  } catch {}
 }
 
 async function listOwnerSplPositions(ownerPubkeyStr) {
@@ -1389,11 +1614,28 @@ async function listOwnerSplPositions(ownerPubkeyStr) {
   if (TOKEN_PROGRAM_ID) any = (await scan(TOKEN_PROGRAM_ID)) || any;
   if (TOKEN_2022_PROGRAM_ID) any = (await scan(TOKEN_2022_PROGRAM_ID)) || any;
 
-  if (!out.length) return cacheToList(ownerPubkeyStr);
+  if (!out.length) {
+    const cached = cacheToList(ownerPubkeyStr);
+    const verified = [];
+    for (const it of cached) {
+      try {
+        const b = await getAtaBalanceUi(ownerPubkeyStr, it.mint, it.decimals);
+        const ui = Number(b.sizeUi || 0);
+        const dec = Number.isFinite(b.decimals) ? b.decimals : it.decimals;
+        if (ui > 0) {
+          updatePosCache(ownerPubkeyStr, it.mint, ui, dec);
+          verified.push({ mint: it.mint, sizeUi: ui, decimals: dec });
+        } else {
+          removeFromPosCache(ownerPubkeyStr, it.mint);
+        }
+      } catch {}
+    }
+    if (!verified.length) log("Owner scan empty; cache fallback had no live balances.");
+    return verified;
+  }
   for (const r of out) updatePosCache(ownerPubkeyStr, r.mint, r.sizeUi, r.decimals);
   return out;
 }
-
 async function syncPositionsFromChain(ownerPubkeyStr) {
   try {
     log("Syncing positions from cache …");
@@ -1426,6 +1668,16 @@ async function syncPositionsFromChain(ownerPubkeyStr) {
     for (const mint of Object.keys(state.positions || {})) {
       if (mint === SOL_MINT) continue;
       if (!cachedSet.has(mint)) {
+        const pos = state.positions[mint];
+        const ageMs = nowTs - Number(pos?.lastBuyAt || pos?.acquiredAt || 0);
+        const withinGrace = !!pos?.awaitingSizeSync && ageMs < Math.max(5000, Number(state.pendingGraceMs || 20000));
+        const pendKey = _pcKey(ownerPubkeyStr, mint);
+        const hasPending = _pendingCredits?.has?.(pendKey);
+        if (withinGrace || hasPending) {
+          // Keep awaiting positions for a short grace window. Very important to avoid
+          // premature deletions while on-chain finality is pending.
+          continue;
+        }
         delete state.positions[mint];
       }
     }
@@ -1457,13 +1709,14 @@ async function sweepNonSolToSolAtStart() {
 
   if (!items.length) { log("Startup sweep: no valid cached SPL balances."); return; }
 
-  let sold = 0;
+  let sold = 0, unsellable = 0;
   for (const { mint, sizeUi, decimals } of items) {
     try {
       const estSol = await quoteOutSol(mint, sizeUi, decimals).catch(() => 0);
       const minNotional = Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN * 1.05);
       if (estSol < minNotional) {
         log(`Skip ${mint.slice(0,4)}… (est ${estSol.toFixed(6)} SOL < ${minNotional}).`);
+        unsellable++;
         continue;
       }
 
@@ -1483,15 +1736,12 @@ async function sweepNonSolToSolAtStart() {
     }
   }
 
-  log(`Startup sweep complete. Sold ${sold} token${sold===1?"":"s"}.`);
+  log(`Startup sweep complete. Sold ${sold} token${sold===1?"":"s"}. ${unsellable} dust/unsellable skipped.`);
   if (sold > 0) { state.lastTradeTs = now(); save(); }
 }
 
 
 // TODO: refine sell logic with more parameters and further include KPI addons.
-
-let _buyInFlight = false;
-let _sellEvalRunning = false;
 
 function shouldSell(pos, curSol, nowTs) {
   const sz = Number(pos.sizeUi || 0);
@@ -1500,6 +1750,14 @@ function shouldSell(pos, curSol, nowTs) {
   if (cost <= 0 || sz <= 0) return { action: "none" };
 
   if (pos.awaitingSizeSync) return { action: "none", reason: "awaiting-size-sync" };
+
+  const maxHold = Math.max(0, Number(state.maxHoldSecs || 0));
+  if (maxHold > 0) {
+    const ageMs = nowTs - Number(pos.acquiredAt || pos.lastBuyAt || 0);
+    if (ageMs >= maxHold * 1000) {
+      return { action: "sell_all", reason: `max-hold>${maxHold}s` };
+    }
+  }
 
   const lastBuyAt = Number(pos.lastBuyAt || pos.acquiredAt || 0);
   if (lastBuyAt && nowTs - lastBuyAt < (state.coolDownSecsAfterBuy|0) * 1000) {
@@ -1545,11 +1803,6 @@ function shouldSell(pos, curSol, nowTs) {
   return { action: "none" };
 }
 
-
-
-let _inFlight = false;
-
-
 async function evalAndMaybeSellPositions() {
   if (state.holdUntilLeaderSwitch) return;
   if (_inFlight) return;
@@ -1566,11 +1819,17 @@ async function evalAndMaybeSellPositions() {
     const nowTs = now();
     for (const [mint, pos] of entries) {
       try {
-        if (window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
+
+        const maxHold = Math.max(0, Number(state.maxHoldSecs || 0));
+        const ageMs = nowTs - Number(pos.acquiredAt || pos.lastBuyAt || 0);
+        const forceExpire = maxHold > 0 && ageMs >= maxHold * 1000;
+
+        if (!forceExpire && window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
           const until = window._fdvRouterHold.get(mint);
           log(`Router cooldown for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`);
           continue;
         }
+
         const sz = Number(pos.sizeUi || 0);
         if (sz <= 0) {
           log(`Skip sell eval for ${mint.slice(0,4)}… (no size)`);
@@ -1590,7 +1849,7 @@ async function evalAndMaybeSellPositions() {
         const minNotional = baseMinNotional; // keep router-safe default
         let d = null;
 
-        if (curSol < minNotional) {
+        if (curSol < minNotional && !forceExpire) {
           // selling dust works... but only if enabled
           d = shouldSell(pos, curSol, nowTs);
           const dustMin = Math.max(MIN_SELL_SOL_OUT, Number(state.dustMinSolOut || 0));
@@ -1602,13 +1861,26 @@ async function evalAndMaybeSellPositions() {
           }
         }
 
-        const decision = d || shouldSell(pos, curSol, nowTs);
+        let decision = d || shouldSell(pos, curSol, nowTs);
+        if (forceExpire && (!decision || decision.action === "none")) {
+          decision = { action: "sell_all", reason: `max-hold>${maxHold}s` };
+          log(`Max-hold reached for ${mint.slice(0,4)}… forcing sell.`);
+        }
+        if (!decision) {
+          const staleMins = Math.max(0, Number(state.staleMinsToDeRisk || 0));
+          const isStale = staleMins > 0 && pos.acquiredAt && (nowTs - pos.acquiredAt) > staleMins * 60_000;
+          if (isStale && curSol >= minNotional) {
+            decision = { action: "sell_all", reason: `stale>${staleMins}m` };
+          } else {
+            decision = shouldSell(pos, curSol, nowTs);
+          }
+        }
         log(`Sell decision: ${decision.action !== "none" ? decision.action : "NO"} (${decision.reason || "criteria not met"})`);
         if (decision.action === "none") continue;
 
 
         // Jupiter 0x1788 = cooldown
-        if (window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
+        if (!forceExpire && window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
           const until = window._fdvRouterHold.get(mint);
           log(`Router cooldown for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`);
           continue;
@@ -1652,6 +1924,8 @@ async function evalAndMaybeSellPositions() {
               if (remainUi2 > 1e-9) {
                 pos.sizeUi = remainUi2;
                 pos.lastSellAt = now();
+                pos.allowRebuy = true;
+                pos.lastSplitSellAt = now();
                 updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
                 save();
                 log(`Post-sell balance remains ${remainUi2.toFixed(6)} ${mint.slice(0,4)}… (keeping position)`);
@@ -1690,6 +1964,8 @@ async function evalAndMaybeSellPositions() {
           pos.hwmSol = Number(pos.hwmSol || 0) * remainPct;
           pos.hwmPx = Number(pos.hwmPx || 0);
           pos.lastSellAt = now();
+          pos.allowRebuy = true;
+          pos.lastSplitSellAt = now();
 
           try {
             const b2 = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
@@ -1749,10 +2025,6 @@ async function evalAndMaybeSellPositions() {
     _sellEvalRunning = false;
   }
 }
-
-let _switchingLeader = false;
-
-
 
 async function switchToLeader(newMint) {
   const prev = state.currentLeaderMint || "";
@@ -1835,15 +2107,30 @@ async function switchToLeader(newMint) {
 }
 
 async function tick() {
+  const endIn = state.endAt ? ((state.endAt - now())/1000).toFixed(0) : "0";
   if (!state.enabled) return;
   if (state.endAt && now() >= state.endAt) {
     log("Lifetime ended. Unwinding…");
     try { await sweepAllToSolAndReturn(); } catch(e){ log(`Unwind failed: ${e.message||e}`); }
     return;
+  } else {
+    const endInSec = Math.max(0, Math.floor((state.endAt - now()) / 1000));
+    const remMins = Math.max(0, Math.floor(endInSec / 60));
+    log(`Bot active. Time until end: ${endInSec}s :: hit "refresh" to reset all stats.`);
+    if (lifeEl) lifeEl.value = String(remMins);
   }
   if (depBalEl && state.autoWalletPub) {
     fetchSolBalance(state.autoWalletPub).then(b => { depBalEl.value = `${b.toFixed(4)} SOL`; }).catch(()=>{});
   }
+
+  try { await processPendingCredits(); } catch {}
+
+  try {
+    const kpTmp = await getAutoKeypair();
+    if (kpTmp && (_pendingCredits?.size > 0)) {
+      await reconcileFromOwnerScan(kpTmp.publicKey.toBase58());
+    }
+  } catch {}
 
   try { await evalAndMaybeSellPositions(); } catch {}
 
@@ -1895,13 +2182,12 @@ async function tick() {
       reservesSol: (ceiling.reserves.totalResLamports/1e9).toFixed(6),
       minThreshold
     });
-
-    // In leader mode, only the single top pick can be a buy candidate.
     const buyCandidates = picks.filter(m => {
       const pos = state.positions[m];
-      const sz0 = Number(pos?.sizeUi || 0) <= 0;
+      const allowRebuy = !!pos?.allowRebuy; // set when we split-sold and kept a remainder
+      const eligibleSize = allowRebuy || Number(pos?.sizeUi || 0) <= 0;
       const notPending = !pos?.awaitingSizeSync;
-      return sz0 && notPending;
+      return eligibleSize && notPending;
     });
     if (!buyCandidates.length) { log("All picks already held or pending. Skipping buys."); return; }
 
@@ -1919,7 +2205,18 @@ async function tick() {
     let spent = 0;
     let buysDone = 0;
 
-    const loopN = leaderMode ? 1 : buyCandidates.length;
+    let loopN = leaderMode ? 1 : buyCandidates.length;
+    try {
+      if (!leaderMode && loopN > 1) {
+        const rentL = await tokenAccountRentLamports();
+        const perOrderMinL = Math.floor(Math.max(MIN_JUP_SOL_IN, minThreshold) * 1e9);
+        const neededTwo = perOrderMinL * 2 + rentL * 2 + TX_FEE_BUFFER_LAMPORTS;
+        if (remainingLamports < neededTwo) {
+          loopN = 1;
+          log(`Small balance; forcing single-buy mode this tick (need ${(neededTwo/1e9).toFixed(6)} SOL for 2 buys).`);
+        }
+      }
+    } catch {}
     for (let i = 0; i < loopN; i++) {
       const mint = buyCandidates[i];
       const left = Math.max(1, loopN - i);
@@ -1931,81 +2228,96 @@ async function tick() {
       let buyLamports = Math.min(targetLamports, Math.floor(remaining * 1e9), candidateBudgetLamports);
 
       const minInLamports = Math.floor(MIN_JUP_SOL_IN * 1e9);
-      if (buyLamports < minInLamports) {
+      const minPerOrderLamports = Math.max(minInLamports, Math.floor(minThreshold * 1e9));
+
+      if (buyLamports < minPerOrderLamports) {
+        // Not enough to place a router-safe and later sellable order; skip to avoid dust.
+        const need = (minPerOrderLamports - buyLamports) / 1e9;
         if (reqRent > 0) {
-          const needSol = (reqRent + minInLamports + TX_FEE_BUFFER_LAMPORTS - remainingLamports) / 1e9;
-          log(`Skip ${mint.slice(0,4)}… (insufficient to fund ATAs). Need ~${Math.max(0, needSol).toFixed(6)} SOL more.`);
+          log(`Skip ${mint.slice(0,4)}… (order ${ (buyLamports/1e9).toFixed(6) } SOL < min ${ (minPerOrderLamports/1e9).toFixed(6) } incl. ATA). Need ~${need.toFixed(6)} SOL more.`);
         } else {
-          log(`Skip ${mint.slice(0,4)}… (buy < router min ${MIN_JUP_SOL_IN}).`);
+          log(`Skip ${mint.slice(0,4)}… (order ${ (buyLamports/1e9).toFixed(6) } SOL < min ${ (minPerOrderLamports/1e9).toFixed(6) }).`);
         }
         continue;
       }
 
       const buySol = buyLamports / 1e9;
 
-      const sig = await jupSwapWithKeypair({
+      const res = await executeSwapWithConfirm({
         signer: kp,
         inputMint: SOL_MINT,
         outputMint: mint,
         amountUi: buySol,
         slippageBps: state.slippageBps,
-      });
-
-      await confirmSig(sig, { commitment: "confirmed", timeoutMs: 12000 });
+      }, { retries: 2, confirmMs: 15000 });
+      if (!res.ok) {
+        log(`Buy not confirmed for ${mint.slice(0,4)}… skipping accounting.`);
+        continue;
+      }
 
       remainingLamports = Math.max(0, remainingLamports - buyLamports - reqRent);
       remaining = remainingLamports / 1e9;
 
       const prevPos  = state.positions[mint];
       const prevSize = Number(prevPos?.sizeUi || 0);
-      const pos = prevPos || { costSol: 0, hwmSol: 0, acquiredAt: now() };
+      const basePos  = prevPos || { costSol: 0, hwmSol: 0, acquiredAt: now() };
 
-      let credit = { sizeUi: 0, decimals: Number.isFinite(pos.decimals) ? pos.decimals : 6 };
+      // Verify on-chain credit before accounting
+      let credited = false;
+      let got = { sizeUi: 0, decimals: Number.isFinite(basePos.decimals) ? basePos.decimals : 6 };
       try {
-        credit = await waitForTokenCredit(kp.publicKey.toBase58(), mint, { timeoutMs: 8000, pollMs: 300 });
-      } catch (e) {
-        log(`Token credit wait failed: ${e.message || e}`);
-        try { credit.decimals = await getMintDecimals(mint); } catch {}
-      }
-
-      pos.costSol = Number(pos.costSol || 0) + buySol;
-      pos.hwmSol = Math.max(Number(pos.hwmSol || 0), buySol);
-      pos.lastBuyAt = now();
-      pos.awaitingSizeSync = true;
-
-      if (credit.sizeUi > 0) {
-        pos.sizeUi = credit.sizeUi;
-        pos.decimals = credit.decimals;
-        pos.lastSeenAt = now();
-        if (Number(pos.sizeUi || 0) !== prevSize) pos.awaitingSizeSync = false;
-        updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
-      } else {
+        got = await waitForTokenCredit(kp.publicKey.toBase58(), mint, { timeoutMs: 8000, pollMs: 300 });
+      } catch (e) { log(`Token credit wait failed: ${e.message || e}`); }
+      if (!Number(got.sizeUi || 0)) {
         try {
-          const bal = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
-          pos.sizeUi = Number(bal.sizeUi || 0);
-          pos.decimals = Number.isFinite(bal.decimals) ? bal.decimals : (pos.decimals ?? await getMintDecimals(mint));
-          pos.lastSeenAt = now();
-          if (Number(pos.sizeUi || 0) > 0 && Number(pos.sizeUi || 0) !== prevSize) pos.awaitingSizeSync = false;
-          updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
-        } catch { log(`Failed to refresh size after buy for ${mint.slice(0,4)}…`); }
-        if (!Number(pos.sizeUi || 0)) {
-          const seeded = loadPosCache(kp.publicKey.toBase58())[mint];
-          if (seeded && Number(seeded.sizeUi || 0) > 0) {
-            pos.sizeUi = Number(seeded.sizeUi);
-            pos.decimals = Number.isFinite(seeded.decimals) ? seeded.decimals : (pos.decimals ?? 6);
-            pos.lastSeenAt = now();
-          }
-        }
+          const bal = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, basePos.decimals);
+          got = { sizeUi: Number(bal.sizeUi || 0), decimals: Number.isFinite(bal.decimals) ? bal.decimals : got.decimals };
+        } catch {}
       }
 
-      state.positions[mint] = pos;
-      save();
+      if (Number(got.sizeUi || 0) > 0) {
+        const pos = {
+          ...basePos,
+          sizeUi: got.sizeUi,
+          decimals: got.decimals,
+          costSol: Number(basePos.costSol || 0) + buySol,
+          hwmSol: Math.max(Number(basePos.hwmSol || 0), buySol),
+          lastBuyAt: now(),
+          lastSeenAt: now(),
+          awaitingSizeSync: false,
+          allowRebuy: false,
+          lastSplitSellAt: undefined,
+        };
+        state.positions[mint] = pos;
+        updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+        save();
+        log(`Bought ~${buySol.toFixed(4)} SOL -> ${mint.slice(0,4)}…`);
+      } else {
+        log(`Buy confirmed for ${mint.slice(0,4)}… but no token credit yet; will sync later.`);
+        const pos = {
+          ...basePos,
+          costSol: Number(basePos.costSol || 0) + buySol,
+          hwmSol: Math.max(Number(basePos.hwmSol || 0), buySol),
+          lastBuyAt: now(),
+          awaitingSizeSync: true,
+          allowRebuy: false,
+          lastSplitSellAt: undefined,
+        };
+        state.positions[mint] = pos;
+        save();
+        enqueuePendingCredit({
+          owner: kp.publicKey.toBase58(),
+          mint,
+          addCostSol: buySol,
+          decimalsHint: basePos.decimals,
+          basePos: pos,
+        });
+        try { await processPendingCredits(); } catch {}
+      }
 
       spent += buySol;
       buysDone++;
       _buyBatchUntil = now() + (state.multiBuyBatchMs|0);
-
-      log(`Bought ~${buySol.toFixed(4)} SOL -> ${mint.slice(0,4)}…`);
 
       if (leaderMode) break;
 
@@ -2024,7 +2336,7 @@ async function tick() {
     _buyInFlight = false;
   }
 }
-let _starting = false;
+
 async function startAutoAsync() {
   if (_starting) return;
   _starting = true;
@@ -2087,6 +2399,48 @@ function onToggle(on) {
    save();
 }
 
+function load() {
+  try { state = { ...state, ...(JSON.parse(localStorage.getItem(LS_KEY))||{}) }; } catch {}
+  state.slippageBps = Math.max(150, Number(state.slippageBps || 150) | 0);
+  state.minBuySol   = Math.max(MIN_JUP_SOL_IN, Number(state.minBuySol || MIN_JUP_SOL_IN));
+  save();
+}
+function save() {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch {}
+}
+
+function copyLog() {
+  if (!logEl) return false;
+  try {
+    const lines = Array.from(logEl.children)
+      .filter(n => n && n.tagName === "DIV")
+      .map(n => n.textContent || "");
+    const text = lines.join("\n");
+    if (!text) { log("Log is empty."); return false; }
+    navigator.clipboard.writeText(text)
+      .then(() => log("Log copied to clipboard"))
+      .catch(() => {
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed";
+          ta.style.left = "-9999px";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          ta.remove();
+          log("Log copied to clipboard");
+        } catch {
+          log("Copy failed");
+        }
+      });
+    return true;
+  } catch {
+    log("Copy failed");
+    return false;
+  }
+}
+
 export function initAutoWidget(container = document.body) {
   load();
 
@@ -2103,7 +2457,7 @@ export function initAutoWidget(container = document.body) {
       <svg class="fdv-acc-caret" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
         <path d="M8 10l4 4 4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>
-      <span class="fdv-title">Auto Pump (v0.0.14)</span>
+      <span class="fdv-title">Auto Pump (v0.0.2)</span>
     </span>
   `;
 
@@ -2161,6 +2515,7 @@ export function initAutoWidget(container = document.body) {
         </select>
       </label>
     </div>
+    <div class="fdv-hold-time-slider"></div>
     <div class="fdv-log" data-auto-log style="position:relative;">
     </div>
     <div class="fdv-actions">
@@ -2181,23 +2536,36 @@ export function initAutoWidget(container = document.body) {
                   <li>Tracks Pumping Radar leaders and buys the top token.</li>
                   <li>With “Leader” on, buys once and holds until the leader changes.</li>
                   <li>On leader change, rotates non-leader tokens back to SOL, then buys the new leader next tick.</li>
+                  <li>Seeds local cache immediately after each buy; background token sync reconciles on-chain credits.</li>
+                  <li>Wallet > Holdings splits coins into Sellable vs Dust/Unsellable by Jupiter min-notional.</li>
+                  <li>Applies router cooldown after route/dust errors to avoid repeated failures.</li>
                 </ul>
               </div>
               <div>
                 <strong>Quick start</strong>
                 <ol style="margin:6px 0 0 18px;">
                   <li>Set a CORS-enabled RPC URL (and headers if required).</li>
-                  <li>Generate the auto wallet and fund it with SOL.</li>
+                  <li>Generate the auto wallet and fund it with SOL. Recommended minimum: <strong>$7</strong>.</li>
                   <li>Set a Recipient to receive funds on End & Return.</li>
                   <li>Tune Buy %, Min/Max Buy, Slippage.</li>
-                  <li>Click Start. Bot ticks every 5s and respects the cooldown.</li>
+                  <li>Click Start. Bot ticks every 5s and respects cooldowns.</li>
+                  <li>If you hit issues, reach out on Telegram: <a href="https://t.me/fdvlolgroup" target="_blank">fdvlolgroup</a>.</li>
                 </ol>
+              </div>
+              <div>
+                <strong>Guidelines</strong>
+                <ul style="margin:6px 0 0 18px;">
+                  <li>Keep at least <strong>$7</strong> in SOL to cover router minimums, ATA rent, and fees.</li>
+                  <li>Dust protection: very small orders are skipped; sells below min-notional are blocked unless dust-exit is enabled.</li>
+                  <li>Use a CORS-enabled RPC; some plans may block owner scans (the bot adapts).</li>
+                </ul>
               </div>
               <div>
                 <strong>Sizing & reserves</strong>
                 <ul style="margin:6px 0 0 18px;">
                   <li>Buy size = min(affordable, carry + desired). A small fee reserve is kept.</li>
                   <li>If size is below router min, it carries over until large enough.</li>
+                  <li>Router minimums enforced to avoid 400/dust errors (min buy and min sell notional enforced).</li>
                 </ul>
               </div>
               <div>
@@ -2205,6 +2573,7 @@ export function initAutoWidget(container = document.body) {
                 <ul style="margin:6px 0 0 18px;">
                   <li>Optional TP/SL selling is paused when “Leader” hold is on.</li>
                   <li>Owner scans may be disabled by your RPC plan; the bot adapts.</li>
+                  <li>On dust/route errors, a per-mint router cooldown is applied automatically.</li>
                 </ul>
               </div>
               <div>
@@ -2223,9 +2592,9 @@ export function initAutoWidget(container = document.body) {
                 <p><strong>By using this bot, you acknowledge and accept these risks.</strong></p>
               </div>
               <div>
-                <strong>Support development</strong>
+                <strong>Support & updates</strong>
                 <p style="margin:6px 0 0 0;">
-                  If you find this tool useful, consider supporting its development:
+                  Issues or questions? Telegram: <a href="https://t.me/fdvlolgroup" target="_blank">fdvlolgroup</a>
                 </p>
                 <ul style="margin:6px 0 0 18px;">
                   <li>twitter: <code><a href="https://twitter.com/fdvlol" target="_blank">@fdvlol</a></code></li>
@@ -2335,15 +2704,24 @@ export function initAutoWidget(container = document.body) {
         return;
       }
 
-      walletListEl.innerHTML = "";
+      walletListEl.innerHTML = `
+        <div style="opacity:.9; font-weight:600; margin:6px 0;">Sellable</div>
+        <div data-sellable></div>
+        <div style="opacity:.9; font-weight:600; margin:10px 0 6px;">Dust / Unsellable</div>
+        <div data-dust></div>
+      `;
+      const sellWrap = walletListEl.querySelector("[data-sellable]");
+      const dustWrap = walletListEl.querySelector("[data-dust]");
+
       let totalUsd = solBal * solUsdPx;
       let totalSol = solBal;
 
-      if (!window._fdvWalletQuoteCache) window._fdvWalletQuoteCache = new Map();
-      const qCache = window._fdvWalletQuoteCache;
-      const minGap = Math.max(5_000, Number(state.minQuoteIntervalMs || 10_000));
+       if (!window._fdvWalletQuoteCache) window._fdvWalletQuoteCache = new Map();
+       const qCache = window._fdvWalletQuoteCache;
+       const minGap = Math.max(5_000, Number(state.minQuoteIntervalMs || 10_000));
+       const baseMinNotional = Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN * 1.05, Number(state.dustMinSolOut || 0));
 
-      for (const { mint, sizeUi, decimals } of entries) {
+       for (const { mint, sizeUi, decimals } of entries) {
         const row = document.createElement("div");
         row.style.display = "grid";
         row.style.gridTemplateColumns = "1fr auto auto auto";
@@ -2356,29 +2734,32 @@ export function initAutoWidget(container = document.body) {
           <div data-sol>~SOL: …</div>
           <div data-usd>USD: …</div>
         `;
-        walletListEl.appendChild(row);
 
-        const cacheKey = `${owner}:${mint}:${Number(sizeUi).toFixed(9)}`;
-        let estSol = 0;
-        try {
-          const hit = qCache.get(cacheKey);
-          if (hit && (now() - hit.ts) < minGap) {
-            estSol = Number(hit.sol || 0) || 0;
-          } else {
-            estSol = await quoteOutSol(mint, Number(sizeUi||0), decimals).catch(()=>0);
-            qCache.set(cacheKey, { ts: now(), sol: estSol });
-          }
-        } catch { estSol = 0; }
+         const cacheKey = `${owner}:${mint}:${Number(sizeUi).toFixed(9)}`;
+         let estSol = 0;
+         try {
+           const hit = qCache.get(cacheKey);
+           if (hit && (now() - hit.ts) < minGap) {
+             estSol = Number(hit.sol || 0) || 0;
+           } else {
+             estSol = await quoteOutSol(mint, Number(sizeUi||0), decimals).catch(()=>0);
+             qCache.set(cacheKey, { ts: now(), sol: estSol });
+           }
+         } catch { estSol = 0; }
 
-        const solCell = row.querySelector("[data-sol]");
-        const usdCell = row.querySelector("[data-usd]");
-        solCell.textContent = `~SOL: ${estSol.toFixed(6)}`;
-        const usd = estSol * solUsdPx;
-        usdCell.textContent = `USD: ${solUsdPx>0?fmtUsd(usd):"—"}`;
+         const solCell = row.querySelector("[data-sol]");
+         const usdCell = row.querySelector("[data-usd]");
+         solCell.textContent = `~SOL: ${estSol.toFixed(6)}`;
+         const usd = estSol * solUsdPx;
+         usdCell.textContent = `USD: ${solUsdPx>0?fmtUsd(usd):"—"}`;
 
-        totalSol += estSol;
-        totalUsd += usd;
-      }
+         totalSol += estSol;
+         totalUsd += usd;
+ 
+         // Classify by Jupiter min-notional/routeability
+         const sellable = estSol > 0 && estSol >= baseMinNotional;
+         (sellable ? sellWrap : dustWrap).appendChild(row);
+       }
 
       walletTotalsEl.textContent = `Total: ${fmtUsd(totalUsd)} (${totalSol.toFixed(6)} SOL)`;
     } catch (e) {
@@ -2401,6 +2782,7 @@ export function initAutoWidget(container = document.body) {
       closeWalletMenu();
     }
   });
+
   document.addEventListener("click", (e) => {
     if (!walletOpen) return;
     const t = e.target;
@@ -2421,6 +2803,36 @@ export function initAutoWidget(container = document.body) {
       log(`Dump failed: ${err.message || err}`);
     }
   });
+
+  const holdTimeWrap = wrap.querySelector(".fdv-hold-time-slider");
+  if (holdTimeWrap) {
+    const MIN_HOLD = 30, MAX_HOLD = 120;
+    let cur = Number(state.maxHoldSecs || 50);
+    cur = Math.min(MAX_HOLD, Math.max(MIN_HOLD, cur));
+    if (cur !== state.maxHoldSecs) { state.maxHoldSecs = cur; save(); }
+
+    holdTimeWrap.innerHTML = `
+      <div style="display:flex; align-items:center; gap:10px; padding:6px 0;">
+        <label style="width:110px;">Hold Time</label>
+        <input type="range" data-auto-holdtime min="${MIN_HOLD}" max="${MAX_HOLD}" step="1" value="${cur}" style="width: 100%;" />
+        <div data-auto-holdtime-val style="width:56px; text-align:right;">${cur}s</div>
+      </div>
+    `;
+
+    const rangeEl = holdTimeWrap.querySelector('[data-auto-holdtime]');
+    const valEl   = holdTimeWrap.querySelector('[data-auto-holdtime-val]');
+    const render  = () => { valEl.textContent = `${Number(rangeEl.value||cur)}s`; };
+
+    rangeEl.addEventListener("input", render);
+    rangeEl.addEventListener("change", () => {
+      const v = Math.max(MIN_HOLD, Math.min(MAX_HOLD, Number(rangeEl.value || cur)));
+      state.maxHoldSecs = v;
+      save();
+      render();
+      log(`Hold time set: ${v}s`);
+    });
+    render();
+  }
 
   secExportBtn.addEventListener("click", () => {
     const payload = JSON.stringify({
@@ -2470,6 +2882,8 @@ export function initAutoWidget(container = document.body) {
   startBtn.addEventListener("click", () => onToggle(true));
   stopBtn.addEventListener("click", () => onToggle(false));
   wrap.querySelector("[data-auto-reset]").addEventListener("click", () => {
+    let feeBps = getPlatformFeeBps();
+    log(`Estimated fee bps: ~${feeBps}bps`);
     state.holdingsUi = 0;
     state.avgEntryUsd = 0;
     state.lastTradeTs = 0;
@@ -2524,10 +2938,6 @@ export function initAutoWidget(container = document.body) {
   log("Auto widget ready.");
 }
 
-function isPlanUpgradeError(e) {
-  const s = String(e?.message || e || "");
-  return /403/.test(s) || /-32602/.test(s) || /plan upgrade/i.test(s);
-}
 function disableOwnerScans(reason) {
   if (state.ownerScanDisabled) return;
   state.ownerScanDisabled = true;
