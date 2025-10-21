@@ -35,7 +35,7 @@
   /* i suck at naming things help */
   --fdv-bg:#0b0f17; 
   --fdv-surface:#11151f; 
-  --fdv-border:#1f2633;
+  --fdv-border:rgba(122, 222, 255, .28);
   --fdv-fg:#e6e8eb; 
   --fdv-muted:#9aa6b2; 
   --fdv-accent:#5865f2;
@@ -45,15 +45,12 @@
   --fdv-primary:#00c2a8; 
   --fdv-primary-fg:#0b0d12; 
   --fdv-phantom:#8a63d2;
-  --fdv-surface: var(--fdv-surface, #0b1119);
   --fdv-bg: var(--fdv-bg, #0f1621);
   --fdv-text: var(--text, #e8f2ff);
-  --fdv-primary: #2b90ff;
   --fdv-primary-700: #1e6fd4;
   --fdv-danger: #ff4d4f;
   --fdv-danger-700: #d9363e;
   --fdv-warn: #f5a524;
-  --fdv-ok: #2ecc71;
   --fdv-focus: rgba(43,144,255,0.45);
   --fdv-shadow: 0 10px 24px rgba(0,0,0,0.25);
 }
