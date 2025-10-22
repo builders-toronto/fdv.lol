@@ -9,6 +9,7 @@ const MIN_JUP_SOL_IN = 0.001;
 const MIN_SELL_SOL_OUT = 0.004;
 const FEE_RESERVE_MIN = 0.0002;   // rent
 const FEE_RESERVE_PCT = 0.15;     // 15% of balance, more runway
+const TX_FEE_BUFFER_LAMPORTS  = 500_000;
 const SELL_TX_FEE_BUFFER_LAMPORTS = 500_000; 
 const EXTRA_TX_BUFFER_LAMPORTS     = 250_000;  
 const MIN_OPERATING_SOL            = 0.010;    
