@@ -46,4 +46,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the **fastest, simplest, and most trusted memecoin radar on Solana**.  
 
-Auto Pump: robust JUP swaps, dust guards, multi-buy
+Raise min buy/sell, increase reserves, add JUP stress backoff and sell fallbacks
