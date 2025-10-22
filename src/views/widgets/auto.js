@@ -4,20 +4,14 @@ import { computePumpingLeaders } from "../meme/addons/pumping.js";
 // Dust orders and minimums are blocked due to Jupiter route failures and 400 errors.
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
-// Minimum SOL-in to avoid Jupiter 400s on tiny swaps 
-const MIN_JUP_SOL_IN = 0.0005;
-// Minimum SOL-out on sells to avoid dust/route failures
-const MIN_SELL_SOL_OUT = 0.002;
 
-// Dynamic fee reserve for small balances
+const MIN_JUP_SOL_IN = 0.001;
+const MIN_SELL_SOL_OUT = 0.004;
 const FEE_RESERVE_MIN = 0.0002;   // rent
-const FEE_RESERVE_PCT = 0.10;     // or 10% of balance
-
-const TX_FEE_BUFFER_LAMPORTS = 250_000
-
-const SELL_TX_FEE_BUFFER_LAMPORTS = 400_000; 
-const EXTRA_TX_BUFFER_LAMPORTS     = 150_000;  
-const MIN_OPERATING_SOL            = 0.005;    
+const FEE_RESERVE_PCT = 0.15;     // 15% of balance, more runway
+const SELL_TX_FEE_BUFFER_LAMPORTS = 500_000; 
+const EXTRA_TX_BUFFER_LAMPORTS     = 250_000;  
+const MIN_OPERATING_SOL            = 0.010;    
 const ROUTER_COOLDOWN_MS           = 60_000;
 
 
@@ -668,9 +662,13 @@ async function jupFetch(path, opts) {
   const isQuote = isGet && /\/quote(\?|$)/.test(path);
 
   const nowTs = Date.now();
-  const minGapMs = isQuote ? 250 : 120; // be gentler on /quote jupiter is sensitive. go smooth. ease your way in.
+  // Be gentler on /quote and add stress-aware spacing
+  const minGapMs = isQuote ? 450 : 150;
   if (!window._fdvJupLastCall) window._fdvJupLastCall = 0;
-  const waitMs = Math.max(0, window._fdvJupLastCall + minGapMs - nowTs) + (isQuote ? Math.floor(Math.random()*80) : 0);
+  const stressLeft = Math.max(0, (window._fdvJupStressUntil || 0) - nowTs);
+  const waitMs = Math.max(0, window._fdvJupLastCall + minGapMs - nowTs)
+               + (isQuote ? Math.floor(Math.random()*200) : 0)
+               + Math.min(2000, stressLeft);
   if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs));
   window._fdvJupLastCall = Date.now();
 
@@ -714,8 +712,9 @@ async function jupFetch(path, opts) {
         if (!res.ok && isQuote && res.status === 400) {
           try { lastBody = await res.clone().text(); } catch {}
           if (/rate limit exceeded/i.test(lastBody)) {
-            const backoff = 300 * Math.pow(2, attempt) + Math.floor(Math.random()*120);
+            const backoff = 600 * Math.pow(2, attempt) + Math.floor(Math.random()*200);
             log(`JUP 400(rate-limit): backing off ${backoff}ms`);
+            window._fdvJupStressUntil = Date.now() + 20_000;
             await new Promise(r => setTimeout(r, backoff));
             continue;
           }
@@ -723,8 +722,9 @@ async function jupFetch(path, opts) {
         return res;
       }
       // 429 backoff
-      const backoff = 350 * Math.pow(2, attempt) + Math.floor(Math.random()*150);
+      const backoff = 600 * Math.pow(2, attempt) + Math.floor(Math.random()*250);
       log(`JUP 429: backing off ${backoff}ms`);
+      window._fdvJupStressUntil = Date.now() + 20_000;
       await new Promise(r => setTimeout(r, backoff));
     }
     return lastRes;
@@ -933,12 +933,14 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     }
 
     try {
-      const slipUp = Math.min(2000, Math.max(baseSlip, Math.floor(baseSlip * 3)));
+      const slipUp = isSell
+        ? Math.min(2000, Math.max(800, Math.floor(baseSlip * 5))) // stronger bump for sell fallbacks
+        : Math.min(2000, Math.max(baseSlip, Math.floor(baseSlip * 3)));
       const alt = buildQuoteUrl({ outMint: outputMint, slipBps: slipUp, restrict: restrictIntermediates, asLegacy: false });
       const qAlt = await jupFetch(alt.pathname + alt.search);
       if (qAlt.ok) {
         quote = await qAlt.json();
-        log(`Re-quoted with slip=${slipUp} bps.`);
+        log(`Re-quoted with slip=${slipUp} bps${isSell ? " (sell fallback)" : ""}.`);
         const seq2 = [
           () => buildAndSend(false, false),
           () => buildAndSend(true,  false),
@@ -2137,6 +2139,12 @@ async function tick() {
   log("Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!");
 
   if (_buyInFlight || _inFlight || _switchingLeader) return;
+
+  if (window._fdvJupStressUntil && now() < window._fdvJupStressUntil) {
+    const left = Math.ceil((window._fdvJupStressUntil - now()) / 1000);
+    log(`Backoff active (${left}s); pausing new buys.`);
+    return;
+  }
 
   const leaderMode = !!state.holdUntilLeaderSwitch;
   const picks = leaderMode
