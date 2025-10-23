@@ -1389,7 +1389,7 @@ button[data-auto-unwind]{ color:#fff; }
 
 /* Head/actions wrap on small screens */
 @media (max-width: 740px){
-  .fdv-actions{ .fdv-actions button{ padding: 7px 7px; flex:1; } }
+  .fdv-actions button{ padding: 7px 7px; flex:1; }
 }
 
 /* Reduce motion */
