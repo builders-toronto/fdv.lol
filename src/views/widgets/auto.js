@@ -1,4 +1,4 @@
-import { FDV_FEE_RECEIVER } from "../../config/env.js";
+// import { FDV_FEE_RECEIVER } from "../../config/env.js";
 import { computePumpingLeaders } from "../meme/addons/pumping.js";
 
 // Dust orders and minimums are blocked due to Jupiter route failures and 400 errors.
@@ -302,19 +302,19 @@ async function getJupBase() {
   return String(cfg.jupiterBase || "https://lite-api.jup.ag").replace(/\/+$/,"");
 }
 
-async function getFeeReceiver() {
-  const cfg = await getCfg();
-  const fromEnv = String(FDV_FEE_RECEIVER || "").trim();
-  if (fromEnv) return fromEnv;
-  const fromCfg =
-    String(
-      cfg.platformFeeReceiver ||
-      cfg.feeReceiver ||
-      cfg.FDV_FEE_RECEIVER ||
-      ""
-    ).trim();
-  return fromCfg;
-}
+// async function getFeeReceiver() {
+//   const cfg = await getCfg();
+//   const fromEnv = String(FDV_FEE_RECEIVER || "").trim();
+//   if (fromEnv) return fromEnv;
+//   const fromCfg =
+//     String(
+//       cfg.platformFeeReceiver ||
+//       cfg.feeReceiver ||
+//       cfg.FDV_FEE_RECEIVER ||
+//       ""
+//     ).trim();
+//   return fromCfg;
+// }
  
 function getPlatformFeeBps() {
   return 5; // 0.05%
@@ -840,8 +840,6 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
   const isSell = (inputMint !== SOL_MINT) && (outputMint === SOL_MINT);
   let restrictIntermediates = isSell ? "false" : "true";
   
-
-
   function buildQuoteUrl({ outMint, slipBps, restrict, asLegacy = false, amountOverrideRaw }) {
     const u = new URL("/swap/v1/quote", "https://fdv.lol");
     const amt = Number.isFinite(amountOverrideRaw) ? amountOverrideRaw : amountRaw;
@@ -920,10 +918,8 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     if (isRouteErr(second?.code || second?.msg)) sawRouteDust = true;
 
     const strictSeq = [
-      () => manualBuildAndSend(false, false),
-      () => manualBuildAndSend(true,  false),
-      () => manualBuildAndSend(false, true),
-      () => manualBuildAndSend(true,  true),
+      () => manualBuildAndSend(false),
+      () => manualBuildAndSend(true),
     ];
     for (const t of strictSeq) {
       try {
@@ -942,27 +938,25 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       if (qAlt.ok) {
         quote = await qAlt.json();
         log(`Re-quoted with slip=${slipUp} bps${isSell ? " (sell fallback)" : ""}.`);
-        const seq2 = [
-          () => buildAndSend(false, false),
-          () => buildAndSend(true,  false),
-          () => buildAndSend(false, true),
-          () => buildAndSend(true,  true),
-          () => manualBuildAndSend(false, false),
-          () => manualBuildAndSend(true,  false),
-          () => manualBuildAndSend(false, true),
-          () => manualBuildAndSend(true,  true),
-        ];
-        for (const t of seq2) {
-          try {
-            const r = await t();
-            if (r?.ok) { await seedCacheIfBuy(); return r.sig; }
-            if (isRouteErr(r?.code || r?.msg)) sawRouteDust = true;
-          } catch {}
-        }
+          const seq2 = [
+            () => buildAndSend(false, false),
+            () => buildAndSend(true,  false),
+            () => buildAndSend(false, true),
+            () => buildAndSend(true,  true),
+            () => manualBuildAndSend(false),
+            () => manualBuildAndSend(true),
+          ];
+          for (const t of seq2) {
+            try {
+              const r = await t();
+              if (r?.ok) { await seedCacheIfBuy(); return r.sig; }
+              if (isRouteErr(r?.code || r?.msg)) sawRouteDust = true;
+            } catch {}
+          }
       }
+
     } catch {}
 
-    // 4) SELL-specific alternates (USDC route and splits) before giving up
     if (isSell) {
       try {
         const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -995,12 +989,10 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
             const tries = [
               () => buildAndSend(false, false),
               () => buildAndSend(true,  false),
-              () => manualBuildAndSend(false, false),
-              () => manualBuildAndSend(true,  false),
+              () => manualBuildAndSend(false),
+              () => manualBuildAndSend(true),
               () => buildAndSend(false, true),
               () => buildAndSend(true,  true),
-              () => manualBuildAndSend(false, true),
-              () => manualBuildAndSend(true,  true),
             ];
             for (const t of tries) {
               try {
@@ -1013,11 +1005,10 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         }
       } catch {}
     }
-
-    // All fallbacks failed
     if (isSell && sawRouteDust) setRouterHold(inputMint, ROUTER_COOLDOWN_MS);
     throw new Error(sawRouteDust ? "ROUTER_DUST" : "swap failed");
   }
+    
 
   async function seedCacheIfBuy() {
     if (inputMint === SOL_MINT && outputMint !== SOL_MINT) {
@@ -1115,37 +1106,23 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     }
   }
 
-  async function manualBuildAndSend(useSharedAccounts = true, asLegacy = false) {
-    const { PublicKey, Transaction, TransactionInstruction, TransactionMessage, VersionedTransaction } = await loadWeb3();
-
-    async function reQuoteIfLegacy() {
-      if (!asLegacy) return;
-      try {
-        const qLegacy = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: restrictIntermediates, asLegacy: true });
-        const qResL = await jupFetch(qLegacy.pathname + qLegacy.search);
-        if (qResL.ok) {
-          quote = await qResL.json();
-          log("Re-quoted for legacy (manual).");
-        } else {
-          const body = await qResL.text().catch(()=> "");
-          log(`Legacy quote (manual) failed (${qResL.status}): ${body || "(empty)"}`);
-        }
-      } catch (e) { log(`Legacy re-quote (manual) error: ${e.message || e}`); }
-    }
-
+  async function manualBuildAndSend(useSharedAccounts = true) {
+    const { PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } = await loadWeb3();
     try {
-      await reQuoteIfLegacy();
-
       const body = {
         quoteResponse: quote,
         userPublicKey: signer.publicKey.toBase58(),
         wrapAndUnwrapSol: true,
         dynamicComputeUnitLimit: true,
         useSharedAccounts: !!useSharedAccounts,
-        asLegacyTransaction: !!asLegacy,
+        asLegacyTransaction: false, // always v0
         ...(feeAccount && feeBps > 0 ? { feeAccount, platformFeeBps: feeBps } : {}),
       };
-      logObj("Swap-instructions body", { hasFee: !!feeAccount, feeBps: feeAccount ? feeBps : 0, useSharedAccounts: !!useSharedAccounts, asLegacy: !!asLegacy });
+      logObj("Swap-instructions body (manual send)", {
+        hasFee: !!feeAccount,
+        feeBps: feeAccount ? feeBps : 0,
+        useSharedAccounts: !!useSharedAccounts
+      });
 
       const iRes = await jupFetch(`/swap/v1/swap-instructions`, {
         method: "POST",
@@ -1155,7 +1132,8 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       if (!iRes.ok) {
         const errTxt = await iRes.text().catch(()=> "");
         log(`Swap-instructions error: ${errTxt || iRes.status}`);
-        return { ok: false, code: "", msg: `swap-instructions ${iRes.status}` };
+        const isNoRoute = /NO_ROUTE|COULD_NOT_FIND_ANY_ROUTE/i.test(errTxt);
+        return { ok: false, code: isNoRoute ? "NO_ROUTE" : "JUP_DOWN", msg: `swap-instructions ${iRes.status}` };
       }
 
       const {
@@ -1165,6 +1143,10 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         cleanupInstructions = [],
         addressLookupTableAddresses = [],
       } = await iRes.json();
+
+      if (!swapInstruction) {
+        return { ok: false, code: "NO_ROUTE", msg: "no swapInstruction" };
+      }
 
       function decodeData(d) {
         if (!d) return new Uint8Array();
@@ -1197,57 +1179,46 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         ...cleanupInstructions.map(toIx).filter(Boolean),
       ].filter(Boolean);
 
-      if (asLegacy) {
-        const tx = new Transaction();
-        tx.feePayer = signer.publicKey;
-        const { blockhash } = await conn.getLatestBlockhash("processed");
-        tx.recentBlockhash = blockhash;
-        for (const ix of ixs) tx.add(ix);
-        tx.sign(signer);
+      const lookups = [];
+      for (const addr of addressLookupTableAddresses || []) {
         try {
-          const sig = await conn.sendRawTransaction(tx.serialize(), { preflightCommitment: "processed", maxRetries: 3 });
-          log(`Swap (manual legacy) sent: ${sig}`);
-          return { ok: true, sig };
-        } catch (e) {
-          log(`Manual legacy send failed: ${e.message || e}. Simulating…`);
-          try {
-            const sim = await conn.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true });
-            const logs = sim?.value?.logs || e?.logs || [];
-            log(`Simulation logs:\n${(logs||[]).join("\n")}`);
-          } catch {}
+          const lut = await conn.getAddressLookupTable(new PublicKey(addr));
+          if (lut?.value) lookups.push(lut.value);
+        } catch {}
+      }
+
+      const { blockhash } = await conn.getLatestBlockhash("confirmed");
+      const msg = new TransactionMessage({
+        payerKey: signer.publicKey,
+        recentBlockhash: blockhash,
+        instructions: ixs,
+      }).compileToV0Message(lookups);
+
+      const vtx = new VersionedTransaction(msg);
+      vtx.sign([signer]);
+
+      try {
+        const sig = await conn.sendRawTransaction(vtx.serialize(), {
+          preflightCommitment: "confirmed",
+          maxRetries: 3,
+        });
+        const ok = await confirmSig(sig, { commitment: "confirmed", timeoutMs: 15000 });
+        if (!ok) {
+          const st = await conn.getSignatureStatuses([sig]).catch(()=>null);
+          const status = st?.value?.[0]?.err ? "TX_ERR" : "NO_CONFIRM";
+          return { ok: false, code: status, msg: "not confirmed" };
+        }
+        log(`Swap (manual send v0) sent: ${sig}`);
+        return { ok: true, sig };
+      } catch (e) {
+        log(`Manual send failed: ${e.message || e}. Simulating…`);
+        try {
+          const sim = await conn.simulateTransaction(vtx, { sigVerify: false, replaceRecentBlockhash: true });
+          const logs = sim?.value?.logs || e?.logs || [];
+          const hasDustErr = (logs || []).some(l => /0x1788|0x1789/i.test(String(l)));
+          return { ok: false, code: hasDustErr ? "ROUTER_DUST" : "SEND_FAIL", msg: e.message || String(e) };
+        } catch {
           return { ok: false, code: "SEND_FAIL", msg: e.message || String(e) };
-        }
-      } else {
-        const lookups = [];
-        for (const addr of addressLookupTableAddresses || []) {
-          try {
-            const lut = await conn.getAddressLookupTable(new PublicKey(addr));
-            if (lut?.value) lookups.push(lut.value);
-          } catch {}
-        }
-        const { blockhash } = await conn.getLatestBlockhash("processed");
-        const msg = new TransactionMessage({
-          payerKey: signer.publicKey,
-          recentBlockhash: blockhash,
-          instructions: ixs,
-        }).compileToV0Message(lookups);
-        const vtx = new VersionedTransaction(msg);
-        vtx.sign([signer]);
-        try {
-          const sig = await conn.sendRawTransaction(vtx.serialize(), { preflightCommitment: "processed", maxRetries: 3 });
-          log(`Swap (manual v0) sent: ${sig}`);
-          return { ok: true, sig };
-        } catch (e) {
-          log(`Manual v0 send failed: ${e.message || e}. Simulating…`);
-          try {
-            const sim = await conn.simulateTransaction(vtx, { sigVerify: false, replaceRecentBlockhash: true });
-            const logs = sim?.value?.logs || e?.logs || [];
-            log(`Simulation logs:\n${(logs||[]).join("\n")}`);
-            const hasDustErr = (logs || []).some(l => /0x1788|0x1789/i.test(String(l)));
-            return { ok: false, code: hasDustErr ? "ROUTER_DUST" : "SEND_FAIL", msg: e.message || String(e) };
-          } catch {
-            return { ok: false, code: "SEND_FAIL", msg: e.message || String(e) };
-          }
         }
       }
     } catch (e) {
@@ -1270,10 +1241,8 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
   {
     log("Swap API failed - trying manual build/sign …");
     const tries = [
-      () => manualBuildAndSend(false, false),
-      () => manualBuildAndSend(true, false),
-      () => manualBuildAndSend(false, true),
-      () => manualBuildAndSend(true, true),
+      () => manualBuildAndSend(false),
+      () => manualBuildAndSend(true),
     ];
     for (const t of tries) {
       try {
@@ -2466,7 +2435,7 @@ export function initAutoWidget(container = document.body) {
       <svg class="fdv-acc-caret" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
         <path d="M8 10l4 4 4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>
-      <span class="fdv-title">Auto Pump (v0.0.2)</span>
+      <span class="fdv-title">Auto Pump (v0.0.2.1)</span>
     </span>
   `;
 
@@ -2476,10 +2445,10 @@ export function initAutoWidget(container = document.body) {
     <div class="fdv-auto-head">
     </div>
     <div style="display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--fdv-border);padding-bottom:8px;margin-bottom:8px; position:relative;">
-      <button data-auto-gen>Generate</button>
-      <button data-auto-copy>Address</button>
-      <button data-auto-unwind>Return</button>
-      <button data-auto-wallet>Wallet</button>
+      <button class="btn" data-auto-gen>Generate</button>
+      <button class="btn" data-auto-copy>Address</button>
+      <button class="btn" data-auto-unwind>Return</button>
+      <button class="btn" data-auto-wallet>Wallet</button>
       <div data-auto-wallet-menu
            style="display:none; position:absolute; top:38px; left:0; z-index:999; min-width:520px; max-width:92vw;
                   background:var(--fdv-bg,#111); color:var(--fdv-fg,#fff); border:1px solid var(--fdv-border,#333);
@@ -2496,7 +2465,7 @@ export function initAutoWidget(container = document.body) {
       </div>
     </div>
     <div class="fdv-grid">
-      <label><a href="https://chainstack.com/" target="_blank">RPC (CORS)</a> <input data-auto-rpc placeholder="https://your-provider.example/solana?api-key=..."/></label>
+      <label><a href="https://chainstack.com/" target="_blank">RPC (CORS CLICK HERE)</a> <input data-auto-rpc placeholder="https://your-provider.example/solana?api-key=..."/></label>
       <label>RPC Headers (JSON) <input data-auto-rpch placeholder='{"Authorization":"Bearer ..."}'/></label>
       <label>Auto Wallet <input data-auto-dep readonly placeholder="Generate to get address"/></label>
       <label>Deposit Balance <input data-auto-bal readonly/></label>
@@ -2505,7 +2474,7 @@ export function initAutoWidget(container = document.body) {
       <label>Buy % of SOL <input data-auto-buyp type="number" step="0.1" min="${UI_LIMITS.BUY_PCT_MIN*100}" max="${UI_LIMITS.BUY_PCT_MAX*100}"/></label>
       <label>Min Buy (SOL) <input data-auto-minbuy type="number" step="0.0001" min="${UI_LIMITS.MIN_BUY_SOL_MIN}" max="${UI_LIMITS.MIN_BUY_SOL_MAX}"/></label>
       <label>Max Buy (SOL) <input data-auto-maxbuy type="number" step="0.0001" min="${UI_LIMITS.MAX_BUY_SOL_MIN}" max="${UI_LIMITS.MAX_BUY_SOL_MAX}"/></label>
-      <label style="margin-left:12px;">Hold Leader
+      <label>Hold Leader
         <select data-auto-hold>
           <option value="no">No</option>
           <option value="yes">Yes</option>
@@ -2529,8 +2498,8 @@ export function initAutoWidget(container = document.body) {
     </div>
     <div class="fdv-actions">
     <div class="fdv-actions-left">
-        <button data-auto-help title="How the bot works">Help</button>
-        <button data-auto-log-copy title="Copy log">Log</button>
+        <button class="btn" data-auto-help title="How the bot works">Help</button>
+        <button class="btn" data-auto-log-copy title="Copy log">Log</button>
         <div class="fdv-modal" data-auto-modal
              style="display:none; position:fixed; width: 100%; inset:0; z-index:9999; background:rgba(0, 0, 0, 1); align-items:center; justify-content:center;">
           <div class="fdv-modal-card"
@@ -2623,7 +2592,7 @@ export function initAutoWidget(container = document.body) {
     <div class="fdv-actions-right">
       <button data-auto-start>Start</button>
       <button data-auto-stop>Stop</button>
-      <button data-auto-reset>Refresh</button>
+      <button class="btn" data-auto-reset>Refresh</button>
     </div>
     </div>
   `;
@@ -2822,7 +2791,7 @@ export function initAutoWidget(container = document.body) {
 
     holdTimeWrap.innerHTML = `
       <div style="display:flex; align-items:center; gap:10px; padding:6px 0;">
-        <label style="width:110px;">Hold Time</label>
+        <label style="width:110px;">Hold</label>
         <input type="range" data-auto-holdtime min="${MIN_HOLD}" max="${MAX_HOLD}" step="1" value="${cur}" style="width: 100%;" />
         <div data-auto-holdtime-val style="width:56px; text-align:right;">${cur}s</div>
       </div>
