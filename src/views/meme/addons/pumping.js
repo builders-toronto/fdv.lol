@@ -8,9 +8,12 @@ export const PUMP_HALFLIFE_DAYS   = 0.6;       // fast decay (~14.4h half-life)
 export const PUMP_MIN_LIQ_USD     = 6000;      // hard floor to avoid illiquid spikes
 export const PUMP_MIN_VOL_1H_USD  = 1500;      // minimum 1h volume gate
 export const PUMP_MIN_PRICE_USD   = 0;         // keep 0 to allow low-priced tokens; raise if needed
-export const PUMP_BADGE_SCORE        = 1.45;   
-export const PUMP_BADGE_CHANGE1H_PCT = 8;      
-export const PUMP_BADGE_ACCEL5TO1    = 1.06;  
+export const PUMP_BADGE_SCORE        = 1.45;   // threshold score for "🔥 Pumping" badge
+export const PUMP_BADGE_CHANGE1H_PCT = 8;      // threshold 1h% change for "🔥 Pumping" badge
+export const PUMP_BADGE_ACCEL5TO1    = 1.06;   // threshold 5m->1h acceleration for "🔥 Pumping" badge
+export const RUG_5M_DROP_PCT  = 10;            // 5m% drop to consider for rug severity
+export const RUG_MAX_PENALTY  = 0.9;           // max score penalty from rugging
+export const RUG_WINDOW_MIN   = 20;            // lookback window for rug detection (minutes)
 const LN2 = Math.log(2);
 
 function loadPumpHistory() {
@@ -126,22 +129,6 @@ function decayedMeanStd(vals, wts) {
 const clamp  = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 const safeZ  = (x, m, s) => s > 0 ? (x - m) / s : 0;
 
-// PROOF 1:
-// The computePumpingScoreForMint function is a safe, stable, and logical way to 
-// detect short-term “pumping” behavior in a token. It begins by validating input 
-// data and filtering recent history, ensuring it never crashes or produces 
-// invalid values. All divisions are guarded, defaults prevent NaNs, and 
-// liquidity and volume thresholds act as safety gates. The score itself
-//  blends multiple weighted factors—price changes over 5m, 1h, and 6h;
-//  volume acceleration; buy pressure; breakout strength; and liquidity 
-// scaling—each tuned to highlight sustained, accelerating moves while filtering noise.
-//  Every component is bounded or logarithmically scaled, so results stay realistic
-//  even in volatile markets. The badge system (“🔥 Pumping”, “Warming”, “Calm”) 
-// is based on clear thresholds, ensuring that only coins with strong price action 
-// and real volume acceleration are flagged as “pumping.” Overall, the algorithm is monotonic, 
-// numerically stable, and computationally efficient—accurately capturing genuine momentum
-//  without overreacting to random spikes.
-
 export function computePumpingScoreForMint(records, nowTs) {
   if (!Array.isArray(records) || !records.length) return { score: 0, badge: 'Calm' };
 
@@ -182,30 +169,44 @@ export function computePumpingScoreForMint(records, nowTs) {
   const offBottom = minTail > 0 ? (priceUsd - minTail)/minTail : 0;
   const breakout  = clamp(offBottom / 0.08, 0, 1.4); // stronger than DBS, 8% rebound ~1.0
 
-  // Liquidity soft scaling (not just a gate)
   const liqScale  = Math.log10(1 + liqUsd) / 5; // ~0..1.2 across 10^0..10^6+
 
-  // Volume surprise vs its own (decayed) regime
   const zV1     = Math.max(0, safeZ(v1hTotal, v1Mean, v1Std)); // only reward upside
 
-  // Weighted blend (calibrated for ~0..3 in hot markets)
   const buyBoost = Math.max(0, (buySell24h - 0.56) * 2.0); // kick after ~56% buys
 
   const core =
-      (change5m / 6.5)        // ~1 when +6.5% in 5m
-    + (change1h / 22)         // ~1 when +22% in 1h
-    + (change6h / 65)         // ~1 when +65% in 6h
-    + (accel5to1 - 1) * 0.9   // up to +1.8 at 3x
-    + (accel1to6 - 1) * 0.7   // up to +1.4 at 3x
+      (change5m / 6.5)
+    + (change1h / 22)
+    + (change6h / 65)
+    + (accel5to1 - 1) * 0.9
+    + (accel1to6 - 1) * 0.7
     + buyBoost * 0.9
     + breakout * 0.8
     + Math.min(2.0, 0.6 * zV1);
 
-  const score = Math.max(0, core) * (0.65 + 0.35 * liqScale);
+  let score = Math.max(0, core) * (0.65 + 0.35 * liqScale);
+
+  const windowCut = nowTs - (RUG_WINDOW_MIN * 60 * 1000);
+  const windowRecs = recent.filter(e => (+e.ts) >= windowCut);
+  const worst5m = windowRecs.length
+    ? Math.min(...windowRecs.map(e => Number(e.kp?.change5m ?? 0)))
+    : change5m;
+
+  const sevNow    = change5m < 0 ? clamp((-change5m) / Math.max(1, RUG_5M_DROP_PCT), 0, 4) : 0;
+  const sevWindow = worst5m   < 0 ? clamp((-worst5m) / Math.max(1, RUG_5M_DROP_PCT), 0, 4) : 0;
+  const sev = Math.max(sevNow, sevWindow);
+
+  const rawFactor = 1 / (1 + 3 * sev);
+  const rugFactor = 1 - Math.min(RUG_MAX_PENALTY, 1 - rawFactor);
+
+  score *= rugFactor;
 
   let badge = 'Calm';
-  const strongScore = score >= 2.0; // loosen pump badge conditions a bit
-  if (
+  const strongScore = score >= 2.0;
+  if (sev >= 1) {
+    badge = 'Cooling';
+  } else if (
     strongScore ||
     (score >= PUMP_BADGE_SCORE &&
      change1h >= PUMP_BADGE_CHANGE1H_PCT &&
@@ -216,7 +217,23 @@ export function computePumpingScoreForMint(records, nowTs) {
     badge = 'Warming';
   }
 
-  return { score, badge, meta: { accel5to1, accel1to6, buy: buySell24h, zV1, liqScale, pMean } };
+  return { score, badge, meta: { accel5to1, accel1to6, buy: buySell24h, zV1, liqScale, pMean, rug: { worst5m, sev, rugFactor } } };
+}
+
+export function getRugSignalForMint(mint, nowTs = Date.now()) {
+  try {
+    const h = prunePumpHistory(loadPumpHistory());
+    const recs = (h?.byMint && h.byMint[mint]) ? h.byMint[mint] : [];
+    const res = computePumpingScoreForMint(recs, nowTs) || {};
+    const sev = Number(res?.meta?.rug?.sev || 0);
+    const score = Number(res?.score || 0);
+    const badge = res?.badge || 'Calm';
+    const rugFactor = Number(res?.meta?.rug?.rugFactor || 1);
+    const rugged = sev >= 1 || score <= 0;
+    return { rugged, sev, rugFactor, score, badge };
+  } catch {
+    return { rugged: false, sev: 0, rugFactor: 1, score: 0, badge: 'Calm' };
+  }
 }
 
 export function computePumpingLeaders(limit = 5) {
