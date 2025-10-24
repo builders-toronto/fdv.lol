@@ -14,8 +14,16 @@ const SELL_TX_FEE_BUFFER_LAMPORTS = 500_000;
 const EXTRA_TX_BUFFER_LAMPORTS     = 250_000;  
 const MIN_OPERATING_SOL            = 0.010;    
 const ROUTER_COOLDOWN_MS           = 60_000;
+// const ROUTER_DUST_FAIL_WINDOW_MS = 2 * 60 * 1000; 
+// const ROUTER_DUST_FAIL_THRESHOLD = 3;    
+if (!window._fdvRouteDustFails) window._fdvRouteDustFails = new Map();
 const MINT_RUG_BLACKLIST_MS = 30 * 60 * 1000;
 const SPLIT_FRACTIONS = [0.99, 0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.50, 0.33, 0.25, 0.20];
+
+
+const POSCACHE_KEY_PREFIX = "fdv_poscache_v1:";
+
+const DUSTCACHE_KEY_PREFIX = "fdv_dustcache_v1:";
 
 
 const FEE_ATAS = {
@@ -92,7 +100,6 @@ async function addRealizedPnl(solProceeds, costSold, label = "PnL") {
   }
 }
 
-
 function redactHeaders(hdrs) {
   const keys = Object.keys(hdrs || {});
   return keys.length ? `{headers: ${keys.join(", ")}}` : "{}";
@@ -146,7 +153,7 @@ let state = {
   allowMultiBuy: true,  
   multiBuyTopN: 1,  
   multiBuyBatchMs: 6000,
-  dustExitEnabled: true,
+  dustExitEnabled: false,
   dustMinSolOut: 0.004,
 
   // Safeties
@@ -186,6 +193,8 @@ let _pendingCredits = new Map();
 
 let _lastOwnerReconTs = 0;
 
+let _solPxCache = { ts: 0, usd: 0 };
+
 function _pcKey(owner, mint) { return `${owner}:${mint}`; }
 
 function enqueuePendingCredit({ owner, mint, addCostSol = 0, decimalsHint = 6, basePos = {} }) {
@@ -211,6 +220,10 @@ async function processPendingCredits() {
   if (!_pendingCredits || _pendingCredits.size === 0) return;
   const nowTs = now();
   for (const [key, entry] of Array.from(_pendingCredits.entries())) {
+    if (!entry?.owner || !entry?.mint) {
+      _pendingCredits.delete(key);
+      continue;
+    }
     if (!entry || nowTs > entry.until) {
       _pendingCredits.delete(key);
       continue;
@@ -255,7 +268,6 @@ async function processPendingCredits() {
   }
 }
 
-const POSCACHE_KEY_PREFIX = "fdv_poscache_v1:";
 
 function loadPosCache(ownerPubkeyStr) {
   if (localStorage.getItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr) === null) {
@@ -306,6 +318,88 @@ function cacheToList(ownerPubkeyStr) {
   return objOfCache;
 }
 
+function loadDustCache(ownerPubkeyStr) {
+  if (localStorage.getItem(DUSTCACHE_KEY_PREFIX + ownerPubkeyStr) === null) {
+    localStorage.setItem(DUSTCACHE_KEY_PREFIX + ownerPubkeyStr, JSON.stringify({}));
+  }
+  try {
+    const raw = localStorage.getItem(DUSTCACHE_KEY_PREFIX + ownerPubkeyStr) || "{}";
+    const obj = JSON.parse(raw) || {};
+    log(`Loaded dust cache for ${ownerPubkeyStr.slice(0,4)}… with ${Object.keys(obj).length} entries.`);
+    return obj;
+  } catch {
+    return {};
+  }
+}
+function saveDustCache(ownerPubkeyStr, data) {
+  try {
+    localStorage.setItem(DUSTCACHE_KEY_PREFIX + ownerPubkeyStr, JSON.stringify(data || {}));
+    log(`Saved dust cache for ${ownerPubkeyStr.slice(0,4)}… with ${Object.keys(data||{}).length} entries.`);
+  } catch {
+    log(`Failed to save dust cache for ${ownerPubkeyStr.slice(0,4)}…`);
+  }
+}
+function addToDustCache(ownerPubkeyStr, mint, sizeUi, decimals) {
+  if (!ownerPubkeyStr || !mint) return;
+  const cache = loadDustCache(ownerPubkeyStr);
+  cache[mint] = { sizeUi: Number(sizeUi || 0), decimals: Number.isFinite(decimals) ? decimals : 6 };
+  saveDustCache(ownerPubkeyStr, cache);
+  log(`Moved to dust cache: ${mint.slice(0,4)}… amt=${Number(sizeUi||0).toFixed(6)}`);
+}
+function removeFromDustCache(ownerPubkeyStr, mint) {
+  if (!ownerPubkeyStr || !mint) return;
+  const cache = loadDustCache(ownerPubkeyStr);
+  if (cache[mint]) { delete cache[mint]; saveDustCache(ownerPubkeyStr, cache); }
+}
+
+function dustCacheToList(ownerPubkeyStr) {
+  const cache = loadDustCache(ownerPubkeyStr);
+  return Object.entries(cache).map(([mint, v]) => ({
+    mint,
+    sizeUi: Number(v?.sizeUi || 0),
+    decimals: Number.isFinite(v?.decimals) ? v.decimals : 6,
+  })).filter(x => x.mint && x.sizeUi > 0);
+}
+function isMintInDustCache(ownerPubkeyStr, mint) {
+  const cache = loadDustCache(ownerPubkeyStr);
+  return !!cache[mint];
+}
+function minSellNotionalSol() {
+  return Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN * 1.05, Number(state.dustMinSolOut || 0));
+}
+
+// async function isDustAmount(mint, sizeUi, decimals) {
+//   const estSol = await quoteOutSol(mint, Number(sizeUi || 0), decimals).catch(()=>0);
+//   return { isDust: estSol > 0 && estSol < minSellNotionalSol(), estSol };
+// }
+// function moveRemainderToDust(ownerPubkeyStr, mint, sizeUi, decimals) {
+//   try { addToDustCache(ownerPubkeyStr, mint, sizeUi, decimals); } catch {}
+//   try { removeFromPosCache(ownerPubkeyStr, mint); } catch {}
+//   if (state.positions && state.positions[mint]) { delete state.positions[mint]; save(); }
+//   log(`Remainder classified as dust for ${mint.slice(0,4)}… removed from positions.`);
+// }
+
+// function markRouteDustFail(mint) {
+//   const nowTs = now();
+//   const prev = window._fdvRouteDustFails.get(mint) || { firstAt: nowTs, count: 0 };
+//   // reset window if expired
+//   const base = (nowTs - prev.firstAt > ROUTER_DUST_FAIL_WINDOW_MS) ? { firstAt: nowTs, count: 0 } : prev;
+//   const next = { firstAt: base.firstAt, count: base.count + 1 };
+//   window._fdvRouteDustFails.set(mint, next);
+//   return next;
+// }
+
+// function shouldAutoDustForMint(mint) {
+//   const rec = window._fdvRouteDustFails.get(mint);
+//   if (!rec) return false;
+//   if ((now() - rec.firstAt) > ROUTER_DUST_FAIL_WINDOW_MS) return false;
+//   return rec.count >= ROUTER_DUST_FAIL_THRESHOLD;
+// }
+
+function clearRouteDustFails(mint) {
+  try { window._fdvRouteDustFails.delete(mint); } catch {}
+}
+
 async function safeGetDecimalsFast(mintStr) {
   try { return await getMintDecimals(mintStr); } catch { return 6; }
 }
@@ -353,7 +447,7 @@ async function getJupBase() {
 // }
  
 function getPlatformFeeBps() {
-  return 5; // 0.05%
+  return 1; // 0.05%
 }
 
 async function tokenAccountRentLamports() {
@@ -422,6 +516,33 @@ async function confirmSig(sig, { commitment = "confirmed", timeoutMs = 12000, po
   return false;
 }
 
+async function waitForTokenDebit(ownerPubkeyStr, mintStr, prevSizeUi, { timeoutMs = 20000, pollMs = 350 } = {}) {
+  const start = now();
+  const prev = Number(prevSizeUi || 0);
+  while (now() - start < timeoutMs) {
+    try {
+      const b = await getAtaBalanceUi(ownerPubkeyStr, mintStr, undefined);
+      const cur = Number(b.sizeUi || 0);
+      if (cur <= 1e-9 || cur < prev * 0.90) {
+        return { debited: true, remainUi: cur, decimals: Number.isFinite(b.decimals) ? b.decimals : undefined };
+      }
+      if (cur < prev - 1e-9) { // any reduction
+        return { debited: true, remainUi: cur, decimals: Number.isFinite(b.decimals) ? b.decimals : undefined };
+      }
+    } catch {}
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+  try {
+    await reconcileFromOwnerScan(ownerPubkeyStr);
+  } catch {}
+  try {
+    const b = await getAtaBalanceUi(ownerPubkeyStr, mintStr, undefined);
+    return { debited: Number(b.sizeUi || 0) <= 1e-9, remainUi: Number(b.sizeUi || 0), decimals: Number.isFinite(b.decimals) ? b.decimals : undefined };
+  } catch {
+    return { debited: true, remainUi: 0, decimals: undefined };
+  }
+}
+
 async function waitForTokenCredit(ownerPubkeyStr, mintStr, { timeoutMs = 8000, pollMs = 300 } = {}) {
   const conn = await getConn();
   const start = now();
@@ -474,7 +595,6 @@ async function waitForTokenCredit(ownerPubkeyStr, mintStr, { timeoutMs = 8000, p
   return { sizeUi: 0, decimals };
 }
 
-
 // async function getFeeAta(mintStr) {
 //   const feeRecv = await getFeeReceiver();
 //   if (!feeRecv) return null;
@@ -515,10 +635,13 @@ async function getMintDecimals(mintStr) {
 }
 
 let _conn = null, _connUrl = "";
+
 let _connHdrKey = "";
+
 function currentRpcUrl() {
   return String(state.rpcUrl || localStorage.getItem("fdv_rpc_url") || "").trim();
 }
+
 function currentRpcHeaders() {
   try {
     const fromState = state.rpcHeaders && typeof state.rpcHeaders === "object" ? state.rpcHeaders : null;
@@ -528,6 +651,7 @@ function currentRpcHeaders() {
     return obj && typeof obj === "object" ? obj : {};
   } catch { return {}; }
 }
+
 function setRpcUrl(url) {
   state.rpcUrl = String(url || "").trim();
   try { localStorage.setItem("fdv_rpc_url", state.rpcUrl); } catch {}
@@ -535,6 +659,7 @@ function setRpcUrl(url) {
   save();
   log(`RPC URL set to: ${state.rpcUrl || "(empty)"}`);
 }
+
 function setRpcHeaders(jsonStr) {
   try {
     const obj = JSON.parse(String(jsonStr || "{}"));
@@ -559,6 +684,7 @@ async function loadWeb3() {
     return await import('https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.1/lib/index.browser.esm.js');
   }
 }
+
 async function loadBs58() {
   if (window.bs58) return window.bs58;
   return (await import('https://esm.sh/bs58@5.0.0')).default;
@@ -609,14 +735,13 @@ function setRouterHold(mint, ms = ROUTER_COOLDOWN_MS) {
   try { log(`Router cooldown set for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`); } catch {}
 }
 
-let _solPxCache = { ts: 0, usd: 0 };
 async function getSolUsd() {
   const t = Date.now();
   if (_solPxCache.usd > 0 && (t - _solPxCache.ts) < 60_000) return _solPxCache.usd;
   try {
     const res = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd", { headers: { accept: "application/json" }});
     const j = await res.json();
-    const px = Number(j?.solana?.usd || 0);
+    const px = Number(j?.solana?.usd || 0); // does it right here.
     if (Number.isFinite(px) && px > 0) {
       _solPxCache = { ts: t, usd: px };
       return px;
@@ -851,53 +976,107 @@ async function executeSwapWithConfirm(opts, { retries = 2, confirmMs = 15000 } =
 }
 
 async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, slippageBps }) {
-  const { PublicKey, VersionedTransaction } = await loadWeb3();
-  const conn = await getConn();
-  const userPub = signer.publicKey.toBase58();
-  const feeBps = Number(getPlatformFeeBps() || 0);
-  let feeAccount = null;
-  if (feeBps > 0) {
-    feeAccount = FEE_ATAS[inputMint] || null;
-    if (feeAccount) {
-      log(`Fee enabled: ATA ${feeAccount.slice(0,4)}… @ ${feeBps} bps`);
-    } else {
-      log("No hardcoded fee ATA for input mint; fees not collected this swap.");
+    const { PublicKey, VersionedTransaction } = await loadWeb3();
+    const conn = await getConn();
+    const userPub = signer.publicKey.toBase58();
+    const feeBps = Number(getPlatformFeeBps() || 0);
+    let feeAccount = null;
+
+    if (feeBps > 0) {
+      feeAccount = FEE_ATAS[inputMint] || null;
+      if (feeAccount) {
+        log(`Fee enabled: ATA ${feeAccount.slice(0,4)}… @ ${feeBps} bps`);
+      } else {
+        log("No hardcoded fee ATA for input mint; fees not collected this swap.");
+      }
     }
-  }
-  const inDecimals = await getMintDecimals(inputMint);
-  const baseSlip = Math.max(150, Number(slippageBps ?? state.slippageBps ?? 150) | 0);
-  const amountRaw = Math.max(1, Math.floor(amountUi * Math.pow(10, inDecimals)));
 
-  const baseUrl = await getJupBase();
-  const isLite = /lite-api\.jup\.ag/i.test(baseUrl);
-  const restrictAllowed = !isLite;
+    const inDecimals = await getMintDecimals(inputMint);
+    const baseSlip = Math.max(150, Number(slippageBps ?? state.slippageBps ?? 150) | 0);
+    const amountRaw = Math.max(1, Math.floor(amountUi * Math.pow(10, inDecimals)));
 
+    const baseUrl = await getJupBase();
+    const isLite = /lite-api\.jup\.ag/i.test(baseUrl);
+    const restrictAllowed = !isLite;
 
-  const isSell = (inputMint !== SOL_MINT) && (outputMint === SOL_MINT);
-  let restrictIntermediates = isSell ? "false" : "true";
-  
-  function buildQuoteUrl({ outMint, slipBps, restrict, asLegacy = false, amountOverrideRaw }) {
-    const u = new URL("/swap/v1/quote", "https://fdv.lol");
-    const amt = Number.isFinite(amountOverrideRaw) ? amountOverrideRaw : amountRaw;
-    u.searchParams.set("inputMint", inputMint);
-    u.searchParams.set("outputMint", outMint);
-    u.searchParams.set("amount", String(amt));
-    u.searchParams.set("slippageBps", String(slipBps));
-    u.searchParams.set("restrictIntermediateTokens", String(isLite ? true : (restrict === "false" ? false : true)));
-    if (feeAccount && feeBps > 0) u.searchParams.set("platformFeeBps", String(feeBps));
-    if (asLegacy) u.searchParams.set("asLegacyTransaction", "true");
-    return u;
-  }
+    const isSell = (inputMint !== SOL_MINT) && (outputMint === SOL_MINT);
+    let restrictIntermediates = isSell ? "false" : "true";
 
-  const q = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: restrictIntermediates });
-  logObj("Quote params", {
-    inputMint, outputMint, amountUi, inDecimals, slippageBps: baseSlip,
-    restrictIntermediateTokens: restrictIntermediates, feeBps: feeAccount ? feeBps : 0
-  });
+    // Track pre-split balance and a reconciler only for split-sell fallbacks
+    let _preSplitUi = 0;
+    let _decHint = await getMintDecimals(inputMint).catch(() => 6);
+    if (isSell) {
+      try {
+        const b0 = await getAtaBalanceUi(userPub, inputMint, _decHint);
+        _preSplitUi = Number(b0.sizeUi || 0);
+        if (Number.isFinite(b0.decimals)) _decHint = b0.decimals;
+      } catch {}
+    }
+    async function _reconcileSplitSellRemainder(sig) {
+      try {
+        // Ensure debit landed before reading balance
+        await confirmSig(sig, { commitment: "confirmed", timeoutMs: 15000 }).catch(()=>{});
+        let remainUi = 0, d = _decHint;
+        try {
+          const b1 = await getAtaBalanceUi(userPub, inputMint, d);
+          remainUi = Number(b1.sizeUi || 0);
+          if (Number.isFinite(b1.decimals)) d = b1.decimals;
+        } catch {}
+        if (remainUi <= 1e-9) {
+          // Fully gone — prune caches/state
+          try { removeFromPosCache(userPub, inputMint); } catch {}
+          if (state.positions && state.positions[inputMint]) { delete state.positions[inputMint]; save(); }
+          return;
+        }
+        const estRemainSol = await quoteOutSol(inputMint, remainUi, d).catch(() => 0);
+        const minN = minSellNotionalSol();
+        if (estRemainSol >= minN) {
+          // Keep in positions/cache; scale cost/hwm proportionally by on-chain remainder
+          const prevSize = _preSplitUi > 0 ? _preSplitUi : (state.positions?.[inputMint]?.sizeUi || 0);
+          const frac = prevSize > 0 ? Math.min(1, Math.max(0, remainUi / Math.max(1e-9, prevSize))) : 1;
+          const pos = state.positions[inputMint];
+          if (pos) {
+            pos.sizeUi = remainUi;
+            pos.decimals = d;
+            pos.costSol = Number(pos.costSol || 0) * frac;
+            pos.hwmSol  = Number(pos.hwmSol  || 0) * frac;
+            pos.lastSellAt = now();
+            save();
+          }
+          updatePosCache(userPub, inputMint, remainUi, d);
+        } else {
+          // Move unsellable leftover to dust cache and remove from normal cache/state
+          try { addToDustCache(userPub, inputMint, remainUi, d); } catch {}
+          try { removeFromPosCache(userPub, inputMint); } catch {}
+          if (state.positions && state.positions[inputMint]) { delete state.positions[inputMint]; save(); }
+          log(`Split-sell remainder below notional for ${inputMint.slice(0,4)}… moved to dust cache.`);
+        }
+      } catch {}
+    }
+    
+    function buildQuoteUrl({ outMint, slipBps, restrict, asLegacy = false, amountOverrideRaw }) {
+      const u = new URL("/swap/v1/quote", "https://fdv.lol");
+      const amt = Number.isFinite(amountOverrideRaw) ? amountOverrideRaw : amountRaw;
+      u.searchParams.set("inputMint", inputMint);
+      u.searchParams.set("outputMint", outMint);
+      u.searchParams.set("amount", String(amt));
+      u.searchParams.set("slippageBps", String(slipBps));
+      u.searchParams.set("restrictIntermediateTokens", String(isLite ? true : (restrict === "false" ? false : true)));
+      if (feeAccount && feeBps > 0) u.searchParams.set("platformFeeBps", String(feeBps));
+      if (asLegacy) u.searchParams.set("asLegacyTransaction", "true");
+      return u;
+    }
 
-  let quote;
-  let haveQuote = false;
-  {
+    const q = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: restrictIntermediates });
+    logObj("Quote params", {
+      inputMint, outputMint, amountUi, inDecimals, slippageBps: baseSlip,
+      restrictIntermediateTokens: restrictIntermediates, feeBps: feeAccount ? feeBps : 0
+    });
+
+    let quote;
+    let haveQuote = false;
+
+    {
     try {
       const qRes = await jupFetch(q.pathname + q.search);
       if (!qRes.ok) {
@@ -943,16 +1122,20 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       }
     }
 
-      const isRouteErr = (codeOrMsg) => /ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|0x1788/i.test(String(codeOrMsg||""));
+    const isRouteErr = (codeOrMsg) => /ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|0x1788/i.test(String(codeOrMsg||""));
     let sawRouteDust = false;
 
     const first = await buildAndSend(false);
     if (first.ok) { await seedCacheIfBuy(); return first.sig; }
-    if (isRouteErr(first?.code || first?.msg)) sawRouteDust = true;
-
-    const second = await buildAndSend(true);
-    if (second.ok) { await seedCacheIfBuy(); return second.sig; }
-    if (isRouteErr(second?.code || second?.msg)) sawRouteDust = true;
+    if (first.code === "NOT_SUPPORTED") {
+      log("Retrying with shared accounts …");
+      const second = await buildAndSend(true);
+      if (second.ok) { await seedCacheIfBuy(); return second.sig; }
+    } else {
+      log("Primary swap failed. Fallback: shared accounts …");
+      const fallback = await buildAndSend(true);
+      if (fallback.ok) { await seedCacheIfBuy(); return fallback.sig; }
+    }
 
     {
       const manualSeq = [
@@ -968,335 +1151,259 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       }
     }
 
-    if (isSell) {
-      try {
-        const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-        const slip3 = 2000;
-        const rFlag = restrictAllowed ? "false" : "true";
-        const q3 = buildQuoteUrl({ outMint: USDC, slipBps: slip3, restrict: rFlag });
-        log("Strict fallback: route to USDC …");
-        const r3 = await jupFetch(q3.pathname + q3.search);
-        if (r3.ok) {
-          quote = await r3.json();
-          const sendFns = [
-            () => buildAndSend(false),
-            () => buildAndSend(true),
-            () => manualBuildAndSend(false),
-            () => manualBuildAndSend(true),
-          ];
-          for (const send of sendFns) {
-            try {
-              const r = await send();
-              if (r?.ok) return r.sig;
-              if (isRouteErr(r?.code || r?.msg)) sawRouteDust = true;
-            } catch {}
-          }
+   
+    async function seedCacheIfBuy() {
+      if (inputMint === SOL_MINT && outputMint !== SOL_MINT) {
+        const estRaw = Number(quote?.outAmount || 0);
+        if (estRaw > 0) {
+          const dec = await safeGetDecimalsFast(outputMint);
+          const ui = estRaw / Math.pow(10, dec);
+          try {
+            updatePosCache(userPub, outputMint, ui, dec);
+            log(`Seeded cache for ${outputMint.slice(0,4)}… (~${ui.toFixed(6)})`);
+          } catch {}
+          // Fire-and-forget: reconcile state and pick up on-chain credit as it lands
+          setTimeout(() => {
+            Promise.resolve()
+              .then(() => syncPositionsFromChain(userPub).catch(()=>{}))
+              .then(() => processPendingCredits().catch(()=>{}));
+          }, 0);
         }
-      } catch {}
+      }
     }
 
-    if (isSell) {
-      try {
-        const slipSplit = 2000;
-        for (const f of SPLIT_FRACTIONS) {
-          const partRaw = Math.max(1, Math.floor(amountRaw * f));
-          if (partRaw <= 0) continue;
-          const restrictOptions = restrictAllowed ? ["false", "true"] : ["true"];
-          for (const restrict of restrictOptions) {
-            const qP = buildQuoteUrl({ outMint: outputMint, slipBps: slipSplit, restrict, amountOverrideRaw: partRaw });
-            log(`Strict split-sell f=${f} restrict=${restrict} slip=${slipSplit} …`);
-            const rP = await jupFetch(qP.pathname + qP.search);
-            if (!rP.ok) continue;
-            quote = await rP.json();
-            const tries = [
-              () => buildAndSend(false, false),
-              () => buildAndSend(true,  false),
-              () => manualBuildAndSend(false),
-              () => manualBuildAndSend(true),
-              () => buildAndSend(false, true),
-              () => buildAndSend(true,  true),
-            ];
-            for (const t of tries) {
-              try {
-                const res = await t();
-                if (res?.ok) { log(`Split-sell succeeded at ${Math.round(f*100)}% of position.`); return res.sig; }
-                if (isRouteErr(res?.code || res?.msg)) sawRouteDust = true;
-              } catch {}
-            }
-          }
-        }
-      } catch {}
-    }
-
-    if (isSell && sawRouteDust) setRouterHold(inputMint, ROUTER_COOLDOWN_MS);
-    throw new Error(sawRouteDust ? "ROUTER_DUST" : "swap failed");
-  }
-    
-
-  async function seedCacheIfBuy() {
-    if (inputMint === SOL_MINT && outputMint !== SOL_MINT) {
-      const estRaw = Number(quote?.outAmount || 0);
-      if (estRaw > 0) {
-        const dec = await safeGetDecimalsFast(outputMint);
-        const ui = estRaw / Math.pow(10, dec);
+    async function buildAndSend(useSharedAccounts = true, asLegacy = false) {
+      if (asLegacy) {
         try {
-          updatePosCache(userPub, outputMint, ui, dec);
-          log(`Seeded cache for ${outputMint.slice(0,4)}… (~${ui.toFixed(6)})`);
-        } catch {}
-        // Fire-and-forget: reconcile state and pick up on-chain credit as it lands
-        setTimeout(() => {
-          Promise.resolve()
-            .then(() => syncPositionsFromChain(userPub).catch(()=>{}))
-            .then(() => processPendingCredits().catch(()=>{}));
-        }, 0);
-      }
-    }
-  }
-
-  async function buildAndSend(useSharedAccounts = true, asLegacy = false) {
-    if (asLegacy) {
-      try {
-        const qLegacy = buildQuoteUrl({
-          outMint: outputMint,
-          slipBps: baseSlip,
-          restrict: restrictIntermediates, // keep same, forced true on lite
-          asLegacy: true
-        });
-        const qResL = await jupFetch(qLegacy.pathname + qLegacy.search);
-        if (!qResL.ok) {
-          const body = await qResL.text().catch(()=> "");
-          log(`Legacy quote failed (${qResL.status}): ${body || "(empty)"}`);
-        } else {
-          quote = await qResL.json();
-          log("Re-quoted for legacy transaction.");
+          const qLegacy = buildQuoteUrl({
+            outMint: outputMint,
+            slipBps: baseSlip,
+            restrict: restrictIntermediates, // keep same, forced true on lite
+            asLegacy: true
+          });
+          const qResL = await jupFetch(qLegacy.pathname + qLegacy.search);
+          if (!qResL.ok) {
+            const body = await qResL.text().catch(()=> "");
+            log(`Legacy quote failed (${qResL.status}): ${body || "(empty)"}`);
+          } else {
+            quote = await qResL.json();
+            log("Re-quoted for legacy transaction.");
+          }
+        } catch (e) {
+          log(`Legacy re-quote error: ${e.message || e}`);
         }
-      } catch (e) {
-        log(`Legacy re-quote error: ${e.message || e}`);
       }
-    }
 
-    const body = {
-      quoteResponse: quote,
-      userPublicKey: signer.publicKey.toBase58(),
-      wrapAndUnwrapSol: true,
-      dynamicComputeUnitLimit: true,
-      useSharedAccounts: !!useSharedAccounts,
-      asLegacyTransaction: !!asLegacy,
-      ...(feeAccount && feeBps > 0 ? { feeAccount, platformFeeBps: feeBps } : {}),
-    };
-    logObj("Swap body", { hasFee: !!feeAccount, feeBps: feeAccount ? feeBps : 0, useSharedAccounts: !!useSharedAccounts, asLegacy: !!asLegacy });
-
-    const sRes = await jupFetch(`/swap/v1/swap`, {
-      method: "POST",
-      headers: { "Content-Type":"application/json", accept: "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!sRes.ok) {
-      const errTxt = await sRes.text().catch(()=> "");
-      log(`Swap error body: ${errTxt || "(empty)"}`);
-      try {
-        const j = JSON.parse(errTxt || "{}");
-        return { ok: false, code: j?.errorCode || "", msg: j?.error || `swap ${sRes.status}` };
-      } catch {
-        return { ok: false, code: "", msg: `swap ${sRes.status}` };
-      }
-    }
-    const { swapTransaction } = await sRes.json();
-    if (!swapTransaction) throw new Error("no swapTransaction");
-    const raw = atob(swapTransaction);
-    const rawBytes = new Uint8Array(raw.length);
-    for (let i=0; i<raw.length; i++) rawBytes[i] = raw.charCodeAt(i);
-    const vtx = VersionedTransaction.deserialize(rawBytes);
-    vtx.sign([signer]);
-    try {
-      const sig = await conn.sendRawTransaction(vtx.serialize(), { preflightCommitment: "processed", maxRetries: 3 });
-      log(`Swap sent: ${sig}`);
-      // add to cache
-      // _pendingCredits?.set(sig, { type: "swap", vtx });
-      return { ok: true, sig };
-    } catch (e) {
-      log(`Swap send failed. NO_ROUTES/ROUTER_DUST. export help/wallet.json to recover dust funds. Simulating…`);
-      try {
-        const sim = await conn.simulateTransaction(vtx, { sigVerify: false, replaceRecentBlockhash: true });
-        const logs = sim?.value?.logs || e?.logs || [];
-        // log(`Simulation logs:\n${(logs||[]).join("\n")}`);
-        const hasDustErr = (logs || []).some(l => /0x1788|0x1789/i.test(String(l)));
-        // Surface router dust immediately
-        return { ok: false, code: hasDustErr ? "ROUTER_DUST" : "SEND_FAIL", msg: e.message || String(e) };
-      } catch {
-        return { ok: false, code: "SEND_FAIL", msg: e.message || String(e) };
-      }
-    }
-  }
-
-  async function manualBuildAndSend(useSharedAccounts = true) {
-    const { PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } = await loadWeb3();
-    try {
       const body = {
         quoteResponse: quote,
         userPublicKey: signer.publicKey.toBase58(),
         wrapAndUnwrapSol: true,
         dynamicComputeUnitLimit: true,
         useSharedAccounts: !!useSharedAccounts,
-        asLegacyTransaction: false, // always v0
+        asLegacyTransaction: !!asLegacy,
         ...(feeAccount && feeBps > 0 ? { feeAccount, platformFeeBps: feeBps } : {}),
       };
-      logObj("Swap-instructions body (manual send)", {
-        hasFee: !!feeAccount,
-        feeBps: feeAccount ? feeBps : 0,
-        useSharedAccounts: !!useSharedAccounts
-      });
+      logObj("Swap body", { hasFee: !!feeAccount, feeBps: feeAccount ? feeBps : 0, useSharedAccounts: !!useSharedAccounts, asLegacy: !!asLegacy });
 
-      const iRes = await jupFetch(`/swap/v1/swap-instructions`, {
+      const sRes = await jupFetch(`/swap/v1/swap`, {
         method: "POST",
         headers: { "Content-Type":"application/json", accept: "application/json" },
         body: JSON.stringify(body),
       });
-      if (!iRes.ok) {
-        const errTxt = await iRes.text().catch(()=> "");
-        log(`Swap-instructions error: ${errTxt || iRes.status}`);
-        const isNoRoute = /NO_ROUTE|COULD_NOT_FIND_ANY_ROUTE/i.test(errTxt);
-        return { ok: false, code: isNoRoute ? "NO_ROUTE" : "JUP_DOWN", msg: `swap-instructions ${iRes.status}` };
-      }
-
-      const {
-        computeBudgetInstructions = [],
-        setupInstructions = [],
-        swapInstruction,
-        cleanupInstructions = [],
-        addressLookupTableAddresses = [],
-      } = await iRes.json();
-
-      if (!swapInstruction) {
-        return { ok: false, code: "NO_ROUTE", msg: "no swapInstruction" };
-      }
-
-      function decodeData(d) {
-        if (!d) return new Uint8Array();
-        if (d instanceof Uint8Array) return d;
-        if (Array.isArray(d)) return new Uint8Array(d);
-        if (typeof d === "string") {
-          const raw = atob(d);
-          const b = new Uint8Array(raw.length);
-          for (let i=0;i<raw.length;i++) b[i] = raw.charCodeAt(i);
-          return b;
-        }
-        return new Uint8Array();
-      }
-      function toIx(ix) {
-        if (!ix) return null;
-        const pid = new PublicKey(ix.programId);
-        const keys = (ix.accounts || []).map(a => {
-          if (typeof a === "string") return { pubkey: new PublicKey(a), isSigner: false, isWritable: false };
-          const pk = a.pubkey || a.pubKey || a.address || a;
-          return { pubkey: new PublicKey(pk), isSigner: !!a.isSigner, isWritable: !!a.isWritable };
-        });
-        const data = decodeData(ix.data);
-        return new TransactionInstruction({ programId: pid, keys, data });
-      }
-
-      const ixs = [
-        ...computeBudgetInstructions.map(toIx).filter(Boolean),
-        ...setupInstructions.map(toIx).filter(Boolean),
-        toIx(swapInstruction),
-        ...cleanupInstructions.map(toIx).filter(Boolean),
-      ].filter(Boolean);
-
-      const lookups = [];
-      for (const addr of addressLookupTableAddresses || []) {
+      if (!sRes.ok) {
+        const errTxt = await sRes.text().catch(()=> "");
+        log(`Swap error body: ${errTxt || "(empty)"}`);
         try {
-          const lut = await conn.getAddressLookupTable(new PublicKey(addr));
-          if (lut?.value) lookups.push(lut.value);
-        } catch {}
-      }
-
-      const { blockhash } = await conn.getLatestBlockhash("confirmed");
-      const msg = new TransactionMessage({
-        payerKey: signer.publicKey,
-        recentBlockhash: blockhash,
-        instructions: ixs,
-      }).compileToV0Message(lookups);
-
-      const vtx = new VersionedTransaction(msg);
-      vtx.sign([signer]);
-
-      try {
-        const sig = await conn.sendRawTransaction(vtx.serialize(), {
-          preflightCommitment: "confirmed",
-          maxRetries: 3,
-        });
-        const ok = await confirmSig(sig, { commitment: "confirmed", timeoutMs: 15000 });
-        if (!ok) {
-          const st = await conn.getSignatureStatuses([sig]).catch(()=>null);
-          const status = st?.value?.[0]?.err ? "TX_ERR" : "NO_CONFIRM";
-          return { ok: false, code: status, msg: "not confirmed" };
+          const j = JSON.parse(errTxt || "{}");
+          return { ok: false, code: j?.errorCode || "", msg: j?.error || `swap ${sRes.status}` };
+        } catch {
+          return { ok: false, code: "", msg: `swap ${sRes.status}` };
         }
-        log(`Swap (manual send v0) sent: ${sig}`);
+      }
+      const { swapTransaction } = await sRes.json();
+      if (!swapTransaction) throw new Error("no swapTransaction");
+      const raw = atob(swapTransaction);
+      const rawBytes = new Uint8Array(raw.length);
+      for (let i=0; i<raw.length; i++) rawBytes[i] = raw.charCodeAt(i);
+      const vtx = VersionedTransaction.deserialize(rawBytes);
+      vtx.sign([signer]);
+      try {
+        const sig = await conn.sendRawTransaction(vtx.serialize(), { preflightCommitment: "processed", maxRetries: 3 });
+        log(`Swap sent: ${sig}`);
+        try { if (isSell) setTimeout(() => _reconcileSplitSellRemainder(sig), 0); } catch {}
         return { ok: true, sig };
       } catch (e) {
-        log(`Manual send failed: ${e.message || e}. Simulating…`);
+        log(`Swap send failed. NO_ROUTES/ROUTER_DUST. export help/wallet.json to recover dust funds. Simulating…`);
         try {
           const sim = await conn.simulateTransaction(vtx, { sigVerify: false, replaceRecentBlockhash: true });
           const logs = sim?.value?.logs || e?.logs || [];
+          // log(`Simulation logs:\n${(logs||[]).join("\n")}`);
           const hasDustErr = (logs || []).some(l => /0x1788|0x1789/i.test(String(l)));
+          // Surface router dust immediately
           return { ok: false, code: hasDustErr ? "ROUTER_DUST" : "SEND_FAIL", msg: e.message || String(e) };
         } catch {
           return { ok: false, code: "SEND_FAIL", msg: e.message || String(e) };
         }
       }
-    } catch (e) {
-      return { ok: false, code: "", msg: e.message || String(e) };
     }
-  }
 
-  const first = await buildAndSend(false);
-  if (first.ok) { await seedCacheIfBuy(); return first.sig; }
-  if (first.code === "NOT_SUPPORTED") {
-    log("Retrying with shared accounts …");
-    const second = await buildAndSend(true);
-    if (second.ok) { await seedCacheIfBuy(); return second.sig; }
-  } else {
-    log("Primary swap failed. Fallback: shared accounts …");
-    const fallback = await buildAndSend(true);
-    if (fallback.ok) { await seedCacheIfBuy(); return fallback.sig; }
-  }
-
-  {
-    log("Swap API failed - trying manual build/sign …");
-    const tries = [
-      () => manualBuildAndSend(false),
-      () => manualBuildAndSend(true),
-    ];
-    for (const t of tries) {
+    async function manualBuildAndSend(useSharedAccounts = true) {
+      const { PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } = await loadWeb3();
       try {
-        const r = await t();
-        if (r?.ok) { await seedCacheIfBuy(); return r.sig; }
-      } catch {}
-    }
-  }
+        const body = {
+          quoteResponse: quote,
+          userPublicKey: signer.publicKey.toBase58(),
+          wrapAndUnwrapSol: true,
+          dynamicComputeUnitLimit: true,
+          useSharedAccounts: !!useSharedAccounts,
+          asLegacyTransaction: false, // always v0
+          ...(feeAccount && feeBps > 0 ? { feeAccount, platformFeeBps: feeBps } : {}),
+        };
+        logObj("Swap-instructions body (manual send)", {
+          hasFee: !!feeAccount,
+          feeBps: feeAccount ? feeBps : 0,
+          useSharedAccounts: !!useSharedAccounts
+        });
 
-  if (isSell) {
-    try {
-      const slip2 = 2000;
-      const rFlag = restrictAllowed ? "false" : "true";
-      const q2 = buildQuoteUrl({ outMint: outputMint, slipBps: slip2, restrict: rFlag });
-      log(`Tiny-notional fallback: relax route, slip=${slip2} bps …`);
-      const r2 = await jupFetch(q2.pathname + q2.search);
-      if (r2.ok) {
-        quote = await r2.json();
+        const iRes = await jupFetch(`/swap/v1/swap-instructions`, {
+          method: "POST",
+          headers: { "Content-Type":"application/json", accept: "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!iRes.ok) {
+          const errTxt = await iRes.text().catch(()=> "");
+          log(`Swap-instructions error: ${errTxt || iRes.status}`);
+          const isNoRoute = /NO_ROUTE|COULD_NOT_FIND_ANY_ROUTE/i.test(errTxt);
+          return { ok: false, code: isNoRoute ? "NO_ROUTE" : "JUP_DOWN", msg: `swap-instructions ${iRes.status}` };
+        }
+
+        const {
+          computeBudgetInstructions = [],
+          setupInstructions = [],
+          swapInstruction,
+          cleanupInstructions = [],
+          addressLookupTableAddresses = [],
+        } = await iRes.json();
+
+        if (!swapInstruction) {
+          return { ok: false, code: "NO_ROUTE", msg: "no swapInstruction" };
+        }
+
+        function decodeData(d) {
+          if (!d) return new Uint8Array();
+          if (d instanceof Uint8Array) return d;
+          if (Array.isArray(d)) return new Uint8Array(d);
+          if (typeof d === "string") {
+            const raw = atob(d);
+            const b = new Uint8Array(raw.length);
+            for (let i=0;i<raw.length;i++) b[i] = raw.charCodeAt(i);
+            return b;
+          }
+          return new Uint8Array();
+        }
+        function toIx(ix) {
+          if (!ix) return null;
+          const pid = new PublicKey(ix.programId);
+          const keys = (ix.accounts || []).map(a => {
+            if (typeof a === "string") return { pubkey: new PublicKey(a), isSigner: false, isWritable: false };
+            const pk = a.pubkey || a.pubKey || a.address || a;
+            return { pubkey: new PublicKey(pk), isSigner: !!a.isSigner, isWritable: !!a.isWritable };
+          });
+          const data = decodeData(ix.data);
+          return new TransactionInstruction({ programId: pid, keys, data });
+        }
+
+        const ixs = [
+          ...computeBudgetInstructions.map(toIx).filter(Boolean),
+          ...setupInstructions.map(toIx).filter(Boolean),
+          toIx(swapInstruction),
+          ...cleanupInstructions.map(toIx).filter(Boolean),
+        ].filter(Boolean);
+
+        const lookups = [];
+        for (const addr of addressLookupTableAddresses || []) {
+          try {
+            const lut = await conn.getAddressLookupTable(new PublicKey(addr));
+            if (lut?.value) lookups.push(lut.value);
+          } catch {}
+        }
+
+        const { blockhash } = await conn.getLatestBlockhash("confirmed");
+        const msg = new TransactionMessage({
+          payerKey: signer.publicKey,
+          recentBlockhash: blockhash,
+          instructions: ixs,
+        }).compileToV0Message(lookups);
+
+        const vtx = new VersionedTransaction(msg);
+        vtx.sign([signer]);
+
+        try {
+          const sig = await conn.sendRawTransaction(vtx.serialize(), {
+            preflightCommitment: "confirmed",
+            maxRetries: 3,
+          });
+          const ok = await confirmSig(sig, { commitment: "confirmed", timeoutMs: 15000 });
+          if (!ok) {
+            const st = await conn.getSignatureStatuses([sig]).catch(()=>null);
+            const status = st?.value?.[0]?.err ? "TX_ERR" : "NO_CONFIRM";
+            return { ok: false, code: status, msg: "not confirmed" };
+          }
+          log(`Swap (manual send v0) sent: ${sig}`);
+          try { if (isSell) setTimeout(() => _reconcileSplitSellRemainder(sig), 0); } catch {}
+          return { ok: true, sig };
+        } catch (e) {
+          log(`Manual send failed: ${e.message || e}. Simulating…`);
+          try {
+            const sim = await conn.simulateTransaction(vtx, { sigVerify: false, replaceRecentBlockhash: true });
+            const logs = sim?.value?.logs || e?.logs || [];
+            const hasDustErr = (logs || []).some(l => /0x1788|0x1789/i.test(String(l)));
+            return { ok: false, code: hasDustErr ? "ROUTER_DUST" : "SEND_FAIL", msg: e.message || String(e) };
+          } catch {
+            return { ok: false, code: "SEND_FAIL", msg: e.message || String(e) };
+          }
+        }
+      } catch (e) {
+        return { ok: false, code: "", msg: e.message || String(e) };
+      }
+    }
+
+    {
+      log("Swap API failed - trying manual build/sign …");
+      const tries = [
+        () => manualBuildAndSend(false),
+        () => manualBuildAndSend(true),
+      ];
+      for (const t of tries) {
+        try {
+          const r = await t();
+          if (r?.ok) { await seedCacheIfBuy(); return r.sig; }
+        } catch {}
+      }
+    }
+
+    if (isSell) {
+      try {
+        const slip2 = 2000;
+        const rFlag = restrictAllowed ? "false" : "true";
+        const q2 = buildQuoteUrl({ outMint: outputMint, slipBps: slip2, restrict: rFlag });
+        log(`Tiny-notional fallback: relax route, slip=${slip2} bps …`);
+        const r2 = await jupFetch(q2.pathname + q2.search);
+        if (r2.ok) {
+          quote = await r2.json();
+          const a = await buildAndSend(false, true);
+          if (a.ok) { await seedCacheIfBuy(); return a.sig; }
+          const b = await buildAndSend(true, true);
+          if (b.ok) { await seedCacheIfBuy(); return b.sig; }
+        }
+      } catch {}
+
+      try {
         const a = await buildAndSend(false, true);
         if (a.ok) { await seedCacheIfBuy(); return a.sig; }
-        const b = await buildAndSend(true, true);
+        const b = await buildAndSend(true);
         if (b.ok) { await seedCacheIfBuy(); return b.sig; }
-      }
-    } catch {}
-
-    try {
-      const a = await buildAndSend(false, true);
-      if (a.ok) { await seedCacheIfBuy(); return a.sig; }
-      const b = await buildAndSend(true);
-      if (b.ok) { await seedCacheIfBuy(); return b.sig; }
-    } catch {}
+      } catch {}
 
       try {
         const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -1332,43 +1439,84 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         }
       } catch {}
 
-    try {
-      const slipSplit = 2000;
-      for (const f of SPLIT_FRACTIONS) {
-        const partRaw = Math.max(1, Math.floor(amountRaw * f));
-        if (partRaw <= 0) continue;
+      try {
+        const slipSplit = 2000;
+        for (const f of SPLIT_FRACTIONS) {
+          const partRaw = Math.max(1, Math.floor(amountRaw * f));
+          if (partRaw <= 0) continue;
 
-        const restrictOptions = restrictAllowed ? ["false", "true"] : ["true"];
-        for (const restrict of restrictOptions) {
-          const qP = buildQuoteUrl({ outMint: outputMint, slipBps: slipSplit, restrict, amountOverrideRaw: partRaw });
-          log(`Split-sell quote f=${f} restrict=${restrict} slip=${slipSplit}…`);
-          const rP = await jupFetch(qP.pathname + qP.search);
-          if (!rP.ok) continue;
+          const restrictOptions = restrictAllowed ? ["false", "true"] : ["true"];
+          for (const restrict of restrictOptions) {
+            const qP = buildQuoteUrl({ outMint: outputMint, slipBps: slipSplit, restrict, amountOverrideRaw: partRaw });
+            log(`Split-sell quote f=${f} restrict=${restrict} slip=${slipSplit}…`);
+            const rP = await jupFetch(qP.pathname + qP.search);
+            if (!rP.ok) continue;
 
-          quote = await rP.json();
-          const tries = [
-            () => buildAndSend(false, false),
-            () => buildAndSend(true, false),
-            () => buildAndSend(false, true),
-            () => buildAndSend(true, true),
-          ];
-          for (const t of tries) {
-            try {
-              const res = await t();
-              if (res?.ok) {
-                log(`Split-sell succeeded at ${Math.round(f*100)}% of position.`);
-                return res.sig;
-              }
-            } catch {}
+            quote = await rP.json();
+            const tries = [
+              () => buildAndSend(false, false),
+              () => buildAndSend(true, false),
+              () => buildAndSend(false, true),
+              () => buildAndSend(true, true),
+            ];
+            for (const t of tries) {
+              try {
+                const res = await t();
+                if (res?.ok) {
+                  log(`Split-sell succeeded at ${Math.round(f*100)}% of position.`);
+                  try { setMintBlacklist(inputMint, MINT_RUG_BLACKLIST_MS); log(`Split-sell: blacklisted ${inputMint.slice(0,4)}… for 30m.`); } catch {}
+                  try {
+                    if (isSell) {
+                      const dec = Number.isFinite(_decHint) ? _decHint : (Number.isFinite(inDecimals) ? inDecimals : 6);
+                      const prevSize =
+                        (_preSplitUi > 0 ? _preSplitUi : (state.positions?.[inputMint]?.sizeUi || 0));
+                      const soldUi = partRaw / Math.pow(10, dec);
+                      let remainUi = Math.max(0, prevSize - soldUi);
+
+                      // Clamp to [0, prevSize] to guard rounding
+                      if (!Number.isFinite(remainUi) || remainUi < 1e-12) remainUi = 0;
+                      if (remainUi <= 1e-9) {
+                        try { removeFromPosCache(userPub, inputMint); } catch {}
+                        if (state.positions && state.positions[inputMint]) { delete state.positions[inputMint]; save(); }
+                        log(`Split-sell cleared position for ${inputMint.slice(0,4)}… locally.`);
+                      } else {
+                        const estRemainSol = await quoteOutSol(inputMint, remainUi, dec).catch(() => 0);
+                        const minN = minSellNotionalSol();
+                        if (estRemainSol >= minN) {
+                          const basePrev = prevSize > 0 ? prevSize : (state.positions?.[inputMint]?.sizeUi || remainUi);
+                          const frac = basePrev > 0 ? Math.min(1, Math.max(0, remainUi / Math.max(1e-9, basePrev))) : 1;
+                          const pos = state.positions[inputMint] || { costSol: 0, hwmSol: 0, acquiredAt: now() };
+                          pos.sizeUi = remainUi;
+                          pos.decimals = dec;
+                          pos.costSol = Number(pos.costSol || 0) * frac;
+                          pos.hwmSol  = Number(pos.hwmSol  || 0) * frac;
+                          pos.lastSellAt = now();
+                          state.positions[inputMint] = pos;
+                          updatePosCache(userPub, inputMint, remainUi, dec);
+                          save();
+                          log(`Split-sell remainder kept: ${remainUi.toFixed(6)} ${inputMint.slice(0,4)}…`);
+                        } else {
+                          try { addToDustCache(userPub, inputMint, remainUi, dec); } catch {}
+                          try { removeFromPosCache(userPub, inputMint); } catch {}
+                          if (state.positions && state.positions[inputMint]) { delete state.positions[inputMint]; save(); }
+                          log(`Split-sell remainder below notional; moved to dust cache (${remainUi.toFixed(6)}).`);
+                        }
+                      }
+                    }
+                  } catch {}
+
+                  return res.sig;
+                }
+              } catch {}
+            }
           }
         }
+      } catch (e) {
+        log(`Split-sell fallback error: ${e.message || e}`);
       }
-    } catch (e) {
-      log(`Split-sell fallback error: ${e.message || e}`);
     }
+    throw new Error("swap failed");
   }
-
-  throw new Error("swap failed");
 }
 
 async function sweepAllToSolAndReturn() {
@@ -1379,30 +1527,117 @@ async function sweepAllToSolAndReturn() {
   log("Unwind: selling SPL positions and returning SOL…");
 
   const conn = await getConn();
+  const owner = signer.publicKey.toBase58();
+
+  const queue = [];
+  const seen = new Set();
+
+  if (state.dustExitEnabled) {
+    try {
+      const dust = dustCacheToList(owner) || [];
+      for (const it of dust) {
+        if (it?.mint && it.mint !== SOL_MINT && !seen.has(it.mint)) {
+          queue.push({ ...it, from: "dust" });
+          seen.add(it.mint);
+        }
+      }
+    } catch {}
+  }
+
   try {
-    for (const mint of Object.keys(state.positions || {})) {
-      if (mint === "So11111111111111111111111111111111111111112") continue;
-      const b = await getAtaBalanceUi(signer.publicKey.toBase58(), mint, state.positions[mint]?.decimals);
-      const uiAmt = Number(b.sizeUi || 0);
-      if (uiAmt <= 0) continue;
-      try {
-        await jupSwapWithKeypair({
-          signer,
-          inputMint: mint,
-          outputMint: "So11111111111111111111111111111111111111112",
-          amountUi: uiAmt,
-          slippageBps: state.slippageBps,
-        });
-        log(`Sold ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> SOL`);
-        const costSold = Number(state.positions[mint]?.costSol || 0);
-        await addRealizedPnl(estSol, costSold, "Unwind PnL");
-        if (state.positions[mint]) { delete state.positions[mint]; save(); }
-      } catch (e) {
-        log(`Sell fail ${mint.slice(0,4)}…: ${e.message||e}`);
+    const cached = cacheToList(owner) || [];
+    for (const it of cached) {
+      if (it?.mint && it.mint !== SOL_MINT && !seen.has(it.mint)) {
+        queue.push({ ...it, from: "cache" });
+        seen.add(it.mint);
       }
     }
   } catch {}
 
+  for (const m of Object.keys(state.positions || {})) {
+    if (m && m !== SOL_MINT && !seen.has(m)) {
+      queue.push({
+        mint: m,
+        sizeUi: Number(state.positions[m]?.sizeUi || 0),
+        decimals: Number.isFinite(state.positions[m]?.decimals) ? state.positions[m].decimals : 6,
+        from: "state",
+      });
+      seen.add(m);
+    }
+  }
+
+  for (const item of queue) {
+    const mint = item.mint;
+    try {
+      const b = await getAtaBalanceUi(owner, mint, item.decimals);
+      const uiAmt = Number(b.sizeUi || 0);
+      const dec = Number.isFinite(b.decimals) ? b.decimals : (item.decimals ?? state.positions[mint]?.decimals ?? 6);
+
+      if (uiAmt <= 0) {
+        // Cleanup zero balances from caches
+        removeFromPosCache(owner, mint);
+        if (item.from === "dust") removeFromDustCache(owner, mint);
+        if (state.positions[mint]) { delete state.positions[mint]; save(); }
+        continue;
+      }
+
+      let estSol = 0;
+      try { estSol = await quoteOutSol(mint, uiAmt, dec); } catch {}
+
+      const res = await executeSwapWithConfirm({
+        signer,
+        inputMint: mint,
+        outputMint: SOL_MINT,
+        amountUi: uiAmt,
+        slippageBps: state.slippageBps,
+      }, { retries: 2, confirmMs: 15000 });
+
+      if (!res.ok) {
+        log(`Sell fail ${mint.slice(0,4)}…: route execution failed`);
+        continue;
+      }
+
+      // Wait for debit to handle partials
+      let remainUi = 0;
+      try {
+        const debit = await waitForTokenDebit(owner, mint, uiAmt);
+        remainUi = Number(debit.remainUi || 0);
+      } catch {
+        // If debit watcher not available, best-effort balance fetch
+        try {
+          const bb = await getAtaBalanceUi(owner, mint, dec);
+          remainUi = Number(bb.sizeUi || 0);
+        } catch {}
+      }
+
+      if (remainUi > 1e-9) {
+        log(`Unwind sold partially; remain ${remainUi.toFixed(6)} ${mint.slice(0,4)}…`);
+        // Update state and cache for remainder
+        if (state.positions[mint]) {
+          const frac = Math.min(1, Math.max(0, remainUi / Math.max(1e-9, uiAmt)));
+          state.positions[mint].sizeUi = remainUi;
+          state.positions[mint].costSol = Number(state.positions[mint].costSol || 0) * frac;
+          state.positions[mint].hwmSol  = Number(state.positions[mint].hwmSol  || 0) * frac;
+          save();
+        }
+        updatePosCache(owner, mint, remainUi, dec);
+        // Keep dust entry if it came from dust cache; otherwise it remains in positions/cache
+        continue;
+      }
+
+      log(`Sold ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
+      const costSold = Number(state.positions[mint]?.costSol || 0);
+      await addRealizedPnl(estSol, costSold, "Unwind PnL");
+
+      if (state.positions[mint]) { delete state.positions[mint]; save(); }
+      removeFromPosCache(owner, mint);
+      if (item.from === "dust") removeFromDustCache(owner, mint);
+    } catch (e) {
+      log(`Sell fail ${mint.slice(0,4)}…: ${e.message||e}`);
+    }
+  }
+
+  // Return SOL to recipient
   const bal = await conn.getBalance(signer.publicKey).catch(()=>0);
   const rent = 0.001 * 1e9;
   const sendLamports = Math.max(0, bal - Math.ceil(rent));
@@ -1462,6 +1697,7 @@ function setMintBlacklist(mint, ms = MINT_RUG_BLACKLIST_MS) {
   window._fdvMintBlacklist.set(mint, until);
   try { log(`Blacklist set for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`); } catch {}
 }
+
 function isMintBlacklisted(mint) {
   if (!mint || !window._fdvMintBlacklist) return false;
   const until = window._fdvMintBlacklist.get(mint);
@@ -1476,6 +1712,7 @@ function normBadge(b) {
   if (s.includes("warming")) return "warming";
   return "calm";
 }
+
 function markPumpDropBan(mint, ms = PUMP_TO_CALM_BAN_MS) {
   if (!mint) return;
   if (!window._fdvPumpDropBan) window._fdvPumpDropBan = new Map();
@@ -1483,6 +1720,7 @@ function markPumpDropBan(mint, ms = PUMP_TO_CALM_BAN_MS) {
   window._fdvPumpDropBan.set(mint, until);
   try { log(`Pump->Calm ban set for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`); } catch {}
 }
+
 function isPumpDropBanned(mint) {
   if (!mint || !window._fdvPumpDropBan) return false;
   const until = window._fdvPumpDropBan.get(mint);
@@ -1490,6 +1728,7 @@ function isPumpDropBanned(mint) {
   if (now() > until) { window._fdvPumpDropBan.delete(mint); return false; }
   return true;
 }
+
 function recordBadgeTransition(mint, badge) {
   if (!mint) return;
   if (!window._fdvMintBadgeAt) window._fdvMintBadgeAt = new Map();
@@ -1515,7 +1754,6 @@ function pickPumpCandidates(take = 1, poolN = 3) {
       recordBadgeTransition(mint, sig.badge);
       const b = normBadge(sig.badge);
       if (b !== "pumping") continue;
-      // Exclude recent Pump->Calm drops and explicit mint blacklist
       if (isPumpDropBanned(mint) || isMintBlacklisted(mint)) continue;
 
       const kp = it?.kp || {};
@@ -1560,7 +1798,6 @@ async function ataExists(ownerPubkeyStr, mintStr) {
     return false;
   }
 }
-
 
 async function getOwnerAta(ownerPubkeyStr, mintStr, programIdOverride) {
   const { PublicKey } = await loadWeb3();
@@ -1658,6 +1895,7 @@ async function listOwnerSplPositions(ownerPubkeyStr) {
         const info = it?.account?.data?.parsed?.info;
         const mint = String(info?.mint || "");
         if (!mint || mint === SOL_MINT) continue;
+        if (isMintInDustCache(ownerPubkeyStr, mint)) continue;
         const ta = info?.tokenAmount; const ui = Number(ta?.uiAmount || 0); const dec = Number(ta?.decimals);
         if (ui > 0 && !seen.has(mint)) {
           out.push({ mint, sizeUi: ui, decimals: Number.isFinite(dec) ? dec : 6 });
@@ -1698,6 +1936,7 @@ async function listOwnerSplPositions(ownerPubkeyStr) {
   for (const r of out) updatePosCache(ownerPubkeyStr, r.mint, r.sizeUi, r.decimals);
   return out;
 }
+
 async function syncPositionsFromChain(ownerPubkeyStr) {
   try {
     log("Syncing positions from cache …");
@@ -1775,16 +2014,16 @@ async function sweepNonSolToSolAtStart() {
   for (const { mint, sizeUi, decimals } of items) {
     try {
       const estSol = await quoteOutSol(mint, sizeUi, decimals).catch(() => 0);
-      const minNotional = Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN * 1.05);
+      const minNotional = minSellNotionalSol();
       if (estSol < minNotional) {
-        log(`Skip ${mint.slice(0,4)}… (est ${estSol.toFixed(6)} SOL < ${minNotional}).`);
+        moveRemainderToDust(owner, mint, sizeUi, decimals);
         unsellable++;
         continue;
       }
 
       const res = await executeSwapWithConfirm({
         signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sizeUi, slippageBps: state.slippageBps,
-      }, { retries: 2, confirmMs: 15000 });
+      }, { retries: 1, confirmMs: 15000 });
 
       if (!res.ok) throw new Error("route execution failed");
 
@@ -1802,6 +2041,107 @@ async function sweepNonSolToSolAtStart() {
 
   log(`Startup sweep complete. Sold ${sold} token${sold===1?"":"s"}. ${unsellable} dust/unsellable skipped.`);
   if (sold > 0) { state.lastTradeTs = now(); save(); }
+}
+
+async function sweepDustToSolAtStart() {
+  if (!state.dustExitEnabled) return;
+  const kp = await getAutoKeypair();
+  if (!kp) { log("Auto wallet not ready; skipping dust sweep."); return; }
+
+  const owner = kp.publicKey.toBase58();
+  log("Startup dust sweep: checking dust cache …");
+
+  const dust = dustCacheToList(owner) || [];
+  if (!dust.length) {
+    log("Startup dust sweep: no entries.");
+    return;
+  }
+
+  let sold = 0, kept = 0, pruned = 0;
+  for (const it of dust) {
+    const mint = it.mint;
+    try {
+      const b = await getAtaBalanceUi(owner, mint, it.decimals);
+      const uiAmt = Number(b.sizeUi || 0);
+      const dec = Number.isFinite(b.decimals) ? b.decimals : (it.decimals ?? 6);
+
+      if (uiAmt <= 0) {
+        removeFromDustCache(owner, mint);
+        removeFromPosCache(owner, mint); // ensure no stale pos cache
+        pruned++;
+        continue;
+      }
+
+      let estSol = 0;
+      try { estSol = await quoteOutSol(mint, uiAmt, dec); } catch {}
+      const minNotional = minSellNotionalSol();
+      if (estSol < minNotional) {
+        kept++;
+        continue;
+      }
+
+      const res = await executeSwapWithConfirm({
+        signer: kp,
+        inputMint: mint,
+        outputMint: SOL_MINT,
+        amountUi: uiAmt,
+        slippageBps: state.slippageBps,
+      }, { retries: 2, confirmMs: 15000 });
+
+      if (!res.ok) {
+        if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
+        log(`Dust sweep sell not confirmed for ${mint.slice(0,4)}… keeping in dust.`);
+        kept++;
+        continue;
+      }
+
+      // Handle partial debit remainder
+      let remainUi = 0, remDec = dec;
+      try {
+        const debit = await waitForTokenDebit(owner, mint, uiAmt, { timeoutMs: 20000, pollMs: 350 });
+        remainUi = Number(debit.remainUi || 0);
+        if (Number.isFinite(debit.decimals)) remDec = debit.decimals;
+      } catch {
+        try {
+          const bb = await getAtaBalanceUi(owner, mint, dec);
+          remainUi = Number(bb.sizeUi || 0);
+          if (Number.isFinite(bb.decimals)) remDec = bb.decimals;
+        } catch {}
+      }
+
+      if (remainUi > 1e-9) {
+        const estRemainSol = await quoteOutSol(mint, remainUi, remDec).catch(() => 0);
+        const minN = minSellNotionalSol();
+        if (estRemainSol >= minN) {
+          // Remainder is sellable — promote to positions cache for normal handling
+          updatePosCache(owner, mint, remainUi, remDec);
+          removeFromDustCache(owner, mint);
+          const prev = state.positions[mint] || { costSol: 0, hwmSol: 0, acquiredAt: now() };
+          state.positions[mint] = { ...prev, sizeUi: remainUi, decimals: remDec, lastSeenAt: now() };
+          save();
+          setRouterHold(mint, ROUTER_COOLDOWN_MS);
+          log(`Dust sweep partial: remain ${remainUi.toFixed(6)} ${mint.slice(0,4)}… promoted from dust.`);
+        } else {
+          // Still dust — update dust cache with new remainder
+          addToDustCache(owner, mint, remainUi, remDec);
+          log(`Dust sweep partial: remain ${remainUi.toFixed(6)} ${mint.slice(0,4)}… stays in dust.`);
+        }
+      } else {
+        // Fully sold — clean up dust and any stale pos cache
+        removeFromDustCache(owner, mint);
+        removeFromPosCache(owner, mint);
+        if (state.positions[mint]) { delete state.positions[mint]; save(); }
+        log(`Dust sweep sold ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
+        sold++;
+      }
+      await new Promise(r => setTimeout(r, 200));
+    } catch (e) {
+      log(`Dust sweep sell failed ${mint.slice(0,4)}…: ${e.message || e}`);
+      kept++;
+    }
+  }
+
+  log(`Startup dust sweep complete. Sold ${sold}, kept ${kept}, pruned ${pruned}.`);
 }
 
 function shouldSell(pos, curSol, nowTs) {
@@ -1930,7 +2270,7 @@ async function evalAndMaybeSellPositions() {
         const minNotional = baseMinNotional;
         let d = null;
 
-        // If rugged or pump-drop, bypass min-notional checks
+
         if (curSol < minNotional && !forceExpire && !forceRug && !forcePumpDrop) {
           d = shouldSell(pos, curSol, nowTs);
           const dustMin = Math.max(MIN_SELL_SOL_OUT, Number(state.dustMinSolOut || 0));
@@ -1998,30 +2338,48 @@ async function evalAndMaybeSellPositions() {
               }, { retries: 1, confirmMs: 15000 });
 
               if (!res2.ok) {
+                if (res2.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
                 log(`Sell not confirmed for ${mint.slice(0,4)}… Keeping position.`);
                 _inFlight = false;
                 continue;
               }
 
-              let remainUi2 = 0;
-              try {
-                const b2 = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
-                remainUi2 = Number(b2.sizeUi || 0);
-              } catch {}
-              if (remainUi2 > 1e-9) {
-                pos.sizeUi = remainUi2;
-                pos.lastSellAt = now();
-                pos.allowRebuy = true;
-                pos.lastSplitSellAt = now();
-                updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
-                save();
-                log(`Post-sell balance remains ${remainUi2.toFixed(6)} ${mint.slice(0,4)}… (keeping position)`);
-                log('Consider exporting your wallet and selling manually.');
+              const prevSize2 = Number(pos.sizeUi || sellUi2);
+              const debit = await waitForTokenDebit(kp.publicKey.toBase58(), mint, prevSize2, { timeoutMs: 25000, pollMs: 400 });
+              // const remainUi2 = Number(debit.remainUi || 0);
+
+              if (remainUi > 1e-9) {
+                let chkUi = remainUi, chkDec = pos.decimals;
+                try {
+                  const chk = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+                  chkUi = Number(chk.sizeUi || 0);
+                  if (Number.isFinite(chk.decimals)) chkDec = chk.decimals;
+                } catch {}
+                if (chkUi <= 1e-9) {
+                  // fully gone
+                  delete state.positions[mint];
+                  removeFromPosCache(kp.publicKey.toBase58(), mint);
+                } else {
+                  const estRemainSol = await quoteOutSol(mint, chkUi, chkDec).catch(() => 0);
+                  const minN = minSellNotionalSol();
+                  if (estRemainSol >= minN) {
+                    pos.sizeUi = chkUi;
+                    if (Number.isFinite(chkDec)) pos.decimals = chkDec;
+                    updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+                  } else {
+                    try { addToDustCache(kp.publicKey.toBase58(), mint, chkUi, chkDec ?? 6); } catch {}
+                    try { removeFromPosCache(kp.publicKey.toBase58(), mint); } catch {}
+                    delete state.positions[mint];
+                    save();
+                    log(`Leftover below notional for ${mint.slice(0,4)}… moved to dust cache.`);
+                  }
+                }
               } else {
                 const reason = (decision && decision.reason) ? decision.reason : "done";
-                log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ${curSol.toFixed(6)} SOL (${reason})`);
+                const estFullSol = curSol > 0 ? curSol : await quoteOutSol(mint, sellUi2, pos.decimals).catch(()=>0);
+                log(`Sold ${sellUi2.toFixed(6)} ${mint.slice(0,4)}… -> ~${estFullSol.toFixed(6)} SOL (${reason})`);
                 const costSold = Number(pos.costSol || 0);
-                await addRealizedPnl(curSol, costSold, "Full sell PnL");
+                await addRealizedPnl(estFullSol, costSold, "Full sell PnL");
                 delete state.positions[mint];
                 removeFromPosCache(kp.publicKey.toBase58(), mint);
                 save();
@@ -2042,12 +2400,17 @@ async function evalAndMaybeSellPositions() {
           }, { retries: 1, confirmMs: 15000 });
 
           if (!res.ok) {
+            if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
             log(`Sell not confirmed for ${mint.slice(0,4)}… (partial). Keeping position.`);
             _inFlight = false;
             continue;
           }
 
-          log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ${curSol.toFixed(6)} SOL (${(decision && decision.reason) ? decision.reason : "done"})`);
+          log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL (${(decision && decision.reason) ? decision.reason : "done"})`);
+
+          // Proportional cost basis for partial exits
+          const prevCostSol = Number(pos.costSol || 0);
+          const costSold = prevCostSol * (pct / 100);
           const remainPct = 1 - (pct / 100);
           pos.sizeUi = Math.max(0, pos.sizeUi - sellUi);
           pos.costSol = Number(pos.costSol || 0) * remainPct;
@@ -2058,51 +2421,87 @@ async function evalAndMaybeSellPositions() {
           pos.lastSplitSellAt = now();
 
           try {
-            const b2 = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
-            pos.sizeUi = Number(b2.sizeUi || pos.sizeUi || 0);
-            pos.decimals = Number.isFinite(b2.decimals) ? b2.decimals : pos.decimals;
-          } catch {}
-          updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+            const debit = await waitForTokenDebit(kp.publicKey.toBase58(), mint, sellUi, { timeoutMs: 20000, pollMs: 350 });
+            const remainUi = Number(debit.remainUi || pos.sizeUi || 0);
+            if (remainUi > 1e-9) {
+              const estRemainSol = await quoteOutSol(mint, remainUi, pos.decimals).catch(() => 0);
+              const minN = minSellNotionalSol();
+              if (estRemainSol >= minN) {
+                pos.sizeUi = remainUi;
+                if (Number.isFinite(debit.decimals)) pos.decimals = debit.decimals;
+                updatePosCache(kp.publicKey.toBase64 ? kp.publicKey.toBase64() : kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+                updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+              } else {
+                try { addToDustCache(kp.publicKey.toBase58(), mint, remainUi, pos.decimals ?? 6); } catch {}
+                try { removeFromPosCache(kp.publicKey.toBase58(), mint); } catch {}
+                delete state.positions[mint];
+                save();
+                log(`Leftover below notional for ${mint.slice(0,4)}… moved to dust cache.`);
+              }
+            } else {
+              // fully gone
+              delete state.positions[mint];
+              removeFromPosCache(kp.publicKey.toBase58(), mint);
+            }
+          } catch {
+            updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+          }
           save();
 
           await addRealizedPnl(estSol, costSold, "Partial sell PnL");
-          } else {
-            let sellUi = pos.sizeUi;
-            try {
-              const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
-              if (Number(b.sizeUi || 0) > 0) sellUi = Number(b.sizeUi);
-            } catch {}
+        } else {
+          let sellUi = pos.sizeUi;
+          try {
+            const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+            if (Number(b.sizeUi || 0) > 0) sellUi = Number(b.sizeUi);
+          } catch {}
 
-            const res = await executeSwapWithConfirm({
-              signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: state.slippageBps,
-            }, { retries: 1, confirmMs: 15000 });
+          const res = await executeSwapWithConfirm({
+            signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: state.slippageBps,
+          }, { retries: 1, confirmMs: 15000 });
 
-            if (!res.ok) {
-              log(`Sell not confirmed for ${mint.slice(0,4)}… Keeping position.`);
-              _inFlight = false;
-              continue;
-            }
+          if (!res.ok) {
+            if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
+            log(`Sell not confirmed for ${mint.slice(0,4)}… Keeping position.`);
+            _inFlight = false;
+            continue;
+          }
 
-            let remainUi = 0;
-            try {
-              const b2 = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
-              remainUi = Number(b2.sizeUi || 0);
-            } catch {}
-            if (remainUi > 1e-9) {
+          clearRouteDustFails(mint);
+
+          const prevSize = Number(pos.sizeUi || sellUi);
+          const debit = await waitForTokenDebit(kp.publicKey.toBase58(), mint, prevSize, { timeoutMs: 25000, pollMs: 400 });
+          const remainUi = Number(debit.remainUi || 0);
+          if (remainUi > 1e-9) {
+            const estRemainSol = await quoteOutSol(mint, remainUi, pos.decimals).catch(() => 0);
+            const minN = minSellNotionalSol();
+            if (estRemainSol >= minN) {
+              const frac = Math.min(1, Math.max(0, remainUi / Math.max(1e-9, prevSize)));
               pos.sizeUi = remainUi;
+              pos.costSol = Number(pos.costSol || 0) * frac;
+              pos.hwmSol  = Number(pos.hwmSol  || 0) * frac;
               pos.lastSellAt = now();
               updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
               save();
-              log(`Post-sell balance remains ${remainUi.toFixed(6)} ${mint.slice(0,4)}… (keeping position)`);
+              setRouterHold(mint, ROUTER_COOLDOWN_MS);
+              log(`Post-sell balance remains ${remainUi.toFixed(6)} ${mint.slice(0,4)}… (keeping position; router cooldown applied)`);
             } else {
-              const reason = (decision && decision.reason) ? decision.reason : "done";
-              log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ${curSol.toFixed(6)} SOL (${reason})`);
-              const costSold = Number(pos.costSol || 0);
-              await addRealizedPnl(curSol, costSold, "Full sell PnL");
+              try { addToDustCache(kp.publicKey.toBase58(), mint, remainUi, pos.decimals ?? 6); } catch {}
+              try { removeFromPosCache(kp.publicKey.toBase58(), mint); } catch {}
               delete state.positions[mint];
-              removeFromPosCache(kp.publicKey.toBase58(), mint);
               save();
+              log(`Leftover below notional for ${mint.slice(0,4)}… moved to dust cache.`);
             }
+          } else {
+            const reason = (decision && decision.reason) ? decision.reason : "done";
+            const estFullSol = curSol > 0 ? curSol : await quoteOutSol(mint, sellUi, pos.decimals).catch(()=>0);
+            log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ~${estFullSol.toFixed(6)} SOL (${reason})`);
+            const costSold = Number(pos.costSol || 0);
+            await addRealizedPnl(estFullSol, costSold, "Full sell PnL");
+            delete state.positions[mint];
+            removeFromPosCache(kp.publicKey.toBase58(), mint);
+            save();
+          }
         }
 
         state.lastTradeTs = now();
@@ -2149,6 +2548,7 @@ async function switchToLeader(newMint) {
       }
     }
 
+    const owner = kp.publicKey.toBase58();
     let rotated = 0;
     for (const mint of mints) {
       try {
@@ -2157,31 +2557,85 @@ async function switchToLeader(newMint) {
           log(`Router cooldown (rotate) for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`);
           continue;
         }
-        const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, state.positions[mint]?.decimals);
-  
+
+        const b = await getAtaBalanceUi(owner, mint, state.positions[mint]?.decimals);
         const uiAmt = Number(b.sizeUi || 0);
+        const dec = Number.isFinite(b.decimals)
+          ? b.decimals
+          : (Number.isFinite(state.positions[mint]?.decimals) ? state.positions[mint].decimals : 6);
+
         if (uiAmt <= 0) {
           log(`No balance to rotate for ${mint.slice(0,4)}…`);
           delete state.positions[mint];
+          removeFromPosCache(owner, mint);
           continue;
         }
-        const estSol = await quoteOutSol(mint, uiAmt, state.positions[mint]?.decimals).catch(() => 0);
-        const minNotional = Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN * 1.05);
+
+        // Pre-quote notional. If below minimum, move to dust cache and skip.
+        let estSol = 0;
+        try { estSol = await quoteOutSol(mint, uiAmt, dec); } catch {}
+        const minNotional = minSellNotionalSol();
         if (estSol < minNotional) {
-          log(`Skip rotation for ${mint.slice(0,4)}… (est ${estSol.toFixed(6)} SOL < ${minNotional})`);
+          try { addToDustCache(owner, mint, uiAmt, dec); } catch {}
+          try { removeFromPosCache(owner, mint); } catch {}
+          delete state.positions[mint];
+          save();
+          log(`Rotate: below notional for ${mint.slice(0,4)}… moved to dust cache.`);
           continue;
         }
-        await jupSwapWithKeypair({
+
+        // Full sell
+        const res = await executeSwapWithConfirm({
           signer: kp,
           inputMint: mint,
           outputMint: SOL_MINT,
           amountUi: uiAmt,
           slippageBps: state.slippageBps,
-        });
+        }, { retries: 2, confirmMs: 15000 });
+
+        if (!res.ok) {
+          if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
+          log(`Rotate sell not confirmed ${mint.slice(0,4)}… keeping position.`);
+          continue;
+        }
+
+        // Handle partial debit remainder
+        const debit = await waitForTokenDebit(owner, mint, uiAmt);
+        const remain = Number(debit.remainUi || 0);
+        if (remain > 1e-9) {
+          const estRemainSol = await quoteOutSol(mint, remain, dec).catch(() => 0);
+          const minN = minSellNotionalSol();
+          if (estRemainSol >= minN) {
+            log(`Rotate out partial: remain ${remain.toFixed(6)} ${mint.slice(0,4)}…`);
+            const prevSize = Number(state.positions[mint]?.sizeUi || uiAmt);
+            const frac = Math.min(1, Math.max(0, remain / Math.max(1e-9, prevSize)));
+            const pos = state.positions[mint] || { costSol: 0, hwmSol: 0 };
+            pos.sizeUi = remain;
+            pos.decimals = Number.isFinite(debit.decimals) ? debit.decimals : dec;
+            pos.costSol = Number(pos.costSol || 0) * frac;
+            pos.hwmSol  = Number(pos.hwmSol  || 0) * frac;
+            pos.lastSellAt = now();
+            state.positions[mint] = pos;
+            updatePosCache(owner, mint, pos.sizeUi, pos.decimals);
+            save();
+            setRouterHold(mint, ROUTER_COOLDOWN_MS);
+            continue;
+          } else {
+            try { addToDustCache(owner, mint, remain, dec); } catch {}
+            try { removeFromPosCache(owner, mint); } catch {}
+            delete state.positions[mint];
+            save();
+            log(`Rotate: leftover below notional for ${mint.slice(0,4)}… moved to dust cache.`);
+            continue;
+          }
+        }
+
+        // Fully rotated out
         log(`Rotated out: ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
         const costSold = Number(state.positions[mint]?.costSol || 0);
         await addRealizedPnl(estSol, costSold, "Rotation PnL");
         delete state.positions[mint];
+        removeFromPosCache(owner, mint);
         save();
         rotated++;
       } catch (e) {
@@ -2470,6 +2924,9 @@ async function startAutoAsync() {
     const kp = await getAutoKeypair();
     if (kp) await syncPositionsFromChain(kp.publicKey.toBase58());
     await sweepNonSolToSolAtStart();
+    if (state.dustExitEnabled) {
+      try { await sweepDustToSolAtStart(); } catch {}
+    }
     if (!timer && state.enabled) {
       timer = setInterval(tick, 5000);
       log("Auto trading started");
@@ -2509,6 +2966,7 @@ function load() {
   state.minBuySol   = Math.max(MIN_JUP_SOL_IN, Number(state.minBuySol || MIN_JUP_SOL_IN));
   save();
 }
+
 function save() {
   try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch {}
 }
@@ -2561,7 +3019,7 @@ export function initAutoWidget(container = document.body) {
       <svg class="fdv-acc-caret" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
         <path d="M8 10l4 4 4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>
-      <span class="fdv-title">Auto Pump (v0.0.2.2)</span>
+      <span class="fdv-title">Auto Pump (v0.0.2.3)</span>
     </span>
   `;
 
@@ -2587,11 +3045,11 @@ export function initAutoWidget(container = document.body) {
         <div data-auto-wallet-list style="display:flex; flex-direction:column; gap:6px; max-height:40vh; overflow:auto;">
           <div style="opacity:0.7;">Loading…</div>
         </div>
-        <div data-auto-wallet-totals style="margin-top:8px; font-weight:600;">Total: …</div>
+        <div data-auto-wallet-totals style="display: flex;flex-direction: row;justify-content: space-between;margin-top:8px; font-weight:600;">Total: …</div>
       </div>
     </div>
     <div class="fdv-grid">
-      <label><a href="https://chainstack.com/" target="_blank">RPC (CORS CLICK HERE)</a> <input data-auto-rpc placeholder="https://your-provider.example/solana?api-key=..."/></label>
+      <label><a href="https://chainstack.com/" target="_blank">RPC (CORS)</a> <input data-auto-rpc placeholder="https://your-provider.example/solana?api-key=..."/></label>
       <label>RPC Headers (JSON) <input data-auto-rpch placeholder='{"Authorization":"Bearer ..."}'/></label>
       <label>Auto Wallet <input data-auto-dep readonly placeholder="Generate to get address"/></label>
       <label>Deposit Balance <input data-auto-bal readonly/></label>
@@ -2608,7 +3066,7 @@ export function initAutoWidget(container = document.body) {
       </label>
       <label>Try to sell dust
         <select data-auto-dust>
-          <option value="no">No</option>
+          <option value="no" selected>No</option>
           <option value="yes">Yes</option>
         </select>
       </label>
@@ -2788,7 +3246,7 @@ export function initAutoWidget(container = document.body) {
       const kp = await getAutoKeypair();
       if (!kp) {
         walletListEl.innerHTML = `<div style="opacity:.7">Generate your auto wallet to view holdings.</div>`;
-        walletSolEl.textContent = `SOL: 0.0000 (—)`;
+        walletSolEl.textContent = `SOL: …`;
         walletTotalsEl.textContent = `Total: $0.00`;
         return;
       }
@@ -2799,10 +3257,11 @@ export function initAutoWidget(container = document.body) {
       const solUsdPx = await getSolUsd();
       walletSolEl.textContent = `SOL: ${Number(solBal).toFixed(6)} (${solUsdPx>0?fmtUsd(solBal*solUsdPx):"—"})`;
 
-      const cachedEntries = cacheToList(owner); // [{ mint, sizeUi, decimals }]
+      const cachedEntries = cacheToList(owner); // active positions cache
+      const dustEntries   = dustCacheToList(owner); // dust cache
       const entries = cachedEntries.filter(it => it.mint !== SOL_MINT && Number(it.sizeUi||0) > 0);
 
-      if (!entries.length) {
+      if (!entries.length && !dustEntries.length) {
         walletListEl.innerHTML = `<div style="opacity:.7">No coins held.</div>`;
         walletTotalsEl.textContent = `Total: ${fmtUsd(solBal * solUsdPx)} (${solBal.toFixed(6)} SOL)`;
         return;
@@ -2820,12 +3279,12 @@ export function initAutoWidget(container = document.body) {
       let totalUsd = solBal * solUsdPx;
       let totalSol = solBal;
 
-       if (!window._fdvWalletQuoteCache) window._fdvWalletQuoteCache = new Map();
-       const qCache = window._fdvWalletQuoteCache;
-       const minGap = Math.max(5_000, Number(state.minQuoteIntervalMs || 10_000));
-       const baseMinNotional = Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN * 1.05, Number(state.dustMinSolOut || 0));
+      if (!window._fdvWalletQuoteCache) window._fdvWalletQuoteCache = new Map();
+      const qCache = window._fdvWalletQuoteCache;
+      const minGap = Math.max(5_000, Number(state.minQuoteIntervalMs || 10_000));
+      const baseMinNotional = minSellNotionalSol();
 
-       for (const { mint, sizeUi, decimals } of entries) {
+      async function renderRow({ mint, sizeUi, decimals }, forceDust = false) {
         const row = document.createElement("div");
         row.style.display = "grid";
         row.style.gridTemplateColumns = "1fr auto auto auto";
@@ -2839,33 +3298,45 @@ export function initAutoWidget(container = document.body) {
           <div data-usd>USD: …</div>
         `;
 
-         const cacheKey = `${owner}:${mint}:${Number(sizeUi).toFixed(9)}`;
-         let estSol = 0;
-         try {
-           const hit = qCache.get(cacheKey);
-           if (hit && (now() - hit.ts) < minGap) {
-             estSol = Number(hit.sol || 0) || 0;
-           } else {
-             estSol = await quoteOutSol(mint, Number(sizeUi||0), decimals).catch(()=>0);
-             qCache.set(cacheKey, { ts: now(), sol: estSol });
-           }
-         } catch { estSol = 0; }
+        const cacheKey = `${owner}:${mint}:${Number(sizeUi).toFixed(9)}`;
+        let estSol = 0;
+        try {
+          const hit = qCache.get(cacheKey);
+          if (hit && (now() - hit.ts) < minGap) {
+            estSol = Number(hit.sol || 0) || 0;
+          } else {
+            estSol = await quoteOutSol(mint, Number(sizeUi||0), decimals).catch(()=>0);
+            qCache.set(cacheKey, { ts: now(), sol: estSol });
+          }
+        } catch { estSol = 0; }
 
-         const solCell = row.querySelector("[data-sol]");
-         const usdCell = row.querySelector("[data-usd]");
-         solCell.textContent = `~SOL: ${estSol.toFixed(6)}`;
-         const usd = estSol * solUsdPx;
-         usdCell.textContent = `USD: ${solUsdPx>0?fmtUsd(usd):"—"}`;
+        const solCell = row.querySelector("[data-sol]");
+        const usdCell = row.querySelector("[data-usd]");
+        solCell.textContent = `~SOL: ${estSol.toFixed(6)}`;
+        const usd = estSol * solUsdPx;
+        usdCell.textContent = `USD: ${solUsdPx>0?fmtUsd(usd):"—"}`;
 
-         totalSol += estSol;
-         totalUsd += usd;
- 
-         // Classify by Jupiter min-notional/routeability
-         const sellable = estSol > 0 && estSol >= baseMinNotional;
-         (sellable ? sellWrap : dustWrap).appendChild(row);
-       }
+        totalSol += estSol;
+        totalUsd += usd;
+
+        const sellable = !forceDust && estSol > 0 && estSol >= baseMinNotional;
+        (sellable ? sellWrap : dustWrap).appendChild(row);
+      }
+
+      // Active positions
+      for (const it of entries) {
+        await renderRow(it, false);
+      }
+      // Dust cache entries (always dust)
+      // Avoid dupes: if a mint is still in positions (shouldn't), prefer dust classification
+      const posMints = new Set(entries.map(x => x.mint));
+      for (const it of dustEntries) {
+        if (posMints.has(it.mint)) continue;
+        await renderRow(it, true);
+      }
 
       walletTotalsEl.textContent = `Total: ${fmtUsd(totalUsd)} (${totalSol.toFixed(6)} SOL)`;
+      walletTotalsEl.innerHTML += ` <button data-auto-sec-export style="font-size:12px; padding:2px 6px;">Export</button>`;
     } catch (e) {
       walletListEl.innerHTML = `<div style="color:#f66;">${e.message || e}</div>`;
     }
