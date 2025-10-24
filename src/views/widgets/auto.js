@@ -1,5 +1,5 @@
 // import { FDV_FEE_RECEIVER } from "../../config/env.js";
-import { computePumpingLeaders } from "../meme/addons/pumping.js";
+import { computePumpingLeaders, getRugSignalForMint } from "../meme/addons/pumping.js";
 
 // Dust orders and minimums are blocked due to Jupiter route failures and 400 errors.
 
@@ -14,6 +14,8 @@ const SELL_TX_FEE_BUFFER_LAMPORTS = 500_000;
 const EXTRA_TX_BUFFER_LAMPORTS     = 250_000;  
 const MIN_OPERATING_SOL            = 0.010;    
 const ROUTER_COOLDOWN_MS           = 60_000;
+const MINT_RUG_BLACKLIST_MS = 30 * 60 * 1000;
+const SPLIT_FRACTIONS = [0.99, 0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.50, 0.33, 0.25, 0.20];
 
 
 const FEE_ATAS = {
@@ -60,6 +62,37 @@ function log(msg) {
 function logObj(label, obj) {
   try { log(`${label}: ${JSON.stringify(obj)}`); } catch {}
 }
+
+async function logMoneyMade() {
+  try {
+    const totalSol = Number(state.moneyMadeSol || 0);
+    const px = await getSolUsd();
+    const usdStr = px > 0 ? ` (${fmtUsd(totalSol * px)})` : "";
+    log(`Money made: ${totalSol.toFixed(6)} SOL${usdStr}`);
+  } catch {
+    const totalSol = Number(state.moneyMadeSol || 0);
+    log(`Money made: ${totalSol.toFixed(6)} SOL`);
+  }
+}
+
+async function addRealizedPnl(solProceeds, costSold, label = "PnL") {
+  const pnl = Number(solProceeds || 0) - Number(costSold || 0);
+  state.moneyMadeSol = Number(state.moneyMadeSol || 0) + pnl;
+  save();
+  try {
+    const px = await getSolUsd();
+    const totalSol = Number(state.moneyMadeSol || 0);
+    const totalUsd = px > 0 ? ` (${fmtUsd(totalSol * px)})` : "";
+    const sign = pnl >= 0 ? "+" : "";
+    log(`${label}: ${sign}${pnl.toFixed(6)} SOL | Money made: ${totalSol.toFixed(6)} SOL${totalUsd}`);
+  } catch {
+    const totalSol = Number(state.moneyMadeSol || 0);
+    const sign = (Number(solProceeds || 0) - Number(costSold || 0)) >= 0 ? "+" : "";
+    log(`${label}: ${sign}${(Number(solProceeds||0)-Number(costSold||0)).toFixed(6)} SOL | Money made: ${totalSol.toFixed(6)} SOL`);
+  }
+}
+
+
 function redactHeaders(hdrs) {
   const keys = Object.keys(hdrs || {});
   return keys.length ? `{headers: ${keys.join(", ")}}` : "{}";
@@ -126,6 +159,9 @@ let state = {
   collapsed: true,
   // hold until new leader detected
   holdUntilLeaderSwitch: false,
+
+  // money made tracker
+  moneyMadeSol: 0,
 };
 // init global user interface
 let timer = null;
@@ -902,11 +938,12 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       const minOutLamports = Math.floor(Math.max(MIN_SELL_SOL_OUT, Number(state.dustMinSolOut || 0)) * 1e9);
       if (!Number.isFinite(outRaw) || outRaw <= 0 || outRaw < minOutLamports) {
         log(`Sell below minimum; skipping (${(outRaw/1e9).toFixed(6)} SOL < ${(minOutLamports/1e9).toFixed(6)})`);
+        log('Consider exporting your wallet and selling DUST manually.');
         throw new Error("BELOW_MIN_NOTIONAL");
       }
     }
 
-    const isRouteErr = (codeOrMsg) => /ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|0x1788/i.test(String(codeOrMsg||""));
+      const isRouteErr = (codeOrMsg) => /ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|0x1788/i.test(String(codeOrMsg||""));
     let sawRouteDust = false;
 
     const first = await buildAndSend(false);
@@ -917,45 +954,19 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     if (second.ok) { await seedCacheIfBuy(); return second.sig; }
     if (isRouteErr(second?.code || second?.msg)) sawRouteDust = true;
 
-    const strictSeq = [
-      () => manualBuildAndSend(false),
-      () => manualBuildAndSend(true),
-    ];
-    for (const t of strictSeq) {
-      try {
-        const r = await t();
-        if (r?.ok) { await seedCacheIfBuy(); return r.sig; }
-        if (isRouteErr(r?.code || r?.msg)) sawRouteDust = true;
-      } catch {}
-    }
-
-    try {
-      const slipUp = isSell
-        ? Math.min(2000, Math.max(800, Math.floor(baseSlip * 5))) // stronger bump for sell fallbacks
-        : Math.min(2000, Math.max(baseSlip, Math.floor(baseSlip * 3)));
-      const alt = buildQuoteUrl({ outMint: outputMint, slipBps: slipUp, restrict: restrictIntermediates, asLegacy: false });
-      const qAlt = await jupFetch(alt.pathname + alt.search);
-      if (qAlt.ok) {
-        quote = await qAlt.json();
-        log(`Re-quoted with slip=${slipUp} bps${isSell ? " (sell fallback)" : ""}.`);
-          const seq2 = [
-            () => buildAndSend(false, false),
-            () => buildAndSend(true,  false),
-            () => buildAndSend(false, true),
-            () => buildAndSend(true,  true),
-            () => manualBuildAndSend(false),
-            () => manualBuildAndSend(true),
-          ];
-          for (const t of seq2) {
-            try {
-              const r = await t();
-              if (r?.ok) { await seedCacheIfBuy(); return r.sig; }
-              if (isRouteErr(r?.code || r?.msg)) sawRouteDust = true;
-            } catch {}
-          }
+    {
+      const manualSeq = [
+        () => manualBuildAndSend(false),
+        () => manualBuildAndSend(true),
+      ];
+      for (const t of manualSeq) {
+        try {
+          const r = await t();
+          if (r?.ok) { await seedCacheIfBuy(); return r.sig; }
+          if (isRouteErr(r?.code || r?.msg)) sawRouteDust = true;
+        } catch {}
       }
-
-    } catch {}
+    }
 
     if (isSell) {
       try {
@@ -967,16 +978,27 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         const r3 = await jupFetch(q3.pathname + q3.search);
         if (r3.ok) {
           quote = await r3.json();
-          for (const t of [() => buildAndSend(false), () => buildAndSend(true), () => manualBuildAndSend(false), () => manualBuildAndSend(true)]) {
-            try { const r = await t(); if (r?.ok) return r.sig; } catch {}
+          const sendFns = [
+            () => buildAndSend(false),
+            () => buildAndSend(true),
+            () => manualBuildAndSend(false),
+            () => manualBuildAndSend(true),
+          ];
+          for (const send of sendFns) {
+            try {
+              const r = await send();
+              if (r?.ok) return r.sig;
+              if (isRouteErr(r?.code || r?.msg)) sawRouteDust = true;
+            } catch {}
           }
         }
       } catch {}
+    }
 
+    if (isSell) {
       try {
-        const fractions = [0.7, 0.5, 0.33, 0.25, 0.2];
         const slipSplit = 2000;
-        for (const f of fractions) {
+        for (const f of SPLIT_FRACTIONS) {
           const partRaw = Math.max(1, Math.floor(amountRaw * f));
           if (partRaw <= 0) continue;
           const restrictOptions = restrictAllowed ? ["false", "true"] : ["true"];
@@ -1005,6 +1027,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         }
       } catch {}
     }
+
     if (isSell && sawRouteDust) setRouterHold(inputMint, ROUTER_COOLDOWN_MS);
     throw new Error(sawRouteDust ? "ROUTER_DUST" : "swap failed");
   }
@@ -1310,9 +1333,8 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       } catch {}
 
     try {
-      const fractions = [0.7, 0.5, 0.33, 0.25, 0.2];
       const slipSplit = 2000;
-      for (const f of fractions) {
+      for (const f of SPLIT_FRACTIONS) {
         const partRaw = Math.max(1, Math.floor(amountRaw * f));
         if (partRaw <= 0) continue;
 
@@ -1372,6 +1394,9 @@ async function sweepAllToSolAndReturn() {
           slippageBps: state.slippageBps,
         });
         log(`Sold ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> SOL`);
+        const costSold = Number(state.positions[mint]?.costSol || 0);
+        await addRealizedPnl(estSol, costSold, "Unwind PnL");
+        if (state.positions[mint]) { delete state.positions[mint]; save(); }
       } catch (e) {
         log(`Sell fail ${mint.slice(0,4)}…: ${e.message||e}`);
       }
@@ -1430,20 +1455,85 @@ function scorePumpCandidate(it) {
   return score;
 }
 
+function setMintBlacklist(mint, ms = MINT_RUG_BLACKLIST_MS) {
+  if (!mint) return;
+  if (!window._fdvMintBlacklist) window._fdvMintBlacklist = new Map();
+  const until = now() + Math.max(60_000, ms|0);
+  window._fdvMintBlacklist.set(mint, until);
+  try { log(`Blacklist set for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`); } catch {}
+}
+function isMintBlacklisted(mint) {
+  if (!mint || !window._fdvMintBlacklist) return false;
+  const until = window._fdvMintBlacklist.get(mint);
+  if (!until) return false;
+  if (now() > until) { window._fdvMintBlacklist.delete(mint); return false; }
+  return true;
+}
+
+function normBadge(b) {
+  const s = String(b || "").toLowerCase();
+  if (s.includes("pumping")) return "pumping"; //// "🔥 Pumping" | "Warming" | "Calm"
+  if (s.includes("warming")) return "warming";
+  return "calm";
+}
+function markPumpDropBan(mint, ms = PUMP_TO_CALM_BAN_MS) {
+  if (!mint) return;
+  if (!window._fdvPumpDropBan) window._fdvPumpDropBan = new Map();
+  const until = now() + Math.max(60_000, ms|0);
+  window._fdvPumpDropBan.set(mint, until);
+  try { log(`Pump->Calm ban set for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`); } catch {}
+}
+function isPumpDropBanned(mint) {
+  if (!mint || !window._fdvPumpDropBan) return false;
+  const until = window._fdvPumpDropBan.get(mint);
+  if (!until) return false;
+  if (now() > until) { window._fdvPumpDropBan.delete(mint); return false; }
+  return true;
+}
+function recordBadgeTransition(mint, badge) {
+  if (!mint) return;
+  if (!window._fdvMintBadgeAt) window._fdvMintBadgeAt = new Map();
+  const nowTs = now();
+  const prev = window._fdvMintBadgeAt.get(mint) || { badge: "calm", ts: nowTs };
+  const prevNorm = normBadge(prev.badge);
+  const curNorm  = normBadge(badge);
+  window._fdvMintBadgeAt.set(mint, { badge, ts: nowTs });
+  // Detect Pumping -> Calm transition and set a buy-ban window
+  if (prevNorm === "pumping" && curNorm === "calm") {
+    markPumpDropBan(mint, PUMP_TO_CALM_BAN_MS);
+  }
+}  
+
 function pickPumpCandidates(take = 1, poolN = 3) {
   try {
-    const pool = (computePumpingLeaders(poolN) || []).map(it => ({
-      mint: it?.mint,
-      score: scorePumpCandidate(it),
-      liqUsd: safeNum(it?.liqUsd ?? it?.kp?.liqUsd, 0),
-      v1h: safeNum(it?.v1hTotal ?? it?.kp?.v1hTotal, 0),
-      chg5m: safeNum(it?.change5m ?? it?.kp?.change5m, 0),
-      chg1h: safeNum(it?.change1h ?? it?.kp?.change1h, 0),
-    })).filter(x => x.mint);
+    const leaders = computePumpingLeaders(poolN) || [];
+    const pool = [];
+    for (const it of leaders) {
+      const mint = it?.mint;
+      if (!mint) continue;
+      const sig = getRugSignalForMint(mint);
+      recordBadgeTransition(mint, sig.badge);
+      const b = normBadge(sig.badge);
+      if (b !== "pumping") continue;
+      // Exclude recent Pump->Calm drops and explicit mint blacklist
+      if (isPumpDropBanned(mint) || isMintBlacklisted(mint)) continue;
+
+      const kp = it?.kp || {};
+      pool.push({
+        mint,
+        badge: sig.badge,
+        pumpScore: Number(it?.pumpScore || 0),
+        liqUsd: safeNum(kp.liqUsd, 0),
+        v1h: safeNum(kp.v1hTotal, 0),
+        chg5m: safeNum(kp.change5m, 0),
+        chg1h: safeNum(kp.change1h, 0),
+        score: scorePumpCandidate({ kp, pumpScore: it?.pumpScore }), // reuse local scorer
+      });
+    }
+
     if (!pool.length) return [];
     pool.sort((a,b) => b.score - a.score);
     const top = pool[0]?.score ?? -Infinity;
-
     const strong = pool.filter(x => x.score >= top * 0.85 && x.chg5m > 0);
 
     const chosen = (strong.length ? strong : pool).slice(0, Math.max(1, take)).map(x => x.mint);
@@ -1699,6 +1789,8 @@ async function sweepNonSolToSolAtStart() {
       if (!res.ok) throw new Error("route execution failed");
 
       log(`Startup sweep sold ${sizeUi.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
+      const costSold = Number(state.positions[mint]?.costSol || 0);
+      await addRealizedPnl(estSol, costSold, "Startup sweep PnL");
       if (state.positions[mint]) { delete state.positions[mint]; save(); }
       removeFromPosCache(owner, mint);
       sold++;
@@ -1711,9 +1803,6 @@ async function sweepNonSolToSolAtStart() {
   log(`Startup sweep complete. Sold ${sold} token${sold===1?"":"s"}. ${unsellable} dust/unsellable skipped.`);
   if (sold > 0) { state.lastTradeTs = now(); save(); }
 }
-
-
-// TODO: refine sell logic with more parameters and further include KPI addons.
 
 function shouldSell(pos, curSol, nowTs) {
   const sz = Number(pos.sizeUi || 0);
@@ -1808,6 +1897,26 @@ async function evalAndMaybeSellPositions() {
           continue;
         }
 
+        let forceRug = false;
+        let rugSev = 0;
+        let forcePumpDrop = false;
+        try {
+          const sig = getRugSignalForMint(mint);
+          recordBadgeTransition(mint, sig.badge);
+          if (sig?.rugged) {
+            forceRug = true;
+            rugSev = Number(sig.sev || 0);
+            setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+            log(`Rug detected for ${mint.slice(0,4)}… sev=${rugSev.toFixed(2)}. Forcing sell and blacklisting 30m.`);
+          } else {
+            const curNorm = normBadge(sig.badge);
+            if (curNorm === "calm" && isPumpDropBanned(mint)) {
+              forcePumpDrop = true;
+              log(`Pump->Calm drop for ${mint.slice(0,4)}… forcing sell and banning re-buys for 30m.`);
+            }
+          }
+        } catch {}
+
         let curSol = Number(pos.lastQuotedSol || 0);
         const lastQ = Number(pos.lastQuotedAt || 0);
         if (!lastQ || (nowTs - lastQ) > (state.minQuoteIntervalMs|0)) {
@@ -1818,11 +1927,11 @@ async function evalAndMaybeSellPositions() {
         }
 
         const baseMinNotional = Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN * 1.05);
-        const minNotional = baseMinNotional; // keep router-safe default
+        const minNotional = baseMinNotional;
         let d = null;
 
-        if (curSol < minNotional && !forceExpire) {
-          // selling dust works... but only if enabled
+        // If rugged or pump-drop, bypass min-notional checks
+        if (curSol < minNotional && !forceExpire && !forceRug && !forcePumpDrop) {
           d = shouldSell(pos, curSol, nowTs);
           const dustMin = Math.max(MIN_SELL_SOL_OUT, Number(state.dustMinSolOut || 0));
           if (!(state.dustExitEnabled && d.action === "sell_all" && curSol >= dustMin)) {
@@ -1831,13 +1940,20 @@ async function evalAndMaybeSellPositions() {
           } else {
             log(`Dust exit enabled for ${mint.slice(0,4)}… (est ${curSol.toFixed(6)} SOL >= ${dustMin})`);
           }
+        } else if (curSol < minNotional && !forceExpire && (forceRug || forcePumpDrop)) {
+          log(`${forceRug ? "Rug" : "Pump->Calm"} exit for ${mint.slice(0,4)}… ignoring min-notional (${curSol.toFixed(6)} SOL < ${minNotional}).`);
         }
 
         let decision = d || shouldSell(pos, curSol, nowTs);
-        if (forceExpire && (!decision || decision.action === "none")) {
+        if (forceRug) {
+          decision = { action: "sell_all", reason: `rug sev=${rugSev.toFixed(2)}` };
+        } else if (forcePumpDrop) {
+          decision = { action: "sell_all", reason: "pump->calm" };
+        } else if (forceExpire && (!decision || decision.action === "none")) {
           decision = { action: "sell_all", reason: `max-hold>${maxHold}s` };
           log(`Max-hold reached for ${mint.slice(0,4)}… forcing sell.`);
         }
+
         if (!decision) {
           const staleMins = Math.max(0, Number(state.staleMinsToDeRisk || 0));
           const isStale = staleMins > 0 && pos.acquiredAt && (nowTs - pos.acquiredAt) > staleMins * 60_000;
@@ -1849,7 +1965,6 @@ async function evalAndMaybeSellPositions() {
         }
         log(`Sell decision: ${decision.action !== "none" ? decision.action : "NO"} (${decision.reason || "criteria not met"})`);
         if (decision.action === "none") continue;
-
 
         // Jupiter 0x1788 = cooldown
         if (!forceExpire && window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
@@ -1901,9 +2016,12 @@ async function evalAndMaybeSellPositions() {
                 updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
                 save();
                 log(`Post-sell balance remains ${remainUi2.toFixed(6)} ${mint.slice(0,4)}… (keeping position)`);
+                log('Consider exporting your wallet and selling manually.');
               } else {
                 const reason = (decision && decision.reason) ? decision.reason : "done";
                 log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ${curSol.toFixed(6)} SOL (${reason})`);
+                const costSold = Number(pos.costSol || 0);
+                await addRealizedPnl(curSol, costSold, "Full sell PnL");
                 delete state.positions[mint];
                 removeFromPosCache(kp.publicKey.toBase58(), mint);
                 save();
@@ -1946,6 +2064,8 @@ async function evalAndMaybeSellPositions() {
           } catch {}
           updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
           save();
+
+          await addRealizedPnl(estSol, costSold, "Partial sell PnL");
           } else {
             let sellUi = pos.sizeUi;
             try {
@@ -1977,6 +2097,8 @@ async function evalAndMaybeSellPositions() {
             } else {
               const reason = (decision && decision.reason) ? decision.reason : "done";
               log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ${curSol.toFixed(6)} SOL (${reason})`);
+              const costSold = Number(pos.costSol || 0);
+              await addRealizedPnl(curSol, costSold, "Full sell PnL");
               delete state.positions[mint];
               removeFromPosCache(kp.publicKey.toBase58(), mint);
               save();
@@ -2057,6 +2179,8 @@ async function switchToLeader(newMint) {
           slippageBps: state.slippageBps,
         });
         log(`Rotated out: ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
+        const costSold = Number(state.positions[mint]?.costSol || 0);
+        await addRealizedPnl(estSol, costSold, "Rotation PnL");
         delete state.positions[mint];
         save();
         rotated++;
@@ -2270,6 +2394,7 @@ async function tick() {
         updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
         save();
         log(`Bought ~${buySol.toFixed(4)} SOL -> ${mint.slice(0,4)}…`);
+        await logMoneyMade();
       } else {
         log(`Buy confirmed for ${mint.slice(0,4)}… but no token credit yet; will sync later.`);
         const pos = {
@@ -2291,6 +2416,7 @@ async function tick() {
           basePos: pos,
         });
         try { await processPendingCredits(); } catch {}
+        await logMoneyMade();
       }
 
       spent += buySol;
@@ -2435,7 +2561,7 @@ export function initAutoWidget(container = document.body) {
       <svg class="fdv-acc-caret" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
         <path d="M8 10l4 4 4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>
-      <span class="fdv-title">Auto Pump (v0.0.2.1)</span>
+      <span class="fdv-title">Auto Pump (v0.0.2.2)</span>
     </span>
   `;
 
