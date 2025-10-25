@@ -16,7 +16,7 @@ const MIN_OPERATING_SOL            = 0.010;
 const ROUTER_COOLDOWN_MS           = 60_000;
 // const ROUTER_DUST_FAIL_WINDOW_MS = 2 * 60 * 1000; 
 // const ROUTER_DUST_FAIL_THRESHOLD = 3;    
-if (!window._fdvRouteDustFails) window._fdvRouteDustFails = new Map();
+// if (!window._fdvRouteDustFails) window._fdvRouteDustFails = new Map();
 const MINT_RUG_BLACKLIST_MS = 30 * 60 * 1000;
 const SPLIT_FRACTIONS = [0.99, 0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.50, 0.33, 0.25, 0.20];
 
@@ -396,9 +396,9 @@ function minSellNotionalSol() {
 //   return rec.count >= ROUTER_DUST_FAIL_THRESHOLD;
 // }
 
-function clearRouteDustFails(mint) {
-  try { window._fdvRouteDustFails.delete(mint); } catch {}
-}
+// function clearRouteDustFails(mint) {
+//   try { window._fdvRouteDustFails.delete(mint); } catch {}
+// }
 
 async function safeGetDecimalsFast(mintStr) {
   try { return await getMintDecimals(mintStr); } catch { return 6; }
@@ -1782,6 +1782,36 @@ function pickPumpCandidates(take = 1, poolN = 3) {
   }
 }
 
+function _getObserverWatch() {
+  if (!window._fdvObserverWatch) window._fdvObserverWatch = new Map();
+  return window._fdvObserverWatch;
+}
+
+function noteObserverConsider(mint, ms = 30_000) {
+  if (!mint) return;
+  const m = _getObserverWatch();
+  const nowTs = now();
+  const rec = m.get(mint) || { firstAt: nowTs, lastPasses: 3, until: nowTs + ms };
+  rec.lastAt = nowTs;
+  rec.lastPasses = 3;
+  rec.until = Math.max(rec.until || 0, nowTs + ms);
+  m.set(mint, rec);
+  try { log(`Observer: consider ${mint.slice(0,4)}… (3/5). Watching for uptick…`); } catch {}
+}
+
+function isObserverConsiderActive(mint) {
+  const m = _getObserverWatch();
+  const rec = m.get(mint);
+  if (!rec) return false;
+  if (now() > rec.until) { m.delete(mint); return false; }
+  return true;
+}
+
+function clearObserverConsider(mint) {
+  try { _getObserverWatch().delete(mint); } catch {}
+}
+
+
 async function pickTopPumper() {
   const picks = pickPumpCandidates(1, 3);
   const mint = picks[0] || "";
@@ -1830,10 +1860,9 @@ async function pickTopPumper() {
     return "";
   }
 
-  // Simple performance gates
   const passChg  = sN.chg5m > 0;
   const passVol  = sN.v1h >= s0.v1h;
-  const passLiq  = sN.liqUsd >= s0.liqUsd * 0.98; // allow tiny wiggle
+  const passLiq  = sN.liqUsd >= s0.liqUsd * 0.98;
   const passScore= sN.pumpScore >= s0.pumpScore * 0.98;
 
   let passes = 0;
@@ -1841,21 +1870,22 @@ async function pickTopPumper() {
   if (passVol) passes++;
   if (passLiq) passes++;
   if (passScore) passes++;
-
-  // Bonus if momentum improved
   if (sN.pumpScore > s0.pumpScore && sN.chg5m > s0.chg5m) passes++;
 
-  // Decide
   if (passes < 3) {
     setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
     log(`Observer: reject ${mint.slice(0,4)}… (score ${passes}/5); blacklisted 30m.`);
     return "";
   }
 
+  if (passes === 3) {
+    noteObserverConsider(mint, 30_000);
+    return "";
+  }
+
   const hold =
     passes >= 5 ? 120 :
-    passes === 4 ? 95 :
-    passes === 3 ? 70 : 50;
+    passes === 4 ? 95 : 70;
   const holdClamped = Math.min(120, Math.max(30, hold));
   if (state.maxHoldSecs !== holdClamped) {
     state.maxHoldSecs = holdClamped;
@@ -1865,18 +1895,19 @@ async function pickTopPumper() {
     log(`Observer: approve ${mint.slice(0,4)}… (score ${passes}/5)`);
   }
 
+  clearObserverConsider(mint);
   return mint;
 }
 
 async function observeMintOnce(mint, { windowMs = 3000, sampleMs = 800, minPasses = 3, adjustHold = false } = {}) {
-  if (!mint) return { ok: false };
+  if (!mint) return { ok: false, passes: 0 };
 
   const findLeader = () => {
     try { return (computePumpingLeaders(3) || []).find(x => x?.mint === mint) || null; } catch { return null; }
   };
 
   const it0 = findLeader();
-  if (!it0) { setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS); log(`Observer: ${mint.slice(0,4)}… not in leaders; blacklisted 30m.`); return { ok: false }; }
+  if (!it0) { setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS); log(`Observer: ${mint.slice(0,4)}… not in leaders; blacklisted 30m.`); return { ok: false, passes: 0 }; }
   const kp0 = it0.kp || {};
   const s0 = {
     pumpScore: safeNum(it0.pumpScore, 0),
@@ -1891,7 +1922,7 @@ async function observeMintOnce(mint, { windowMs = 3000, sampleMs = 800, minPasse
   while (now() - start < windowMs) {
     await new Promise(r => setTimeout(r, sampleMs));
     const itN = findLeader();
-    if (!itN) { setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS); log(`Observer: ${mint.slice(0,4)}… dropped; blacklisted 30m.`); return { ok: false }; }
+    if (!itN) { setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS); log(`Observer: ${mint.slice(0,4)}… dropped; blacklisted 30m.`); return { ok: false, passes: 0 }; }
     const kpN = itN.kp || {};
     sN = {
       pumpScore: safeNum(itN.pumpScore, 0),
@@ -1914,19 +1945,24 @@ async function observeMintOnce(mint, { windowMs = 3000, sampleMs = 800, minPasse
   if (passScore) passes++;
   if (sN.pumpScore > s0.pumpScore && sN.chg5m > s0.chg5m) passes++;
 
-  if (passes < minPasses) {
+  if (passes < 3) {
     setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
     log(`Observer: reject ${mint.slice(0,4)}… (score ${passes}/5); blacklisted 30m.`);
-    return { ok: false };
+    return { ok: false, passes };
   }
 
   const holdSecs = passes >= 5 ? 120 : passes === 4 ? 95 : 70;
-  if (adjustHold) {
-    const clamped = Math.min(120, Math.max(30, holdSecs));
-    if (state.maxHoldSecs !== clamped) { state.maxHoldSecs = clamped; save(); }
+  if (passes >= minPasses) {
+    if (adjustHold) {
+      const clamped = Math.min(120, Math.max(30, holdSecs));
+      if (state.maxHoldSecs !== clamped) { state.maxHoldSecs = clamped; save(); }
+    }
+    log(`Observer: approve ${mint.slice(0,4)}… (score ${passes}/5)`);
+    return { ok: true, passes, holdSecs };
   }
-  log(`Observer: approve ${mint.slice(0,4)}… (score ${passes}/5)`);
-  return { ok: true, passes, holdSecs };
+
+  log(`Observer: consider ${mint.slice(0,4)}… (score ${passes}/5)`);
+  return { ok: false, passes, holdSecs };
 }
 
 async function ataExists(ownerPubkeyStr, mintStr) {
@@ -2402,11 +2438,16 @@ async function evalAndMaybeSellPositions() {
 
         if (!forceRug && !forcePumpDrop) {
           try {
-            const obs = await observeMintOnce(mint, { windowMs: 2000, sampleMs: 600, minPasses: 3, adjustHold: false });
+            const obs = await observeMintOnce(mint, { windowMs: 2000, sampleMs: 600, minPasses: 4, adjustHold: false });
             if (!obs.ok) {
-              forceObserverDrop = true;
-              setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
-              log(`Observer drop for ${mint.slice(0,4)}… forcing sell and blacklisting 30m.`);
+              const p = Number(obs.passes || 0);
+              if (p <= 2) {
+                forceObserverDrop = true;
+                setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+                log(`Observer drop for ${mint.slice(0,4)}… (${p}/5) forcing sell and blacklisting 30m.`);
+              } else if (p === 3) {
+                log(`Observer ${mint.slice(0,4)}… at 3/5; watching — no forced sell.`);
+              }
             }
           } catch {}
         }
@@ -2503,17 +2544,16 @@ async function evalAndMaybeSellPositions() {
 
               const prevSize2 = Number(pos.sizeUi || sellUi2);
               const debit = await waitForTokenDebit(kp.publicKey.toBase58(), mint, prevSize2, { timeoutMs: 25000, pollMs: 400 });
-              // const remainUi2 = Number(debit.remainUi || 0);
+              const remainUi2 = Number(debit.remainUi || 0); 
 
-              if (remainUi > 1e-9) {
-                let chkUi = remainUi, chkDec = pos.decimals;
+              if (remainUi2 > 1e-9) {
+                let chkUi = remainUi2, chkDec = pos.decimals;
                 try {
                   const chk = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
                   chkUi = Number(chk.sizeUi || 0);
                   if (Number.isFinite(chk.decimals)) chkDec = chk.decimals;
                 } catch {}
                 if (chkUi <= 1e-9) {
-                  // fully gone
                   delete state.positions[mint];
                   removeFromPosCache(kp.publicKey.toBase58(), mint);
                 } else {
@@ -2624,7 +2664,7 @@ async function evalAndMaybeSellPositions() {
             continue;
           }
 
-          clearRouteDustFails(mint);
+          // clearRouteDustFails(mint);
 
           const prevSize = Number(pos.sizeUi || sellUi);
           const debit = await waitForTokenDebit(kp.publicKey.toBase58(), mint, prevSize, { timeoutMs: 25000, pollMs: 400 });
@@ -2857,7 +2897,7 @@ async function tick() {
     const p = await pickTopPumper();
     if (p) picks = [p];
   } else if (state.allowMultiBuy) {
-    const primary = await pickTopPumper(); // always run observer for the first choice
+    const primary = await pickTopPumper(); // requires >=4/5 internally
     const rest = pickPumpCandidates(Math.max(1, state.multiBuyTopN|0), 3)
       .filter(m => m && m !== primary);
     picks = [primary, ...rest].filter(Boolean);
@@ -2941,8 +2981,9 @@ async function tick() {
     for (let i = 0; i < loopN; i++) {
       const mint = buyCandidates[i];
       if (state.allowMultiBuy && mint !== picks[0]) {
-        const obs = await observeMintOnce(mint, { windowMs: 2500, sampleMs: 700, minPasses: 3, adjustHold: false });
+        const obs = await observeMintOnce(mint, { windowMs: 2500, sampleMs: 700, minPasses: 4, adjustHold: false });
         if (!obs.ok) {
+          if (Number(obs.passes || 0) === 3) noteObserverConsider(mint, 30_000);
           continue;
         }
       }
@@ -2986,11 +3027,11 @@ async function tick() {
       remaining = remainingLamports / 1e9;
 
       const prevPos  = state.positions[mint];
-      const prevSize = Number(prevPos?.sizeUi || 0);
+      // const prevSize = Number(prevPos?.sizeUi || 0);
       const basePos  = prevPos || { costSol: 0, hwmSol: 0, acquiredAt: now() };
 
       // Verify on-chain credit before accounting
-      let credited = false;
+      // let credited = false;
       let got = { sizeUi: 0, decimals: Number.isFinite(basePos.decimals) ? basePos.decimals : 6 };
       try {
         got = await waitForTokenCredit(kp.publicKey.toBase58(), mint, { timeoutMs: 8000, pollMs: 300 });
@@ -3019,6 +3060,7 @@ async function tick() {
         updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
         save();
         log(`Bought ~${buySol.toFixed(4)} SOL -> ${mint.slice(0,4)}…`);
+        clearObserverConsider(mint);
         await logMoneyMade();
       } else {
         log(`Buy confirmed for ${mint.slice(0,4)}… but no token credit yet; will sync later.`);
@@ -3190,7 +3232,7 @@ export function initAutoWidget(container = document.body) {
       <svg class="fdv-acc-caret" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
         <path d="M8 10l4 4 4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>
-      <span class="fdv-title">Auto Pump (v0.0.2.3)</span>
+      <span class="fdv-title">Auto Pump (v0.0.2.4)</span>
     </span>
   `;
 
