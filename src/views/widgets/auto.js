@@ -150,7 +150,7 @@ let state = {
   ownerScanDisabledReason: "",
 
   // Multi buys
-  allowMultiBuy: true,  
+  allowMultiBuy: false,  
   multiBuyTopN: 1,  
   multiBuyBatchMs: 6000,
   dustExitEnabled: false,
@@ -1782,9 +1782,151 @@ function pickPumpCandidates(take = 1, poolN = 3) {
   }
 }
 
-function pickTopPumper() {
+async function pickTopPumper() {
   const picks = pickPumpCandidates(1, 3);
-  return picks[0] || "";
+  const mint = picks[0] || "";
+  if (!mint) return "";
+
+  if (isMintBlacklisted(mint) || isPumpDropBanned(mint)) return "";
+
+  async function snapshot(m) {
+    try {
+      const leaders = computePumpingLeaders(3) || [];
+      const it = leaders.find(x => x?.mint === m);
+      if (!it) return null;
+      const kp = it.kp || {};
+      return {
+        pumpScore: safeNum(it.pumpScore, 0),
+        liqUsd: safeNum(kp.liqUsd, 0),
+        v1h: safeNum(kp.v1hTotal, 0),
+        chg5m: safeNum(kp.change5m, 0),
+        chg1h: safeNum(kp.change1h, 0),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  const s0 = await snapshot(mint);
+  if (!s0) {
+    setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+    log(`Observer: ${mint.slice(0,4)}… vanished from leaders; blacklisted 30m.`);
+    return "";
+  }
+
+  // Observe for ~5s
+  const start = now();
+  let sN = s0;
+  while (now() - start < 5000) {
+    await new Promise(r => setTimeout(r, 1000));
+    const s1 = await snapshot(mint);
+    if (!s1) { sN = null; break; }
+    sN = s1;
+  }
+
+  if (!sN) {
+    setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+    log(`Observer: ${mint.slice(0,4)}… dropped during watch; blacklisted 30m.`);
+    return "";
+  }
+
+  // Simple performance gates
+  const passChg  = sN.chg5m > 0;
+  const passVol  = sN.v1h >= s0.v1h;
+  const passLiq  = sN.liqUsd >= s0.liqUsd * 0.98; // allow tiny wiggle
+  const passScore= sN.pumpScore >= s0.pumpScore * 0.98;
+
+  let passes = 0;
+  if (passChg) passes++;
+  if (passVol) passes++;
+  if (passLiq) passes++;
+  if (passScore) passes++;
+
+  // Bonus if momentum improved
+  if (sN.pumpScore > s0.pumpScore && sN.chg5m > s0.chg5m) passes++;
+
+  // Decide
+  if (passes < 3) {
+    setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+    log(`Observer: reject ${mint.slice(0,4)}… (score ${passes}/5); blacklisted 30m.`);
+    return "";
+  }
+
+  const hold =
+    passes >= 5 ? 120 :
+    passes === 4 ? 95 :
+    passes === 3 ? 70 : 50;
+  const holdClamped = Math.min(120, Math.max(30, hold));
+  if (state.maxHoldSecs !== holdClamped) {
+    state.maxHoldSecs = holdClamped;
+    save();
+    log(`Observer: approve ${mint.slice(0,4)}… (score ${passes}/5); hold=${holdClamped}s`);
+  } else {
+    log(`Observer: approve ${mint.slice(0,4)}… (score ${passes}/5)`);
+  }
+
+  return mint;
+}
+
+async function observeMintOnce(mint, { windowMs = 3000, sampleMs = 800, minPasses = 3, adjustHold = false } = {}) {
+  if (!mint) return { ok: false };
+
+  const findLeader = () => {
+    try { return (computePumpingLeaders(3) || []).find(x => x?.mint === mint) || null; } catch { return null; }
+  };
+
+  const it0 = findLeader();
+  if (!it0) { setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS); log(`Observer: ${mint.slice(0,4)}… not in leaders; blacklisted 30m.`); return { ok: false }; }
+  const kp0 = it0.kp || {};
+  const s0 = {
+    pumpScore: safeNum(it0.pumpScore, 0),
+    liqUsd:    safeNum(kp0.liqUsd, 0),
+    v1h:       safeNum(kp0.v1hTotal, 0),
+    chg5m:     safeNum(kp0.change5m, 0),
+    chg1h:     safeNum(kp0.change1h, 0),
+  };
+
+  const start = now();
+  let sN = s0;
+  while (now() - start < windowMs) {
+    await new Promise(r => setTimeout(r, sampleMs));
+    const itN = findLeader();
+    if (!itN) { setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS); log(`Observer: ${mint.slice(0,4)}… dropped; blacklisted 30m.`); return { ok: false }; }
+    const kpN = itN.kp || {};
+    sN = {
+      pumpScore: safeNum(itN.pumpScore, 0),
+      liqUsd:    safeNum(kpN.liqUsd, 0),
+      v1h:       safeNum(kpN.v1hTotal, 0),
+      chg5m:     safeNum(kpN.change5m, 0),
+      chg1h:     safeNum(kpN.change1h, 0),
+    };
+  }
+
+  const passChg   = sN.chg5m > 0;
+  const passVol   = sN.v1h >= s0.v1h;
+  const passLiq   = sN.liqUsd >= s0.liqUsd * 0.98;
+  const passScore = sN.pumpScore >= s0.pumpScore * 0.98;
+
+  let passes = 0;
+  if (passChg) passes++;
+  if (passVol) passes++;
+  if (passLiq) passes++;
+  if (passScore) passes++;
+  if (sN.pumpScore > s0.pumpScore && sN.chg5m > s0.chg5m) passes++;
+
+  if (passes < minPasses) {
+    setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+    log(`Observer: reject ${mint.slice(0,4)}… (score ${passes}/5); blacklisted 30m.`);
+    return { ok: false };
+  }
+
+  const holdSecs = passes >= 5 ? 120 : passes === 4 ? 95 : 70;
+  if (adjustHold) {
+    const clamped = Math.min(120, Math.max(30, holdSecs));
+    if (state.maxHoldSecs !== clamped) { state.maxHoldSecs = clamped; save(); }
+  }
+  log(`Observer: approve ${mint.slice(0,4)}… (score ${passes}/5)`);
+  return { ok: true, passes, holdSecs };
 }
 
 async function ataExists(ownerPubkeyStr, mintStr) {
@@ -2207,7 +2349,7 @@ function shouldSell(pos, curSol, nowTs) {
 async function evalAndMaybeSellPositions() {
   if (state.holdUntilLeaderSwitch) return;
   if (_inFlight) return;
-  if (_sellEvalRunning) return;
+  if (_sellEvalRunning) return; 
   _sellEvalRunning = true;
   try {
     const kp = await getAutoKeypair();
@@ -2240,6 +2382,7 @@ async function evalAndMaybeSellPositions() {
         let forceRug = false;
         let rugSev = 0;
         let forcePumpDrop = false;
+        let forceObserverDrop = false;
         try {
           const sig = getRugSignalForMint(mint);
           recordBadgeTransition(mint, sig.badge);
@@ -2257,6 +2400,17 @@ async function evalAndMaybeSellPositions() {
           }
         } catch {}
 
+        if (!forceRug && !forcePumpDrop) {
+          try {
+            const obs = await observeMintOnce(mint, { windowMs: 2000, sampleMs: 600, minPasses: 3, adjustHold: false });
+            if (!obs.ok) {
+              forceObserverDrop = true;
+              setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+              log(`Observer drop for ${mint.slice(0,4)}… forcing sell and blacklisting 30m.`);
+            }
+          } catch {}
+        }
+
         let curSol = Number(pos.lastQuotedSol || 0);
         const lastQ = Number(pos.lastQuotedAt || 0);
         if (!lastQ || (nowTs - lastQ) > (state.minQuoteIntervalMs|0)) {
@@ -2271,7 +2425,7 @@ async function evalAndMaybeSellPositions() {
         let d = null;
 
 
-        if (curSol < minNotional && !forceExpire && !forceRug && !forcePumpDrop) {
+        if (curSol < minNotional && !forceExpire && !forceRug && !forcePumpDrop && !forceObserverDrop) {
           d = shouldSell(pos, curSol, nowTs);
           const dustMin = Math.max(MIN_SELL_SOL_OUT, Number(state.dustMinSolOut || 0));
           if (!(state.dustExitEnabled && d.action === "sell_all" && curSol >= dustMin)) {
@@ -2280,8 +2434,9 @@ async function evalAndMaybeSellPositions() {
           } else {
             log(`Dust exit enabled for ${mint.slice(0,4)}… (est ${curSol.toFixed(6)} SOL >= ${dustMin})`);
           }
-        } else if (curSol < minNotional && !forceExpire && (forceRug || forcePumpDrop)) {
-          log(`${forceRug ? "Rug" : "Pump->Calm"} exit for ${mint.slice(0,4)}… ignoring min-notional (${curSol.toFixed(6)} SOL < ${minNotional}).`);
+        } else if (curSol < minNotional && !forceExpire && (forceRug || forcePumpDrop || forceObserverDrop)) {
+          const why = forceRug ? "Rug" : (forcePumpDrop ? "Pump->Calm" : "Observer");
+          log(`${why} exit for ${mint.slice(0,4)}… ignoring min-notional (${curSol.toFixed(6)} SOL < ${minNotional}).`);
         }
 
         let decision = d || shouldSell(pos, curSol, nowTs);
@@ -2289,6 +2444,8 @@ async function evalAndMaybeSellPositions() {
           decision = { action: "sell_all", reason: `rug sev=${rugSev.toFixed(2)}` };
         } else if (forcePumpDrop) {
           decision = { action: "sell_all", reason: "pump->calm" };
+        } else if (forceObserverDrop) {
+          decision = { action: "sell_all", reason: "observer detection system" };
         } else if (forceExpire && (!decision || decision.action === "none")) {
           decision = { action: "sell_all", reason: `max-hold>${maxHold}s` };
           log(`Max-hold reached for ${mint.slice(0,4)}… forcing sell.`);
@@ -2695,11 +2852,19 @@ async function tick() {
   }
 
   const leaderMode = !!state.holdUntilLeaderSwitch;
-  const picks = leaderMode
-    ? [pickTopPumper()].filter(Boolean)
-    : (state.allowMultiBuy
-        ? pickPumpCandidates(Math.max(1, state.multiBuyTopN|0), 3)
-        : [pickTopPumper()].filter(Boolean));
+  let picks = [];
+  if (leaderMode) {
+    const p = await pickTopPumper();
+    if (p) picks = [p];
+  } else if (state.allowMultiBuy) {
+    const primary = await pickTopPumper(); // always run observer for the first choice
+    const rest = pickPumpCandidates(Math.max(1, state.multiBuyTopN|0), 3)
+      .filter(m => m && m !== primary);
+    picks = [primary, ...rest].filter(Boolean);
+  } else {
+    const p = await pickTopPumper();
+    if (p) picks = [p];
+  }
   if (!picks.length) return;
 
   let ignoreCooldownForLeaderBuy = false;
@@ -2775,6 +2940,12 @@ async function tick() {
     } catch {}
     for (let i = 0; i < loopN; i++) {
       const mint = buyCandidates[i];
+      if (state.allowMultiBuy && mint !== picks[0]) {
+        const obs = await observeMintOnce(mint, { windowMs: 2500, sampleMs: 700, minPasses: 3, adjustHold: false });
+        if (!obs.ok) {
+          continue;
+        }
+      }
       const left = Math.max(1, loopN - i);
       const target = Math.max(minThreshold, remaining / left);
 
