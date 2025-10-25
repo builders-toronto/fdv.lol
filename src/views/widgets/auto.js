@@ -1123,7 +1123,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     }
 
     const isRouteErr = (codeOrMsg) => /ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|0x1788/i.test(String(codeOrMsg||""));
-    let sawRouteDust = false;
+    // let sawRouteDust = false;
 
     const first = await buildAndSend(false);
     if (first.ok) { await seedCacheIfBuy(); return first.sig; }
