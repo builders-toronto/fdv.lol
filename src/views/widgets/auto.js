@@ -503,7 +503,7 @@ async function loadSplToken() {
   }
 }
 
-+async function unwrapWsolIfAny(signerOrOwner) {
+async function unwrapWsolIfAny(signerOrOwner) {
    try {
      const { PublicKey, Transaction, TransactionInstruction } = await loadWeb3();
      const conn = await getConn();
@@ -3317,7 +3317,7 @@ export function initAutoWidget(container = document.body) {
       <svg class="fdv-acc-caret" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
         <path d="M8 10l4 4 4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>
-      <span class="fdv-title">Auto Pump (v0.0.2.4)</span>
+      <span class="fdv-title">Auto Pump (v0.0.2.5)</span>
     </span>
   `;
 
@@ -3387,80 +3387,118 @@ export function initAutoWidget(container = document.body) {
           <div class="fdv-modal-card"
                style="background:var(--fdv-bg,#111); color:var(--fdv-fg,#fff); width:92%; max-width:720px; max-height:80vh; overflow:auto; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.5); padding:16px 20px;">
             <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px;">
-              <h3 style="margin:0; font-size:16px;">Auto Pump Bot Guide</h3>
+              <h3 style="margin:0; font-size:16px;">Auto Pump Bot</h3>
+            </div>
+            <div class="fdv-tabs" data-auto-tabs style="display:flex; gap:8px; margin:6px 0 10px;">
+              <button data-auto-tab="guide" class="active" style="padding:4px 8px;border:1px solid var(--fdv-border,#333);border-radius:6px;background:#222;color:#fff;">Guide</button>
+              <button data-auto-tab="release" style="padding:4px 8px;border:1px solid var(--fdv-border,#333);border-radius:6px;background:#111;color:#aaa;">Release</button>
             </div>
             <div class="fdv-modal-body-tooltip" style="font-size:13px; line-height:1.5; gap:10px;">
+             <div data-auto-tab-panel="guide">
+               <div>
+                 <strong>What it does</strong>
+                 <ul style="margin:6px 0 0 18px;">
+                   <li>Tracks Pumping Radar leaders and buys the top token.</li>
+                   <li>With “Leader” on, buys once and holds until the leader changes.</li>
+                   <li>On leader change, rotates non-leader tokens back to SOL, then buys the new leader next tick.</li>
+                   <li>Seeds local cache immediately after each buy; background token sync reconciles on-chain credits.</li>
+                   <li>Wallet > Holdings splits coins into Sellable vs Dust/Unsellable by Jupiter min-notional.</li>
+                   <li>Applies router cooldown after route/dust errors to avoid repeated failures.</li>
+                 </ul>
+               </div>
+               <div>
+                 <strong>Quick start</strong>
+                 <ol style="margin:6px 0 0 18px;">
+                   <li>Set a CORS-enabled RPC URL (and headers if required).</li>
+                   <li>Generate the auto wallet and fund it with SOL. Recommended minimum: <strong>$7</strong>.</li>
+                   <li>Set a Recipient to receive funds on End & Return.</li>
+                   <li>Tune Buy %, Min/Max Buy, Slippage.</li>
+                   <li>Click Start. Bot ticks every 5s and respects cooldowns.</li>
+                   <li>If you hit issues, reach out on Telegram: <a href="https://t.me/fdvlolgroup" target="_blank">fdvlolgroup</a>.</li>
+                 </ol>
+               </div>
+               <div>
+                 <strong>Guidelines</strong>
+                 <ul style="margin:6px 0 0 18px;">
+                   <li>Keep at least <strong>$7</strong> in SOL to cover router minimums, ATA rent, and fees.</li>
+                   <li>Dust protection: very small orders are skipped; sells below min-notional are blocked unless dust-exit is enabled.</li>
+                   <li>Use a CORS-enabled RPC; some plans may block owner scans (the bot adapts).</li>
+                 </ul>
+               </div>
               <div>
-                <strong>What it does</strong>
+                <strong>Usage tips</strong>
                 <ul style="margin:6px 0 0 18px;">
-                  <li>Tracks Pumping Radar leaders and buys the top token.</li>
-                  <li>With “Leader” on, buys once and holds until the leader changes.</li>
-                  <li>On leader change, rotates non-leader tokens back to SOL, then buys the new leader next tick.</li>
-                  <li>Seeds local cache immediately after each buy; background token sync reconciles on-chain credits.</li>
-                  <li>Wallet > Holdings splits coins into Sellable vs Dust/Unsellable by Jupiter min-notional.</li>
-                  <li>Applies router cooldown after route/dust errors to avoid repeated failures.</li>
+                  <li>If you see router cooldown logs, let it clear; retries auto-increase slippage within limits.</li>
+                  <li>Set “Hold Leader” to reduce churn; the bot rotates non-leaders for you.</li>
+                  <li>Enable “Try to sell dust” to exit small bags when they cross min-notional.</li>
+                  <li>Under heavy API load, increase Min Quote Interval to reduce rate limits.</li>
+                  <li>Use a fast CORS RPC and add auth headers if needed; verify with RPC preflight.</li>
+                  <li>Export wallet.json periodically; use it to manually recover dust if needed.</li>
+                  <li>Adjust slippage if swaps fail often; start at 150–300 bps, cap near 2000 bps.</li>
+                  <li>Keep a small SOL runway for fees and ATAs; bot reserves are automatic.</li>
                 </ul>
               </div>
-              <div>
-                <strong>Quick start</strong>
-                <ol style="margin:6px 0 0 18px;">
-                  <li>Set a CORS-enabled RPC URL (and headers if required).</li>
-                  <li>Generate the auto wallet and fund it with SOL. Recommended minimum: <strong>$7</strong>.</li>
-                  <li>Set a Recipient to receive funds on End & Return.</li>
-                  <li>Tune Buy %, Min/Max Buy, Slippage.</li>
-                  <li>Click Start. Bot ticks every 5s and respects cooldowns.</li>
-                  <li>If you hit issues, reach out on Telegram: <a href="https://t.me/fdvlolgroup" target="_blank">fdvlolgroup</a>.</li>
-                </ol>
-              </div>
-              <div>
-                <strong>Guidelines</strong>
-                <ul style="margin:6px 0 0 18px;">
-                  <li>Keep at least <strong>$7</strong> in SOL to cover router minimums, ATA rent, and fees.</li>
-                  <li>Dust protection: very small orders are skipped; sells below min-notional are blocked unless dust-exit is enabled.</li>
-                  <li>Use a CORS-enabled RPC; some plans may block owner scans (the bot adapts).</li>
-                </ul>
-              </div>
-              <div>
-                <strong>Sizing & reserves</strong>
-                <ul style="margin:6px 0 0 18px;">
-                  <li>Buy size = min(affordable, carry + desired). A small fee reserve is kept.</li>
-                  <li>If size is below router min, it carries over until large enough.</li>
-                  <li>Router minimums enforced to avoid 400/dust errors (min buy and min sell notional enforced).</li>
-                </ul>
-              </div>
-              <div>
-                <strong>Safety</strong>
-                <ul style="margin:6px 0 0 18px;">
-                  <li>Optional TP/SL selling is paused when “Leader” hold is on.</li>
-                  <li>Owner scans may be disabled by your RPC plan; the bot adapts.</li>
-                  <li>On dust/route errors, a per-mint router cooldown is applied automatically.</li>
-                </ul>
-              </div>
-              <div>
-                <strong>Unwind</strong>
-                <ul style="margin:6px 0 0 18px;">
-                  <li>“End & Return” sells tokens to SOL and sends SOL to Recipient (minus rent/fees).</li>
-                </ul>
-              </div>
-              <div>
-                <strong>Disclaimer</strong>
-                <p style="margin:6px 0 0 0;">
-                  This bot is provided "as is" without warranties of any kind. Trading cryptocurrencies involves significant risk,
-                  including the potential loss of your investment. Past performance is not indicative of future results.
-                  Always do your own research and consider your risk tolerance before using this bot.
-                </p>
-                <p><strong>By using this bot, you acknowledge and accept these risks.</strong></p>
-              </div>
-              <div>
-                <strong>Support & updates</strong>
-                <p style="margin:6px 0 0 0;">
-                  Issues or questions? Telegram: <a href="https://t.me/fdvlolgroup" target="_blank">fdvlolgroup</a>
-                </p>
-                <ul style="margin:6px 0 0 18px;">
-                  <li>twitter: <code><a href="https://twitter.com/fdvlol" target="_blank">@fdvlol</a></code></li>
-                  <li>telegram: <code><a href="https://t.me/fdvlolgroup" target="_blank">fdvlolgroup</a></code></li>
-                </ul>
-              </div>
+               <div>
+                 <strong>Sizing & reserves</strong>
+                 <ul style="margin:6px 0 0 18px;">
+                   <li>Buy size = min(affordable, carry + desired). A small fee reserve is kept.</li>
+                   <li>If size is below router min, it carries over until large enough.</li>
+                   <li>Router minimums enforced to avoid 400/dust errors (min buy and min sell notional enforced).</li>
+                 </ul>
+               </div>
+               <div>
+                 <strong>Safety</strong>
+                 <ul style="margin:6px 0 0 18px;">
+                   <li>Optional TP/SL selling is paused when “Leader” hold is on.</li>
+                   <li>Owner scans may be disabled by your RPC plan; the bot adapts.</li>
+                   <li>On dust/route errors, a per-mint router cooldown is applied automatically.</li>
+                 </ul>
+               </div>
+               <div>
+                 <strong>Unwind</strong>
+                 <ul style="margin:6px 0 0 18px;">
+                   <li>“End & Return” sells tokens to SOL and sends SOL to Recipient (minus rent/fees).</li>
+                 </ul>
+               </div>
+               <div>
+                 <strong>Disclaimer</strong>
+                 <p style="margin:6px 0 0 0;">
+                   This bot is provided "as is" without warranties of any kind. Trading cryptocurrencies involves significant risk,
+                   including the potential loss of your investment. Past performance is not indicative of future results.
+                   Always do your own research and consider your risk tolerance before using this bot.
+                 </p>
+                 <p><strong>By using this bot, you acknowledge and accept these risks.</strong></p>
+               </div>
+               <div>
+                 <strong>Support & updates</strong>
+                 <p style="margin:6px 0 0 0;">
+                   Issues or questions? Telegram: <a href="https://t.me/fdvlolgroup" target="_blank">fdvlolgroup</a>
+                 </p>
+                 <ul style="margin:6px 0 0 18px;">
+                   <li>twitter: <code><a href="https://twitter.com/fdvlol" target="_blank">@fdvlol</a></code></li>
+                   <li>telegram: <code><a href="https://t.me/fdvlolgroup" target="_blank">fdvlolgroup</a></code></li>
+                 </ul>
+               </div>
+             </div>
+             <div data-auto-tab-panel="release" style="display:none;">
+               <div>
+                 <strong>Release v0.0.2.4 — Highlights</strong>
+                 <ul style="margin:6px 0 0 18px;">
+                   <li>Leader mode with automatic rotation on leader changes.</li>
+                   <li>Stress-aware Jupiter rate limiting and quote caching.</li>
+                   <li>Min-notional dust protection on buys and sells.</li>
+                   <li>Split-sell fallback with remainder reconciliation and cache updates.</li>
+                   <li>USDC fallback routing (token -> USDC -> SOL) when direct routes fail.</li>
+                   <li>Per-mint router cooldowns after route/dust errors.</li>
+                   <li>Position and dust caches with on-chain reconciliation and pending credit watcher.</li>
+                   <li>WSOL unwrap factorization to prevent wrapped SOL routing errors; auto-close zero-balance ATAs to reclaim rent.</li>
+                   <li>Auto-wallet generation/export; “End & Return” to send SOL to recipient.</li>
+                   <li>CORS RPC + headers support; owner-scan adaptation for restricted plans.</li>
+                   <li>Dynamic compute unit limit; v0 and legacy transaction fallbacks.</li>
+                   <li>Optional platform fees with pre-configured fee ATAs.</li>
+                 </ul>
+               </div>
+             </div>
             </div>
             <div style="display:flex; justify-content:space-between; gap:8px; margin-top:22px; flex-wrap:wrap;">
               <div style="display:flex; gap:8px; flex-wrap:wrap;">
@@ -3495,6 +3533,25 @@ export function initAutoWidget(container = document.body) {
   const helpBtn = wrap.querySelector("[data-auto-help]");
   const modalEl = wrap.querySelector("[data-auto-modal]");
   const modalCloseEls = wrap.querySelectorAll("[data-auto-modal-close]");
+  const tabBtns = modalEl.querySelectorAll("[data-auto-tab]");
+  const tabPanels = modalEl.querySelectorAll("[data-auto-tab-panel]");
+  function activateTab(name) {
+    tabBtns.forEach(b => {
+      const on = b.getAttribute("data-auto-tab") === name;
+      b.classList.toggle("active", on);
+      b.style.background = on ? "#222" : "#111";
+      b.style.color = on ? "#fff" : "#aaa";
+    });
+    tabPanels.forEach(p => {
+      p.style.display = (p.getAttribute("data-auto-tab-panel") === name) ? "block" : "none";
+    });
+  }
+  tabBtns.forEach(b => b.addEventListener("click", (e) => {
+    e.preventDefault();
+    const name = b.getAttribute("data-auto-tab");
+    activateTab(name);
+  }));
+  activateTab("guide");
   startBtn  = wrap.querySelector("[data-auto-start]");
   stopBtn   = wrap.querySelector("[data-auto-stop]");
   mintEl    = { value: "" }; // not used in auto-wallet mode
