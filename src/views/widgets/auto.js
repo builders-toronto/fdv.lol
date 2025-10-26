@@ -2,7 +2,7 @@
 import { computePumpingLeaders, getRugSignalForMint } from "../meme/addons/pumping.js";
 
 // Dust orders and minimums are blocked due to Jupiter route failures and 400 errors.
-// please export wallet.json to recover any dust funds if dust orders occur.
+// please export wallet.json to recover any dust funds.
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
@@ -167,6 +167,8 @@ let state = {
   collapsed: true,
   // hold until new leader detected
   holdUntilLeaderSwitch: false,
+  // dynamic observer hold time
+  dynamicHoldEnabled: true,
 
   // money made tracker
   moneyMadeSol: 0,
@@ -521,7 +523,14 @@ async function unwrapWsolIfAny(signerOrOwner) {
        return false;
      }
      const ownerPk = new PublicKey(ownerStr);
-     const canSign = !!(signerOrOwner && typeof signerOrOwner.sign === "function" && signerOrOwner.publicKey);
+     const canSign = !!(
+       signerOrOwner &&
+       signerOrOwner.publicKey &&
+       (
+         typeof signerOrOwner.sign === "function" ||
+         (signerOrOwner.secretKey && signerOrOwner.secretKey.length > 0)
+       )
+     );
      if (!canSign) {
        // Without a signer we can't close ATAs!~!!!!
        log("WSOL unwrap: no signer; skipping.");
@@ -1816,7 +1825,37 @@ function recordBadgeTransition(mint, badge) {
   if (prevNorm === "pumping" && curNorm === "calm") {
     markPumpDropBan(mint, PUMP_TO_CALM_BAN_MS);
   }
-}  
+} 
+  
+ function _getSeriesStore() {
+   if (!window._fdvLeaderSeries) window._fdvLeaderSeries = new Map(); // mint -> [{ts, pumpScore, liqUsd, v1h, chg5m, chg1h}]
+   return window._fdvLeaderSeries;
+ }
+
+ function recordLeaderSample(mint, sample) {
+   if (!mint) return;
+   const s = _getSeriesStore();
+   const list = s.get(mint) || [];
+   const row = {
+     ts: now(),
+     pumpScore: safeNum(sample.pumpScore, 0),
+     liqUsd:    safeNum(sample.liqUsd, 0),
+     v1h:       safeNum(sample.v1h, 0),
+     chg5m:     safeNum(sample.chg5m, 0),
+     chg1h:     safeNum(sample.chg1h, 0),
+   };
+   list.push(row);
+   // Keep last 3 samples only (previous 3 ticks)
+   while (list.length > 3) list.shift();
+   s.set(mint, list);
+ }
+
+ function getLeaderSeries(mint, n = 3) {
+   const s = _getSeriesStore();
+   const list = s.get(mint) || [];
+   if (!n || n >= list.length) return list.slice();
+   return list.slice(list.length - n);
+ }
 
 function pickPumpCandidates(take = 1, poolN = 3) {
   try {
@@ -1832,6 +1871,18 @@ function pickPumpCandidates(take = 1, poolN = 3) {
       if (isPumpDropBanned(mint) || isMintBlacklisted(mint)) continue;
 
       const kp = it?.kp || {};
+
+
+      recordLeaderSample(mint, {
+        pumpScore: Number(it?.pumpScore || 0),
+        liqUsd:    safeNum(kp.liqUsd, 0),
+        v1h:       safeNum(kp.v1hTotal, 0),
+        chg5m:     safeNum(kp.change5m, 0),
+        chg1h:     safeNum(kp.change1h, 0),
+      });
+
+
+
       pool.push({
         mint,
         badge: sig.badge,
@@ -1962,10 +2013,14 @@ async function pickTopPumper() {
     passes >= 5 ? 120 :
     passes === 4 ? 95 : 70;
   const holdClamped = Math.min(120, Math.max(30, hold));
-  if (state.maxHoldSecs !== holdClamped) {
-    state.maxHoldSecs = holdClamped;
-    save();
-    log(`Observer: approve ${mint.slice(0,4)}… (score ${passes}/5); hold=${holdClamped}s`);
+  if (state.dynamicHoldEnabled) {
+    if (state.maxHoldSecs !== holdClamped) {
+      state.maxHoldSecs = holdClamped;
+      save();
+      log(`Observer: approve ${mint.slice(0,4)}… (score ${passes}/5); hold=${holdClamped}s`);
+    } else {
+      log(`Observer: approve ${mint.slice(0,4)}… (score ${passes}/5)`);
+    }
   } else {
     log(`Observer: approve ${mint.slice(0,4)}… (score ${passes}/5)`);
   }
@@ -2008,17 +2063,26 @@ async function observeMintOnce(mint, { windowMs = 3000, sampleMs = 800, minPasse
     };
   }
 
-  const passChg   = sN.chg5m > 0;
-  const passVol   = sN.v1h >= s0.v1h;
-  const passLiq   = sN.liqUsd >= s0.liqUsd * 0.98;
-  const passScore = sN.pumpScore >= s0.pumpScore * 0.98;
+  const series = getLeaderSeries(mint, 3);
+  let base = s0, last = sN, usingTrend = false;
+  if (series && series.length >= 3) {
+    base = series[0];
+    last = series[series.length - 1];
+    usingTrend = true;
+  }
+  const passChg   = last.chg5m > base.chg5m;               // momentum up
+  const passVol   = last.v1h   >= base.v1h;                 // volume non-decreasing
+  const passLiq   = last.liqUsd>= base.liqUsd * 0.98;       // liquidity stable
+  const passScore = last.pumpScore >= base.pumpScore * 0.98;// composite score stable/up
+
 
   let passes = 0;
   if (passChg) passes++;
   if (passVol) passes++;
   if (passLiq) passes++;
   if (passScore) passes++;
-  if (sN.pumpScore > s0.pumpScore && sN.chg5m > s0.chg5m) passes++;
+  // if (sN.pumpScore > s0.pumpScore && sN.chg5m > s0.chg5m) passes++;
+  if (last.pumpScore > base.pumpScore && last.chg5m > base.chg5m) passes++;
 
   if (passes < 3) {
     setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
@@ -2032,11 +2096,14 @@ async function observeMintOnce(mint, { windowMs = 3000, sampleMs = 800, minPasse
       const clamped = Math.min(120, Math.max(30, holdSecs));
       if (state.maxHoldSecs !== clamped) { state.maxHoldSecs = clamped; save(); }
     }
-    log(`Observer: approve ${mint.slice(0,4)}… (score ${passes}/5)`);
+    //log(`Observer: approve ${mint.slice(0,4)}… (score ${passes}/5)`);
+    log(`Observer: approve ${mint.slice(0,4)}… (score ${passes}/5)${usingTrend ? " [3-tick trend]" : ""}`);
+
     return { ok: true, passes, holdSecs };
   }
 
-  log(`Observer: consider ${mint.slice(0,4)}… (score ${passes}/5)`);
+  // log(`Observer: consider ${mint.slice(0,4)}… (score ${passes}/5)`);
+  log(`Observer: consider ${mint.slice(0,4)}… (score ${passes}/5)${usingTrend ? " [3-tick trend]" : ""}`);
   return { ok: false, passes, holdSecs };
 }
 
@@ -2517,7 +2584,7 @@ async function evalAndMaybeSellPositions() {
 
         if (!forceRug && !forcePumpDrop) {
           try {
-            const obs = await observeMintOnce(mint, { windowMs: 2000, sampleMs: 600, minPasses: 4, adjustHold: false });
+            const obs = await observeMintOnce(mint, { windowMs: 2000, sampleMs: 600, minPasses: 4, adjustHold: !!state.dynamicHoldEnabled });
             if (!obs.ok) {
               const p = Number(obs.passes || 0);
               if (p <= 2) {
@@ -2935,6 +3002,21 @@ async function switchToLeader(newMint) {
 async function tick() {
   const endIn = state.endAt ? ((state.endAt - now())/1000).toFixed(0) : "0";
   if (!state.enabled) return;
+  try {
+    const leaders = computePumpingLeaders(3) || [];
+    for (const it of leaders) {
+      const kp = it?.kp || {};
+      if (it?.mint) {
+        recordLeaderSample(it.mint, {
+          pumpScore: Number(it?.pumpScore || 0),
+          liqUsd:    safeNum(kp.liqUsd, 0),
+          v1h:       safeNum(kp.v1hTotal, 0),
+          chg5m:     safeNum(kp.change5m, 0),
+          chg1h:     safeNum(kp.change1h, 0),
+        });
+      }
+    }
+  } catch {}
   if (state.endAt && now() >= state.endAt) {
     log("Lifetime ended. Unwinding…");
     try { await sweepAllToSolAndReturn(); } catch(e){ log(`Unwind failed: ${e.message||e}`); }
@@ -3061,7 +3143,7 @@ async function tick() {
       const mint = buyCandidates[i];
       if (state.allowMultiBuy && mint !== picks[0]) {
         try {
-          const obs = await observeMintOnce(mint, { windowMs: 2500, sampleMs: 700, minPasses: 4, adjustHold: false });
+          const obs = await observeMintOnce(mint, { windowMs: 2500, sampleMs: 700, minPasses: 4, adjustHold: !!state.dynamicHoldEnabled });
           if (!obs.ok) {
             if (Number(obs.passes || 0) === 3) noteObserverConsider(mint, 30_000);
             log(`Observer gate: ${mint.slice(0,4)}… scored ${obs.passes||0}/5 (<4). Skipping buy.`);
@@ -3521,6 +3603,41 @@ export function initAutoWidget(container = document.body) {
   wrap.appendChild(body);
   container.appendChild(wrap);
 
+  try {
+    const hasAutomate =
+      typeof location !== "undefined" &&
+      (String(location.hash || "").toLowerCase().includes("automate") ||
+      String(location.search || "").toLowerCase().includes("automate"));
+    if (hasAutomate) {
+      wrap.open = true;
+      state.collapsed = false;
+      save();
+      const openPumpKpi = () => {
+        let opened = false;
+        const pumpBtn = document.getElementById("pumpingToggle") || document.querySelector('button[title="PUMP"]');
+        if (pumpBtn) {
+          const isExpanded = String(pumpBtn.getAttribute("aria-expanded") || "false") === "true";
+          if (!isExpanded) {
+            try { pumpBtn.click(); opened = true; } catch {}
+          } else {
+            opened = true;
+          }
+          const panelId = pumpBtn.getAttribute("aria-controls") || "pumpingPanel";
+          const panel = document.getElementById(panelId) || document.querySelector("#pumpingPanel");
+          if (panel) {
+            panel.removeAttribute("hidden");
+            panel.style.display = "";
+            panel.classList.add("open");
+          }
+        }
+        return opened;
+      };
+      openPumpKpi();
+      setTimeout(openPumpKpi, 0);
+      setTimeout(openPumpKpi, 250);
+     }
+  } catch {}
+
   wrap.addEventListener("toggle", () => {
     state.collapsed = !wrap.open;
     save(); // persist?
@@ -3746,11 +3863,16 @@ export function initAutoWidget(container = document.body) {
         <label style="width:110px;">Hold</label>
         <input type="range" data-auto-holdtime min="${MIN_HOLD}" max="${MAX_HOLD}" step="1" value="${cur}" style="width: 100%;" />
         <div data-auto-holdtime-val style="width:56px; text-align:right;">${cur}s</div>
+        <label style="display:flex; align-items:center; gap:6px; margin-left:8px; white-space:nowrap;">
+          <input type="checkbox" data-auto-dynhold />
+          <span style="opacity:.9;">∞</span>
+        </label>
       </div>
     `;
 
     const rangeEl = holdTimeWrap.querySelector('[data-auto-holdtime]');
     const valEl   = holdTimeWrap.querySelector('[data-auto-holdtime-val]');
+    const dynEl = holdTimeWrap.querySelector('[data-auto-dynhold]');
     const render  = () => { valEl.textContent = `${Number(rangeEl.value||cur)}s`; };
 
     rangeEl.addEventListener("input", render);
@@ -3762,6 +3884,13 @@ export function initAutoWidget(container = document.body) {
       log(`Hold time set: ${v}s`);
     });
     render();
+
+    dynEl.checked = state.dynamicHoldEnabled !== false;
+    dynEl.addEventListener("change", () => {
+      state.dynamicHoldEnabled = dynEl.checked;
+      save();
+      log(`Dynamic hold: ${state.dynamicHoldEnabled ? "ON" : "OFF"}`);
+    });
   }
 
   secExportBtn.addEventListener("click", () => {
