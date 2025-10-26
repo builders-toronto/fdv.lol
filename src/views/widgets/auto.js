@@ -2,6 +2,7 @@
 import { computePumpingLeaders, getRugSignalForMint } from "../meme/addons/pumping.js";
 
 // Dust orders and minimums are blocked due to Jupiter route failures and 400 errors.
+// please export wallet.json to recover any dust funds if dust orders occur.
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
@@ -502,6 +503,79 @@ async function loadSplToken() {
   }
 }
 
++async function unwrapWsolIfAny(signerOrOwner) {
+   try {
+     const { PublicKey, Transaction, TransactionInstruction } = await loadWeb3();
+     const conn = await getConn();
+
+     let ownerStr = "";
+     try {
+       if (!signerOrOwner) ownerStr = "";
+       else if (typeof signerOrOwner === "string") ownerStr = signerOrOwner;
+       else if (typeof signerOrOwner?.toBase58 === "function") ownerStr = signerOrOwner.toBase58();
+       else if (signerOrOwner?.publicKey?.toBase58) ownerStr = signerOrOwner.publicKey.toBase58();
+       else if (signerOrOwner?.publicKey) ownerStr = new PublicKey(signerOrOwner.publicKey).toBase58();
+     } catch {}
+     if (!ownerStr) {
+       log("WSOL unwrap: owner missing/invalid; skipping.");
+       return false;
+     }
+     const ownerPk = new PublicKey(ownerStr);
+     const canSign = !!(signerOrOwner && typeof signerOrOwner.sign === "function" && signerOrOwner.publicKey);
+     if (!canSign) {
+       // Without a signer we can't close ATAs!~!!!!
+       log("WSOL unwrap: no signer; skipping.");
+       return false;
+     }
+
+     const atas = await getOwnerAtas(ownerStr, SOL_MINT);
+     if (!Array.isArray(atas) || !atas.length) return false;
+
+     const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+     const TOKEN_2022_PROGRAM_ID = new PublicKey("TokenzQdBNb1KzYrNU3G1bqbp1VZr1z7jWmzuXyaS6uJ");
+
+     const ixs = [];
+     for (const rec of atas) {
+       try {
+         const ataPk = rec?.ata instanceof PublicKey ? rec.ata : new PublicKey(String(rec?.ata));
+         const ai = await conn.getAccountInfo(ataPk, "processed").catch(() => null);
+         if (!ai) continue;
+
+         const bal = await conn.getTokenAccountBalance(ataPk, "processed").catch(() => null);
+         const ui = Number(bal?.value?.uiAmount || 0);
+         if (ui > 0) continue;
+
+         const pidStr = rec?.programId?.toBase58?.() || String(rec?.programId || "");
+         const programId = (pidStr && pidStr === TOKEN_2022_PROGRAM_ID.toBase58())
+           ? TOKEN_2022_PROGRAM_ID
+           : TOKEN_PROGRAM_ID;
+
+         const keys = [
+           { pubkey: ataPk,   isSigner: false, isWritable: true },
+           { pubkey: ownerPk, isSigner: false, isWritable: true },
+           { pubkey: ownerPk, isSigner: true,  isWritable: false },
+         ];
+         const data = Uint8Array.of(9);
+         ixs.push(new TransactionInstruction({ programId, keys, data }));
+       } catch {}
+     }
+     if (!ixs.length) return false;
+
+     const tx = new Transaction();
+     for (const ix of ixs) tx.add(ix);
+     tx.feePayer = ownerPk;
+     tx.recentBlockhash = (await conn.getLatestBlockhash("confirmed")).blockhash;
+     tx.sign(signerOrOwner);
+
+     const sig = await conn.sendRawTransaction(tx.serialize(), { preflightCommitment: "processed", maxRetries: 2 });
+     log(`WSOL unwrap sent: ${sig}`);
+     return true;
+   } catch (e) {
+     log(`WSOL unwrap failed: ${e.message || e}`);
+     return false;
+   }
+}
+
 async function confirmSig(sig, { commitment = "confirmed", timeoutMs = 12000, pollMs = 300 } = {}) {
   const conn = await getConn();
   const start = now();
@@ -552,9 +626,7 @@ async function waitForTokenCredit(ownerPubkeyStr, mintStr, { timeoutMs = 8000, p
 
   let atas = [];
   try { atas = await getOwnerAtas(ownerPubkeyStr, mintStr); } catch {}
-  // If no ATAs yet, we'll still loop and fall back to owner scan
   while (now() - start < timeoutMs) {
-    // Check known ATAs first
     if (Array.isArray(atas) && atas.length) {
       for (const { ata } of atas) {
         try {
@@ -1231,6 +1303,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         const sig = await conn.sendRawTransaction(vtx.serialize(), { preflightCommitment: "processed", maxRetries: 3 });
         log(`Swap sent: ${sig}`);
         try { if (isSell) setTimeout(() => _reconcileSplitSellRemainder(sig), 0); } catch {}
+        try { setTimeout(() => { unwrapWsolIfAny(signer).catch(()=>{}); }, 0); } catch {} // wtf is that <-
         return { ok: true, sig };
       } catch (e) {
         log(`Swap send failed. NO_ROUTES/ROUTER_DUST. export help/wallet.json to recover dust funds. Simulating…`);
@@ -1351,6 +1424,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
           }
           log(`Swap (manual send v0) sent: ${sig}`);
           try { if (isSell) setTimeout(() => _reconcileSplitSellRemainder(sig), 0); } catch {}
+          try { setTimeout(() => { unwrapWsolIfAny(signer).catch(()=>{}); }, 0); } catch {} // wtf is that <-
           return { ok: true, sig };
         } catch (e) {
           log(`Manual send failed: ${e.message || e}. Simulating…`);
@@ -1638,6 +1712,7 @@ async function sweepAllToSolAndReturn() {
   }
 
   // Return SOL to recipient
+  try { await unwrapWsolIfAny(signer); } catch {}
   const bal = await conn.getBalance(signer.publicKey).catch(()=>0);
   const rent = 0.001 * 1e9;
   const sendLamports = Math.max(0, bal - Math.ceil(rent));
@@ -1984,9 +2059,13 @@ async function getOwnerAta(ownerPubkeyStr, mintStr, programIdOverride) {
     const owner = new PublicKey(ownerPubkeyStr);
     const mint = new PublicKey(mintStr);
     const pid = programIdOverride || TOKEN_PROGRAM_ID;
-    return await getAssociatedTokenAddress(mint, owner, true, pid);
+    const ataAny = await getAssociatedTokenAddress(mint, owner, true, pid);
+    const ataStr = typeof ataAny === "string"
+      ? ataAny
+      : (ataAny?.toBase58 ? ataAny.toBase58() : (ataAny?.toString ? ataAny.toString() : ""));
+    if (!ataStr) return null;
+    return new PublicKey(ataStr);
   } catch {
-    // return a dummy impossible ATA to prevent throws upstream
     return null;
   }
 }
@@ -2981,9 +3060,15 @@ async function tick() {
     for (let i = 0; i < loopN; i++) {
       const mint = buyCandidates[i];
       if (state.allowMultiBuy && mint !== picks[0]) {
-        const obs = await observeMintOnce(mint, { windowMs: 2500, sampleMs: 700, minPasses: 4, adjustHold: false });
-        if (!obs.ok) {
-          if (Number(obs.passes || 0) === 3) noteObserverConsider(mint, 30_000);
+        try {
+          const obs = await observeMintOnce(mint, { windowMs: 2500, sampleMs: 700, minPasses: 4, adjustHold: false });
+          if (!obs.ok) {
+            if (Number(obs.passes || 0) === 3) noteObserverConsider(mint, 30_000);
+            log(`Observer gate: ${mint.slice(0,4)}… scored ${obs.passes||0}/5 (<4). Skipping buy.`);
+            continue;
+          }
+        } catch {
+          log(`Observer gate failed for ${mint.slice(0,4)}… Skipping buy.`);
           continue;
         }
       }
