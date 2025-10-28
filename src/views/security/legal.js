@@ -16,7 +16,6 @@ import { PRIVACY, TOS, AGREEMENT } from "../../config/env.js";
   .legal-modal__close:hover{background:rgba(255,255,255,.06)}
   .legal-modal__tabs{display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid rgba(122,222,255,.08);overflow:auto}
   .legal-tab{appearance:none;border:0;background:transparent;color:#cfe8f1;padding:10px 12px;border-radius:12px;cursor:pointer;white-space:nowrap}
-  .legal-tab[aria-selected="true"]{background:rgba(122,222,255,.10);box-shadow:inset 0 0 0 1px rgba(122,222,255,.18)}
   .legal-modal__body{overflow:auto;padding:18px 20px}
   .legal-panel{display:none;animation:fadeIn .15s ease}
   .legal-panel[aria-hidden="false"]{display:block}

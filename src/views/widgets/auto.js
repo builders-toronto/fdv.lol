@@ -15,11 +15,9 @@ const SELL_TX_FEE_BUFFER_LAMPORTS = 500_000;
 const EXTRA_TX_BUFFER_LAMPORTS     = 250_000;  
 const MIN_OPERATING_SOL            = 0.010;    
 const ROUTER_COOLDOWN_MS           = 60_000;
-// const ROUTER_DUST_FAIL_WINDOW_MS = 2 * 60 * 1000; 
-// const ROUTER_DUST_FAIL_THRESHOLD = 3;    
-// if (!window._fdvRouteDustFails) window._fdvRouteDustFails = new Map();
 const MINT_RUG_BLACKLIST_MS = 30 * 60 * 1000;
 const SPLIT_FRACTIONS = [0.99, 0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.50, 0.33, 0.25, 0.20];
+const MINT_OP_LOCK_MS = 30_000;
 
 
 const POSCACHE_KEY_PREFIX = "fdv_poscache_v1:";
@@ -28,7 +26,7 @@ const DUSTCACHE_KEY_PREFIX = "fdv_dustcache_v1:";
 
 
 const FEE_ATAS = {
-  [SOL_MINT]: "4FSwzXe544mW2BLYqAAjcyBmFFHYgMbnA1XUdtGUeST8", 
+  [SOL_MINT]: "4FSwzXe544mW2BLYqAAjcyBmFFHYgMbnA1XUdtGUeST8",  // Buy me a coffee
   "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "BKWwTmwc7FDSRb82n5o76bycH3rKZ4Xqt87EjZ2rnUXB", 
 };
 
@@ -159,6 +157,11 @@ let state = {
 
   // Safeties
   seedBuyCache: true,
+  observerDropSellAt: 3,
+  // Observer hysteresis settings
+  observerDropMinAgeSecs: 5,   
+  observerDropConsec: 2,     
+  observerDropTrailPct: 2.5,    
 
   // Cache
   pendingGraceMs: 60000,
@@ -200,7 +203,163 @@ let _solPxCache = { ts: 0, usd: 0 };
 
 function _pcKey(owner, mint) { return `${owner}:${mint}`; }
 
-function enqueuePendingCredit({ owner, mint, addCostSol = 0, decimalsHint = 6, basePos = {} }) {
+function clearPendingCredit(owner, mint) {
+  try { if (_pendingCredits) _pendingCredits.delete(_pcKey(owner, mint)); } catch {}
+}
+
+
+
+const BUY_LOCK_MS = 5_000;
+
+function tryAcquireBuyLock(ms = BUY_LOCK_MS) {
+  const t = now();
+  const until = Number(window._fdvBuyLockUntil || 0);
+  if (t < until) return false;
+  window._fdvBuyLockUntil = t + Math.max(1_000, ms|0);
+  return true;
+}
+
+function releaseBuyLock() {
+  try { window._fdvBuyLockUntil = 0; } catch {}
+}
+
+function _getMintLocks() {
+  if (!window._fdvMintLocks) window._fdvMintLocks = new Map(); // mint -> { mode: 'buy'|'sell', until: ts }
+  return window._fdvMintLocks;
+}
+
+function lockMint(mint, mode = "sell", ms = MINT_OP_LOCK_MS) {
+  if (!mint) return;
+  const m = _getMintLocks();
+  const until = now() + Math.max(5_000, ms|0);
+  m.set(mint, { mode, until });
+}
+
+function unlockMint(mint) {
+  try { _getMintLocks().delete(mint); } catch {}
+}
+
+function isMintLocked(mint) {
+  const rec = _getMintLocks().get(mint);
+  if (!rec) return false;
+  if (now() > rec.until) { _getMintLocks().delete(mint); return false; }
+  return true;
+}
+
+
+const BUY_SEED_TTL_MS = 60_000;
+
+function _getBuySeedStore() {
+  if (!window._fdvBuySeeds) window._fdvBuySeeds = new Map();
+  return window._fdvBuySeeds;
+}
+
+function _seedKey(owner, mint) { return `${owner}:${mint}`; }
+
+function putBuySeed(owner, mint, seed) {
+  if (!owner || !mint || !seed) return;
+  const s = _getBuySeedStore();
+  const k = _seedKey(owner, mint);
+  const prev = s.get(k);
+  const next = prev
+    ? {
+        ...prev,
+        sizeUi: Number(prev.sizeUi || 0) + Number(seed.sizeUi || 0),
+        costSol: Number(prev.costSol || 0) + Number(seed.costSol || 0),
+        decimals: Number.isFinite(seed.decimals) ? seed.decimals : (prev.decimals ?? 6),
+        at: now(),
+      }
+    : { ...seed, owner, mint, at: now() };
+  s.set(k, next);
+}
+
+function getBuySeed(owner, mint) {
+  try {
+    const s = _getBuySeedStore();
+    const k = _seedKey(owner, mint);
+    const rec = s.get(k);
+    if (!rec) return null;
+    if ((now() - Number(rec.at || 0)) > BUY_SEED_TTL_MS) { s.delete(k); return null; }
+    return rec;
+  } catch { return null; }
+}
+
+function clearBuySeed(owner, mint) {
+  try { _getBuySeedStore().delete(_seedKey(owner, mint)); } catch {}
+}
+
+function optimisticSeedBuy(ownerStr, mint, estUi, decimals, buySol, sig = "") {
+  try {
+    if (!ownerStr || !mint || !Number.isFinite(estUi) || estUi <= 0) return;
+    const nowTs = now();
+    const prev = state.positions[mint] || { sizeUi: 0, costSol: 0, hwmSol: 0, acquiredAt: nowTs };
+    const pos = {
+      ...prev,
+      sizeUi: Number(prev.sizeUi || 0) + Number(estUi || 0),   // accumulate
+      decimals: Number.isFinite(decimals) ? decimals : (prev.decimals ?? 6),
+      costSol: Number(prev.costSol || 0) + Number(buySol || 0),
+      hwmSol: Math.max(Number(prev.hwmSol || 0), Number(buySol || 0)),
+      lastBuyAt: nowTs,
+      lastSeenAt: nowTs,
+      awaitingSizeSync: true,
+      allowRebuy: false,
+      lastSplitSellAt: undefined,
+    };
+    state.positions[mint] = pos;
+    updatePosCache(ownerStr, mint, pos.sizeUi, pos.decimals);
+    save();
+    enqueuePendingCredit({
+      owner: ownerStr,
+      mint,
+      addCostSol: Number(buySol || 0),
+      decimalsHint: pos.decimals,
+      basePos: pos,
+      sig: sig || ""
+    });
+    log(`Optimistic seed: ${mint.slice(0,4)}… (~${Number(estUi).toFixed(6)}) — awaiting credit`);
+  } catch {}
+}
+
+async function getTxWithMeta(sig) {
+  try {
+    const conn = await getConn();
+    // finalized preferred; falls back to confirmed if not found yet
+    let tx = await conn.getTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "finalized" });
+    if (!tx) tx = await conn.getTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+    return tx || null;
+  } catch { return null; }
+}
+
+async function reconcileBuyFromTx(sig, ownerPub, expectedMint) {
+  const tx = await getTxWithMeta(sig);
+  if (!tx?.meta) return null;
+
+  const keys = tx.transaction?.message?.accountKeys || [];
+  const post = tx.meta.postTokenBalances || [];
+  // Try expected mint first, then any positive balance owned by us
+  const pick = (arr, mint) => arr.find(b => (!mint || b.mint === mint));
+  let rec = pick(post, expectedMint);
+  if (!rec) rec = post.find(b => b?.owner === ownerPub) || post[0];
+
+  if (!rec?.mint) return null;
+  const mint = rec.mint;
+  const dec = Number(rec.uiTokenAmount?.decimals ?? 6);
+  const ui  = Number(rec.uiTokenAmount?.uiAmount ?? 0);
+  if (ui > 0) return { mint, sizeUi: ui, decimals: dec };
+
+  // As a fallback, resolve by accountIndex -> account owner lookup if needed
+  try {
+    const ai = Number(rec.accountIndex);
+    const pk = keys?.[ai]?.pubkey?.toBase58?.() || keys?.[ai]?.toBase58?.() || String(keys?.[ai] || "");
+    if (pk) {
+      const b = await getAtaBalanceUi(ownerPub, mint, dec);
+      if (Number(b.sizeUi || 0) > 0) return { mint, sizeUi: Number(b.sizeUi), decimals: Number.isFinite(b.decimals) ? b.decimals : dec };
+    }
+  } catch {}
+  return null;
+}
+
+function enqueuePendingCredit({ owner, mint, addCostSol = 0, decimalsHint = 6, basePos = {}, sig }) {
   if (!owner || !mint) return;
   const nowTs = now();
   const until = nowTs + Math.max(5000, Number(state.pendingGraceMs || 20000));
@@ -209,6 +368,8 @@ function enqueuePendingCredit({ owner, mint, addCostSol = 0, decimalsHint = 6, b
   const add = Number(addCostSol || 0);
   _pendingCredits.set(key, {
     owner, mint,
+    sig: sig || prev?.sig || "",
+    expectedMint: mint,
     addCostSol: (Number(prev?.addCostSol || 0) + add),
     decimalsHint: Number.isFinite(decimalsHint) ? decimalsHint : (prev?.decimalsHint ?? 6),
     basePos: Object.assign({}, basePos || {}, { awaitingSizeSync: true }),
@@ -223,20 +384,24 @@ async function processPendingCredits() {
   if (!_pendingCredits || _pendingCredits.size === 0) return;
   const nowTs = now();
   for (const [key, entry] of Array.from(_pendingCredits.entries())) {
-    if (!entry?.owner || !entry?.mint) {
-      _pendingCredits.delete(key);
-      continue;
-    }
-    if (!entry || nowTs > entry.until) {
-      _pendingCredits.delete(key);
-      continue;
-    }
+    if (!entry?.owner || !entry?.mint) { _pendingCredits.delete(key); continue; }
+    if (!entry || nowTs > entry.until) { _pendingCredits.delete(key); continue; }
     if (entry.lastTriedAt && (nowTs - entry.lastTriedAt) < 300) continue;
     try {
       entry.lastTriedAt = nowTs;
+
       const bal = await getAtaBalanceUi(entry.owner, entry.mint, entry.decimalsHint);
       let sizeUi = Number(bal.sizeUi || 0);
       let dec = Number.isFinite(bal.decimals) ? bal.decimals : (entry.decimalsHint ?? 6);
+
+      if (sizeUi <= 0 && entry.sig) {
+        const metaHit = await reconcileBuyFromTx(entry.sig, entry.owner, entry.expectedMint).catch(()=>null);
+        if (metaHit && metaHit.mint === entry.mint) {
+          sizeUi = Number(metaHit.sizeUi || 0);
+          if (Number.isFinite(metaHit.decimals)) dec = metaHit.decimals;
+          if (sizeUi > 0) log(`Buy reconciled via tx meta for ${entry.mint.slice(0,4)}… size=${sizeUi.toFixed(6)}`);
+        }
+      }
 
       if (sizeUi <= 0) {
         try {
@@ -284,6 +449,7 @@ function loadPosCache(ownerPubkeyStr) {
     return {};
   }
 }
+
 function savePosCache(ownerPubkeyStr, data) {
   try {
     localStorage.setItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr, JSON.stringify(data || {}));
@@ -292,6 +458,7 @@ function savePosCache(ownerPubkeyStr, data) {
     log(`Failed to save position cache for ${ownerPubkeyStr.slice(0,4)}…`);
   }
 }
+
 function updatePosCache(ownerPubkeyStr, mint, sizeUi, decimals) {
   if (localStorage.getItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr) === null) {
     localStorage.setItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr, JSON.stringify({}));
@@ -304,12 +471,14 @@ function updatePosCache(ownerPubkeyStr, mint, sizeUi, decimals) {
     log(`Updated position cache for ${ownerPubkeyStr.slice(0,4)}… mint ${mint.slice(0,4)}… size ${sizeUi}`);
   }
 }
+
 function removeFromPosCache(ownerPubkeyStr, mint) {
   if (!ownerPubkeyStr || !mint) return;
   const cache = loadPosCache(ownerPubkeyStr);
   if (cache[mint]) { delete cache[mint]; savePosCache(ownerPubkeyStr, cache); }
   log(`Removed from position cache for ${ownerPubkeyStr.slice(0,4)}… mint ${mint.slice(0,4)}…`);
 }
+
 function cacheToList(ownerPubkeyStr) {
   const cache = loadPosCache(ownerPubkeyStr);
   const objOfCache = Object.entries(cache).map(([mint, v]) => ({
@@ -510,19 +679,25 @@ async function unwrapWsolIfAny(signerOrOwner) {
      const { PublicKey, Transaction, TransactionInstruction } = await loadWeb3();
      const conn = await getConn();
 
-     let ownerStr = "";
+     let ownerPk = null;
      try {
-       if (!signerOrOwner) ownerStr = "";
-       else if (typeof signerOrOwner === "string") ownerStr = signerOrOwner;
-       else if (typeof signerOrOwner?.toBase58 === "function") ownerStr = signerOrOwner.toBase58();
-       else if (signerOrOwner?.publicKey?.toBase58) ownerStr = signerOrOwner.publicKey.toBase58();
-       else if (signerOrOwner?.publicKey) ownerStr = new PublicKey(signerOrOwner.publicKey).toBase58();
+       if (!signerOrOwner) {
+         ownerPk = null;
+       } else if (typeof signerOrOwner === "string") {
+         if (await isValidPubkeyStr(signerOrOwner)) ownerPk = new PublicKey(signerOrOwner);
+       } else if (signerOrOwner?.publicKey?.toBase58) {
+         ownerPk = new PublicKey(signerOrOwner.publicKey.toBase58());
+       } else if (signerOrOwner?.publicKey) {
+         ownerPk = new PublicKey(signerOrOwner.publicKey);
+       } else if (typeof signerOrOwner?.toBase58 === "function") {
+         ownerPk = new PublicKey(signerOrOwner.toBase58());
+       }
      } catch {}
-     if (!ownerStr) {
-       log("WSOL unwrap: owner missing/invalid; skipping.");
+     if (!ownerPk) {
+       log("WSOL unwrap: invalid owner; skipping.");
        return false;
      }
-     const ownerPk = new PublicKey(ownerStr);
+     const ownerStr = ownerPk.toBase58();
      const canSign = !!(
        signerOrOwner &&
        signerOrOwner.publicKey &&
@@ -546,7 +721,9 @@ async function unwrapWsolIfAny(signerOrOwner) {
      const ixs = [];
      for (const rec of atas) {
        try {
-         const ataPk = rec?.ata instanceof PublicKey ? rec.ata : new PublicKey(String(rec?.ata));
+         const ataStr = rec?.ata?.toBase58?.() || String(rec?.ata || "");
+         if (!ataStr || !(await isValidPubkeyStr(ataStr))) continue;
+         const ataPk = new PublicKey(ataStr);
          const ai = await conn.getAccountInfo(ataPk, "processed").catch(() => null);
          if (!ai) continue;
 
@@ -580,19 +757,29 @@ async function unwrapWsolIfAny(signerOrOwner) {
      log(`WSOL unwrap sent: ${sig}`);
      return true;
    } catch (e) {
-     log(`WSOL unwrap failed: ${e.message || e}`);
+     const msg = String(e?.message || e || "");
+     if (/Invalid public key input/i.test(msg)) {
+       log("WSOL unwrap: invalid input; skipping.");
+       return false;
+     }
+     log(`WSOL unwrap failed: ${msg}`);
      return false;
    }
 }
 
-async function confirmSig(sig, { commitment = "confirmed", timeoutMs = 12000, pollMs = 300 } = {}) {
+async function confirmSig(sig, { commitment = "confirmed", timeoutMs = 12000, pollMs = 300, requireFinalized = false } = {}) {
   const conn = await getConn();
   const start = now();
   while (now() - start < timeoutMs) {
     try {
-      const st = await conn.getSignatureStatuses([sig]);
+      const st = await conn.getSignatureStatuses([sig], { searchTransactionHistory: true });
       const v = st?.value?.[0];
-      if (v?.confirmationStatus === "confirmed" || v?.confirmationStatus === "finalized") return true;
+      if (v) {
+        const cs = v.confirmationStatus;
+        const ok = (!v.err) && (requireFinalized ? cs === "finalized" : (cs === "confirmed" || cs === "finalized"));
+        if (ok) return true;
+        if (v.err) return false;
+      }
     } catch {}
     await new Promise(r => setTimeout(r, pollMs));
   }
@@ -979,7 +1166,7 @@ async function jupFetch(path, opts) {
     try {
       const res = await p;
       log(`JUP resp: ${res.status} ${url}`);
-      return res;
+      return res.clone(); 
     } finally {
       window._fdvJupInflight.delete(url);
     }
@@ -1034,26 +1221,62 @@ async function quoteOutSol(inputMint, amountUi, inDecimals) {
 
 async function executeSwapWithConfirm(opts, { retries = 2, confirmMs = 15000 } = {}) {
   let slip = Math.max(150, Number(opts.slippageBps ?? state.slippageBps ?? 150) | 0);
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const sig = await jupSwapWithKeypair({ ...opts, slippageBps: slip });
-      const ok = await confirmSig(sig, { commitment: "confirmed", timeoutMs: confirmMs }).catch(() => false);
-      if (ok) return { ok: true, sig, slip };
-    } catch (e) {
-      const msg = String(e?.message || e || "");
-      log(`Swap attempt ${attempt+1} failed: ${msg}`);
-      if (/ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|BELOW_MIN_NOTIONAL|0x1788/i.test(msg)) {
-        // On sell failures, set per-mint cooldown
-        if (opts?.inputMint && opts?.outputMint === SOL_MINT && opts.inputMint !== SOL_MINT) {
-          setRouterHold(opts.inputMint, ROUTER_COOLDOWN_MS);
+  const prevDefer = !!window._fdvDeferSeed;
+  window._fdvDeferSeed = true;
+  let lastSig = null;
+  try {
+    const isBuy = (opts?.inputMint === SOL_MINT && opts?.outputMint && opts.outputMint !== SOL_MINT);
+    const needFinal = isBuy;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const sig = await jupSwapWithKeypair({ ...opts, slippageBps: slip });
+        lastSig = sig;
+
+        if (isBuy) {
+          try {
+            const ownerStr = opts?.signer?.publicKey?.toBase58?.();
+            if (ownerStr) {
+              const s = getBuySeed(ownerStr, opts.outputMint);
+              if (s && Number(s.sizeUi || 0) > 0) {
+                optimisticSeedBuy(ownerStr, opts.outputMint, Number(s.sizeUi), Number(s.decimals), Number(opts.amountUi || 0), sig);
+                clearBuySeed(ownerStr, opts.outputMint);
+              }
+            }
+          } catch {}
         }
-        return { ok: false, noRoute: true, msg };
+
+        const ok = await confirmSig(sig, {
+          commitment: "confirmed",
+          timeoutMs: confirmMs,
+          requireFinalized: needFinal
+        }).catch(() => false);
+        if (ok) return { ok: true, sig, slip };
+
+        // Avoid duplicate buys: do not retry a buy after first send
+        if (isBuy) {
+          log("Buy sent; skipping retries and relying on pending credit.");
+          return { ok: false, sig, slip };
+        }
+      } catch (e) {
+        const msg = String(e?.message || e || "");
+        log(`Swap attempt ${attempt+1} failed: ${msg}`);
+        if (/INSUFFICIENT_LAMPORTS/i.test(msg)) {
+          return { ok: false, insufficient: true, msg, sig: lastSig };
+        }
+        if (/ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|BELOW_MIN_NOTIONAL|0x1788/i.test(msg)) {
+          if (opts?.inputMint && opts?.outputMint === SOL_MINT && opts.inputMint !== SOL_MINT) {
+            setRouterHold(opts.inputMint, ROUTER_COOLDOWN_MS);
+          }
+          return { ok: false, noRoute: true, msg, sig: lastSig };
+        }
       }
+      slip = Math.min(2000, Math.floor(slip * 1.6));
+      log(`Swap not confirmed; retrying with slippage=${slip} bps…`);
     }
-    slip = Math.min(2000, Math.floor(slip * 1.6));
-    log(`Swap not confirmed; retrying with slippage=${slip} bps…`);
+    return { ok: false, sig: lastSig };
+  } finally {
+    window._fdvDeferSeed = prevDefer;
   }
-  return { ok: false };
 }
 
 async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, slippageBps }) {
@@ -1076,6 +1299,11 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     const baseSlip = Math.max(150, Number(slippageBps ?? state.slippageBps ?? 150) | 0);
     const amountRaw = Math.max(1, Math.floor(amountUi * Math.pow(10, inDecimals)));
 
+    let _preBuyRent = 0;
+    if (inputMint === SOL_MINT && outputMint !== SOL_MINT) {
+      try { _preBuyRent = await requiredAtaLamportsForSwap(userPub, inputMint, outputMint); } catch { _preBuyRent = 0; }
+    }
+
     const baseUrl = await getJupBase();
     const isLite = /lite-api\.jup\.ag/i.test(baseUrl);
     const restrictAllowed = !isLite;
@@ -1093,9 +1321,26 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         if (Number.isFinite(b0.decimals)) _decHint = b0.decimals;
       } catch {}
     }
+
+    async function notePendingBuySeed() {
+      try {
+        if (!(inputMint === SOL_MINT && outputMint !== SOL_MINT)) return;
+        const outRaw = Number(quote?.outAmount || 0);
+        if (!Number.isFinite(outRaw) || outRaw <= 0) return;
+        const dec = await safeGetDecimalsFast(outputMint);
+        const ui = outRaw / Math.pow(10, dec);
+        if (ui > 0) {
+          putBuySeed(userPub, outputMint, {
+            sizeUi: ui,
+            decimals: dec,
+            costSol: Number(amountUi || 0),
+          });
+        }
+      } catch {}
+    }
+
     async function _reconcileSplitSellRemainder(sig) {
       try {
-        // Ensure debit landed before reading balance
         await confirmSig(sig, { commitment: "confirmed", timeoutMs: 15000 }).catch(()=>{});
         let remainUi = 0, d = _decHint;
         try {
@@ -1104,15 +1349,14 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
           if (Number.isFinite(b1.decimals)) d = b1.decimals;
         } catch {}
         if (remainUi <= 1e-9) {
-          // Fully gone — prune caches/state
           try { removeFromPosCache(userPub, inputMint); } catch {}
+          try { clearPendingCredit(userPub, inputMint); } catch {}
           if (state.positions && state.positions[inputMint]) { delete state.positions[inputMint]; save(); }
           return;
         }
         const estRemainSol = await quoteOutSol(inputMint, remainUi, d).catch(() => 0);
         const minN = minSellNotionalSol();
         if (estRemainSol >= minN) {
-          // Keep in positions/cache; scale cost/hwm proportionally by on-chain remainder
           const prevSize = _preSplitUi > 0 ? _preSplitUi : (state.positions?.[inputMint]?.sizeUi || 0);
           const frac = prevSize > 0 ? Math.min(1, Math.max(0, remainUi / Math.max(1e-9, prevSize))) : 1;
           const pos = state.positions[inputMint];
@@ -1126,7 +1370,6 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
           }
           updatePosCache(userPub, inputMint, remainUi, d);
         } else {
-          // Move unsellable leftover to dust cache and remove from normal cache/state
           try { addToDustCache(userPub, inputMint, remainUi, d); } catch {}
           try { removeFromPosCache(userPub, inputMint); } catch {}
           if (state.positions && state.positions[inputMint]) { delete state.positions[inputMint]; save(); }
@@ -1207,15 +1450,15 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     // let sawRouteDust = false;
 
     const first = await buildAndSend(false);
-    if (first.ok) { await seedCacheIfBuy(); return first.sig; }
+    if (first.ok) { await notePendingBuySeed(); await seedCacheIfBuy(); return first.sig; }
     if (first.code === "NOT_SUPPORTED") {
       log("Retrying with shared accounts …");
       const second = await buildAndSend(true);
-      if (second.ok) { await seedCacheIfBuy(); return second.sig; }
+      if (second.ok) { await notePendingBuySeed(); await seedCacheIfBuy(); return second.sig; }
     } else {
       log("Primary swap failed. Fallback: shared accounts …");
       const fallback = await buildAndSend(true);
-      if (fallback.ok) { await seedCacheIfBuy(); return fallback.sig; }
+      if (fallback.ok) { await notePendingBuySeed(); await seedCacheIfBuy(); return fallback.sig; }
     }
 
     {
@@ -1226,14 +1469,14 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       for (const t of manualSeq) {
         try {
           const r = await t();
-          if (r?.ok) { await seedCacheIfBuy(); return r.sig; }
-          if (isRouteErr(r?.code || r?.msg)) sawRouteDust = true;
+          if (r?.ok) { await notePendingBuySeed(); await seedCacheIfBuy(); return r.sig; }
         } catch {}
       }
     }
 
    
     async function seedCacheIfBuy() {
+      if (window._fdvDeferSeed) return;
       if (inputMint === SOL_MINT && outputMint !== SOL_MINT) {
         const estRaw = Number(quote?.outAmount || 0);
         if (estRaw > 0) {
@@ -1243,7 +1486,6 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
             updatePosCache(userPub, outputMint, ui, dec);
             log(`Seeded cache for ${outputMint.slice(0,4)}… (~${ui.toFixed(6)})`);
           } catch {}
-          // Fire-and-forget: reconcile state and pick up on-chain credit as it lands
           setTimeout(() => {
             Promise.resolve()
               .then(() => syncPositionsFromChain(userPub).catch(()=>{}))
@@ -1254,6 +1496,18 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     }
 
     async function buildAndSend(useSharedAccounts = true, asLegacy = false) {
+      if (inputMint === SOL_MINT && outputMint !== SOL_MINT) {
+        try {
+          const balL = await conn.getBalance(signer.publicKey, "processed");
+          const needL = amountRaw + Math.ceil(_preBuyRent) + TX_FEE_BUFFER_LAMPORTS;
+          if (balL < needL) {
+            log(`Buy preflight: insufficient SOL ${(balL/1e9).toFixed(6)} < ${(needL/1e9).toFixed(6)} (amount+rent+fees).`);
+            throw new Error("INSUFFICIENT_LAMPORTS");
+          }
+        } catch (e) {
+          if (String(e?.message||"").includes("INSUFFICIENT_LAMPORTS")) throw e;
+        }
+      }
       if (asLegacy) {
         try {
           const qLegacy = buildQuoteUrl({
@@ -1312,7 +1566,11 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         const sig = await conn.sendRawTransaction(vtx.serialize(), { preflightCommitment: "processed", maxRetries: 3 });
         log(`Swap sent: ${sig}`);
         try { if (isSell) setTimeout(() => _reconcileSplitSellRemainder(sig), 0); } catch {}
-        try { setTimeout(() => { unwrapWsolIfAny(signer).catch(()=>{}); }, 0); } catch {} // wtf is that <-
+        try {
+          if (inputMint === SOL_MINT || outputMint === SOL_MINT) {
+            setTimeout(() => { unwrapWsolIfAny(signer).catch(()=>{}); }, 0);
+          }
+        } catch {}
         return { ok: true, sig };
       } catch (e) {
         log(`Swap send failed. NO_ROUTES/ROUTER_DUST. export help/wallet.json to recover dust funds. Simulating…`);
@@ -1433,7 +1691,11 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
           }
           log(`Swap (manual send v0) sent: ${sig}`);
           try { if (isSell) setTimeout(() => _reconcileSplitSellRemainder(sig), 0); } catch {}
-          try { setTimeout(() => { unwrapWsolIfAny(signer).catch(()=>{}); }, 0); } catch {} // wtf is that <-
+          try {
+            if (inputMint === SOL_MINT || outputMint === SOL_MINT) {
+              setTimeout(() => { unwrapWsolIfAny(signer).catch(()=>{}); }, 0);
+            }
+          } catch {}
           return { ok: true, sig };
         } catch (e) {
           log(`Manual send failed: ${e.message || e}. Simulating…`);
@@ -1460,7 +1722,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       for (const t of tries) {
         try {
           const r = await t();
-          if (r?.ok) { await seedCacheIfBuy(); return r.sig; }
+          if (r?.ok) { await notePendingBuySeed(); await seedCacheIfBuy(); return r.sig; }
         } catch {}
       }
     }
@@ -1908,6 +2170,50 @@ function pickPumpCandidates(take = 1, poolN = 3) {
   }
 }
 
+function _getDropGuardStore() {
+  if (!window._fdvDropGuard) window._fdvDropGuard = new Map(); // mint -> { consec3, lastPasses, lastAt }
+  return window._fdvDropGuard;
+}
+
+function recordObserverPasses(mint, passes) {
+  if (!mint) return;
+  const m = _getDropGuardStore();
+  const r = m.get(mint) || { consec3: 0, lastPasses: 0, lastAt: 0 };
+  if (passes === 3) {
+    r.consec3 = (r.lastPasses === 3) ? (r.consec3 + 1) : 1;
+  } else {
+    r.consec3 = 0;
+  }
+  r.lastPasses = passes;
+  r.lastAt = now();
+  m.set(mint, r);
+}
+
+function shouldForceSellAtThree(mint, pos, curSol, nowTs) {
+  try {
+    const sizeUi = Number(pos.sizeUi || 0);
+    if (sizeUi <= 0) return false;
+
+    // Age guard
+    const minAgeMs = Math.max(0, Number(state.observerDropMinAgeSecs || 0) * 1000);
+    const ageMs = nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0);
+    if (ageMs < minAgeMs) return false;
+
+    const rec = _getDropGuardStore().get(mint) || { consec3: 0 };
+    const needConsec = Math.max(1, Number(state.observerDropConsec || 2));
+
+    // Price drawdown from HWM
+    const pxNow = curSol / sizeUi; // SOL per unit
+    const hwmPx = Number(pos.hwmPx || 0) || pxNow;
+    const ddPct = (hwmPx > 0 && pxNow > 0) ? ((hwmPx - pxNow) / hwmPx) * 100 : 0;
+    const trailThr = Math.max(0, Number(state.observerDropTrailPct || 0));
+
+    const consecOk = (rec.consec3 + 1) >= needConsec;
+    const drawdownOk = trailThr > 0 && ddPct >= trailThr;
+    return consecOk || drawdownOk;
+  } catch { return false; }
+}
+
 function _getObserverWatch() {
   if (!window._fdvObserverWatch) window._fdvObserverWatch = new Map();
   return window._fdvObserverWatch;
@@ -1925,17 +2231,19 @@ function noteObserverConsider(mint, ms = 30_000) {
   try { log(`Observer: consider ${mint.slice(0,4)}… (3/5). Watching for uptick…`); } catch {}
 }
 
-function isObserverConsiderActive(mint) {
-  const m = _getObserverWatch();
-  const rec = m.get(mint);
-  if (!rec) return false;
-  if (now() > rec.until) { m.delete(mint); return false; }
-  return true;
-}
+// function isObserverConsiderActive(mint) {
+//   const m = _getObserverWatch();
+//   const rec = m.get(mint);
+//   if (!rec) return false;
+//   if (now() > rec.until) { m.delete(mint); return false; }
+//   return true;
+// }
 
 function clearObserverConsider(mint) {
   try { _getObserverWatch().delete(mint); } catch {}
 }
+
+
 
 
 async function pickTopPumper() {
@@ -2356,6 +2664,7 @@ async function sweepNonSolToSolAtStart() {
       await addRealizedPnl(estSol, costSold, "Startup sweep PnL");
       if (state.positions[mint]) { delete state.positions[mint]; save(); }
       removeFromPosCache(owner, mint);
+      try { clearPendingCredit(owner, mint); } catch {}
       sold++;
       await new Promise(r => setTimeout(r, 250));
     } catch (e) {
@@ -2437,7 +2746,6 @@ async function sweepDustToSolAtStart() {
         const estRemainSol = await quoteOutSol(mint, remainUi, remDec).catch(() => 0);
         const minN = minSellNotionalSol();
         if (estRemainSol >= minN) {
-          // Remainder is sellable — promote to positions cache for normal handling
           updatePosCache(owner, mint, remainUi, remDec);
           removeFromDustCache(owner, mint);
           const prev = state.positions[mint] || { costSol: 0, hwmSol: 0, acquiredAt: now() };
@@ -2446,14 +2754,13 @@ async function sweepDustToSolAtStart() {
           setRouterHold(mint, ROUTER_COOLDOWN_MS);
           log(`Dust sweep partial: remain ${remainUi.toFixed(6)} ${mint.slice(0,4)}… promoted from dust.`);
         } else {
-          // Still dust — update dust cache with new remainder
           addToDustCache(owner, mint, remainUi, remDec);
           log(`Dust sweep partial: remain ${remainUi.toFixed(6)} ${mint.slice(0,4)}… stays in dust.`);
         }
       } else {
-        // Fully sold — clean up dust and any stale pos cache
         removeFromDustCache(owner, mint);
         removeFromPosCache(owner, mint);
+        try { removePendingCredit(owner, mint); } catch {}
         if (state.positions[mint]) { delete state.positions[mint]; save(); }
         log(`Dust sweep sold ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
         sold++;
@@ -2565,7 +2872,8 @@ async function evalAndMaybeSellPositions() {
         let rugSev = 0;
         let forcePumpDrop = false;
         let forceObserverDrop = false;
-        try {
+        let obsPasses = null; 
+               try {
           const sig = getRugSignalForMint(mint);
           recordBadgeTransition(mint, sig.badge);
           if (sig?.rugged) {
@@ -2587,13 +2895,18 @@ async function evalAndMaybeSellPositions() {
             const obs = await observeMintOnce(mint, { windowMs: 2000, sampleMs: 600, minPasses: 4, adjustHold: !!state.dynamicHoldEnabled });
             if (!obs.ok) {
               const p = Number(obs.passes || 0);
+              recordObserverPasses(mint, p);
+              const thr = Math.max(0, Number(state.observerDropSellAt ?? 3));
               if (p <= 2) {
                 forceObserverDrop = true;
                 setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
-                log(`Observer drop for ${mint.slice(0,4)}… (${p}/5) forcing sell and blacklisting 30m.`);
-              } else if (p === 3) {
-                log(`Observer ${mint.slice(0,4)}… at 3/5; watching — no forced sell.`);
+                log(`Observer drop for ${mint.slice(0,4)}… (${p}/5 <= 2) forcing sell and blacklisting 30m.`);
+              } else if (p === 3 && thr >= 3) {
+                // Soft-watch; hysteresis to avoid flip-flopping
+                obsPasses = 3;
               }
+            } else {
+              recordObserverPasses(mint, Number(obs.passes || 5));
             }
           } catch {}
         }
@@ -2605,6 +2918,18 @@ async function evalAndMaybeSellPositions() {
           curSol = await quoteOutSol(mint, sz, pos.decimals).catch(() => 0);
           pos.lastQuotedSol = curSol;
           pos.lastQuotedAt = nowTs;
+        }
+
+        if (!forceRug && !forcePumpDrop && !forceObserverDrop && obsPasses === 3) {
+          const should = shouldForceSellAtThree(mint, pos, curSol, nowTs);
+          if (should) {
+            forceObserverDrop = true;
+            setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+            log(`Observer 3/5 debounced -> forcing sell (${mint.slice(0,4)}…) and blacklisting 30m.`);
+          } else {
+            log(`Observer 3/5 for ${mint.slice(0,4)}… soft-watch; debounce active (no sell).`);
+            noteObserverConsider(mint, 30_000);
+          }
         }
 
         const baseMinNotional = Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN * 1.05);
@@ -2658,6 +2983,8 @@ async function evalAndMaybeSellPositions() {
         }
 
         _inFlight = true;
+        lockMint(mint, "sell", Math.max(MINT_OP_LOCK_MS, Number(state.sellCooldownMs||20000)));
+
         if (decision.action === "sell_partial") {
           const pct = Math.min(100, Math.max(1, Number(decision.pct || 50)));
           let sellUi = pos.sizeUi * (pct / 100);
@@ -2685,6 +3012,7 @@ async function evalAndMaybeSellPositions() {
                 if (res2.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
                 log(`Sell not confirmed for ${mint.slice(0,4)}… Keeping position.`);
                 _inFlight = false;
+                unlockMint(mint);
                 continue;
               }
 
@@ -2702,6 +3030,7 @@ async function evalAndMaybeSellPositions() {
                 if (chkUi <= 1e-9) {
                   delete state.positions[mint];
                   removeFromPosCache(kp.publicKey.toBase58(), mint);
+                  try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
                 } else {
                   const estRemainSol = await quoteOutSol(mint, chkUi, chkDec).catch(() => 0);
                   const minN = minSellNotionalSol();
@@ -2725,10 +3054,12 @@ async function evalAndMaybeSellPositions() {
                 await addRealizedPnl(estFullSol, costSold, "Full sell PnL");
                 delete state.positions[mint];
                 removeFromPosCache(kp.publicKey.toBase58(), mint);
+                try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
                 save();
               }
               state.lastTradeTs = now();
               _inFlight = false;
+              unlockMint(mint);
               save();
               return; // one sell per tick
             } else {
@@ -2746,6 +3077,7 @@ async function evalAndMaybeSellPositions() {
             if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
             log(`Sell not confirmed for ${mint.slice(0,4)}… (partial). Keeping position.`);
             _inFlight = false;
+            unlockMint(mint);
             continue;
           }
 
@@ -2777,6 +3109,7 @@ async function evalAndMaybeSellPositions() {
               } else {
                 try { addToDustCache(kp.publicKey.toBase58(), mint, remainUi, pos.decimals ?? 6); } catch {}
                 try { removeFromPosCache(kp.publicKey.toBase58(), mint); } catch {}
+                try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
                 delete state.positions[mint];
                 save();
                 log(`Leftover below notional for ${mint.slice(0,4)}… moved to dust cache.`);
@@ -2785,6 +3118,7 @@ async function evalAndMaybeSellPositions() {
               // fully gone
               delete state.positions[mint];
               removeFromPosCache(kp.publicKey.toBase58(), mint);
+              try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
             }
           } catch {
             updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
@@ -2807,6 +3141,7 @@ async function evalAndMaybeSellPositions() {
             if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
             log(`Sell not confirmed for ${mint.slice(0,4)}… Keeping position.`);
             _inFlight = false;
+            unlockMint(mint);
             continue;
           }
 
@@ -3077,6 +3412,13 @@ async function tick() {
   const withinBatch = state.allowMultiBuy && now() <= _buyBatchUntil;
   if (state.lastTradeTs && (now() - state.lastTradeTs)/1000 < state.minSecsBetween && !withinBatch && !ignoreCooldownForLeaderBuy) return;
 
+
+  if (!tryAcquireBuyLock(BUY_LOCK_MS)) {
+    log("Buy lock held; skipping buys this tick.");
+    return;
+  }
+
+
   try {
     const kp = await getAutoKeypair();
     if (!kp) return;
@@ -3104,13 +3446,18 @@ async function tick() {
       reservesSol: (ceiling.reserves.totalResLamports/1e9).toFixed(6),
       minThreshold
     });
+
+
     const buyCandidates = picks.filter(m => {
       const pos = state.positions[m];
-      const allowRebuy = !!pos?.allowRebuy; // set when we split-sold and kept a remainder
+      const allowRebuy = !!pos?.allowRebuy;
       const eligibleSize = allowRebuy || Number(pos?.sizeUi || 0) <= 0;
       const notPending = !pos?.awaitingSizeSync;
-      return eligibleSize && notPending;
+      const notLocked  = !isMintLocked(m);
+      return eligibleSize && notPending && notLocked;
     });
+
+
     if (!buyCandidates.length) { log("All picks already held or pending. Skipping buys."); return; }
 
     if (plannedTotal < minThreshold) {
@@ -3178,6 +3525,10 @@ async function tick() {
 
       const buySol = buyLamports / 1e9;
 
+      const ownerStr = kp.publicKey.toBase58();
+      const prevPos  = state.positions[mint];
+      const basePos  = prevPos || { costSol: 0, hwmSol: 0, acquiredAt: now() };
+
       const res = await executeSwapWithConfirm({
         signer: kp,
         inputMint: SOL_MINT,
@@ -3185,28 +3536,47 @@ async function tick() {
         amountUi: buySol,
         slippageBps: state.slippageBps,
       }, { retries: 2, confirmMs: 15000 });
+
       if (!res.ok) {
-        log(`Buy not confirmed for ${mint.slice(0,4)}… skipping accounting.`);
+        try {
+          const seed = getBuySeed(ownerStr, mint);
+          if (seed && Number(seed.sizeUi || 0) > 0) {
+            optimisticSeedBuy(ownerStr, mint, Number(seed.sizeUi), Number(seed.decimals), buySol, res.sig || "");
+            clearBuySeed(ownerStr, mint);
+            log(`Buy unconfirmed for ${mint.slice(0,4)}… seeded pending credit watch.`);
+          } else {
+            log(`Buy not confirmed for ${mint.slice(0,4)}… skipping accounting.`);
+          }
+        } catch {
+          log(`Buy not confirmed for ${mint.slice(0,4)}… skipping accounting.`);
+        }
         continue;
       }
+      try {
+        const seed = getBuySeed(ownerStr, mint);
+        if (seed && Number(seed.sizeUi || 0) > 0) {
+          optimisticSeedBuy(ownerStr, mint, Number(seed.sizeUi), Number(seed.decimals), buySol, res.sig || "");
+          clearBuySeed(ownerStr, mint);
+        }
+      } catch {}
+
+
 
       remainingLamports = Math.max(0, remainingLamports - buyLamports - reqRent);
       remaining = remainingLamports / 1e9;
 
-      const prevPos  = state.positions[mint];
-      // const prevSize = Number(prevPos?.sizeUi || 0);
-      const basePos  = prevPos || { costSol: 0, hwmSol: 0, acquiredAt: now() };
-
-      // Verify on-chain credit before accounting
       // let credited = false;
       let got = { sizeUi: 0, decimals: Number.isFinite(basePos.decimals) ? basePos.decimals : 6 };
       try {
         got = await waitForTokenCredit(kp.publicKey.toBase58(), mint, { timeoutMs: 8000, pollMs: 300 });
       } catch (e) { log(`Token credit wait failed: ${e.message || e}`); }
-      if (!Number(got.sizeUi || 0)) {
+      if (!Number(got.sizeUi || 0) && res.sig) {
         try {
-          const bal = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, basePos.decimals);
-          got = { sizeUi: Number(bal.sizeUi || 0), decimals: Number.isFinite(bal.decimals) ? bal.decimals : got.decimals };
+          const metaHit = await reconcileBuyFromTx(res.sig, kp.publicKey.toBase58(), mint);
+          if (metaHit && metaHit.mint === mint && Number(metaHit.sizeUi || 0) > 0) {
+            got = { sizeUi: Number(metaHit.sizeUi), decimals: Number.isFinite(metaHit.decimals) ? metaHit.decimals : got.decimals };
+            log(`Buy registered via tx meta for ${mint.slice(0,4)}… (${got.sizeUi.toFixed(6)})`);
+          }
         } catch {}
       }
 
@@ -3248,6 +3618,7 @@ async function tick() {
           addCostSol: buySol,
           decimalsHint: basePos.decimals,
           basePos: pos,
+          sig: res.sig
         });
         try { await processPendingCredits(); } catch {}
         await logMoneyMade();
@@ -3272,6 +3643,7 @@ async function tick() {
     log(`Buy failed: ${e.message||e}`);
   } finally {
     _buyInFlight = false;
+    releaseBuyLock();
   }
 }
 
@@ -3335,6 +3707,10 @@ function onToggle(on) {
    } else if (!state.enabled && timer) {
      clearInterval(timer);
      timer = null;
+     try {
+       const hasOpen = Object.entries(state.positions||{}).some(([m,p]) => m!==SOL_MINT && Number(p?.sizeUi||0) > 0);
+       if (hasOpen) setTimeout(() => { evalAndMaybeSellPositions().catch(()=>{}); }, 0);
+     } catch {}
      log("Auto trading stopped");
    }
    save();
@@ -3399,7 +3775,7 @@ export function initAutoWidget(container = document.body) {
       <svg class="fdv-acc-caret" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
         <path d="M8 10l4 4 4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>
-      <span class="fdv-title">Auto Pump (v0.0.2.5)</span>
+      <span class="fdv-title">Auto Pump (v0.0.2.6)</span>
     </span>
   `;
 
@@ -3564,21 +3940,31 @@ export function initAutoWidget(container = document.body) {
              </div>
              <div data-auto-tab-panel="release" style="display:none;">
                <div>
-                 <strong>Release v0.0.2.4 — Highlights</strong>
+                 <strong>Release v0.0.2.6: Highlights</strong>
                  <ul style="margin:6px 0 0 18px;">
-                   <li>Leader mode with automatic rotation on leader changes.</li>
-                   <li>Stress-aware Jupiter rate limiting and quote caching.</li>
-                   <li>Min-notional dust protection on buys and sells.</li>
-                   <li>Split-sell fallback with remainder reconciliation and cache updates.</li>
-                   <li>USDC fallback routing (token -> USDC -> SOL) when direct routes fail.</li>
-                   <li>Per-mint router cooldowns after route/dust errors.</li>
-                   <li>Position and dust caches with on-chain reconciliation and pending credit watcher.</li>
-                   <li>WSOL unwrap factorization to prevent wrapped SOL routing errors; auto-close zero-balance ATAs to reclaim rent.</li>
-                   <li>Auto-wallet generation/export; “End & Return” to send SOL to recipient.</li>
-                   <li>CORS RPC + headers support; owner-scan adaptation for restricted plans.</li>
-                   <li>Dynamic compute unit limit; v0 and legacy transaction fallbacks.</li>
-                   <li>Optional platform fees with pre-configured fee ATAs.</li>
+                   <li>Observer system refinements: 3/5 soft-watch debounce, forced sells with hysteresis, dynamic hold tuning.</li>
+                   <li>Leader mode rotation polished: full/partial rotation with remainder reconciliation and router cooldowns.</li>
+                   <li>Optimistic buy seeding now accumulates multiple seeds; pending-credit reconciliation is more robust.</li>
+                   <li>Wallet Holdings panel shows Sellable vs Dust with live SOL and USD totals; quick export button.</li>
+                   <li>Stress-aware Jupiter client: inflight GET dedupe + safe Response clones; quote memoization with jittered pacing.</li>
+                   <li>Split-sell fallback upgrades: accurate proportional cost/hwm, cache updates, and dust promotion/cleanup.</li>
+                   <li>WSOL unwrap hardening: tolerant owner/ATA normalization and gated only for SOL-involved swaps.</li>
+                   <li>Per-mint router cooldowns applied consistently after route/dust errors and partial remainders.</li>
+                   <li>Startup sweeps for positions and dust with on-chain verification and safe cache pruning.</li>
+                   <li>Compute/spend ceiling improvements: fee/rent/runway buffers and multi-buy single-tick gating.</li>
                  </ul>
+                 <div style="margin-top:10px;">
+                   <strong>Fixes & stability</strong>
+                   <ul style="margin:6px 0 0 18px;">
+                     <li>Eliminated duplicate buy sends: no retries after first buy submit; rely on pending-credit watcher.</li>
+                     <li>Fixed “body stream already read” by returning cloned Responses from inflight GET cache.</li>
+                     <li>Clears pending-credit watchers on full sells, rotations, dust sweeps, and remainders.</li>
+                     <li>Preflight balance checks for buys include ATA rent and fee buffers to prevent lamport shortfalls.</li>
+                     <li>Min-notional enforcement for sells and dust exits; safe classification to dust cache when needed.</li>
+                     <li>Improved public key handling and validation to avoid “Invalid public key input” noise.</li>
+                     <li>Safer owner scans with adaptive fallbacks and cache verification for restricted RPC plans.</li>
+                   </ul>
+                 </div>
                </div>
              </div>
             </div>
