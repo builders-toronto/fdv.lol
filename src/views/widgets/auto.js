@@ -16,8 +16,15 @@ const EXTRA_TX_BUFFER_LAMPORTS     = 250_000;
 const MIN_OPERATING_SOL            = 0.010;    
 const ROUTER_COOLDOWN_MS           = 60_000;
 const MINT_RUG_BLACKLIST_MS = 30 * 60 * 1000;
+const MINT_BLACKLIST_STAGES_MS =  [2 * 60 * 1000, 15 * 60 * 1000, MINT_RUG_BLACKLIST_MS];
+const URGENT_SELL_COOLDOWN_MS= 8_000; 
+const URGENT_SELL_MIN_AGE_MS = 12_000;
+const FAST_OBS_INTERVAL_MS   = 40;    
 const SPLIT_FRACTIONS = [0.99, 0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.50, 0.33, 0.25, 0.20];
 const MINT_OP_LOCK_MS = 30_000;
+const BUY_SEED_TTL_MS = 60_000;
+const BUY_LOCK_MS = 5_000;
+const FAST_OBS_LOG_INTERVAL_MS = 200; 
 
 
 const POSCACHE_KEY_PREFIX = "fdv_poscache_v1:";
@@ -201,15 +208,103 @@ let _lastOwnerReconTs = 0;
 
 let _solPxCache = { ts: 0, usd: 0 };
 
+let _conn = null, _connUrl = "";
+
+let _connHdrKey = "";
+
 function _pcKey(owner, mint) { return `${owner}:${mint}`; }
+
+function _getUrgentSellStore() {
+  if (!window._fdvUrgentSell) window._fdvUrgentSell = new Map();
+  return window._fdvUrgentSell;
+}
+
+function flagUrgentSell(mint, reason = "observer", sev = 1) {
+  if (!mint) return;
+  const m = _getUrgentSellStore();
+  const prev = m.get(mint) || { until: 0 };
+  const nowTs = now();
+  if (prev.until && nowTs < prev.until) return; // cooldown
+  m.set(mint, { reason, sev, until: nowTs + URGENT_SELL_COOLDOWN_MS });
+  setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+  log(`URGENT: ${reason} for ${mint.slice(0,4)}… flagged for immediate sell.`);
+  wakeSellEval();
+}
+
+function takeUrgentSell(mint) {
+  const m = _getUrgentSellStore();
+  const rec = m.get(mint);
+  if (!rec) return null;
+  if (now() > rec.until) { m.delete(mint); return null; }
+  m.delete(mint);
+  return rec;
+}
+
+function wakeSellEval() {
+  try {
+    if (!_sellEvalRunning) setTimeout(() => { evalAndMaybeSellPositions().catch(()=>{}); }, 0);
+  } catch {}
+}
+
+function _getFastObsLogStore() {
+  if (!window._fdvFastObsLog) window._fdvFastObsLog = new Map(); // mint -> { lastAt, lastBadge, lastMsg }
+  return window._fdvFastObsLog;
+}
+function _fmtDelta(a, b, digits = 2) {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return "—";
+  const d = b - a;
+  const sign = d > 0 ? "+" : d < 0 ? "−" : "±";
+  return `${b.toFixed(digits)} (${sign}${Math.abs(d).toFixed(digits)})`;
+}
+function _normNum(n) { return Number.isFinite(n) ? n : null; }
+function logFastObserverSample(mint, pos) {
+  try {
+    const store = _getFastObsLogStore();
+    const rec = store.get(mint) || { lastAt: 0, lastBadge: "", lastMsg: "" };
+    const nowTs = now();
+    if (nowTs - rec.lastAt < FAST_OBS_LOG_INTERVAL_MS) return;
+
+    const sig = getRugSignalForMint(mint) || {};
+    const rawBadge = String(sig.badge || "");
+    const badge = normBadge(rawBadge);
+
+    const series = getLeaderSeries(mint, 3) || [];
+    const a = series[0] || {};
+    const c = series[series.length - 1] || {};
+    const aChg = _normNum(a.chg5m), cChg = _normNum(c.chg5m);
+    const aSc  = _normNum(a.pumpScore), cSc  = _normNum(c.pumpScore);
+
+    const sz = Number(pos.sizeUi || 0);
+    const curSol = Number(pos.lastQuotedSol || 0);
+    let ddStr = "dd: —";
+    if (sz > 0 && curSol > 0 && Number(pos.hwmPx || 0) > 0) {
+      const pxNow = curSol / sz;
+      const ddPct = ((pos.hwmPx - pxNow) / Math.max(1e-12, pos.hwmPx)) * 100;
+      ddStr = `dd: ${ddPct.toFixed(2)}%`;
+    }
+
+    const chgStr = (aChg !== null && cChg !== null) ? `chg5m: ${_fmtDelta(aChg, cChg, 2)}` : `chg5m: ${Number.isFinite(cChg) ? cChg.toFixed(2) : "—"}`;
+    const scStr  = (aSc !== null  && cSc !== null)  ? `score: ${_fmtDelta(aSc, cSc, 2)}`  : `score: ${Number.isFinite(cSc) ? cSc.toFixed(2) : "—"}`;
+
+    const msg = `FastObs ${mint.slice(0,4)}… [${badge}] ${chgStr} ${scStr} ${ddStr}`;
+    // Only log if new interval or badge changed or content differs
+    if (badge !== rec.lastBadge || msg !== rec.lastMsg) {
+      if (rawBadge && rawBadge !== rec.lastRawBadge) {
+        // surface raw badge transition (e.g., "🔥 Pumping" -> "Calm")
+        log(`FastObs badge ${mint.slice(0,4)}…: ${rec.lastRawBadge || "(none)"} -> ${rawBadge}`);
+      }
+      log(msg);
+      store.set(mint, { lastAt: nowTs, lastBadge: badge, lastMsg: msg, lastRawBadge: rawBadge });
+    } else {
+      // update timestamp to pace logs even if unchanged
+      store.set(mint, { ...rec, lastAt: nowTs });
+    }
+  } catch {}
+}
 
 function clearPendingCredit(owner, mint) {
   try { if (_pendingCredits) _pendingCredits.delete(_pcKey(owner, mint)); } catch {}
 }
-
-
-
-const BUY_LOCK_MS = 5_000;
 
 function tryAcquireBuyLock(ms = BUY_LOCK_MS) {
   const t = now();
@@ -245,9 +340,6 @@ function isMintLocked(mint) {
   if (now() > rec.until) { _getMintLocks().delete(mint); return false; }
   return true;
 }
-
-
-const BUY_SEED_TTL_MS = 60_000;
 
 function _getBuySeedStore() {
   if (!window._fdvBuySeeds) window._fdvBuySeeds = new Map();
@@ -902,10 +994,6 @@ async function getMintDecimals(mintStr) {
   } catch { return 6; }
 }
 
-let _conn = null, _connUrl = "";
-
-let _connHdrKey = "";
-
 function currentRpcUrl() {
   return String(state.rpcUrl || localStorage.getItem("fdv_rpc_url") || "").trim();
 }
@@ -1285,6 +1373,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     const userPub = signer.publicKey.toBase58();
     const feeBps = Number(getPlatformFeeBps() || 0);
     let feeAccount = null;
+    let lastErrCode = "";
 
     if (feeBps > 0) {
       feeAccount = FEE_ATAS[inputMint] || null;
@@ -1451,14 +1540,17 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
 
     const first = await buildAndSend(false);
     if (first.ok) { await notePendingBuySeed(); await seedCacheIfBuy(); return first.sig; }
+    if (!first.ok) lastErrCode = first.code || lastErrCode;
     if (first.code === "NOT_SUPPORTED") {
       log("Retrying with shared accounts …");
       const second = await buildAndSend(true);
       if (second.ok) { await notePendingBuySeed(); await seedCacheIfBuy(); return second.sig; }
+      if (!second.ok) lastErrCode = second.code || lastErrCode;
     } else {
       log("Primary swap failed. Fallback: shared accounts …");
       const fallback = await buildAndSend(true);
       if (fallback.ok) { await notePendingBuySeed(); await seedCacheIfBuy(); return fallback.sig; }
+      if (!fallback.ok) lastErrCode = fallback.code || lastErrCode;
     }
 
     {
@@ -1470,6 +1562,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         try {
           const r = await t();
           if (r?.ok) { await notePendingBuySeed(); await seedCacheIfBuy(); return r.sig; }
+          if (r && !r.ok) lastErrCode = r.code || lastErrCode;
         } catch {}
       }
     }
@@ -1722,7 +1815,12 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       for (const t of tries) {
         try {
           const r = await t();
-          if (r?.ok) { await notePendingBuySeed(); await seedCacheIfBuy(); return r.sig; }
+          if (r?.ok) { 
+            await notePendingBuySeed(); 
+            await seedCacheIfBuy(); 
+            return r.sig; 
+          }
+          if (r && !r.ok) lastErrCode = r.code || lastErrCode;
         } catch {}
       }
     }
@@ -1738,8 +1836,10 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
           quote = await r2.json();
           const a = await buildAndSend(false, true);
           if (a.ok) { await seedCacheIfBuy(); return a.sig; }
+          if (!a.ok) lastErrCode = a.code || lastErrCode;
           const b = await buildAndSend(true, true);
           if (b.ok) { await seedCacheIfBuy(); return b.sig; }
+          if (!b.ok) lastErrCode = b.code || lastErrCode;
         }
       } catch {}
 
@@ -1778,6 +1878,8 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
                   log("USDC->SOL dump failed after fallback; keeping USDC.");
                 }
                 return sig1;
+              } else if (r && !r.ok) {
+               lastErrCode = r.code || lastErrCode;
               }
             } catch {}
           }
@@ -1860,7 +1962,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         log(`Split-sell fallback error: ${e.message || e}`);
       }
     }
-    throw new Error("swap failed");
+    throw new Error(lastErrCode || "swap failed");
   }
 }
 
@@ -2039,15 +2141,40 @@ function scorePumpCandidate(it) {
 function setMintBlacklist(mint, ms = MINT_RUG_BLACKLIST_MS) {
   if (!mint) return;
   if (!window._fdvMintBlacklist) window._fdvMintBlacklist = new Map();
-  const until = now() + Math.max(60_000, ms|0);
-  window._fdvMintBlacklist.set(mint, until);
-  try { log(`Blacklist set for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`); } catch {}
+
+  // Backward-compat: stored value may be a number (until) or an object { until, count, lastAt }
+  const nowTs = now();
+  const prev = window._fdvMintBlacklist.get(mint);
+  const prevCount = typeof prev === "object" && prev ? Number(prev.count || 0) : 0;
+  const lastAt = typeof prev === "object" && prev ? Number(prev.lastAt || 0) : 0;
+
+  // Coalesce bursts: only allow one stage bump per 10s window
+  const COALESCE_WINDOW_MS = 10_000;
+  const canBump = !lastAt || (nowTs - lastAt) > COALESCE_WINDOW_MS;
+
+  const nextCount = Math.min(3, canBump ? (prevCount + 1) : prevCount || 1);
+
+  // Choose stage duration, optionally capped by provided ms
+  const stageMs = MINT_BLACKLIST_STAGES_MS[nextCount - 1] || MINT_RUG_BLACKLIST_MS;
+  const capMs = Number.isFinite(ms) ? Math.max(60_000, ms | 0) : Infinity;
+  const dur = Math.min(stageMs, capMs);
+
+  // Extend, don't shorten
+  const until = Math.max(Number(prev?.until || 0), nowTs + dur);
+  window._fdvMintBlacklist.set(mint, { until, count: nextCount, lastAt: nowTs });
+  try {
+    const mins = Math.round((until - nowTs) / 60000);
+    log(`Blacklist set (stage ${nextCount}/3, ${mins}m) for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`);
+  } catch {}
 }
 
 function isMintBlacklisted(mint) {
   if (!mint || !window._fdvMintBlacklist) return false;
-  const until = window._fdvMintBlacklist.get(mint);
-  if (!until) return false;
+  const rec = window._fdvMintBlacklist.get(mint);
+  if (!rec) return false;
+  const until = typeof rec === "number" ? rec : Number(rec.until || 0);
+  if (!Number.isFinite(until) || until <= 0) return false;
+
   if (now() > until) { window._fdvMintBlacklist.delete(mint); return false; }
   return true;
 }
@@ -2089,10 +2216,10 @@ function recordBadgeTransition(mint, badge) {
   }
 } 
   
- function _getSeriesStore() {
+function _getSeriesStore() {
    if (!window._fdvLeaderSeries) window._fdvLeaderSeries = new Map(); // mint -> [{ts, pumpScore, liqUsd, v1h, chg5m, chg1h}]
    return window._fdvLeaderSeries;
- }
+}
 
  function recordLeaderSample(mint, sample) {
    if (!mint) return;
@@ -2242,9 +2369,6 @@ function noteObserverConsider(mint, ms = 30_000) {
 function clearObserverConsider(mint) {
   try { _getObserverWatch().delete(mint); } catch {}
 }
-
-
-
 
 async function pickTopPumper() {
   const picks = pickPumpCandidates(1, 3);
@@ -2485,6 +2609,30 @@ async function getAtaBalanceUi(ownerPubkeyStr, mintStr, decimalsHint) {
   const decimals = Number.isFinite(decimalsHint) ? decimalsHint : (await getMintDecimals(mintStr));
   if (best) return best;
   return { sizeUi: 0, decimals, exists: existsAny };
+}
+
+async function pruneZeroBalancePositions(ownerPubkeyStr, { limit = 8 } = {}) {
+  try {
+    const mints = Object.keys(state.positions || {}).filter(m => m && m !== SOL_MINT);
+    if (!mints.length) return;
+    let checked = 0;
+    for (const mint of mints) {
+      if (checked >= limit) break;
+      try {
+        const b = await getAtaBalanceUi(ownerPubkeyStr, mint, state.positions[mint]?.decimals);
+        const ui = Number(b.sizeUi || 0);
+        if (ui <= 1e-9) {
+          removeFromPosCache(ownerPubkeyStr, mint);
+          removeFromDustCache(ownerPubkeyStr, mint);
+          clearPendingCredit(ownerPubkeyStr, mint);
+          delete state.positions[mint];
+          save();
+          log(`Pruned zero-balance position ${mint.slice(0,4)}… from state/cache.`);
+        }
+        checked++;
+      } catch {}
+    }
+  } catch {}
 }
 
 async function reconcileFromOwnerScan(ownerPubkeyStr) {
@@ -2760,7 +2908,7 @@ async function sweepDustToSolAtStart() {
       } else {
         removeFromDustCache(owner, mint);
         removeFromPosCache(owner, mint);
-        try { removePendingCredit(owner, mint); } catch {}
+        try { clearPendingCredit(owner, mint); } catch {}
         if (state.positions[mint]) { delete state.positions[mint]; save(); }
         log(`Dust sweep sold ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
         sold++;
@@ -2835,6 +2983,63 @@ function shouldSell(pos, curSol, nowTs) {
   return { action: "none" };
 }
 
+function fastDropCheck(mint, pos) {
+  try {
+    // 1) Explicit rug signal wins
+    const sig = getRugSignalForMint(mint);
+    if (sig?.rugged) return { trigger: true, reason: `rug sev=${Number(sig.sev||0).toFixed(2)}`, sev: Number(sig.sev||1) };
+
+    // 2) Pump->Calm transition with recent buys and drawdown
+    const badge = String(sig?.badge || "").toLowerCase();
+    if (badge.includes("calm")) {
+      const sz = Number(pos.sizeUi || 0);
+      const curSol = Number(pos.lastQuotedSol || 0);
+      if (sz > 0 && curSol > 0 && Number(pos.hwmPx || 0) > 0) {
+        const pxNow = curSol / sz;
+        const ddPct = ((pos.hwmPx - pxNow) / Math.max(1e-12, pos.hwmPx)) * 100;
+        if (ddPct >= Math.max(1.5, Number(state.observerDropTrailPct || 2.5))) {
+          return { trigger: true, reason: "pump->calm drawdown", sev: 1 };
+        }
+      }
+    }
+
+    // 3) Short-term trend deteriorating (3-sample series)
+    const series = getLeaderSeries(mint, 3);
+    if (series && series.length >= 3) {
+      const a = series[0], c = series[series.length - 1];
+      const passChg = c.chg5m <= a.chg5m;
+      const passScore = c.pumpScore <= a.pumpScore * 0.97;
+      if (passChg && passScore) return { trigger: true, reason: "momentum drop (3/5)", sev: 0.6 };
+    }
+  } catch {}
+  return { trigger: false };
+}
+
+function startFastObserver() {
+  if (window._fdvFastObsTimer) return;
+  window._fdvFastObsTimer = setInterval(() => {
+    try {
+      // Only examine held positions; do not call Jupiter or heavy RPC here.
+      const entries = Object.entries(state.positions || {});
+      if (!entries.length) return;
+      for (const [mint, pos] of entries) {
+        if (!mint || mint === SOL_MINT) continue;
+        if (Number(pos.sizeUi || 0) <= 0) continue;
+        logFastObserverSample(mint, pos);
+        const r = fastDropCheck(mint, pos);
+        if (r.trigger) flagUrgentSell(mint, r.reason, r.sev);
+      }
+    } catch {}
+  }, FAST_OBS_INTERVAL_MS);
+  log(`Fast observer started @ ${FAST_OBS_INTERVAL_MS}ms cadence.`);
+}
+
+function stopFastObserver() {
+  try { if (window._fdvFastObsTimer) clearInterval(window._fdvFastObsTimer); } catch {}
+  window._fdvFastObsTimer = null;
+  log("Fast observer stopped.");
+}
+
 async function evalAndMaybeSellPositions() {
   if (state.holdUntilLeaderSwitch) return;
   if (_inFlight) return;
@@ -2845,16 +3050,17 @@ async function evalAndMaybeSellPositions() {
     if (!kp) return;
 
     await syncPositionsFromChain(kp.publicKey.toBase58());
+    await pruneZeroBalancePositions(kp.publicKey.toBase58(), { limit: 8 });
     const entries = Object.entries(state.positions || {});
     if (!entries.length) return;
 
     const nowTs = now();
     for (const [mint, pos] of entries) {
       try {
-
+        const ageMs = nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0);
         const maxHold = Math.max(0, Number(state.maxHoldSecs || 0));
-        const ageMs = nowTs - Number(pos.acquiredAt || pos.lastBuyAt || 0);
         const forceExpire = maxHold > 0 && ageMs >= maxHold * 1000;
+
 
         if (!forceExpire && window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
           const until = window._fdvRouterHold.get(mint);
@@ -2868,12 +3074,32 @@ async function evalAndMaybeSellPositions() {
           continue;
         }
 
+        const ownerStr = kp.publicKey.toBase58();
+        const pendKey = _pcKey(ownerStr, mint);
+        const hasPending = !!(_pendingCredits?.has?.(pendKey));
+        const creditGraceMs = Math.max(8_000, Number(state.pendingGraceMs || 20_000));
+
+        if ((pos.awaitingSizeSync || hasPending) && ageMs < creditGraceMs) {
+          log(`Sell skip ${mint.slice(0,4)}… awaiting credit/size sync (${Math.round(ageMs/1000)}s).`);
+          continue;
+        }
+
         let forceRug = false;
         let rugSev = 0;
         let forcePumpDrop = false;
         let forceObserverDrop = false;
         let obsPasses = null; 
-               try {
+        const urgent = takeUrgentSell(mint);
+        if (urgent) {
+          if (ageMs < URGENT_SELL_MIN_AGE_MS) {
+            log(`Urgent sell suppressed (warmup ${Math.round(ageMs/1000)}s) for ${mint.slice(0,4)}…`);
+          } else {
+            forceObserverDrop = true;
+            rugSev = Number(urgent.sev || 1);
+            log(`Urgent sell for ${mint.slice(0,4)}… (${urgent.reason}); bypassing notional/cooldowns.`);
+          }
+        }
+        try {
           const sig = getRugSignalForMint(mint);
           recordBadgeTransition(mint, sig.badge);
           if (sig?.rugged) {
@@ -3680,9 +3906,10 @@ async function startAutoAsync() {
       try { await sweepDustToSolAtStart(); } catch {}
     }
     if (!timer && state.enabled) {
-      timer = setInterval(tick, 5000);
+      timer = setInterval(tick, 3000);
       log("Auto trading started");
     }
+    startFastObserver();
   } finally {
     _starting = false;
   }
@@ -3707,6 +3934,7 @@ function onToggle(on) {
    } else if (!state.enabled && timer) {
      clearInterval(timer);
      timer = null;
+     stopFastObserver();
      try {
        const hasOpen = Object.entries(state.positions||{}).some(([m,p]) => m!==SOL_MINT && Number(p?.sizeUi||0) > 0);
        if (hasOpen) setTimeout(() => { evalAndMaybeSellPositions().catch(()=>{}); }, 0);
