@@ -767,96 +767,110 @@ async function loadSplToken() {
 }
 
 async function unwrapWsolIfAny(signerOrOwner) {
-   try {
-     const { PublicKey, Transaction, TransactionInstruction } = await loadWeb3();
-     const conn = await getConn();
+  const SOL_MINT = "So11111111111111111111111111111111111111112";
+  try {
+    const { PublicKey, Transaction, TransactionInstruction } = await loadWeb3();
+    const conn = await getConn();
 
-     let ownerPk = null;
-     try {
-       if (!signerOrOwner) {
-         ownerPk = null;
-       } else if (typeof signerOrOwner === "string") {
-         if (await isValidPubkeyStr(signerOrOwner)) ownerPk = new PublicKey(signerOrOwner);
-       } else if (signerOrOwner?.publicKey?.toBase58) {
-         ownerPk = new PublicKey(signerOrOwner.publicKey.toBase58());
-       } else if (signerOrOwner?.publicKey) {
-         ownerPk = new PublicKey(signerOrOwner.publicKey);
-       } else if (typeof signerOrOwner?.toBase58 === "function") {
-         ownerPk = new PublicKey(signerOrOwner.toBase58());
-       }
-     } catch {}
-     if (!ownerPk) {
-       log("WSOL unwrap: invalid owner; skipping.");
-       return false;
-     }
-     const ownerStr = ownerPk.toBase58();
-     const canSign = !!(
-       signerOrOwner &&
-       signerOrOwner.publicKey &&
-       (
-         typeof signerOrOwner.sign === "function" ||
-         (signerOrOwner.secretKey && signerOrOwner.secretKey.length > 0)
-       )
-     );
-     if (!canSign) {
-       // Without a signer we can't close ATAs!~!!!!
-       log("WSOL unwrap: no signer; skipping.");
-       return false;
-     }
+    let ownerPk = null;
+    let signer = null;
+    try {
+      if (signerOrOwner?.publicKey) {
+        ownerPk = signerOrOwner.publicKey instanceof PublicKey
+          ? signerOrOwner.publicKey
+          : new PublicKey(
+              signerOrOwner.publicKey.toBase58
+                ? signerOrOwner.publicKey.toBase58()
+                : signerOrOwner.publicKey
+            );
+        signer = signerOrOwner;
+      } else if (typeof signerOrOwner === "string" && await isValidPubkeyStr(signerOrOwner)) {
+        ownerPk = new PublicKey(signerOrOwner);
+      } else if (signerOrOwner && typeof signerOrOwner.toBase58 === "function") {
+        ownerPk = new PublicKey(signerOrOwner.toBase58());
+        signer = signerOrOwner;
+      }
+    } catch {}
+    if (!ownerPk) return false;
 
-     const atas = await getOwnerAtas(ownerStr, SOL_MINT);
-     if (!Array.isArray(atas) || !atas.length) return false;
+    const canSign = !!(signer && (typeof signer.sign === "function" || (signer.secretKey && signer.secretKey.length > 0)));
+    if (!canSign) return false;
 
-     const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-     const TOKEN_2022_PROGRAM_ID = new PublicKey("TokenzQdBNb1KzYrNU3G1bqbp1VZr1z7jWmzuXyaS6uJ");
+    if (!window._fdvUnwrapInflight) window._fdvUnwrapInflight = new Map();
+    const ownerStr = ownerPk.toBase58();
+    if (window._fdvUnwrapInflight.get(ownerStr)) return false;
+    window._fdvUnwrapInflight.set(ownerStr, true);
 
-     const ixs = [];
-     for (const rec of atas) {
-       try {
-         const ataStr = rec?.ata?.toBase58?.() || String(rec?.ata || "");
-         if (!ataStr || !(await isValidPubkeyStr(ataStr))) continue;
-         const ataPk = new PublicKey(ataStr);
-         const ai = await conn.getAccountInfo(ataPk, "processed").catch(() => null);
-         if (!ai) continue;
+    try {
+      const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, createCloseAccountInstruction } = await loadSplToken();
 
-         const bal = await conn.getTokenAccountBalance(ataPk, "processed").catch(() => null);
-         const ui = Number(bal?.value?.uiAmount || 0);
-         if (ui > 0) continue;
+      const ixs = [];
+      const programs = [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].filter(Boolean);
 
-         const pidStr = rec?.programId?.toBase58?.() || String(rec?.programId || "");
-         const programId = (pidStr && pidStr === TOKEN_2022_PROGRAM_ID.toBase58())
-           ? TOKEN_2022_PROGRAM_ID
-           : TOKEN_PROGRAM_ID;
+      const addCloseIx = (ataPk, progId) => {
+        try {
+          if (typeof createCloseAccountInstruction === "function") {
+            return createCloseAccountInstruction(ataPk, ownerPk, ownerPk, [], progId);
+          }
+        } catch {}
+        return new TransactionInstruction({
+          programId: progId,
+          keys: [
+            { pubkey: ataPk,   isSigner: false, isWritable: true }, // account
+            { pubkey: ownerPk, isSigner: false, isWritable: true }, // destination
+            { pubkey: ownerPk, isSigner: true,  isWritable: false },// owner
+          ],
+          data: Uint8Array.of(9),
+        });
+      };
 
-         const keys = [
-           { pubkey: ataPk,   isSigner: false, isWritable: true },
-           { pubkey: ownerPk, isSigner: false, isWritable: true },
-           { pubkey: ownerPk, isSigner: true,  isWritable: false },
-         ];
-         const data = Uint8Array.of(9);
-         ixs.push(new TransactionInstruction({ programId, keys, data }));
-       } catch {}
-     }
-     if (!ixs.length) return false;
+      for (const pid of programs) {
+        try {
+          const resp = await conn.getParsedTokenAccountsByOwner(ownerPk, { programId: pid }, "processed");
+          for (const it of resp?.value || []) {
+            try {
+              const info = it?.account?.data?.parsed?.info;
+              if (!info || String(info.mint || "") !== SOL_MINT) continue;
 
-     const tx = new Transaction();
-     for (const ix of ixs) tx.add(ix);
-     tx.feePayer = ownerPk;
-     tx.recentBlockhash = (await conn.getLatestBlockhash("confirmed")).blockhash;
-     tx.sign(signerOrOwner);
+              const ataPk = it?.pubkey?.toBase58 ? it.pubkey : new PublicKey(String(it?.pubkey || ""));
+              const ai = await conn.getAccountInfo(ataPk, "processed").catch(() => null);
+              if (!ai) continue; // nothing to close
 
-     const sig = await conn.sendRawTransaction(tx.serialize(), { preflightCommitment: "processed", maxRetries: 2 });
-     log(`WSOL unwrap sent: ${sig}`);
-     return true;
-   } catch (e) {
-     const msg = String(e?.message || e || "");
-     if (/Invalid public key input/i.test(msg)) {
-       log("WSOL unwrap: invalid input; skipping.");
-       return false;
-     }
-     log(`WSOL unwrap failed: ${msg}`);
-     return false;
-   }
+              ixs.push(addCloseIx(ataPk, pid));
+            } catch {}
+          }
+        } catch {}
+      }
+
+      if (!ixs.length) return false;
+
+      // Send in small chunks
+      const sendBatch = async (chunk) => {
+        const tx = new Transaction();
+        for (const ix of chunk) tx.add(ix);
+        tx.feePayer = ownerPk;
+        tx.recentBlockhash = (await conn.getLatestBlockhash("processed")).blockhash;
+        tx.sign(signer);
+        const sig = await conn.sendRawTransaction(tx.serialize(), { preflightCommitment: "processed", maxRetries: 2 });
+        log(`WSOL unwrap sent: ${sig}`);
+        return sig;
+      };
+
+      if (ixs.length <= 2) {
+        await sendBatch(ixs);
+      } else {
+        for (const ix of ixs) { try { await sendBatch([ix]); } catch {} }
+      }
+      return true;
+    } finally {
+      window._fdvUnwrapInflight.delete(ownerStr);
+    }
+  } catch (e) {
+    if (!/Invalid public key input/i.test(String(e?.message || e))) {
+      log(`WSOL unwrap failed: ${String(e?.message || e)}`);
+    }
+    return false;
+  }
 }
 
 async function confirmSig(sig, { commitment = "confirmed", timeoutMs = 12000, pollMs = 300, requireFinalized = false } = {}) {
@@ -1662,6 +1676,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         try {
           if (inputMint === SOL_MINT || outputMint === SOL_MINT) {
             setTimeout(() => { unwrapWsolIfAny(signer).catch(()=>{}); }, 0);
+            setTimeout(() => { unwrapWsolIfAny(signer).catch(()=>{}); }, 1500);
           }
         } catch {}
         return { ok: true, sig };
@@ -1787,6 +1802,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
           try {
             if (inputMint === SOL_MINT || outputMint === SOL_MINT) {
               setTimeout(() => { unwrapWsolIfAny(signer).catch(()=>{}); }, 0);
+              setTimeout(() => { unwrapWsolIfAny(signer).catch(()=>{}); }, 1500); 
             }
           } catch {}
           return { ok: true, sig };
@@ -2221,30 +2237,30 @@ function _getSeriesStore() {
    return window._fdvLeaderSeries;
 }
 
- function recordLeaderSample(mint, sample) {
-   if (!mint) return;
-   const s = _getSeriesStore();
-   const list = s.get(mint) || [];
-   const row = {
-     ts: now(),
-     pumpScore: safeNum(sample.pumpScore, 0),
-     liqUsd:    safeNum(sample.liqUsd, 0),
-     v1h:       safeNum(sample.v1h, 0),
-     chg5m:     safeNum(sample.chg5m, 0),
-     chg1h:     safeNum(sample.chg1h, 0),
-   };
-   list.push(row);
-   // Keep last 3 samples only (previous 3 ticks)
-   while (list.length > 3) list.shift();
-   s.set(mint, list);
- }
+function recordLeaderSample(mint, sample) {
+  if (!mint) return;
+  const s = _getSeriesStore();
+  const list = s.get(mint) || [];
+  const row = {
+    ts: now(),
+    pumpScore: safeNum(sample.pumpScore, 0),
+    liqUsd:    safeNum(sample.liqUsd, 0),
+    v1h:       safeNum(sample.v1h, 0),
+    chg5m:     safeNum(sample.chg5m, 0),
+    chg1h:     safeNum(sample.chg1h, 0),
+  };
+  list.push(row);
+  // Keep last 3 samples only (previous 3 ticks)
+  while (list.length > 3) list.shift();
+  s.set(mint, list);
+}
 
- function getLeaderSeries(mint, n = 3) {
-   const s = _getSeriesStore();
-   const list = s.get(mint) || [];
-   if (!n || n >= list.length) return list.slice();
-   return list.slice(list.length - n);
- }
+function getLeaderSeries(mint, n = 3) {
+  const s = _getSeriesStore();
+  const list = s.get(mint) || [];
+  if (!n || n >= list.length) return list.slice();
+  return list.slice(list.length - n);
+}
 
 function pickPumpCandidates(take = 1, poolN = 3) {
   try {
@@ -4003,7 +4019,7 @@ export function initAutoWidget(container = document.body) {
       <svg class="fdv-acc-caret" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
         <path d="M8 10l4 4 4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>
-      <span class="fdv-title">Auto Pump (v0.0.2.6)</span>
+      <span class="fdv-title">Auto Pump (v0.0.2.7)</span>
     </span>
   `;
 
