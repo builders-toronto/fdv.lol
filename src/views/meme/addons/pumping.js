@@ -54,6 +54,7 @@ function prunePumpHistory(h) {
 }
 
 function norm(n) { return Number.isFinite(n) ? Number(n) : 0; }
+
 export function ingestPumpingSnapshot(items) {
   // console.log("ingesting pumping snapshot", items);
   const h = loadPumpHistory();
@@ -143,37 +144,30 @@ export function computePumpingScoreForMint(records, nowTs) {
     buySell24h=0, liqUsd=0, priceUsd=0
   } = latest;
 
-  // Hard gates
   if (liqUsd < PUMP_MIN_LIQ_USD) return { score: 0, badge: 'Calm' };
   if (v1hTotal < PUMP_MIN_VOL_1H_USD) return { score: 0, badge: 'Calm' };
   if (!Number.isFinite(priceUsd) || priceUsd <= PUMP_MIN_PRICE_USD) return { score: 0, badge: 'Calm' };
 
-  // Decayed stats for normalization
   const dw   = decayWeights(recent, nowTs);
   const pVal = dw.map(x => Number(x.e.kp?.priceUsd) || 0);
   const pWts = dw.map(x => x.w);
   const { mean: pMean } = decayedMeanStd(pVal, pWts);
-
   const v1Vals = dw.map(x => Number(x.e.kp?.v1hTotal) || 0);
   const v1Wts  = dw.map(x => x.w);
   const { mean: v1Mean, std: v1Std } = decayedMeanStd(v1Vals, v1Wts);
-
-  // Acceleration signals
   const accel5to1 = (v1hTotal > 0) ? Math.min(3, (v5mTotal * 12) / v1hTotal) : (v5mTotal > 0 ? 1 : 0);
   const accel1to6 = (v6hTotal > 0) ? Math.min(3, (v1hTotal * 6) / v6hTotal) : (v1hTotal > 0 ? 1 : 0);
-
-  // Micro-breakout vs recent lows (last ~25% of window)
   const tail = Math.max(3, Math.floor(recent.length * 0.25));
   const lastPrices = recent.slice(-tail).map(e => e.kp?.priceUsd || 0).filter(Boolean);
   const minTail = lastPrices.length ? Math.min(...lastPrices) : priceUsd;
   const offBottom = minTail > 0 ? (priceUsd - minTail)/minTail : 0;
-  const breakout  = clamp(offBottom / 0.08, 0, 1.4); // stronger than DBS, 8% rebound ~1.0
+  const breakout  = clamp(offBottom / 0.08, 0, 1.4); 
 
-  const liqScale  = Math.log10(1 + liqUsd) / 5; // ~0..1.2 across 10^0..10^6+
+  const liqScale  = Math.log10(1 + liqUsd) / 5; 
 
-  const zV1     = Math.max(0, safeZ(v1hTotal, v1Mean, v1Std)); // only reward upside
+  const zV1     = Math.max(0, safeZ(v1hTotal, v1Mean, v1Std)); 
 
-  const buyBoost = Math.max(0, (buySell24h - 0.56) * 2.0); // kick after ~56% buys
+  const buyBoost = Math.max(0, (buySell24h - 0.56) * 2.0); 
 
   const core =
       (change5m / 6.5)
@@ -202,22 +196,41 @@ export function computePumpingScoreForMint(records, nowTs) {
 
   score *= rugFactor;
 
+  const risingNow = (change1h > 0) && (change5m >= 0 || accel5to1 > 1);
+  const trendUp = (() => {
+    const len = lastPrices.length;
+    if (len >= 3) {
+      const xMean = (len - 1) / 2;
+      const yMean = lastPrices.reduce((a, v) => a + v, 0) / len;
+      let num = 0, den = 0;
+      for (let i = 0; i < len; i++) {
+        const dx = i - xMean;
+        num += dx * (lastPrices[i] - yMean);
+        den += dx * dx;
+      }
+      const slope = den > 0 ? num / den : 0;
+      return slope > 0;
+    }
+    return change1h > 0;
+  })();
+
   let badge = 'Calm';
   const strongScore = score >= 2.0;
   if (sev >= 1) {
     badge = 'Cooling';
   } else if (
-    strongScore ||
-    (score >= PUMP_BADGE_SCORE &&
-     change1h >= PUMP_BADGE_CHANGE1H_PCT &&
-     accel5to1 >= PUMP_BADGE_ACCEL5TO1)
+    ((strongScore && risingNow && trendUp) ||
+     (score >= PUMP_BADGE_SCORE &&
+      change1h >= PUMP_BADGE_CHANGE1H_PCT &&
+      accel5to1 >= PUMP_BADGE_ACCEL5TO1 &&
+      risingNow && trendUp))
   ) {
     badge = '🔥 Pumping';
-  } else if (score >= 1.0) {
+  } else if (score >= 1.0 && (change1h > 0 || change6h > 0)) {
     badge = 'Warming';
   }
 
-  return { score, badge, meta: { accel5to1, accel1to6, buy: buySell24h, zV1, liqScale, pMean, rug: { worst5m, sev, rugFactor } } };
+  return { score, badge, meta: { accel5to1, accel1to6, buy: buySell24h, zV1, liqScale, pMean, rug: { worst5m, sev, rugFactor }, risingNow, trendUp } };
 }
 
 export function getRugSignalForMint(mint, nowTs = Date.now()) {
