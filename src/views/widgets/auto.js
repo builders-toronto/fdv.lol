@@ -17,7 +17,7 @@ const MIN_OPERATING_SOL            = 0.010;
 const ROUTER_COOLDOWN_MS           = 60_000;
 const MINT_RUG_BLACKLIST_MS = 30 * 60 * 1000;
 const MINT_BLACKLIST_STAGES_MS =  [2 * 60 * 1000, 15 * 60 * 1000, MINT_RUG_BLACKLIST_MS];
-const URGENT_SELL_COOLDOWN_MS= 8_000; 
+const URGENT_SELL_COOLDOWN_MS= 20_000; 
 const URGENT_SELL_MIN_AGE_MS = 12_000;
 const FAST_OBS_INTERVAL_MS   = 40;    
 const SPLIT_FRACTIONS = [0.99, 0.98, 0.97, 0.96, 0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.50, 0.33, 0.25, 0.20];
@@ -1392,7 +1392,7 @@ async function executeSwapWithConfirm(opts, { retries = 2, confirmMs = 15000 } =
   let lastSig = null;
   try {
     const isBuy = (opts?.inputMint === SOL_MINT && opts?.outputMint && opts.outputMint !== SOL_MINT);
-    const needFinal = isBuy;
+    const needFinal = false;
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         const sig = await jupSwapWithKeypair({ ...opts, slippageBps: slip });
@@ -1413,7 +1413,7 @@ async function executeSwapWithConfirm(opts, { retries = 2, confirmMs = 15000 } =
 
         const ok = await confirmSig(sig, {
           commitment: "confirmed",
-          timeoutMs: confirmMs,
+          timeoutMs: Math.max(confirmMs, 22_000),
           requireFinalized: needFinal
         }).catch(() => false);
         if (ok) return { ok: true, sig, slip };
@@ -2258,11 +2258,22 @@ function setMintBlacklist(mint, ms = MINT_RUG_BLACKLIST_MS) {
   const capMs = Number.isFinite(ms) ? Math.max(60_000, ms | 0) : Infinity;
   const dur = Math.min(stageMs, capMs);
 
-  const until = Math.max(Number(prev?.until || 0), nowTs + dur);
-  window._fdvMintBlacklist.set(mint, { until, count: nextCount, lastAt: nowTs });
+  // If already blacklisted and we're within the window without a bump, quietly extend once
+  if (prev && !canBump) {
+    const newUntil = Math.max(Number(prev.until || 0), nowTs + dur);
+    // Only mutate if the extension actually increases remaining time by a meaningful margin
+    const meaningfullyExtended = (newUntil - Number(prev.until || 0)) > 15_000;
+    window._fdvMintBlacklist.set(mint, { ...prev, until: newUntil, lastAt: nowTs });
+    if (!meaningfullyExtended) return; // suppress duplicate logs
+  } else {
+    const until = Math.max(Number(prev?.until || 0), nowTs + dur);
+    window._fdvMintBlacklist.set(mint, { until, count: nextCount, lastAt: nowTs });
+  }
+
   try {
-    const mins = Math.round((until - nowTs) / 60000);
-    log(`Blacklist set (stage ${nextCount}/3, ${mins}m) for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`);
+    const rec = window._fdvMintBlacklist.get(mint);
+    const mins = Math.round((Number(rec.until) - nowTs) / 60000);
+    log(`Blacklist set (stage ${nextCount}/3, ${mins}m) for ${mint.slice(0,4)}… until ${new Date(rec.until).toLocaleTimeString()}`);
   } catch {}
 }
 
@@ -4351,6 +4362,8 @@ function load() {
   if (!Number.isFinite(state.warmingDecayDelaySecs)) state.warmingDecayDelaySecs = 45;
   if (!Number.isFinite(state.warmingMinProfitFloorPct)) state.warmingMinProfitFloorPct = -2.0;
   if (!Number.isFinite(state.warmingAutoReleaseSecs)) state.warmingAutoReleaseSecs = 90;
+
+  state.pendingGraceMs = Math.max(120_000, Number(state.pendingGraceMs || 120_000));
 
   save();
 }

@@ -286,19 +286,20 @@ function _decimalsFor(mint) {
   return 6;
 }
 
-
-
-
 function _uiToRaw(amountUi, mint) {
   const dec = _decimalsFor(mint);
   return Math.floor(Number(amountUi) * 10 ** dec);
 }
 
 async function _loadWeb3() {
-  if (web3) return web3;
-  web3 = await import("https://esm.sh/@solana/web3.js@1.95.3");
-  return web3;
+  if (window.solanaWeb3) return window.solanaWeb3;
+  try {
+    return await import('https://esm.sh/@solana/web3.js@1.95.1?bundle');
+  } catch (_) {
+    return await import('https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.1/lib/index.browser.esm.js');
+  }
 }
+
 
 function _now() { return Date.now(); }
 function _hasLiveSession(skewMs = 1500) { return !!(_rpcSession.token && _rpcSession.exp - skewMs > _now()); }
