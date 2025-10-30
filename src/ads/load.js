@@ -73,7 +73,7 @@ export function adCard(ad){
   const icons = renderAdIcons(ad.socials || []);
 
   const buyUrl = AD_JUP_URL(ad.mint);
-
+  // <div class="adtag" title="Sponsored">SPONSORED</div>
   return `
   <section class="adcard" role="complementary" aria-label="Sponsored" data-compact="1">
     <div class="adrow">
@@ -89,10 +89,8 @@ export function adCard(ad){
       </div>
       <div class="adactions">
         ${icons}
-        <div class="adtag" title="Sponsored">SPONSORED</div>
-        
         <a class="adbtn primary" href="${buyUrl}" target="_blank" rel="noopener">${cta}</a>
-        <a class="adbtn" href="https://fdv.lol/token/${ad.mint}" target="_blank" rel="noopener nofollow">Learn</a>
+        <a class="adbtn" href="https://fdv.lol/token/${ad.mint}" target="_blank" rel="noopener nofollow">Profile</a>
       </div>
     </div>
   </section>`;

@@ -57,6 +57,41 @@ function startAutoScroll(container) {
 let elMarqueeWrap = null;
 let _marqueeRenderedKey = null;
 
+const MQ_MIN_UPDATE_MS = 8000;
+let _marqueeLastUpdate = 0;
+let _mqUpdateTimer = 0;
+let _mqPending = null;
+
+function buildInner(list, tokenHref) {
+  if (!Array.isArray(list) || list.length === 0) return '';
+  return list.map(x => mqItemHTML(x, tokenHref)).join('<span class="mq-gap"></span>');
+}
+
+function setStripContentPreserveScroll(rowEl, innerHTML) {
+  if (!rowEl) return;
+  let strip = rowEl.querySelector('.mq-strip');
+  if (!strip) {
+    rowEl.innerHTML = `
+      <div class="mq-label">${rowEl.dataset.label || ''}</div>
+      <div class="mq-strip">
+        <div class="mq-strip-inner">${innerHTML}</div>
+        <div class="mq-strip-inner">${innerHTML}</div>
+      </div>
+    `;
+    return;
+  }
+  const prevHalf = Math.max(1, strip.scrollWidth / 2);
+  const ratio = strip.scrollLeft / prevHalf;
+
+  strip.innerHTML = `
+    <div class="mq-strip-inner">${innerHTML}</div>
+    <div class="mq-strip-inner">${innerHTML}</div>
+  `;
+
+  const newHalf = Math.max(1, strip.scrollWidth / 2);
+  strip.scrollLeft = Math.floor(ratio * newHalf);
+}
+
 export function ensureMarqueeSlot(cardsEl) {
   if (elMarqueeWrap) return elMarqueeWrap;
   const parent = cardsEl?.parentElement;
@@ -73,19 +108,68 @@ export function renderMarquee(marquee) {
   if (!elMarqueeWrap) return;
   if (!marquee) {
     elMarqueeWrap.innerHTML = '';
+    _marqueeRenderedKey = null;
+    _marqueeLastUpdate = 0;
+    clearTimeout(_mqUpdateTimer); _mqUpdateTimer = 0; _mqPending = null;
     return;
   }
+
   const key = JSON.stringify({
     t: (marquee.trending || []).map(x => x.mint).slice(0, 40),
     n: (marquee.new || []).map(x => x.mint).slice(0, 40),
   });
+
+  if (_marqueeRenderedKey == null) {
+    const tokenHref = mint => `/token/${encodeURIComponent(mint)}`;
+    const tRow = marqueeRowHTML(marquee.trending || [], 'Trending', tokenHref);
+    const nRow = marqueeRowHTML(marquee.new || [], 'New', tokenHref);
+    elMarqueeWrap.innerHTML = `${tRow}${nRow}`;
+    startAutoScroll(elMarqueeWrap);
+    _marqueeRenderedKey = key;
+    _marqueeLastUpdate = Date.now();
+    return;
+  }
+
   if (_marqueeRenderedKey === key) return;
 
-  const tokenHref = mint => `/token/${encodeURIComponent(mint)}`;
-  const tRow = marqueeRowHTML(marquee.trending || [], 'Trending', tokenHref);
-  const nRow = marqueeRowHTML(marquee.new || [], 'New', tokenHref);
-  elMarqueeWrap.innerHTML = `${tRow}${nRow}`;
+  const now = Date.now();
+  const remain = _marqueeLastUpdate + MQ_MIN_UPDATE_MS - now;
+  if (remain > 0) {
+    _mqPending = marquee;
+    clearTimeout(_mqUpdateTimer);
+    _mqUpdateTimer = setTimeout(() => {
+      const m = _mqPending;
+      _mqPending = null;
+      renderMarquee(m);
+    }, remain);
+    return;
+  }
 
-  startAutoScroll(elMarqueeWrap);
+  const tokenHref = mint => `/token/${encodeURIComponent(mint)}`;
+  const tRowEl = elMarqueeWrap.querySelector('.mq-row[data-label="Trending"]');
+  const nRowEl = elMarqueeWrap.querySelector('.mq-row[data-label="New"]');
+
+  if (!tRowEl || !nRowEl) {
+    const tRow = marqueeRowHTML(marquee.trending || [], 'Trending', tokenHref);
+    const nRow = marqueeRowHTML(marquee.new || [], 'New', tokenHref);
+    elMarqueeWrap.innerHTML = `${tRow}${nRow}`;
+    startAutoScroll(elMarqueeWrap);
+  } else {
+    const tInner = buildInner(marquee.trending || [], tokenHref);
+    const nInner = buildInner(marquee.new || [], tokenHref);
+
+    if (!tInner) tRowEl.style.display = 'none';
+    else {
+      tRowEl.style.display = '';
+      setStripContentPreserveScroll(tRowEl, tInner);
+    }
+    if (!nInner) nRowEl.style.display = 'none';
+    else {
+      nRowEl.style.display = '';
+      setStripContentPreserveScroll(nRowEl, nInner);
+    }
+  }
+
   _marqueeRenderedKey = key;
+  _marqueeLastUpdate = now;
 }

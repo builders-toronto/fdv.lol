@@ -118,7 +118,7 @@ export function coinCard(it) {
       data-timeout-ms="${escAttr(timeoutMs)}"
       data-pair-url="${escAttr(pairUrl)}"
       data-swap-opts='${escAttr(JSON.stringify(swapOpts))}'
-    >Swap</button>`;
+    >Chart</button>`;
 
   return `
 <article
