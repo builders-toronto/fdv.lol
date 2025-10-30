@@ -137,4 +137,16 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-feat(auto): 5s observer detectionn system. intro dynamic hold times
+chore(release): v0.0.2.8 — Warming engine + decay; status LED
+
+- New “Warming” engine to predict and ride near-term uplifts; holds until profit or timeout.
+  Predictive uplift score:
+    prePumpScore = 0.30*fA + 0.25*fZ + 0.18*fT + 0.17*f5m + 0.10*fB
+    where:
+      fA = accel(5m vs 1h), fZ = vol z-score, fT = 3-tick trend, f5m = near-term momentum, fB = buy-skew
+- Profit threshold decay with floor + delay:
+    req(t) = max(floor, base − decayPerMin * max(0, (t − delaySecs)/60))
+  Auto-release warming after warmingAutoReleaseSecs (no sell suppression past timeout).
+- UI: added header LED to indicate when the system is running.
+
+State knobs: warmingMinProfitPct, warmingDecayPctPerMin, warmingDecayDelaySecs, warmingMinProfitFloorPct, warmingAutoReleaseSecs.
