@@ -1,5 +1,7 @@
 import { MAX_CARDS } from '../../config/env.js';
 
+import { loadAds, pickAd, adCard } from "../../ads/load.js";
+
 import { showHome } from '../../router/main/home.js';
 
 import { ensureAddonsUI } from './addons/register.js';
@@ -18,8 +20,6 @@ import { initLibrary, createOpenLibraryButton } from '../widgets/library.js';
 import { initSearch, createOpenSearchButton } from '../widgets/search.js';
 import { initFavboard, createOpenFavboardButton } from '../widgets/favboard.js';
 import { initAutoWidget } from '../widgets/auto.js';
-
-
 
 import {
   initHeader,
@@ -51,7 +51,6 @@ export const elMetaBase = document.getElementById('metaBaseSpan');
 export const elQ        = document.getElementById('q');
 export const elSort     = document.getElementById('sort');
 
-// Fallback helper (search panel input may be injected later)
 function getQueryValue() {
   return (document.getElementById('q')?.value || '').trim();
 }
@@ -72,6 +71,9 @@ let _latestMarquee = null;
 let _lastPaintSig = '';
 let _paintQueued = false;
 
+let _elCardAdSlot = null;
+let _elMarqueeAdSlot = null;
+
 const STATE = {
   settleTimer: null,
   needsPaint: false
@@ -80,6 +82,74 @@ const STATE = {
 elSort.addEventListener('change', () => showHome()); // hmmm. good placement?
 elRefresh.addEventListener('click', () => showHome({ force: true }));
 elRelax.addEventListener('change', () => showHome({ force: true }));
+
+
+function ensureAdSlots() {
+  if (!_elCardAdSlot) {
+    const host = elCards?.parentElement || document.body;
+    _elCardAdSlot = document.createElement('div');
+    _elCardAdSlot.id = 'cardAdSlot';
+    _elCardAdSlot.className = 'ad-slot ad-slot-cards';
+    host.insertBefore(_elCardAdSlot, elCards || host.firstChild);
+  }
+
+  // if (!_elMarqueeAdSlot) {
+  //   const host = elCards?.parentElement || document.body;
+  //   const marqueeHost =
+  //     document.querySelector('[data-marquee-slot]') ||
+  //     document.getElementById('marqueeSlot') ||
+  //     document.querySelector('.marquee, .marquee-slot') ||
+  //     null;
+
+  //   _elMarqueeAdSlot = document.createElement('div');
+  //   _elMarqueeAdSlot.id = 'marqueeAdSlot';
+  //   _elMarqueeAdSlot.className = 'ad-slot ad-slot-marquee';
+
+  //   if (marqueeHost && marqueeHost.parentElement) {
+  //     marqueeHost.parentElement.insertBefore(_elMarqueeAdSlot, marqueeHost.nextSibling);
+  //   } else {
+  //     (host).insertBefore(_elMarqueeAdSlot, elCards || host.firstChild);
+  //   }
+  // }
+}
+
+function renderAdInto(slot, ad) {
+  if (!slot) return;
+  if (!ad) { slot.innerHTML = ''; return; }
+  try {
+    const node = adCard(ad);
+    if (typeof node === 'string') {
+      slot.innerHTML = node;
+    } else if (node instanceof Node) {
+      slot.innerHTML = '';
+      slot.appendChild(node);
+    } else {
+      slot.innerHTML = '';
+    }
+  } catch {
+    slot.innerHTML = '';
+  }
+}
+
+function renderAdSlots() {
+  if (!_latestAd) return;
+  ensureAdSlots();
+  renderAdInto(_elCardAdSlot, _latestAd);
+  // renderAdInto(_elMarqueeAdSlot, _latestAd);
+}
+
+async function loadAndRenderAd() {
+  try {
+    if (_elCardAdSlot && _elCardAdSlot.childElementCount > 0) return;
+    if (_elMarqueeAdSlot && _elMarqueeAdSlot.childElementCount > 0) return;
+    const ads = await loadAds();
+    const pick = pickAd(ads);
+    if (pick) {
+      _latestAd = pick;
+      renderAdSlots();
+    }
+  } catch {}
+}
 
 export function setLoadingStatus(msg = '') {
   try {
@@ -184,13 +254,15 @@ function paintNow() {
 
 export function render(items, adPick, marquee) {
   _latestItems = Array.isArray(items) ? items : [];
-  _latestAd = adPick || null;
+  _latestAd = adPick || _latestAd;
   _latestMarquee = marquee || null;
 
   ensureOpenLibraryHeaderBtn();
   ensureFavboardHeaderBtn();
   try { ingestSnapshot(_latestItems); } catch {}
   renderMarquee(_latestMarquee);
+
+  // if (_latestAd) renderAdSlots();
 
   STATE.needsPaint = true;
 
@@ -304,6 +376,9 @@ function initInitialLoading() {
   } catch {}
 
   initSearch(elQ, elQResults, elSearchWrap);
+
+  loadAndRenderAd().catch(() => {});
+
   ensureMarqueeSlot(elCards);
 
   wireSort();

@@ -68,6 +68,8 @@ let _walletTokens = []; // [{mint,symbol,decimals,uiAmount,logo,rawAmount}]
 let _walletReloadTimer = null;
 let _pendingConnLogged = false;
 
+let _outputToken;
+
 function _startVerifyAnim() {
   const chip = _el("[data-captcha-state]");
   if (!chip) return;
@@ -134,6 +136,7 @@ export async function openSwapModal({
   _state.outputMint = outputMint;
 
   const opened = await _openModal();
+
   if (!opened) return;
 
   _setModalFields({ inputMint, outputMint, amountUi, slippageBps });
@@ -242,6 +245,9 @@ function _watchKeyboardViewport(on) {
 function _handleSwapClickFromEl(el) {
   const { mint, pairUrl, tokenHydrate, priority, relay, timeoutMs } = _collectHardDataFromEl(el);
   if (!mint) return;
+  const url = CFG.buildDexUrl({ outputMint: mint, pairUrl: tokenHydrate?.headlineUrl || pairUrl });
+  window.open(url, "_blank", "noopener");
+  return;
 
   const mobile = isLikelyMobile();
   const phantom = hasPhantomInstalled();
@@ -263,6 +269,8 @@ function _handleSwapClickFromEl(el) {
     window.open(url, "_blank", "noopener");
     return;
   }
+
+  _outputToken = mint;
   openSwapModal({
     inputMint: SOL_MINT,
     outputMint: mint,

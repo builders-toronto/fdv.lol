@@ -2,6 +2,7 @@ import { FDV_FAV_ENDPOINT } from "../../config/env.js";
 import { fetchTokenInfo } from "../../data/dexscreener.js";
 
 const CACHE_KEY = "favboard_cache_v1";
+const META_STORE_PREFIX = "favboard_meta_v1:";
 const CACHE_TTL_MS = 5 * 60_000;
 const PANEL_ID = "favboardPanel";
 
@@ -11,8 +12,14 @@ let panelEl = null;
 let panelInner = null;
 let toggleBtnRef = null;
 let escHandlerBound = false;
+let _favRunId = 0;
 
 const tokenMetaCache = new Map();
+
+const META_TTL_MS = 10 * 60_000;  
+const MAX_ROWS    = 100;          
+
+
 
 (function injectFavStyles() {
   if (document.getElementById("favboard-css")) return;
@@ -70,6 +77,36 @@ const tokenMetaCache = new Map();
   document.head.appendChild(style);
 })();
 
+function readMetaCache(mint) {
+  try {
+    const raw = localStorage.getItem(`${META_STORE_PREFIX}${mint}`);
+    if (!raw) return null;
+    const { ts, data } = JSON.parse(raw);
+    if (!ts || Date.now() - ts > META_TTL_MS) return null;
+    return data;
+  } catch { return null; }
+}
+
+function writeMetaCache(mint, data) {
+  try { localStorage.setItem(`${META_STORE_PREFIX}${mint}`, JSON.stringify({ ts: Date.now(), data })); } catch {}
+}
+
+function getMetaFromCaches(mint) {
+  if (tokenMetaCache.has(mint)) return tokenMetaCache.get(mint);
+  const ls = readMetaCache(mint);
+  if (ls) {
+    tokenMetaCache.set(mint, ls);
+    return ls;
+  }
+  return null;
+}
+
+function withTimeout(promise, ms, label = "timeout") {
+  let t;
+  const timeout = new Promise((_, rej) => { t = setTimeout(() => rej(new Error(label)), ms); });
+  return Promise.race([promise.finally(() => clearTimeout(t)), timeout]);
+}
+
 function ensurePanel() {
   if (panelEl) return panelEl;
   const host = document.getElementById("hdrToolsPanels") || document.body;
@@ -126,7 +163,7 @@ export function openFavboard(triggerBtn) {
   ensureFavLeaderboard(panelInner);
   panel.setAttribute("data-open", "1");
   panel.style.display = "block";
-  loadFavs();
+  loadFavs({ priority: true });
   toggleBtnRef = triggerBtn || toggleBtnRef;
   if (toggleBtnRef) {
     toggleBtnRef.setAttribute("aria-expanded", "true");
@@ -184,25 +221,36 @@ export function ensureFavLeaderboard(container = document.body) {
   tableBodyEl = rootEl.querySelector("#favboardTbody");
   refreshBtn = rootEl.querySelector(".favboard-refresh");
   statusEl = rootEl.querySelector(".favboard-status");
-  refreshBtn.addEventListener("click", () => loadFavs(true));
+    refreshBtn.addEventListener("click", () => loadFavs({ force: true, priority: true }));
+
   container.appendChild(rootEl);
   return rootEl;
 }
 
-async function loadFavs(force = false) {
-  if (isLoading) return;
+async function loadFavs(opts = {}) {
+  // opts can be boolean (legacy) or object
+  const { force = (typeof opts === "boolean" ? opts : false), priority = false } =
+    typeof opts === "object" ? opts : { force: !!opts, priority: false };
+
+  // Allow priority runs to preempt non-priority ones
+  if (isLoading && !priority) return;
+
+  const myRun = ++_favRunId; // invalidate older runs
   isLoading = true;
-  setStatus("Loading…");
+  setStatus(priority ? "Loading…" : "Loading…");
 
   let payload = null;
   if (!force) payload = readCache();
 
   try {
     if (!payload) {
-      payload = await fetchRemote();
-      if (payload) writeCache(payload);
+      const fresh = await fetchRemote({ priority, runId: myRun });
+      if (fresh) {
+        payload = fresh;
+        writeCache(payload);
+      }
     } else if (force) {
-      const fresh = await fetchRemote();
+      const fresh = await fetchRemote({ priority, runId: myRun });
       if (fresh) {
         payload = fresh;
         writeCache(payload);
@@ -211,17 +259,28 @@ async function loadFavs(force = false) {
   } catch (err) {
     setStatus(`Fetch failed: ${err?.message || err}`);
   } finally {
-    isLoading = false;
+    // only the latest run can clear loading; older runs were preempted
+    if (_favRunId === myRun) isLoading = false;
   }
 
-  await render(payload);
+  if (_favRunId !== myRun) return;
+
+  await render(payload, { priority, runId: myRun });
 }
 
-async function fetchRemote() {
+async function fetchRemote({ priority = false } = {}) {
+  // Slightly longer budget for user-initiated loads; still bounded
+  const timeoutMs = priority ? 12000 : 7000;
+  const ac = new AbortController();
+  const to = setTimeout(() => ac.abort(), timeoutMs);
   try {
     const res = await fetch(`${FDV_FAV_ENDPOINT}`, {
-      headers: { "Origin": "https://fdv.lol" },
+      method: "GET",
       cache: "no-store",
+      credentials: "omit",
+      mode: "cors",
+      signal: ac.signal,
+      headers: { "Accept": "application/json", "Origin": "fdv.lol" },
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
@@ -230,37 +289,74 @@ async function fetchRemote() {
   } catch (err) {
     setStatus(`Fetch failed: ${err.message || err}`);
     return null;
+  } finally {
+    clearTimeout(to);
   }
 }
 
-async function render(data) {
+async function render(data, { priority = false, runId } = {}) {
   if (!data || !Array.isArray(data.items) || !data.items.length) {
     tableBodyEl.innerHTML = `<tr><td colspan="10" class="favboard-empty">Processing data...</td></tr>`;
     setStatus("Updated just now.");
     return;
   }
 
-  const enriched = await Promise.all(data.items.map(async (item) => {
-    const base = { ...item };
-    const mint = base.mint;
-    if (!mint) return base;
-    if (tokenMetaCache.has(mint)) return { ...base, ...tokenMetaCache.get(mint) };
-    try {
-      const meta = await fetchTokenInfo(mint, { priority: true });
-      const normalized = normalizeTokenMeta(meta, mint);
-      tokenMetaCache.set(mint, normalized);
-      return { ...base, ...normalized };
-    } catch (err) {
-      console.warn("favboard meta fetch failed", mint, err?.message || err);
-      const fallback = normalizeTokenMeta(null, mint);
-      tokenMetaCache.set(mint, fallback);
-      return { ...base, ...fallback };
-    }
-  }));
+  const items = data.items.slice(0, MAX_ROWS);
 
-  const rows = enriched.map((item, idx) => favRow(item, idx + 1)).join("");
-  tableBodyEl.innerHTML = rows || `<tr><td colspan="10" class="favboard-empty">No rows to display.</td></tr>`;
+  // Immediate paint with cached/placeholder meta
+  const baseRows = items.map((item, idx) => {
+    const mint = item.mint;
+    const cached = mint ? getMetaFromCaches(mint) : null;
+    const meta = cached || normalizeTokenMeta(null, mint);
+    return favRow({ ...item, ...meta }, idx + 1);
+  }).join("");
+  tableBodyEl.innerHTML = baseRows || `<tr><td colspan="10" class="favboard-empty">No rows to display.</td></tr>`;
+  setStatus(`Hydrating ${items.length} tokens…`);
+
+  const enriched = await hydrateMeta(items, { limit: priority ? 10 : 4, runId });
+  // If a newer run started during hydration, skip updating DOM
+  if (runId != null && runId !== _favRunId) return;
+
+  const finalRows = enriched.map((item, idx) => favRow(item, idx + 1)).join("");
+  tableBodyEl.innerHTML = finalRows || `<tr><td colspan="10" class="favboard-empty">No rows to display.</td></tr>`;
   setStatus(`Updated ${timeAgo(data.fetchedAt || Date.now())}`);
+}
+async function hydrateMeta(items, { limit = 4, runId } = {}) {
+  const out = new Array(items.length);
+  let i = 0;
+
+  async function worker() {
+    while (true) {
+      // Stop early if preempted by a newer run
+      if (runId != null && runId !== _favRunId) return;
+
+      const idx = i++;
+      if (idx >= items.length) break;
+      const base = items[idx];
+      const mint = base.mint;
+      let normalized;
+
+      const cached = mint ? getMetaFromCaches(mint) : null;
+      if (cached) {
+        normalized = cached;
+      } else {
+        try {
+          const meta = await withTimeout(fetchTokenInfo(mint, { priority: true }), 6000, "meta_timeout");
+          normalized = normalizeTokenMeta(meta, mint);
+          tokenMetaCache.set(mint, normalized);
+          writeMetaCache(mint, normalized);
+        } catch {
+          normalized = normalizeTokenMeta(null, mint);
+          tokenMetaCache.set(mint, normalized);
+          writeMetaCache(mint, normalized);
+        }
+      }
+      out[idx] = { ...base, ...normalized };
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }
 
 function favRow(item, rank) {

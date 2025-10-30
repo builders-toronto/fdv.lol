@@ -504,7 +504,8 @@ input[type="checkbox"]:disabled{
 
 .btn{
   display:inline-flex; align-items:center; justify-content: center; gap:8px; padding:13px 12px; border-radius:12px; font-weight:600; letter-spacing:.2px;
-  background: linear-gradient(90deg, rgb(0 0 0 / 15%), rgb(11 156 173 / 15%));
+  /* background: linear-gradient(90deg, rgb(0 0 0 / 15%), rgb(11 156 173 / 15%)); */
+  background: transparent;
   border:1px solid rgba(122,222,255,.28); color:var(--text); text-decoration:none; cursor: pointer;
 }
 .btn:hover{filter:brightness(1.1)}
@@ -620,17 +621,17 @@ input[type="checkbox"]:disabled{
 }
 
 .adcard{
-  --ring: 2px;       
-  --glow: 36px;      
-  --wedge: 16deg;    
-  --speed: 8s;       
-
-  position:relative; z-index:0; grid-column: 1 / -1;
-  border-radius:18px; padding:16px;
-  background: var(--panel);
-  overflow:hidden;
-  border: none;           
-  contain: paint;
+  /* Fit container to theme; leave visuals to .adbanner inside */
+  --ring: 1.5px;
+  --glow: 24px;
+  --wedge: 16deg;
+  --speed: 7s;
+  margin-top: 30px;
+  margin-bottom: 30px;
+  padding: 12px;
+  border-radius: 14px;
+  background: var(--panel, #0f1729);
+  border: 1px solid #3da6a6;
 }
 
 .adcard::before{
@@ -677,13 +678,13 @@ input[type="checkbox"]:disabled{
 .adactions{display:flex; gap:10px; flex-wrap:wrap;justify-content:flex-end; align-items:center}
 .adbtn{
   display:inline-flex; align-items:center; gap:8px; padding:10px 14px; border-radius:12px; font-weight:700;
-  background: linear-gradient(90deg, rgba(26,255,213,.18), rgba(123,241,255,.18));
+  background: transparent;
   border:1px solid rgba(122,222,255,.35); color:var(--text); text-decoration:none;
   transition: transform .12s ease, filter .12s ease, border-color .12s ease;
 }
 .adbtn:hover{filter:brightness(1.1); border-color: rgba(26,255,213,.55)}
 .adbtn:active{transform:translateY(1px)}
-.adbtn.primary{ border-color: rgba(26,255,122,.55); box-shadow: inset 0 0 0 1px rgba(26,255,122,.25) }
+.adbtn.primary{ border-color: #1affd5; box-shadow: inset 0 0 0 1px rgba(26,255,122,.25) }
 
 /* .adicons{ height:25px; display:flex; gap:8px; align-items:center } */
 
@@ -929,16 +930,6 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 
 .small{font-size:.78rem;color:var(--muted)}
 
-.adcard{
-  --ring: 1.5px;
-  --glow: 24px;
-  --wedge: 16deg;
-  --speed: 7s;
-  margin-top: 30px;
-  padding: 12px;              /* was 16px */
-  border-radius: 14px;        /* was 18px */
-  border: 0.4px solid orange;
-}
 .adrow{
   grid-template-columns: 56px 1fr auto; /* was 64px */
   gap: 12px;                             /* was 14px */

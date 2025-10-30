@@ -1,4 +1,3 @@
-// import { FDV_FEE_RECEIVER } from "../../config/env.js";
 import { computePumpingLeaders, getRugSignalForMint } from "../meme/addons/pumping.js";
 
 // Dust orders and minimums are blocked due to Jupiter route failures and 400 errors.
@@ -48,7 +47,7 @@ const UI_LIMITS = {
   LIFE_MINS_MAX: 10080,  // 7 days
 };
 
-function clamp(n, lo, hi) { const x = Number(n); return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : lo; }
+function _clamp(n, lo, hi) { const x = Number(n); return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : lo; }
 
 function now() { return Date.now(); }
 
@@ -77,7 +76,7 @@ function logObj(label, obj) {
   try { log(`${label}: ${JSON.stringify(obj)}`); } catch {}
 }
 
-async function logMoneyMade() {
+async function _logMoneyMade() {
   try {
     const totalSol = Number(state.moneyMadeSol || 0);
     const px = await getSolUsd();
@@ -89,7 +88,7 @@ async function logMoneyMade() {
   }
 }
 
-async function addRealizedPnl(solProceeds, costSold, label = "PnL") {
+async function _addRealizedPnl(solProceeds, costSold, label = "PnL") {
   const pnl = Number(solProceeds || 0) - Number(costSold || 0);
   state.moneyMadeSol = Number(state.moneyMadeSol || 0) + pnl;
   save();
@@ -135,6 +134,7 @@ let state = {
   minQuoteIntervalMs: 10000, 
   sellCooldownMs: 20000,  
   staleMinsToDeRisk: 4, 
+  singlePositionMode: true,
 
   // Auto wallet mode
   autoWalletPub: "",        
@@ -2167,7 +2167,7 @@ async function sweepAllToSolAndReturn() {
 
       log(`Sold ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
       const costSold = Number(state.positions[mint]?.costSol || 0);
-      await addRealizedPnl(estSol, costSold, "Unwind PnL");
+      await _addRealizedPnl(estSol, costSold, "Unwind PnL");
 
       if (state.positions[mint]) { delete state.positions[mint]; save(); }
       removeFromPosCache(owner, mint);
@@ -2811,8 +2811,8 @@ async function observeMintOnce(mint, { windowMs = 3000, sampleMs = 800, minPasse
   const holdSecs = passes >= 5 ? 120 : passes === 4 ? 95 : 70;
   if (passes >= minPasses) {
     if (adjustHold) {
-      const clamped = Math.min(120, Math.max(30, holdSecs));
-      if (state.maxHoldSecs !== clamped) { state.maxHoldSecs = clamped; save(); }
+      const _clamped = Math.min(120, Math.max(30, holdSecs));
+      if (state.maxHoldSecs !== _clamped) { state.maxHoldSecs = _clamped; save(); }
     }
     //log(`Observer: approve ${mint.slice(0,4)}… (score ${passes}/5)`);
     log(`Observer: approve ${mint.slice(0,4)}… (score ${passes}/5)${usingTrend ? " [3-tick trend]" : ""}`);
@@ -3095,7 +3095,7 @@ async function sweepNonSolToSolAtStart() {
 
       log(`Startup sweep sold ${sizeUi.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
       const costSold = Number(state.positions[mint]?.costSol || 0);
-      await addRealizedPnl(estSol, costSold, "Startup sweep PnL");
+      await _addRealizedPnl(estSol, costSold, "Startup sweep PnL");
       if (state.positions[mint]) { delete state.positions[mint]; save(); }
       removeFromPosCache(owner, mint);
       try { clearPendingCredit(owner, mint); } catch {}
@@ -3651,7 +3651,7 @@ async function evalAndMaybeSellPositions() {
                 const estFullSol = curSol > 0 ? curSol : await quoteOutSol(mint, sellUi2, pos.decimals).catch(()=>0);
                 log(`Sold ${sellUi2.toFixed(6)} ${mint.slice(0,4)}… -> ~${estFullSol.toFixed(6)} SOL (${reason})`);
                 const costSold = Number(pos.costSol || 0);
-                await addRealizedPnl(estFullSol, costSold, "Full sell PnL");
+                await _addRealizedPnl(estFullSol, costSold, "Full sell PnL");
                 delete state.positions[mint];
                 removeFromPosCache(kp.publicKey.toBase58(), mint);
                 try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
@@ -3725,7 +3725,7 @@ async function evalAndMaybeSellPositions() {
           }
           save();
 
-          await addRealizedPnl(estSol, costSold, "Partial sell PnL");
+          await _addRealizedPnl(estSol, costSold, "Partial sell PnL");
         } else {
           let sellUi = pos.sizeUi;
           try {
@@ -3775,7 +3775,7 @@ async function evalAndMaybeSellPositions() {
             const estFullSol = curSol > 0 ? curSol : await quoteOutSol(mint, sellUi, pos.decimals).catch(()=>0);
             log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ~${estFullSol.toFixed(6)} SOL (${reason})`);
             const costSold = Number(pos.costSol || 0);
-            await addRealizedPnl(estFullSol, costSold, "Full sell PnL");
+            await _addRealizedPnl(estFullSol, costSold, "Full sell PnL");
             delete state.positions[mint];
             removeFromPosCache(kp.publicKey.toBase58(), mint);
             save();
@@ -3911,7 +3911,7 @@ async function switchToLeader(newMint) {
         // Fully rotated out
         log(`Rotated out: ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
         const costSold = Number(state.positions[mint]?.costSol || 0);
-        await addRealizedPnl(estSol, costSold, "Rotation PnL");
+        await _addRealizedPnl(estSol, costSold, "Rotation PnL");
         delete state.positions[mint];
         removeFromPosCache(owner, mint);
         save();
@@ -4213,7 +4213,7 @@ async function tick() {
         save();
         log(`Bought ~${buySol.toFixed(4)} SOL -> ${mint.slice(0,4)}…`);
         clearObserverConsider(mint);
-        await logMoneyMade();
+        await _logMoneyMade();
       } else {
         log(`Buy confirmed for ${mint.slice(0,4)}… but no token credit yet; will sync later.`);
         const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
@@ -4241,7 +4241,7 @@ async function tick() {
           sig: res.sig
         });
         try { await processPendingCredits(); } catch {}
-        await logMoneyMade();
+        await _logMoneyMade();
       }
 
       spent += buySol;
@@ -4420,7 +4420,7 @@ export function initAutoWidget(container = document.body) {
       <svg class="fdv-acc-caret" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
         <path d="M8 10l4 4 4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>
-      <span class="fdv-title">Auto Pump (v0.0.2.8)</span>
+      <span class="fdv-title">FDV Auto Pump</span>
     </span>
     <span data-auto-led title="Status"
             style="display:inline-block; width:10px; height:10px; border-radius:50%;
@@ -4632,11 +4632,35 @@ export function initAutoWidget(container = document.body) {
       <button class="btn" data-auto-reset>Refresh</button>
     </div>
     </div>
+    <div class="fdv-bot-footer" style="margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
+      <span>Version: 0.0.2.8</span>
+    </div>
   `;
 
   wrap.appendChild(summary);
   wrap.appendChild(body);
   container.appendChild(wrap);
+
+  const openPumpKpi = () => {
+    let opened = false;
+    const pumpBtn = document.getElementById("pumpingToggle") || document.querySelector('button[title="PUMP"]');
+    if (pumpBtn) {
+      const isExpanded = String(pumpBtn.getAttribute("aria-expanded") || "false") === "true";
+      if (!isExpanded) {
+        try { pumpBtn.click(); opened = true; } catch {}
+      } else {
+        opened = true;
+      }
+      const panelId = pumpBtn.getAttribute("aria-controls") || "pumpingPanel";
+      const panel = document.getElementById(panelId) || document.querySelector("#pumpingPanel");
+      if (panel) {
+        panel.removeAttribute("hidden");
+        panel.style.display = "";
+        panel.classList.add("open");
+      }
+    }
+    return opened;
+};
 
   try {
     const hasAutomate =
@@ -4647,26 +4671,6 @@ export function initAutoWidget(container = document.body) {
       wrap.open = true;
       state.collapsed = false;
       save();
-      const openPumpKpi = () => {
-        let opened = false;
-        const pumpBtn = document.getElementById("pumpingToggle") || document.querySelector('button[title="PUMP"]');
-        if (pumpBtn) {
-          const isExpanded = String(pumpBtn.getAttribute("aria-expanded") || "false") === "true";
-          if (!isExpanded) {
-            try { pumpBtn.click(); opened = true; } catch {}
-          } else {
-            opened = true;
-          }
-          const panelId = pumpBtn.getAttribute("aria-controls") || "pumpingPanel";
-          const panel = document.getElementById(panelId) || document.querySelector("#pumpingPanel");
-          if (panel) {
-            panel.removeAttribute("hidden");
-            panel.style.display = "";
-            panel.classList.add("open");
-          }
-        }
-        return opened;
-      };
       openPumpKpi();
       setTimeout(openPumpKpi, 0);
       setTimeout(openPumpKpi, 250);
@@ -4675,6 +4679,7 @@ export function initAutoWidget(container = document.body) {
 
   wrap.addEventListener("toggle", () => {
     state.collapsed = !wrap.open;
+    openPumpKpi();
     save(); // persist?
   });
 
@@ -5002,17 +5007,17 @@ export function initAutoWidget(container = document.body) {
   });
 
   const saveField = () => {
-    const life = clamp(parseInt(lifeEl.value || "0", 10), UI_LIMITS.LIFE_MINS_MIN, UI_LIMITS.LIFE_MINS_MAX);
+    const life = _clamp(parseInt(lifeEl.value || "0", 10), UI_LIMITS.LIFE_MINS_MIN, UI_LIMITS.LIFE_MINS_MAX);
     state.lifetimeMins = life;
     lifeEl.value = String(life);
 
     const rawPct = normalizePercent(buyPctEl.value);
-    const pct = clamp(rawPct, UI_LIMITS.BUY_PCT_MIN, UI_LIMITS.BUY_PCT_MAX);
+    const pct = _clamp(rawPct, UI_LIMITS.BUY_PCT_MIN, UI_LIMITS.BUY_PCT_MAX);
     state.buyPct = pct;
     buyPctEl.value = (pct * 100).toFixed(2);
 
-    let minBuy = clamp(Number(minBuyEl.value || 0), UI_LIMITS.MIN_BUY_SOL_MIN, UI_LIMITS.MIN_BUY_SOL_MAX);
-    let maxBuy = clamp(Number(maxBuyEl.value || 0), UI_LIMITS.MAX_BUY_SOL_MIN, UI_LIMITS.MAX_BUY_SOL_MAX);
+    let minBuy = _clamp(Number(minBuyEl.value || 0), UI_LIMITS.MIN_BUY_SOL_MIN, UI_LIMITS.MIN_BUY_SOL_MAX);
+    let maxBuy = _clamp(Number(maxBuyEl.value || 0), UI_LIMITS.MAX_BUY_SOL_MIN, UI_LIMITS.MAX_BUY_SOL_MAX);
 
     if (maxBuy < minBuy) maxBuy = minBuy;
 
