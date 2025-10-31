@@ -1,0 +1,1508 @@
+[11:13:56] Auto widget ready.
+[11:13:57] Fetching SOL balance for 5d6U…
+[11:13:57] RPC connection ready ->  {}
+[11:13:57] Balance: 0.064433 SOL
+[11:14:00] RPC preflight OK.
+[11:14:00] Join us on telegram: https://t.me/fdvlolgroup for community discussions!
+[11:14:00] Syncing positions from cache …
+[11:14:00] Loaded position cache for 5d6U… with 0 entries.
+[11:14:00] Position cache to list for 5d6U… 0 entries.
+[11:14:00] Startup sweep: checking cached SPL balances …
+[11:14:00] Loaded position cache for 5d6U… with 0 entries.
+[11:14:00] Position cache to list for 5d6U… 0 entries.
+[11:14:00] Startup sweep: no SPL balances in cache.
+[11:14:00] Auto trading started
+[11:14:00] Fast observer started @ 40ms cadence.
+[11:14:03] Bot active. Time until end: 47220s :: hit "refresh" to reset all stats.
+[11:14:03] Fetching SOL balance for 5d6U…
+[11:14:03] Syncing positions from cache …
+[11:14:03] Loaded position cache for 5d6U… with 0 entries.
+[11:14:03] Position cache to list for 5d6U… 0 entries.
+[11:14:03] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:03] Picking pump candidates from 6 leaders…
+[11:14:03] Evaluating leader FDgS… badge="Warming"
+[11:14:03] Evaluating leader 2v8V… badge="Warming"
+[11:14:03] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:03] Pre-pump score 2v8V… pre=0.000 zV1=1.00 a5/1=1.00 chg5m=16.86
+[11:14:03] Evaluating leader BsWG… badge="Warming"
+[11:14:03] Evaluating leader DzTj… badge="Warming"
+[11:14:03] Evaluating leader Gn3z… badge="Warming"
+[11:14:03] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:03] Pre-pump score Gn3z… pre=0.235 zV1=1.00 a5/1=1.00 chg5m=6.43
+[11:14:03] Evaluating leader 9yZ5… badge="Warming"
+[11:14:03] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:03] Pre-pump score 9yZ5… pre=0.235 zV1=1.00 a5/1=1.00 chg5m=7.91
+[11:14:03] Balance: 0.064433 SOL
+[11:14:06] Bot active. Time until end: 47217s :: hit "refresh" to reset all stats.
+[11:14:06] Fetching SOL balance for 5d6U…
+[11:14:06] Syncing positions from cache …
+[11:14:06] Loaded position cache for 5d6U… with 0 entries.
+[11:14:06] Position cache to list for 5d6U… 0 entries.
+[11:14:06] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:06] Picking pump candidates from 6 leaders…
+[11:14:06] Evaluating leader FDgS… badge="Warming"
+[11:14:06] Evaluating leader 2v8V… badge="Warming"
+[11:14:06] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:06] Pre-pump score 2v8V… pre=0.000 zV1=1.00 a5/1=1.00 chg5m=16.86
+[11:14:06] Evaluating leader BsWG… badge="Warming"
+[11:14:06] Evaluating leader DzTj… badge="Warming"
+[11:14:06] Evaluating leader Gn3z… badge="Warming"
+[11:14:06] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:06] Pre-pump score Gn3z… pre=0.068 zV1=0.00 a5/1=1.00 chg5m=6.43
+[11:14:06] Evaluating leader 9yZ5… badge="Warming"
+[11:14:06] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:06] Pre-pump score 9yZ5… pre=0.068 zV1=0.00 a5/1=1.00 chg5m=7.91
+[11:14:06] Balance: 0.064433 SOL
+[11:14:09] Bot active. Time until end: 47214s :: hit "refresh" to reset all stats.
+[11:14:09] Fetching SOL balance for 5d6U…
+[11:14:09] Syncing positions from cache …
+[11:14:09] Loaded position cache for 5d6U… with 0 entries.
+[11:14:09] Position cache to list for 5d6U… 0 entries.
+[11:14:09] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:09] Picking pump candidates from 6 leaders…
+[11:14:09] Evaluating leader FDgS… badge="Warming"
+[11:14:09] Evaluating leader BsWG… badge="Warming"
+[11:14:09] Evaluating leader 2v8V… badge="Warming"
+[11:14:09] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:09] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=16.86
+[11:14:09] Evaluating leader DzTj… badge="Warming"
+[11:14:09] Evaluating leader Gn3z… badge="Warming"
+[11:14:09] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:09] Pre-pump score Gn3z… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=6.43
+[11:14:09] Evaluating leader 9yZ5… badge="Warming"
+[11:14:09] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:09] Pre-pump score 9yZ5… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=7.91
+[11:14:09] Balance: 0.064433 SOL
+[11:14:12] Bot active. Time until end: 47211s :: hit "refresh" to reset all stats.
+[11:14:12] Fetching SOL balance for 5d6U…
+[11:14:12] Syncing positions from cache …
+[11:14:12] Loaded position cache for 5d6U… with 0 entries.
+[11:14:12] Position cache to list for 5d6U… 0 entries.
+[11:14:12] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:12] Picking pump candidates from 6 leaders…
+[11:14:12] Evaluating leader FDgS… badge="Warming"
+[11:14:12] Evaluating leader BsWG… badge="Warming"
+[11:14:12] Evaluating leader 2v8V… badge="Warming"
+[11:14:12] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:12] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=16.86
+[11:14:12] Evaluating leader DzTj… badge="Warming"
+[11:14:12] Evaluating leader 9yZ5… badge="Warming"
+[11:14:12] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:12] Pre-pump score 9yZ5… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=7.91
+[11:14:12] Evaluating leader Gn3z… badge="Warming"
+[11:14:12] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:12] Pre-pump score Gn3z… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=6.43
+[11:14:12] Balance: 0.064433 SOL
+[11:14:15] Bot active. Time until end: 47208s :: hit "refresh" to reset all stats.
+[11:14:15] Fetching SOL balance for 5d6U…
+[11:14:15] Syncing positions from cache …
+[11:14:15] Loaded position cache for 5d6U… with 0 entries.
+[11:14:15] Position cache to list for 5d6U… 0 entries.
+[11:14:15] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:15] Picking pump candidates from 6 leaders…
+[11:14:15] Evaluating leader FDgS… badge="Warming"
+[11:14:15] Evaluating leader BsWG… badge="Warming"
+[11:14:15] Evaluating leader 2v8V… badge="Warming"
+[11:14:15] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:15] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=16.86
+[11:14:15] Evaluating leader DzTj… badge="Warming"
+[11:14:15] Evaluating leader Gn3z… badge="Warming"
+[11:14:15] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:15] Pre-pump score Gn3z… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=6.43
+[11:14:15] Evaluating leader 9yZ5… badge="Warming"
+[11:14:15] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:15] Pre-pump score 9yZ5… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=7.91
+[11:14:15] Balance: 0.064433 SOL
+[11:14:18] Bot active. Time until end: 47205s :: hit "refresh" to reset all stats.
+[11:14:18] Fetching SOL balance for 5d6U…
+[11:14:18] Syncing positions from cache …
+[11:14:18] Loaded position cache for 5d6U… with 0 entries.
+[11:14:18] Position cache to list for 5d6U… 0 entries.
+[11:14:18] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:18] Picking pump candidates from 6 leaders…
+[11:14:18] Evaluating leader FDgS… badge="Warming"
+[11:14:18] Evaluating leader BsWG… badge="Warming"
+[11:14:18] Evaluating leader 2v8V… badge="Warming"
+[11:14:18] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:18] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=16.86
+[11:14:18] Evaluating leader DzTj… badge="Warming"
+[11:14:18] Evaluating leader Gn3z… badge="Warming"
+[11:14:18] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:18] Pre-pump score Gn3z… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=6.43
+[11:14:18] Evaluating leader 9yZ5… badge="Warming"
+[11:14:18] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:18] Pre-pump score 9yZ5… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=7.91
+[11:14:18] Balance: 0.064433 SOL
+[11:14:21] Bot active. Time until end: 47202s :: hit "refresh" to reset all stats.
+[11:14:21] Fetching SOL balance for 5d6U…
+[11:14:21] Syncing positions from cache …
+[11:14:21] Loaded position cache for 5d6U… with 0 entries.
+[11:14:21] Position cache to list for 5d6U… 0 entries.
+[11:14:21] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:21] Picking pump candidates from 6 leaders…
+[11:14:21] Evaluating leader FDgS… badge="Warming"
+[11:14:21] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.707 fB=0.000
+[11:14:21] Pre-pump score FDgS… pre=0.425 zV1=1.06 a5/1=1.00 chg5m=20.90
+[11:14:21] Evaluating leader 3P2u… badge="Warming"
+[11:14:21] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:21] Pre-pump score 3P2u… pre=0.235 zV1=1.00 a5/1=1.00 chg5m=26.49
+[11:14:21] Evaluating leader 2v8V… badge="Warming"
+[11:14:21] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:21] Pre-pump score 2v8V… pre=0.000 zV1=1.00 a5/1=1.00 chg5m=12.46
+[11:14:21] Evaluating leader DzTj… badge="Warming"
+[11:14:21] Evaluating leader Gn3z… badge="Warming"
+[11:14:21] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:21] Pre-pump score Gn3z… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=10.85
+[11:14:21] Evaluating leader BsWG… badge="Cooling"
+[11:14:21] Balance: 0.064433 SOL
+[11:14:24] Bot active. Time until end: 47199s :: hit "refresh" to reset all stats.
+[11:14:24] Fetching SOL balance for 5d6U…
+[11:14:24] Syncing positions from cache …
+[11:14:24] Loaded position cache for 5d6U… with 0 entries.
+[11:14:24] Position cache to list for 5d6U… 0 entries.
+[11:14:24] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:24] Picking pump candidates from 6 leaders…
+[11:14:24] Evaluating leader FDgS… badge="Warming"
+[11:14:24] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.252 fB=0.000
+[11:14:24] Pre-pump score FDgS… pre=0.221 zV1=0.38 a5/1=1.00 chg5m=20.90
+[11:14:24] Evaluating leader 3P2u… badge="Warming"
+[11:14:24] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.309 fB=0.000
+[11:14:24] Pre-pump score 3P2u… pre=0.235 zV1=0.46 a5/1=1.00 chg5m=26.49
+[11:14:24] Evaluating leader 2v8V… badge="Warming"
+[11:14:24] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.309 fB=0.000
+[11:14:24] Pre-pump score 2v8V… pre=0.000 zV1=0.46 a5/1=1.00 chg5m=12.46
+[11:14:24] Evaluating leader DzTj… badge="Warming"
+[11:14:24] Evaluating leader Gn3z… badge="Warming"
+[11:14:24] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.252 fB=0.000
+[11:14:24] Pre-pump score Gn3z… pre=0.311 zV1=0.38 a5/1=1.00 chg5m=10.85
+[11:14:24] Evaluating leader BsWG… badge="Cooling"
+[11:14:24] Balance: 0.064433 SOL
+[11:14:27] Bot active. Time until end: 47196s :: hit "refresh" to reset all stats.
+[11:14:27] Fetching SOL balance for 5d6U…
+[11:14:27] Syncing positions from cache …
+[11:14:27] Loaded position cache for 5d6U… with 0 entries.
+[11:14:27] Position cache to list for 5d6U… 0 entries.
+[11:14:27] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:27] Picking pump candidates from 6 leaders…
+[11:14:27] Evaluating leader FDgS… badge="Warming"
+[11:14:27] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:27] Pre-pump score FDgS… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=20.90
+[11:14:27] Evaluating leader 3P2u… badge="Warming"
+[11:14:27] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:27] Pre-pump score 3P2u… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=26.49
+[11:14:27] Evaluating leader 2v8V… badge="Warming"
+[11:14:27] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:27] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=12.46
+[11:14:27] Evaluating leader DzTj… badge="Warming"
+[11:14:27] Evaluating leader Gn3z… badge="Warming"
+[11:14:27] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:27] Pre-pump score Gn3z… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=10.85
+[11:14:27] Evaluating leader BsWG… badge="Cooling"
+[11:14:27] Balance: 0.064433 SOL
+[11:14:30] Bot active. Time until end: 47193s :: hit "refresh" to reset all stats.
+[11:14:30] Fetching SOL balance for 5d6U…
+[11:14:30] Syncing positions from cache …
+[11:14:30] Loaded position cache for 5d6U… with 0 entries.
+[11:14:30] Position cache to list for 5d6U… 0 entries.
+[11:14:30] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:30] Picking pump candidates from 6 leaders…
+[11:14:30] Evaluating leader FDgS… badge="Warming"
+[11:14:30] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:30] Pre-pump score FDgS… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=20.90
+[11:14:30] Evaluating leader 3P2u… badge="Warming"
+[11:14:30] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:30] Pre-pump score 3P2u… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=26.49
+[11:14:30] Evaluating leader 2v8V… badge="Warming"
+[11:14:30] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:30] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=12.46
+[11:14:30] Evaluating leader DzTj… badge="Warming"
+[11:14:30] Evaluating leader Gn3z… badge="Warming"
+[11:14:30] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:30] Pre-pump score Gn3z… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=10.85
+[11:14:30] Evaluating leader BsWG… badge="Cooling"
+[11:14:30] Balance: 0.064433 SOL
+[11:14:33] Bot active. Time until end: 47190s :: hit "refresh" to reset all stats.
+[11:14:33] Fetching SOL balance for 5d6U…
+[11:14:33] Syncing positions from cache …
+[11:14:33] Loaded position cache for 5d6U… with 0 entries.
+[11:14:33] Position cache to list for 5d6U… 0 entries.
+[11:14:33] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:33] Picking pump candidates from 6 leaders…
+[11:14:33] Evaluating leader FDgS… badge="Warming"
+[11:14:33] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:33] Pre-pump score FDgS… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=20.90
+[11:14:33] Evaluating leader 3P2u… badge="Warming"
+[11:14:33] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:33] Pre-pump score 3P2u… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=26.49
+[11:14:33] Evaluating leader 2v8V… badge="Warming"
+[11:14:33] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:33] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=12.46
+[11:14:33] Evaluating leader DzTj… badge="Warming"
+[11:14:33] Evaluating leader Gn3z… badge="Warming"
+[11:14:33] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:33] Pre-pump score Gn3z… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=10.85
+[11:14:33] Evaluating leader BsWG… badge="Cooling"
+[11:14:33] Balance: 0.064433 SOL
+[11:14:36] Bot active. Time until end: 47187s :: hit "refresh" to reset all stats.
+[11:14:36] Fetching SOL balance for 5d6U…
+[11:14:36] Syncing positions from cache …
+[11:14:36] Loaded position cache for 5d6U… with 0 entries.
+[11:14:36] Position cache to list for 5d6U… 0 entries.
+[11:14:36] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:36] Picking pump candidates from 6 leaders…
+[11:14:36] Evaluating leader FDgS… badge="Warming"
+[11:14:36] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:36] Pre-pump score FDgS… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=20.90
+[11:14:36] Evaluating leader 3P2u… badge="Warming"
+[11:14:36] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:36] Pre-pump score 3P2u… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=26.49
+[11:14:36] Evaluating leader 2v8V… badge="Warming"
+[11:14:36] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:36] Pre-pump score 2v8V… pre=0.000 zV1=1.00 a5/1=1.00 chg5m=12.46
+[11:14:36] Evaluating leader DzTj… badge="Warming"
+[11:14:36] Evaluating leader Gn3z… badge="Warming"
+[11:14:36] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:36] Pre-pump score Gn3z… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=10.85
+[11:14:36] Evaluating leader BsWG… badge="Cooling"
+[11:14:36] Balance: 0.064433 SOL
+[11:14:39] Bot active. Time until end: 47184s :: hit "refresh" to reset all stats.
+[11:14:39] Fetching SOL balance for 5d6U…
+[11:14:39] Syncing positions from cache …
+[11:14:39] Loaded position cache for 5d6U… with 0 entries.
+[11:14:39] Position cache to list for 5d6U… 0 entries.
+[11:14:39] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:39] Picking pump candidates from 6 leaders…
+[11:14:39] Evaluating leader FDgS… badge="Warming"
+[11:14:39] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:39] Pre-pump score FDgS… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=20.90
+[11:14:39] Evaluating leader 3P2u… badge="Warming"
+[11:14:39] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:39] Pre-pump score 3P2u… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=26.49
+[11:14:39] Evaluating leader 2v8V… badge="Warming"
+[11:14:39] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:39] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=12.46
+[11:14:39] Evaluating leader DzTj… badge="Warming"
+[11:14:39] Evaluating leader Gn3z… badge="Warming"
+[11:14:39] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:39] Pre-pump score Gn3z… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=10.85
+[11:14:39] Evaluating leader BsWG… badge="Cooling"
+[11:14:39] Balance: 0.064433 SOL
+[11:14:42] Bot active. Time until end: 47181s :: hit "refresh" to reset all stats.
+[11:14:42] Fetching SOL balance for 5d6U…
+[11:14:42] Syncing positions from cache …
+[11:14:42] Loaded position cache for 5d6U… with 0 entries.
+[11:14:42] Position cache to list for 5d6U… 0 entries.
+[11:14:42] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:42] Picking pump candidates from 6 leaders…
+[11:14:42] Evaluating leader FDgS… badge="Warming"
+[11:14:42] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:42] Pre-pump score FDgS… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=20.90
+[11:14:42] Evaluating leader 3P2u… badge="Warming"
+[11:14:42] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:42] Pre-pump score 3P2u… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=26.49
+[11:14:42] Evaluating leader 2v8V… badge="Warming"
+[11:14:42] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:42] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=12.46
+[11:14:42] Evaluating leader DzTj… badge="Warming"
+[11:14:42] Evaluating leader Gn3z… badge="Warming"
+[11:14:42] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:42] Pre-pump score Gn3z… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=10.85
+[11:14:42] Evaluating leader BsWG… badge="Cooling"
+[11:14:42] Balance: 0.064433 SOL
+[11:14:45] Bot active. Time until end: 47178s :: hit "refresh" to reset all stats.
+[11:14:45] Fetching SOL balance for 5d6U…
+[11:14:45] Syncing positions from cache …
+[11:14:45] Loaded position cache for 5d6U… with 0 entries.
+[11:14:45] Position cache to list for 5d6U… 0 entries.
+[11:14:45] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:45] Picking pump candidates from 6 leaders…
+[11:14:45] Evaluating leader FDgS… badge="Warming"
+[11:14:45] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:45] Pre-pump score FDgS… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=20.90
+[11:14:45] Evaluating leader 3P2u… badge="Warming"
+[11:14:45] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:45] Pre-pump score 3P2u… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=26.49
+[11:14:45] Evaluating leader 2v8V… badge="Warming"
+[11:14:45] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:45] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=12.46
+[11:14:45] Evaluating leader DzTj… badge="Warming"
+[11:14:45] Evaluating leader Gn3z… badge="Warming"
+[11:14:45] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:45] Pre-pump score Gn3z… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=10.85
+[11:14:45] Evaluating leader BsWG… badge="Cooling"
+[11:14:45] Balance: 0.064433 SOL
+[11:14:48] Bot active. Time until end: 47175s :: hit "refresh" to reset all stats.
+[11:14:48] Fetching SOL balance for 5d6U…
+[11:14:48] Syncing positions from cache …
+[11:14:48] Loaded position cache for 5d6U… with 0 entries.
+[11:14:48] Position cache to list for 5d6U… 0 entries.
+[11:14:48] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:48] Picking pump candidates from 6 leaders…
+[11:14:48] Evaluating leader FDgS… badge="Warming"
+[11:14:48] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:48] Pre-pump score FDgS… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=20.90
+[11:14:48] Evaluating leader 3P2u… badge="Warming"
+[11:14:48] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:48] Pre-pump score 3P2u… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=26.49
+[11:14:48] Evaluating leader 2v8V… badge="Warming"
+[11:14:48] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:48] Pre-pump score 2v8V… pre=0.000 zV1=1.00 a5/1=1.00 chg5m=12.46
+[11:14:48] Evaluating leader DzTj… badge="Warming"
+[11:14:48] Evaluating leader Gn3z… badge="Warming"
+[11:14:48] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:48] Pre-pump score Gn3z… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=10.85
+[11:14:48] Evaluating leader BsWG… badge="Cooling"
+[11:14:48] Balance: 0.064433 SOL
+[11:14:51] Bot active. Time until end: 47172s :: hit "refresh" to reset all stats.
+[11:14:51] Fetching SOL balance for 5d6U…
+[11:14:51] Syncing positions from cache …
+[11:14:51] Loaded position cache for 5d6U… with 0 entries.
+[11:14:51] Position cache to list for 5d6U… 0 entries.
+[11:14:51] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:51] Picking pump candidates from 6 leaders…
+[11:14:51] Evaluating leader FDgS… badge="Warming"
+[11:14:51] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:51] Pre-pump score FDgS… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=20.90
+[11:14:51] Evaluating leader 3P2u… badge="Warming"
+[11:14:51] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:51] Pre-pump score 3P2u… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=26.49
+[11:14:51] Evaluating leader 2v8V… badge="Warming"
+[11:14:51] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:51] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=12.46
+[11:14:51] Evaluating leader DzTj… badge="Warming"
+[11:14:51] Evaluating leader Gn3z… badge="Warming"
+[11:14:51] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:51] Pre-pump score Gn3z… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=10.85
+[11:14:51] Evaluating leader BsWG… badge="Cooling"
+[11:14:51] Balance: 0.064433 SOL
+[11:14:54] Bot active. Time until end: 47169s :: hit "refresh" to reset all stats.
+[11:14:54] Fetching SOL balance for 5d6U…
+[11:14:54] Syncing positions from cache …
+[11:14:54] Loaded position cache for 5d6U… with 0 entries.
+[11:14:54] Position cache to list for 5d6U… 0 entries.
+[11:14:54] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:54] Picking pump candidates from 6 leaders…
+[11:14:54] Evaluating leader FDgS… badge="Warming"
+[11:14:54] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:54] Pre-pump score FDgS… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=20.90
+[11:14:54] Evaluating leader 3P2u… badge="Warming"
+[11:14:54] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:54] Pre-pump score 3P2u… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=26.49
+[11:14:54] Evaluating leader 2v8V… badge="Warming"
+[11:14:54] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:54] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=12.46
+[11:14:54] Evaluating leader DzTj… badge="Warming"
+[11:14:54] Evaluating leader Gn3z… badge="Warming"
+[11:14:54] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:14:54] Pre-pump score Gn3z… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=10.85
+[11:14:54] Evaluating leader BsWG… badge="Cooling"
+[11:14:54] Balance: 0.064433 SOL
+[11:14:57] Bot active. Time until end: 47166s :: hit "refresh" to reset all stats.
+[11:14:57] Fetching SOL balance for 5d6U…
+[11:14:57] Syncing positions from cache …
+[11:14:57] Loaded position cache for 5d6U… with 0 entries.
+[11:14:57] Position cache to list for 5d6U… 0 entries.
+[11:14:57] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:14:57] Picking pump candidates from 6 leaders…
+[11:14:57] Evaluating leader FDgS… badge="Warming"
+[11:14:57] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:57] Pre-pump score FDgS… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=20.90
+[11:14:57] Evaluating leader 3P2u… badge="Warming"
+[11:14:57] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:57] Pre-pump score 3P2u… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=26.49
+[11:14:57] Evaluating leader 2v8V… badge="Warming"
+[11:14:57] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:57] Pre-pump score 2v8V… pre=0.000 zV1=1.00 a5/1=1.00 chg5m=12.46
+[11:14:57] Evaluating leader DzTj… badge="Warming"
+[11:14:57] Evaluating leader Gn3z… badge="Warming"
+[11:14:57] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:14:57] Pre-pump score Gn3z… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=10.85
+[11:14:57] Evaluating leader BsWG… badge="Cooling"
+[11:14:57] Balance: 0.064433 SOL
+[11:15:00] Bot active. Time until end: 47163s :: hit "refresh" to reset all stats.
+[11:15:00] Fetching SOL balance for 5d6U…
+[11:15:00] Syncing positions from cache …
+[11:15:00] Loaded position cache for 5d6U… with 0 entries.
+[11:15:00] Position cache to list for 5d6U… 0 entries.
+[11:15:00] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:00] Picking pump candidates from 6 leaders…
+[11:15:00] Evaluating leader FDgS… badge="Warming"
+[11:15:00] Pre-pump factors: f5m=0.400 fA=0.000 fZ=1.000 fB=0.000
+[11:15:00] Pre-pump score FDgS… pre=0.318 zV1=2.65 a5/1=1.00 chg5m=12.76
+[11:15:00] Evaluating leader 3P2u… badge="🔥 Pumping"
+[11:15:00] Evaluating leader 2v8V… badge="Warming"
+[11:15:00] Pre-pump factors: f5m=0.400 fA=0.000 fZ=1.000 fB=0.000
+[11:15:00] Pre-pump score 2v8V… pre=0.000 zV1=2.74 a5/1=1.00 chg5m=4.93
+[11:15:00] Evaluating leader Gn3z… badge="Warming"
+[11:15:00] Pre-pump factors: f5m=0.400 fA=0.000 fZ=1.000 fB=0.000
+[11:15:00] Pre-pump score Gn3z… pre=0.408 zV1=2.74 a5/1=1.00 chg5m=9.14
+[11:15:00] Evaluating leader AhbP… badge="Warming"
+[11:15:00] Pre-pump factors: f5m=0.400 fA=0.000 fZ=1.000 fB=0.000
+[11:15:00] Pre-pump score AhbP… pre=0.318 zV1=2.65 a5/1=1.00 chg5m=5.29
+[11:15:00] Evaluating leader BsWG… badge="Cooling"
+[11:15:00] Pump picks (fallback): using top Pumping with relaxed accel gate.
+[11:15:00] Pump picks: [{"mint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","badge":"🔥 Pumping","pumpScore":7.84,"liqUsd":37217.56,"v1h":2537.3962500000002,"chg5m":32.12,"chg1h":32.12,"meta":{"accel5to1":0,"accel1to6":1.0000000000000002,"buy":0,"zV1":2.7384006057641623,"liqScale":0.9141519132207876,"pMean":0.00009931771784134997,"rug":{"worst5m":26.49,"sev":0,"rugFactor":1},"risingNow":true,"trendUp":true},"primed":false,"nb":true,"pre":0,"score":18.097163077154526}]
+[11:15:00] Balance: 0.064433 SOL
+[11:15:03] Bot active. Time until end: 47160s :: hit "refresh" to reset all stats.
+[11:15:03] Fetching SOL balance for 5d6U…
+[11:15:03] Syncing positions from cache …
+[11:15:03] Loaded position cache for 5d6U… with 0 entries.
+[11:15:03] Position cache to list for 5d6U… 0 entries.
+[11:15:03] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:03] Picking pump candidates from 6 leaders…
+[11:15:03] Evaluating leader FDgS… badge="Warming"
+[11:15:03] Pre-pump factors: f5m=0.400 fA=0.000 fZ=1.000 fB=0.000
+[11:15:03] Pre-pump score FDgS… pre=0.498 zV1=2.65 a5/1=1.00 chg5m=12.76
+[11:15:03] Evaluating leader 3P2u… badge="🔥 Pumping"
+[11:15:03] Evaluating leader 2v8V… badge="Warming"
+[11:15:03] Pre-pump factors: f5m=0.400 fA=0.000 fZ=1.000 fB=0.000
+[11:15:03] Pre-pump score 2v8V… pre=0.000 zV1=2.74 a5/1=1.00 chg5m=4.93
+[11:15:03] Evaluating leader Gn3z… badge="Warming"
+[11:15:03] Pre-pump factors: f5m=0.400 fA=0.000 fZ=1.000 fB=0.000
+[11:15:03] Pre-pump score Gn3z… pre=0.408 zV1=2.74 a5/1=1.00 chg5m=9.14
+[11:15:03] Evaluating leader AhbP… badge="Warming"
+[11:15:03] Pre-pump factors: f5m=0.400 fA=0.000 fZ=1.000 fB=0.000
+[11:15:03] Pre-pump score AhbP… pre=0.318 zV1=2.65 a5/1=1.00 chg5m=5.29
+[11:15:03] Evaluating leader BsWG… badge="Cooling"
+[11:15:03] Pump picks (fallback): using top Pumping with relaxed accel gate.
+[11:15:03] Pump picks: [{"mint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","badge":"🔥 Pumping","pumpScore":7.84,"liqUsd":37217.56,"v1h":2537.3962500000002,"chg5m":32.12,"chg1h":32.12,"meta":{"accel5to1":0,"accel1to6":1.0000000000000002,"buy":0,"zV1":2.738400605764163,"liqScale":0.9141519132207876,"pMean":0.00009931771784134997,"rug":{"worst5m":26.49,"sev":0,"rugFactor":1},"risingNow":true,"trendUp":true},"primed":false,"nb":true,"pre":0,"score":18.097163077154526}]
+[11:15:03] Observer: approve 3P2u… (score 4/5)
+[11:15:03] Syncing positions from cache …
+[11:15:03] Loaded position cache for 5d6U… with 0 entries.
+[11:15:03] Position cache to list for 5d6U… 0 entries.
+[11:15:03] Fetching SOL balance for 5d6U…
+[11:15:03] Balance: 0.064433 SOL
+[11:15:03] Balance: 0.064433 SOL
+[11:15:03] Buy sizing (pre-split): {"solBal":"0.064433","spendable":"0.054433","posCount":0,"reservesSol":"0.010000","minThreshold":0.004}
+[11:15:04] JUP fetch: GET https://lite-api.jup.ag/swap/v1/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&amount=49854894&slippageBps=200&restrictIntermediateTokens=true
+[11:15:04] JUP resp: 200 https://lite-api.jup.ag/swap/v1/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&amount=49854894&slippageBps=200&restrictIntermediateTokens=true
+[11:15:04] JUP fetch: GET https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=84736014465&slippageBps=200&restrictIntermediateTokens=true
+[11:15:04] JUP resp: 200 https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=84736014465&slippageBps=200&restrictIntermediateTokens=true
+[11:15:05] Roundtrip edge breakdown: {"buySol":0.049854894,"backSol":0.048618298,"platformBps":1,"platformSol":0.000004861,"txFeesSol":0.0005,"ataRentSol":0.00203928,"netSolInclOnetime":-0.003780737,"netSolNoOnetime":-0.001741457,"pctInclOnetime":-7.58,"pctNoOnetime":-3.49}
+[11:15:05] Edge OK 3P2u… net≈-3.49% (-3.49% excl-ATA)
+[11:15:05] Fees:1% only on sell up.
+[11:15:05] Buy cost breakdown: input=0.049855 SOL + ataRent≈0.004079
+[11:15:05] Quote params: {"inputMint":"So11111111111111111111111111111111111111112","outputMint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","amountUi":0.049854894,"inDecimals":9,"slippageBps":200,"restrictIntermediateTokens":"true","feeBps":0}
+[11:15:05] JUP cache hit: https://lite-api.jup.ag/swap/v1/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&amount=49854894&slippageBps=200&restrictIntermediateTokens=true
+[11:15:05] Quote: {"inAmount":"49854894","outAmount":"84736014465","routePlanLen":1}
+[11:15:05] Swap body: {"hasFee":false,"feeBps":0,"useSharedAccounts":false,"asLegacy":false}
+[11:15:05] JUP fetch: POST https://lite-api.jup.ag/swap/v1/swap
+[11:15:05] JUP resp: 200 https://lite-api.jup.ag/swap/v1/swap
+[11:15:06] Observer: approve 3P2u… (score 3/5) [badge=pumping]
+[11:15:06] Buy lock held; skipping buys this tick.
+[11:15:06] Swap sent: 3KV9CDYht9fRQoMSFeo2UYEkrr84kwnD7rYrCGMSDDWeqEPKesxnFPHRfaDiZfsi1WJ7xcSXSqnP1dKBwum21css
+[11:15:06] Explorer: https://solscan.io/tx/3KV9CDYht9fRQoMSFeo2UYEkrr84kwnD7rYrCGMSDDWeqEPKesxnFPHRfaDiZfsi1WJ7xcSXSqnP1dKBwum21css
+[11:15:06] Bot active. Time until end: 47157s :: hit "refresh" to reset all stats.
+[11:15:06] Fetching SOL balance for 5d6U…
+[11:15:06] Syncing positions from cache …
+[11:15:06] Loaded position cache for 5d6U… with 0 entries.
+[11:15:06] Position cache to list for 5d6U… 0 entries.
+[11:15:06] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:06] Loaded position cache for 5d6U… with 0 entries.
+[11:15:06] Saved position cache for 5d6U… with 1 entries.
+[11:15:06] Updated position cache for 5d6U… mint 3P2u… size 84736.014465
+[11:15:06] Queued pending credit watch for 3P2u… for up to 120s.
+[11:15:06] Pending-credit watchdog running.
+[11:15:06] Optimistic seed: 3P2u… (~84736.014465) — awaiting credit
+[11:15:06] FastObs badge 3P2u…: (none) -> 🔥 Pumping
+[11:15:06] FastObs 3P2u… [pumping] chg5m: 32.12 (±0.00) score: 7.46 (−0.38) dd: —
+[11:15:06] FastObs badge 3P2u…: 🔥 Pumping -> Warming
+[11:15:06] FastObs 3P2u… [warming] chg5m: 32.12 (±0.00) score: 7.46 (−0.38) dd: —
+[11:15:06] Balance: 0.064433 SOL
+[11:15:07] Loaded position cache for 5d6U… with 1 entries.
+[11:15:07] Saved position cache for 5d6U… with 1 entries.
+[11:15:07] Updated position cache for 5d6U… mint 3P2u… size 88530.476926
+[11:15:07] Loaded position cache for 5d6U… with 1 entries.
+[11:15:07] Saved position cache for 5d6U… with 1 entries.
+[11:15:07] Updated position cache for 5d6U… mint 3P2u… size 88530.476926
+[11:15:07] Credit detected for 3P2u… synced to cache.
+[11:15:07] Loaded position cache for 5d6U… with 1 entries.
+[11:15:07] Position cache to list for 5d6U… 1 entries.
+[11:15:08] Loaded position cache for 5d6U… with 1 entries.
+[11:15:08] Saved position cache for 5d6U… with 1 entries.
+[11:15:08] Updated position cache for 5d6U… mint 3P2u… size 88530.476926
+[11:15:08] Bought ~0.0499 SOL -> 3P2u…
+[11:15:08] Money made: 0.584956 SOL ($111)
+[11:15:09] Bot active. Time until end: 47154s :: hit "refresh" to reset all stats.
+[11:15:09] Fetching SOL balance for 5d6U…
+[11:15:09] Syncing positions from cache …
+[11:15:09] Loaded position cache for 5d6U… with 1 entries.
+[11:15:09] Position cache to list for 5d6U… 1 entries.
+[11:15:09] Balance: 0.012441 SOL
+[11:15:09] FastObs 3P2u… [warming] chg5m: 32.12 (±0.00) score: 6.40 (−1.44) dd: —
+[11:15:11] Blacklist set (stage 1/3, 2m) for 3P2u… until 11:17:11
+[11:15:11] Observer: reject 3P2u… (score 2/5); blacklisted 30m.
+[11:15:11] Observer drop for 3P2u… (2/5 <= 2) forcing sell and blacklisting 30m.
+[11:15:11] Post-buy cooldown active (1s); suppressing volatility sell for 3P2u…
+[11:15:11] Evaluating sell for 3P2u… size 88530.476926
+[11:15:11] Valuation quote params: {"inputMint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","amountUi":88530.476926,"dec":6,"slippageBps":200}
+[11:15:11] JUP fetch: GET https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=88530476926&slippageBps=200&restrictIntermediateTokens=true
+[11:15:11] JUP resp: 200 https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=88530476926&slippageBps=200&restrictIntermediateTokens=true
+[11:15:11] Valuation: ~0.049412 SOL
+[11:15:11] Sell decision: NO (cooldown)
+[11:15:11] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:11] Picking pump candidates from 6 leaders…
+[11:15:11] Evaluating leader FDgS… badge="Warming"
+[11:15:11] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:11] Pre-pump score FDgS… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=12.76
+[11:15:11] Evaluating leader 3P2u… badge="Warming"
+[11:15:11] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:11] Pre-pump score 3P2u… pre=0.325 zV1=1.00 a5/1=1.00 chg5m=32.12
+[11:15:11] Evaluating leader BsWG… badge="Warming"
+[11:15:11] Evaluating leader 2v8V… badge="Warming"
+[11:15:11] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:11] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=4.93
+[11:15:11] Evaluating leader AhbP… badge="Warming"
+[11:15:11] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:11] Pre-pump score AhbP… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=5.29
+[11:15:11] Evaluating leader Gn3z… badge="Warming"
+[11:15:11] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:11] Pre-pump score Gn3z… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=9.14
+[11:15:11] FastObs 3P2u… [warming] chg5m: 32.12 (±0.00) score: 6.40 (−1.06) dd: —
+[11:15:12] Bot active. Time until end: 47151s :: hit "refresh" to reset all stats.
+[11:15:12] Fetching SOL balance for 5d6U…
+[11:15:12] Syncing positions from cache …
+[11:15:12] Loaded position cache for 5d6U… with 1 entries.
+[11:15:12] Position cache to list for 5d6U… 1 entries.
+[11:15:12] Balance: 0.012441 SOL
+[11:15:12] FastObs 3P2u… [warming] chg5m: 32.12 (±0.00) score: 5.82 (−0.58) dd: —
+[11:15:14] Observer: reject 3P2u… (score 2/5); blacklisted 30m.
+[11:15:14] Observer drop for 3P2u… (2/5 <= 2) forcing sell and blacklisting 30m.
+[11:15:14] Post-buy cooldown active (4s); suppressing volatility sell for 3P2u…
+[11:15:14] Sell decision: NO (cooldown)
+[11:15:14] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:14] Picking pump candidates from 6 leaders…
+[11:15:14] Evaluating leader FDgS… badge="Warming"
+[11:15:14] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:14] Pre-pump score FDgS… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=12.76
+[11:15:14] Evaluating leader 3P2u… badge="Warming"
+[11:15:14] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:14] Pre-pump score 3P2u… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=32.12
+[11:15:14] Evaluating leader BsWG… badge="Warming"
+[11:15:14] Evaluating leader 2v8V… badge="Warming"
+[11:15:14] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:14] Pre-pump score 2v8V… pre=0.000 zV1=1.00 a5/1=1.00 chg5m=4.93
+[11:15:14] Evaluating leader AhbP… badge="Warming"
+[11:15:14] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:14] Pre-pump score AhbP… pre=0.325 zV1=1.00 a5/1=1.00 chg5m=5.29
+[11:15:14] Evaluating leader Gn3z… badge="Warming"
+[11:15:14] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:14] Pre-pump score Gn3z… pre=0.325 zV1=1.00 a5/1=1.00 chg5m=9.14
+[11:15:14] FastObs 3P2u… [warming] chg5m: 32.12 (±0.00) score: 6.40 (±0.00) dd: —
+[11:15:15] Bot active. Time until end: 47148s :: hit "refresh" to reset all stats.
+[11:15:15] FastObs 3P2u… [warming] chg5m: 32.12 (±0.00) score: 5.82 (±0.00) dd: —
+[11:15:15] Fetching SOL balance for 5d6U…
+[11:15:15] Syncing positions from cache …
+[11:15:15] Loaded position cache for 5d6U… with 1 entries.
+[11:15:15] Position cache to list for 5d6U… 1 entries.
+[11:15:15] Balance: 0.012441 SOL
+[11:15:17] Observer: consider 3P2u… (score 3/5) [3-tick trend]
+[11:15:17] Observer 3/5 for 3P2u… soft-watch; debounce active (no sell).
+[11:15:17] Observer: consider 3P2u… (3/5). Watching for uptick…
+[11:15:17] Sell decision: NO (cooldown)
+[11:15:17] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:17] Picking pump candidates from 6 leaders…
+[11:15:17] Evaluating leader FDgS… badge="Warming"
+[11:15:17] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:17] Pre-pump score FDgS… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=12.76
+[11:15:17] Evaluating leader 3P2u… badge="Warming"
+[11:15:17] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:17] Pre-pump score 3P2u… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=32.12
+[11:15:17] Evaluating leader BsWG… badge="Warming"
+[11:15:17] Evaluating leader 2v8V… badge="Warming"
+[11:15:17] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:17] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=4.93
+[11:15:17] Evaluating leader AhbP… badge="Warming"
+[11:15:17] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:17] Pre-pump score AhbP… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=5.29
+[11:15:17] Evaluating leader Gn3z… badge="Warming"
+[11:15:17] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:17] Pre-pump score Gn3z… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=9.14
+[11:15:18] FastObs 3P2u… [warming] chg5m: 32.12 (±0.00) score: 5.82 (−0.58) dd: —
+[11:15:18] Bot active. Time until end: 47145s :: hit "refresh" to reset all stats.
+[11:15:18] Fetching SOL balance for 5d6U…
+[11:15:18] Syncing positions from cache …
+[11:15:18] Loaded position cache for 5d6U… with 1 entries.
+[11:15:18] Position cache to list for 5d6U… 1 entries.
+[11:15:18] FastObs 3P2u… [warming] chg5m: 32.12 (±0.00) score: 6.40 (+0.58) dd: —
+[11:15:18] Balance: 0.012441 SOL
+[11:15:20] Observer: consider 3P2u… (score 3/5) [3-tick trend]
+[11:15:20] Observer 3/5 for 3P2u… soft-watch; debounce active (no sell).
+[11:15:20] Observer: consider 3P2u… (3/5). Watching for uptick…
+[11:15:20] Sell decision: NO (cooldown)
+[11:15:20] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:20] Picking pump candidates from 6 leaders…
+[11:15:20] Evaluating leader FDgS… badge="Warming"
+[11:15:20] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:20] Pre-pump score FDgS… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=12.76
+[11:15:20] Evaluating leader 3P2u… badge="Warming"
+[11:15:20] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:20] Pre-pump score 3P2u… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=32.12
+[11:15:20] Evaluating leader BsWG… badge="Warming"
+[11:15:20] Evaluating leader 2v8V… badge="Warming"
+[11:15:20] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:20] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=4.93
+[11:15:20] Evaluating leader AhbP… badge="Warming"
+[11:15:20] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:20] Pre-pump score AhbP… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=5.29
+[11:15:20] Evaluating leader Gn3z… badge="Warming"
+[11:15:20] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:20] Pre-pump score Gn3z… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=9.14
+[11:15:20] FastObs 3P2u… [warming] chg5m: 32.12 (±0.00) score: 5.82 (±0.00) dd: —
+[11:15:21] Bot active. Time until end: 47142s :: hit "refresh" to reset all stats.
+[11:15:21] Fetching SOL balance for 5d6U…
+[11:15:21] Syncing positions from cache …
+[11:15:21] Loaded position cache for 5d6U… with 1 entries.
+[11:15:21] Position cache to list for 5d6U… 1 entries.
+[11:15:21] Balance: 0.012441 SOL
+[11:15:21] FastObs 3P2u… [warming] chg5m: 32.12 (±0.00) score: 5.82 (−0.58) dd: —
+[11:15:23] Observer: reject 3P2u… (score 2/5); blacklisted 30m.
+[11:15:23] Observer drop for 3P2u… (2/5 <= 2) forcing sell and blacklisting 30m.
+[11:15:23] Post-buy cooldown active (13s); suppressing volatility sell for 3P2u…
+[11:15:23] Evaluating sell for 3P2u… size 88530.476926
+[11:15:23] Valuation quote params: {"inputMint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","amountUi":88530.476926,"dec":6,"slippageBps":200}
+[11:15:23] JUP fetch: GET https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=88530476926&slippageBps=200&restrictIntermediateTokens=true
+[11:15:23] JUP resp: 200 https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=88530476926&slippageBps=200&restrictIntermediateTokens=true
+[11:15:23] Valuation: ~0.053225 SOL
+[11:15:23] Warming profit met for 3P2u… (PnL 6.76% ≥ 1.00%). Normal sell rules restored.
+[11:15:23] Sell decision: NO (cooldown)
+[11:15:23] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:23] Picking pump candidates from 6 leaders…
+[11:15:23] Evaluating leader FDgS… badge="Warming"
+[11:15:23] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:23] Pre-pump score FDgS… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=12.76
+[11:15:23] Evaluating leader 3P2u… badge="Warming"
+[11:15:23] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:23] Pre-pump score 3P2u… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=32.12
+[11:15:23] Evaluating leader BsWG… badge="Warming"
+[11:15:23] Evaluating leader 2v8V… badge="Warming"
+[11:15:23] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:23] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=4.93
+[11:15:23] Evaluating leader AhbP… badge="Warming"
+[11:15:23] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:23] Pre-pump score AhbP… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=5.29
+[11:15:23] Evaluating leader Gn3z… badge="Warming"
+[11:15:23] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:23] Pre-pump score Gn3z… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=9.14
+[11:15:23] FastObs 3P2u… [warming] chg5m: 32.12 (±0.00) score: 5.82 (±0.00) dd: —
+[11:15:24] Bot active. Time until end: 47139s :: hit "refresh" to reset all stats.
+[11:15:24] FastObs 3P2u… [warming] chg5m: 32.12 (±0.00) score: 6.40 (+0.58) dd: —
+[11:15:24] Fetching SOL balance for 5d6U…
+[11:15:24] Syncing positions from cache …
+[11:15:24] Loaded position cache for 5d6U… with 1 entries.
+[11:15:24] Position cache to list for 5d6U… 1 entries.
+[11:15:24] Balance: 0.012441 SOL
+[11:15:26] Observer: consider 3P2u… (score 3/5) [3-tick trend]
+[11:15:26] Observer 3/5 for 3P2u… soft-watch; debounce active (no sell).
+[11:15:26] Observer: consider 3P2u… (3/5). Watching for uptick…
+[11:15:26] Sell decision: NO (cooldown)
+[11:15:26] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:26] Picking pump candidates from 6 leaders…
+[11:15:26] Evaluating leader FDgS… badge="Warming"
+[11:15:26] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:26] Pre-pump score FDgS… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=12.76
+[11:15:26] Evaluating leader 3P2u… badge="Warming"
+[11:15:26] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:26] Pre-pump score 3P2u… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=32.12
+[11:15:26] Evaluating leader BsWG… badge="Warming"
+[11:15:26] Evaluating leader 2v8V… badge="Warming"
+[11:15:26] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:26] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=4.93
+[11:15:26] Evaluating leader AhbP… badge="Warming"
+[11:15:26] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:26] Pre-pump score AhbP… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=5.29
+[11:15:26] Evaluating leader Gn3z… badge="Warming"
+[11:15:26] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:26] Pre-pump score Gn3z… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=9.14
+[11:15:26] FastObs 3P2u… [warming] chg5m: 32.12 (±0.00) score: 5.82 (±0.00) dd: —
+[11:15:27] Bot active. Time until end: 47136s :: hit "refresh" to reset all stats.
+[11:15:27] Fetching SOL balance for 5d6U…
+[11:15:27] Syncing positions from cache …
+[11:15:27] Loaded position cache for 5d6U… with 1 entries.
+[11:15:27] Position cache to list for 5d6U… 1 entries.
+[11:15:27] Balance: 0.012441 SOL
+[11:15:27] FastObs 3P2u… [warming] chg5m: 32.12 (±0.00) score: 5.82 (−0.58) dd: —
+[11:15:29] Observer: reject 3P2u… (score 2/5); blacklisted 30m.
+[11:15:29] Observer drop for 3P2u… (2/5 <= 2) forcing sell and blacklisting 30m.
+[11:15:29] Post-buy cooldown active (19s); suppressing volatility sell for 3P2u…
+[11:15:29] Sell decision: NO (cooldown)
+[11:15:29] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:29] Picking pump candidates from 6 leaders…
+[11:15:29] Evaluating leader FDgS… badge="Warming"
+[11:15:29] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:29] Pre-pump score FDgS… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=12.76
+[11:15:29] Evaluating leader 3P2u… badge="Warming"
+[11:15:29] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:29] Pre-pump score 3P2u… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=32.12
+[11:15:29] Evaluating leader BsWG… badge="Warming"
+[11:15:29] Evaluating leader 2v8V… badge="Warming"
+[11:15:29] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:29] Pre-pump score 2v8V… pre=0.000 zV1=1.00 a5/1=1.00 chg5m=4.93
+[11:15:29] Evaluating leader AhbP… badge="Warming"
+[11:15:29] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:29] Pre-pump score AhbP… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=5.29
+[11:15:29] Evaluating leader Gn3z… badge="Warming"
+[11:15:29] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:29] Pre-pump score Gn3z… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=9.14
+[11:15:29] FastObs 3P2u… [warming] chg5m: 32.12 (±0.00) score: 6.40 (+0.58) dd: —
+[11:15:30] Bot active. Time until end: 47133s :: hit "refresh" to reset all stats.
+[11:15:30] Fetching SOL balance for 5d6U…
+[11:15:30] Syncing positions from cache …
+[11:15:30] Loaded position cache for 5d6U… with 1 entries.
+[11:15:30] Position cache to list for 5d6U… 1 entries.
+[11:15:30] Balance: 0.012441 SOL
+[11:15:30] FastObs 3P2u… [warming] chg5m: 32.12 (±0.00) score: 5.82 (±0.00) dd: —
+[11:15:30] FastObs badge 3P2u…: Warming -> 🔥 Pumping
+[11:15:30] FastObs 3P2u… [pumping] chg5m: 32.12 (±0.00) score: 5.82 (±0.00) dd: —
+[11:15:32] Observer: consider 3P2u… (score 3/5) [3-tick trend]
+[11:15:32] Observer 3/5 for 3P2u… soft-watch; debounce active (no sell).
+[11:15:32] Observer: consider 3P2u… (3/5). Watching for uptick…
+[11:15:32] Sell decision: NO (cooldown)
+[11:15:32] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:32] Picking pump candidates from 6 leaders…
+[11:15:32] Evaluating leader 3P2u… badge="🔥 Pumping"
+[11:15:32] Evaluating leader FDgS… badge="🔥 Pumping"
+[11:15:32] Evaluating leader AhbP… badge="🔥 Pumping"
+[11:15:32] Evaluating leader Gn3z… badge="Warming"
+[11:15:32] Pre-pump factors: f5m=0.400 fA=0.000 fZ=1.000 fB=0.000
+[11:15:32] Pre-pump score Gn3z… pre=0.498 zV1=2.65 a5/1=1.00 chg5m=21.46
+[11:15:32] Evaluating leader 2v8V… badge="Warming"
+[11:15:32] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:32] Pre-pump score 2v8V… pre=0.000 zV1=1.00 a5/1=1.00 chg5m=9.26
+[11:15:32] Evaluating leader BsWG… badge="Warming"
+[11:15:32] Pump picks (fallback): using top Pumping with relaxed accel gate.
+[11:15:32] Pump picks: [{"mint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","badge":"🔥 Pumping","pumpScore":11.68,"liqUsd":39344.8,"v1h":2685.909166666667,"chg5m":47.56,"chg1h":47.56,"meta":{"accel5to1":0,"accel1to6":1.0000000000000002,"buy":0,"zV1":2.645537488181525,"liqScale":0.918979676009031,"pMean":0.00010470021216724815,"rug":{"worst5m":32.12,"sev":0,"rugFactor":1},"risingNow":true,"trendUp":true},"primed":false,"nb":true,"pre":0,"score":26.026373031094778},{"mint":"AhbPuFSpj56YNnVCCkVYvpW6gH89MNY9wuMscGPHpump","badge":"🔥 Pumping","pumpScore":5.5,"liqUsd":53066.41,"v1h":86074.58833333333,"chg5m":13.92,"chg1h":3.53,"meta":{"accel5to1":0,"accel1to6":1,"buy":0,"zV1":2.645537488182953,"liqScale":0.9449655784071409,"pMean":0.0001726626644296173,"rug":{"worst5m":5.29,"sev":0,"rugFactor":1},"risingNow":true,"trendUp":true},"primed":false,"nb":true,"pre":0,"score":11.964414765735388},{"mint":"FDgSegoxrdpsct21YVeAbC9dWeTwTxA8Cceeh8BPpump","badge":"🔥 Pumping","pumpScore":8.28,"liqUsd":49697.61,"v1h":15383.948750000001,"chg5m":5.05,"chg1h":105,"meta":{"accel5to1":0,"accel1to6":1,"buy":0,"zV1":2.645537488181482,"liqScale":0.939268848459859,"pMean":0.00017696255127375165,"rug":{"worst5m":5.05,"sev":0,"rugFactor":1},"risingNow":true,"trendUp":true},"primed":false,"nb":true,"pre":0,"score":4.058685556459037}]
+[11:15:32] FastObs 3P2u… [pumping] chg5m: 47.56 (+15.44) score: 11.68 (+5.28) dd: —
+[11:15:33] Bot active. Time until end: 47130s :: hit "refresh" to reset all stats.
+[11:15:33] Fetching SOL balance for 5d6U…
+[11:15:33] Syncing positions from cache …
+[11:15:33] Loaded position cache for 5d6U… with 1 entries.
+[11:15:33] Position cache to list for 5d6U… 1 entries.
+[11:15:33] FastObs 3P2u… [pumping] chg5m: 47.56 (+15.44) score: 11.68 (+5.86) dd: —
+[11:15:33] Balance: 0.012441 SOL
+[11:15:35] Observer: approve 3P2u… (score 5/5) [3-tick trend]
+[11:15:35] Evaluating sell for 3P2u… size 88530.476926
+[11:15:35] Valuation quote params: {"inputMint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","amountUi":88530.476926,"dec":6,"slippageBps":200}
+[11:15:35] JUP fetch: GET https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=88530476926&slippageBps=200&restrictIntermediateTokens=true
+[11:15:35] JUP resp: 200 https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=88530476926&slippageBps=200&restrictIntermediateTokens=true
+[11:15:35] Valuation: ~0.057149 SOL
+[11:15:35] Sell decision: NO (cooldown)
+[11:15:35] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:35] Picking pump candidates from 6 leaders…
+[11:15:35] Evaluating leader 3P2u… badge="🔥 Pumping"
+[11:15:35] Evaluating leader FDgS… badge="🔥 Pumping"
+[11:15:35] Evaluating leader AhbP… badge="🔥 Pumping"
+[11:15:35] Evaluating leader Gn3z… badge="Warming"
+[11:15:35] Pre-pump factors: f5m=0.400 fA=0.000 fZ=1.000 fB=0.000
+[11:15:35] Pre-pump score Gn3z… pre=0.498 zV1=2.08 a5/1=1.00 chg5m=21.46
+[11:15:35] Evaluating leader BsWG… badge="Warming"
+[11:15:35] Evaluating leader 2v8V… badge="Warming"
+[11:15:35] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:35] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=9.26
+[11:15:35] Pump picks (fallback): using top Pumping with relaxed accel gate.
+[11:15:35] Pump picks: [{"mint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","badge":"🔥 Pumping","pumpScore":11.35,"liqUsd":39344.8,"v1h":2685.909166666667,"chg5m":47.56,"chg1h":47.56,"meta":{"accel5to1":0,"accel1to6":1.0000000000000002,"buy":0,"zV1":2.0814803534544963,"liqScale":0.918979676009031,"pMean":0.00010545032610242755,"rug":{"worst5m":32.12,"sev":0,"rugFactor":1},"risingNow":true,"trendUp":true},"primed":false,"nb":true,"pre":0,"score":26.01317303109478},{"mint":"AhbPuFSpj56YNnVCCkVYvpW6gH89MNY9wuMscGPHpump","badge":"🔥 Pumping","pumpScore":5.17,"liqUsd":53066.41,"v1h":86074.58833333333,"chg5m":13.92,"chg1h":3.53,"meta":{"accel5to1":0,"accel1to6":1,"buy":0,"zV1":2.081480353454559,"liqScale":0.9449655784071409,"pMean":0.00017324400272938133,"rug":{"worst5m":5.29,"sev":0,"rugFactor":1},"risingNow":true,"trendUp":true},"primed":false,"nb":true,"pre":0,"score":11.951214765735386},{"mint":"FDgSegoxrdpsct21YVeAbC9dWeTwTxA8Cceeh8BPpump","badge":"🔥 Pumping","pumpScore":8,"liqUsd":49697.61,"v1h":15383.948750000001,"chg5m":5.05,"chg1h":105,"meta":{"accel5to1":0,"accel1to6":1,"buy":0,"zV1":2.1600528903425658,"liqScale":0.939268848459859,"pMean":0.00017711184041408783,"rug":{"worst5m":5.05,"sev":0,"rugFactor":1},"risingNow":true,"trendUp":true},"primed":false,"nb":true,"pre":0,"score":4.047485556459037}]
+[11:15:35] FastObs 3P2u… [pumping] chg5m: 47.56 (±0.00) score: 11.35 (−0.33) dd: —
+[11:15:36] Bot active. Time until end: 47127s :: hit "refresh" to reset all stats.
+[11:15:36] Fetching SOL balance for 5d6U…
+[11:15:36] Syncing positions from cache …
+[11:15:36] Loaded position cache for 5d6U… with 1 entries.
+[11:15:36] Position cache to list for 5d6U… 1 entries.
+[11:15:36] Balance: 0.012441 SOL
+[11:15:38] Observer: reject 3P2u… (score 2/5); blacklisted 30m.
+[11:15:38] Observer drop for 3P2u… (2/5 <= 2) forcing sell and blacklisting 30m.
+[11:15:38] Post-buy cooldown active (28s); suppressing volatility sell for 3P2u…
+[11:15:38] Sell decision: NO (cooldown)
+[11:15:38] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:38] Picking pump candidates from 6 leaders…
+[11:15:38] Evaluating leader 3P2u… badge="🔥 Pumping"
+[11:15:38] Evaluating leader FDgS… badge="🔥 Pumping"
+[11:15:38] Evaluating leader AhbP… badge="🔥 Pumping"
+[11:15:38] Evaluating leader Gn3z… badge="Warming"
+[11:15:38] Pre-pump factors: f5m=0.400 fA=0.000 fZ=1.000 fB=0.000
+[11:15:38] Pre-pump score Gn3z… pre=0.408 zV1=2.08 a5/1=1.00 chg5m=21.46
+[11:15:38] Evaluating leader 2v8V… badge="Warming"
+[11:15:38] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:38] Pre-pump score 2v8V… pre=0.000 zV1=1.00 a5/1=1.00 chg5m=9.26
+[11:15:38] Evaluating leader BsWG… badge="Warming"
+[11:15:38] Pump picks (fallback): using top Pumping with relaxed accel gate.
+[11:15:38] Pump picks: [{"mint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","badge":"🔥 Pumping","pumpScore":11.35,"liqUsd":39344.8,"v1h":2685.909166666667,"chg5m":47.56,"chg1h":47.56,"meta":{"accel5to1":0,"accel1to6":1.0000000000000002,"buy":0,"zV1":2.081480353454489,"liqScale":0.918979676009031,"pMean":0.00010545032610242755,"rug":{"worst5m":32.12,"sev":0,"rugFactor":1},"risingNow":true,"trendUp":true},"primed":false,"nb":true,"pre":0,"score":26.01317303109478},{"mint":"AhbPuFSpj56YNnVCCkVYvpW6gH89MNY9wuMscGPHpump","badge":"🔥 Pumping","pumpScore":5.17,"liqUsd":53066.41,"v1h":86074.58833333333,"chg5m":13.92,"chg1h":3.53,"meta":{"accel5to1":0,"accel1to6":1,"buy":0,"zV1":2.081480353454559,"liqScale":0.9449655784071409,"pMean":0.00017324400272938136,"rug":{"worst5m":5.29,"sev":0,"rugFactor":1},"risingNow":true,"trendUp":true},"primed":false,"nb":true,"pre":0,"score":11.951214765735386},{"mint":"FDgSegoxrdpsct21YVeAbC9dWeTwTxA8Cceeh8BPpump","badge":"🔥 Pumping","pumpScore":8,"liqUsd":49697.61,"v1h":15383.948750000001,"chg5m":5.05,"chg1h":105,"meta":{"accel5to1":0,"accel1to6":1,"buy":0,"zV1":2.1600528903425102,"liqScale":0.939268848459859,"pMean":0.00017711184041408786,"rug":{"worst5m":5.05,"sev":0,"rugFactor":1},"risingNow":true,"trendUp":true},"primed":false,"nb":true,"pre":0,"score":4.047485556459037}]
+[11:15:38] FastObs 3P2u… [pumping] chg5m: 47.56 (±0.00) score: 11.35 (±0.00) dd: —
+[11:15:39] Bot active. Time until end: 47124s :: hit "refresh" to reset all stats.
+[11:15:39] Fetching SOL balance for 5d6U…
+[11:15:39] Syncing positions from cache …
+[11:15:39] Loaded position cache for 5d6U… with 1 entries.
+[11:15:39] Position cache to list for 5d6U… 1 entries.
+[11:15:39] Balance: 0.012441 SOL
+[11:15:39] FastObs badge 3P2u…: 🔥 Pumping -> Warming
+[11:15:39] FastObs 3P2u… [warming] chg5m: 47.56 (±0.00) score: 11.35 (±0.00) dd: —
+[11:15:41] Observer: consider 3P2u… (score 3/5) [3-tick trend]
+[11:15:41] Observer 3/5 for 3P2u… soft-watch; debounce active (no sell).
+[11:15:41] Observer: consider 3P2u… (3/5). Watching for uptick…
+[11:15:41] Sell decision: NO (cooldown)
+[11:15:41] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:41] Picking pump candidates from 6 leaders…
+[11:15:41] Evaluating leader 3P2u… badge="Warming"
+[11:15:41] Pre-pump factors: f5m=0.400 fA=0.000 fZ=1.000 fB=0.000
+[11:15:41] Pre-pump score 3P2u… pre=0.408 zV1=1.55 a5/1=1.00 chg5m=47.56
+[11:15:41] Evaluating leader FDgS… badge="Warming"
+[11:15:41] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.989 fB=0.000
+[11:15:41] Pre-pump score FDgS… pre=0.405 zV1=1.48 a5/1=1.00 chg5m=5.05
+[11:15:41] Evaluating leader Gn3z… badge="Warming"
+[11:15:41] Pre-pump factors: f5m=0.400 fA=0.000 fZ=1.000 fB=0.000
+[11:15:41] Pre-pump score Gn3z… pre=0.408 zV1=1.55 a5/1=1.00 chg5m=21.46
+[11:15:41] Evaluating leader AhbP… badge="Warming"
+[11:15:41] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.989 fB=0.000
+[11:15:41] Pre-pump score AhbP… pre=0.405 zV1=1.48 a5/1=1.00 chg5m=13.92
+[11:15:41] Evaluating leader BsWG… badge="Warming"
+[11:15:41] Evaluating leader 2v8V… badge="Warming"
+[11:15:41] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:41] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=9.26
+[11:15:41] FastObs 3P2u… [warming] chg5m: 47.56 (±0.00) score: 9.95 (−1.40) dd: —
+[11:15:42] Bot active. Time until end: 47121s :: hit "refresh" to reset all stats.
+[11:15:42] Fetching SOL balance for 5d6U…
+[11:15:42] Syncing positions from cache …
+[11:15:42] Loaded position cache for 5d6U… with 1 entries.
+[11:15:42] Position cache to list for 5d6U… 1 entries.
+[11:15:42] Balance: 0.012441 SOL
+[11:15:44] Observer: reject 3P2u… (score 2/5); blacklisted 30m.
+[11:15:44] Observer drop for 3P2u… (2/5 <= 2) forcing sell and blacklisting 30m.
+[11:15:44] Post-buy cooldown active (34s); suppressing volatility sell for 3P2u…
+[11:15:44] Sell decision: NO (cooldown)
+[11:15:44] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:44] Picking pump candidates from 6 leaders…
+[11:15:44] Evaluating leader 3P2u… badge="Warming"
+[11:15:44] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.861 fB=0.000
+[11:15:44] Pre-pump score 3P2u… pre=0.373 zV1=1.29 a5/1=1.00 chg5m=47.56
+[11:15:44] Evaluating leader FDgS… badge="Warming"
+[11:15:44] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.903 fB=0.000
+[11:15:44] Pre-pump score FDgS… pre=0.384 zV1=1.35 a5/1=1.00 chg5m=5.05
+[11:15:44] Evaluating leader AhbP… badge="Warming"
+[11:15:44] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.861 fB=0.000
+[11:15:44] Pre-pump score AhbP… pre=0.373 zV1=1.29 a5/1=1.00 chg5m=13.92
+[11:15:44] Evaluating leader Gn3z… badge="Warming"
+[11:15:44] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.861 fB=0.000
+[11:15:44] Pre-pump score Gn3z… pre=0.373 zV1=1.29 a5/1=1.00 chg5m=21.46
+[11:15:44] Evaluating leader 2v8V… badge="Warming"
+[11:15:44] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:44] Pre-pump score 2v8V… pre=0.000 zV1=1.00 a5/1=1.00 chg5m=9.26
+[11:15:44] Evaluating leader BsWG… badge="Warming"
+[11:15:44] FastObs 3P2u… [warming] chg5m: 47.56 (±0.00) score: 9.80 (−0.15) dd: —
+[11:15:45] Bot active. Time until end: 47118s :: hit "refresh" to reset all stats.
+[11:15:45] Fetching SOL balance for 5d6U…
+[11:15:45] Syncing positions from cache …
+[11:15:45] Loaded position cache for 5d6U… with 1 entries.
+[11:15:45] Position cache to list for 5d6U… 1 entries.
+[11:15:45] Balance: 0.012441 SOL
+[11:15:47] Observer: consider 3P2u… (score 3/5) [3-tick trend]
+[11:15:47] Evaluating sell for 3P2u… size 88530.476926
+[11:15:47] Valuation quote params: {"inputMint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","amountUi":88530.476926,"dec":6,"slippageBps":200}
+[11:15:47] JUP fetch: GET https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=88530476926&slippageBps=200&restrictIntermediateTokens=true
+[11:15:47] JUP resp: 200 https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=88530476926&slippageBps=200&restrictIntermediateTokens=true
+[11:15:47] Valuation: ~0.058821 SOL
+[11:15:47] Observer 3/5 for 3P2u… soft-watch; debounce active (no sell).
+[11:15:47] Observer: consider 3P2u… (3/5). Watching for uptick…
+[11:15:47] Sell decision: NO (cooldown)
+[11:15:47] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:47] Picking pump candidates from 6 leaders…
+[11:15:47] Evaluating leader 3P2u… badge="Warming"
+[11:15:47] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:47] Pre-pump score 3P2u… pre=0.325 zV1=1.00 a5/1=1.00 chg5m=47.56
+[11:15:47] Evaluating leader FDgS… badge="Warming"
+[11:15:47] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:47] Pre-pump score FDgS… pre=0.325 zV1=1.00 a5/1=1.00 chg5m=5.05
+[11:15:47] Evaluating leader BsWG… badge="Warming"
+[11:15:47] Evaluating leader Gn3z… badge="Warming"
+[11:15:47] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:47] Pre-pump score Gn3z… pre=0.325 zV1=1.00 a5/1=1.00 chg5m=21.46
+[11:15:47] Evaluating leader AhbP… badge="Warming"
+[11:15:47] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:47] Pre-pump score AhbP… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=13.92
+[11:15:47] Evaluating leader 2v8V… badge="Warming"
+[11:15:47] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:47] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=9.26
+[11:15:48] FastObs 3P2u… [warming] chg5m: 47.56 (±0.00) score: 9.63 (−0.17) dd: —
+[11:15:48] Bot active. Time until end: 47115s :: hit "refresh" to reset all stats.
+[11:15:48] Fetching SOL balance for 5d6U…
+[11:15:48] Syncing positions from cache …
+[11:15:48] Loaded position cache for 5d6U… with 1 entries.
+[11:15:48] Position cache to list for 5d6U… 1 entries.
+[11:15:48] FastObs 3P2u… [warming] chg5m: 47.56 (±0.00) score: 9.05 (−0.75) dd: —
+[11:15:48] Balance: 0.012441 SOL
+[11:15:50] Observer: reject 3P2u… (score 2/5); blacklisted 30m.
+[11:15:50] Observer drop for 3P2u… (2/5 <= 2) forcing sell and blacklisting 30m.
+[11:15:50] Post-buy cooldown active (40s); suppressing volatility sell for 3P2u…
+[11:15:50] Sell decision: NO (cooldown)
+[11:15:50] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:50] Picking pump candidates from 6 leaders…
+[11:15:50] Evaluating leader 3P2u… badge="Warming"
+[11:15:50] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:50] Pre-pump score 3P2u… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=47.56
+[11:15:50] Evaluating leader FDgS… badge="Warming"
+[11:15:50] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:50] Pre-pump score FDgS… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=5.05
+[11:15:50] Evaluating leader BsWG… badge="Warming"
+[11:15:50] Evaluating leader AhbP… badge="Warming"
+[11:15:50] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:50] Pre-pump score AhbP… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=13.92
+[11:15:50] Evaluating leader Gn3z… badge="Warming"
+[11:15:50] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:50] Pre-pump score Gn3z… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=21.46
+[11:15:50] Evaluating leader 2v8V… badge="Warming"
+[11:15:50] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:50] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=9.26
+[11:15:50] FastObs 3P2u… [warming] chg5m: 47.56 (±0.00) score: 9.05 (−0.58) dd: —
+[11:15:51] Bot active. Time until end: 47112s :: hit "refresh" to reset all stats.
+[11:15:51] Fetching SOL balance for 5d6U…
+[11:15:51] Syncing positions from cache …
+[11:15:51] Loaded position cache for 5d6U… with 1 entries.
+[11:15:51] Position cache to list for 5d6U… 1 entries.
+[11:15:51] Balance: 0.012441 SOL
+[11:15:51] FastObs 3P2u… [warming] chg5m: 47.56 (±0.00) score: 9.63 (+0.58) dd: —
+[11:15:53] Observer: consider 3P2u… (score 3/5) [3-tick trend]
+[11:15:53] Observer 3/5 for 3P2u… soft-watch; debounce active (no sell).
+[11:15:53] Observer: consider 3P2u… (3/5). Watching for uptick…
+[11:15:53] Sell decision: NO (cooldown)
+[11:15:53] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:53] Picking pump candidates from 6 leaders…
+[11:15:53] Evaluating leader 3P2u… badge="Warming"
+[11:15:53] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:53] Pre-pump score 3P2u… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=47.56
+[11:15:53] Evaluating leader FDgS… badge="Warming"
+[11:15:53] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:15:53] Pre-pump score FDgS… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=5.05
+[11:15:53] Evaluating leader BsWG… badge="Warming"
+[11:15:53] Evaluating leader AhbP… badge="Warming"
+[11:15:53] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:53] Pre-pump score AhbP… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=13.92
+[11:15:53] Evaluating leader Gn3z… badge="Warming"
+[11:15:53] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:53] Pre-pump score Gn3z… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=21.46
+[11:15:53] Evaluating leader 2v8V… badge="Warming"
+[11:15:53] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:53] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=9.26
+[11:15:54] Bot active. Time until end: 47109s :: hit "refresh" to reset all stats.
+[11:15:54] Fetching SOL balance for 5d6U…
+[11:15:54] Syncing positions from cache …
+[11:15:54] Loaded position cache for 5d6U… with 1 entries.
+[11:15:54] Position cache to list for 5d6U… 1 entries.
+[11:15:54] Balance: 0.012441 SOL
+[11:15:54] FastObs 3P2u… [warming] chg5m: 47.56 (±0.00) score: 9.05 (−0.58) dd: —
+[11:15:56] Observer: reject 3P2u… (score 2/5); blacklisted 30m.
+[11:15:56] Observer drop for 3P2u… (2/5 <= 2) forcing sell and blacklisting 30m.
+[11:15:56] Post-buy cooldown active (46s); suppressing volatility sell for 3P2u…
+[11:15:56] Sell decision: NO (cooldown)
+[11:15:56] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:56] Picking pump candidates from 6 leaders…
+[11:15:56] Evaluating leader 3P2u… badge="Warming"
+[11:15:56] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:56] Pre-pump score 3P2u… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=47.56
+[11:15:56] Evaluating leader FDgS… badge="Warming"
+[11:15:56] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:56] Pre-pump score FDgS… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=5.05
+[11:15:56] Evaluating leader BsWG… badge="Warming"
+[11:15:56] Evaluating leader AhbP… badge="Warming"
+[11:15:56] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:56] Pre-pump score AhbP… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=13.92
+[11:15:56] Evaluating leader Gn3z… badge="Warming"
+[11:15:56] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:56] Pre-pump score Gn3z… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=21.46
+[11:15:56] Evaluating leader 2v8V… badge="Warming"
+[11:15:56] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:56] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=9.26
+[11:15:57] Bot active. Time until end: 47106s :: hit "refresh" to reset all stats.
+[11:15:57] Fetching SOL balance for 5d6U…
+[11:15:57] Syncing positions from cache …
+[11:15:57] Loaded position cache for 5d6U… with 1 entries.
+[11:15:57] Position cache to list for 5d6U… 1 entries.
+[11:15:57] FastObs 3P2u… [warming] chg5m: 47.56 (±0.00) score: 9.63 (+0.58) dd: —
+[11:15:57] Balance: 0.012441 SOL
+[11:15:59] Observer: consider 3P2u… (score 3/5) [3-tick trend]
+[11:15:59] Evaluating sell for 3P2u… size 88530.476926
+[11:15:59] Valuation quote params: {"inputMint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","amountUi":88530.476926,"dec":6,"slippageBps":200}
+[11:15:59] JUP fetch: GET https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=88530476926&slippageBps=200&restrictIntermediateTokens=true
+[11:15:59] JUP resp: 200 https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=88530476926&slippageBps=200&restrictIntermediateTokens=true
+[11:15:59] Valuation: ~0.059120 SOL
+[11:15:59] Observer 3/5 for 3P2u… soft-watch; debounce active (no sell).
+[11:15:59] Observer: consider 3P2u… (3/5). Watching for uptick…
+[11:15:59] Sell decision: NO (cooldown)
+[11:15:59] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:15:59] Picking pump candidates from 6 leaders…
+[11:15:59] Evaluating leader 3P2u… badge="Warming"
+[11:15:59] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:59] Pre-pump score 3P2u… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=47.56
+[11:15:59] Evaluating leader FDgS… badge="Warming"
+[11:15:59] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:59] Pre-pump score FDgS… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=5.05
+[11:15:59] Evaluating leader BsWG… badge="Warming"
+[11:15:59] Evaluating leader AhbP… badge="Warming"
+[11:15:59] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:59] Pre-pump score AhbP… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=13.92
+[11:15:59] Evaluating leader Gn3z… badge="Warming"
+[11:15:59] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:59] Pre-pump score Gn3z… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=21.46
+[11:15:59] Evaluating leader 2v8V… badge="Warming"
+[11:15:59] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:15:59] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=9.26
+[11:15:59] FastObs 3P2u… [warming] chg5m: 47.56 (±0.00) score: 9.05 (±0.00) dd: —
+[11:16:00] Bot active. Time until end: 47103s :: hit "refresh" to reset all stats.
+[11:16:00] FastObs 3P2u… [warming] chg5m: 47.56 (±0.00) score: 9.05 (−0.58) dd: —
+[11:16:00] Fetching SOL balance for 5d6U…
+[11:16:00] Syncing positions from cache …
+[11:16:00] Loaded position cache for 5d6U… with 1 entries.
+[11:16:00] Position cache to list for 5d6U… 1 entries.
+[11:16:00] Balance: 0.012441 SOL
+[11:16:02] Observer: reject 3P2u… (score 2/5); blacklisted 30m.
+[11:16:02] Observer drop for 3P2u… (2/5 <= 2) forcing sell and blacklisting 30m.
+[11:16:02] Post-buy cooldown active (52s); suppressing volatility sell for 3P2u…
+[11:16:02] Sell decision: NO (cooldown)
+[11:16:02] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:16:02] Picking pump candidates from 6 leaders…
+[11:16:02] Evaluating leader 3P2u… badge="Warming"
+[11:16:02] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:16:02] Pre-pump score 3P2u… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=47.56
+[11:16:02] Evaluating leader FDgS… badge="Warming"
+[11:16:02] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:02] Pre-pump score FDgS… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=5.05
+[11:16:02] Evaluating leader BsWG… badge="Warming"
+[11:16:02] Evaluating leader AhbP… badge="Warming"
+[11:16:02] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:02] Pre-pump score AhbP… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=13.92
+[11:16:02] Evaluating leader Gn3z… badge="Warming"
+[11:16:02] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:02] Pre-pump score Gn3z… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=21.46
+[11:16:02] Evaluating leader 2v8V… badge="Warming"
+[11:16:02] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:02] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=9.26
+[11:16:02] FastObs 3P2u… [warming] chg5m: 47.56 (±0.00) score: 9.63 (+0.58) dd: —
+[11:16:03] Bot active. Time until end: 47100s :: hit "refresh" to reset all stats.
+[11:16:03] Fetching SOL balance for 5d6U…
+[11:16:03] Syncing positions from cache …
+[11:16:03] Loaded position cache for 5d6U… with 1 entries.
+[11:16:03] Position cache to list for 5d6U… 1 entries.
+[11:16:03] FastObs 3P2u… [warming] chg5m: 47.56 (±0.00) score: 9.05 (±0.00) dd: —
+[11:16:03] Balance: 0.012441 SOL
+[11:16:05] Observer: consider 3P2u… (score 3/5) [3-tick trend]
+[11:16:05] Observer 3/5 for 3P2u… soft-watch; debounce active (no sell).
+[11:16:05] Observer: consider 3P2u… (3/5). Watching for uptick…
+[11:16:05] Sell decision: NO (cooldown)
+[11:16:05] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:16:05] Picking pump candidates from 6 leaders…
+[11:16:05] Evaluating leader 3P2u… badge="Warming"
+[11:16:05] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:05] Pre-pump score 3P2u… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=47.56
+[11:16:05] Evaluating leader FDgS… badge="Warming"
+[11:16:05] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:05] Pre-pump score FDgS… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=5.05
+[11:16:05] Evaluating leader BsWG… badge="Warming"
+[11:16:05] Evaluating leader Gn3z… badge="Warming"
+[11:16:05] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:16:05] Pre-pump score Gn3z… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=21.46
+[11:16:05] Evaluating leader AhbP… badge="Warming"
+[11:16:05] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:05] Pre-pump score AhbP… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=13.92
+[11:16:05] Evaluating leader 2v8V… badge="Warming"
+[11:16:05] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:05] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=9.26
+[11:16:05] FastObs 3P2u… [warming] chg5m: 47.56 (±0.00) score: 9.05 (−0.58) dd: —
+[11:16:06] Bot active. Time until end: 47097s :: hit "refresh" to reset all stats.
+[11:16:06] Fetching SOL balance for 5d6U…
+[11:16:06] Syncing positions from cache …
+[11:16:06] Loaded position cache for 5d6U… with 1 entries.
+[11:16:06] Position cache to list for 5d6U… 1 entries.
+[11:16:06] FastObs 3P2u… [warming] chg5m: 47.56 (±0.00) score: 9.05 (±0.00) dd: —
+[11:16:06] Balance: 0.012441 SOL
+[11:16:08] FastObs badge 3P2u…: Warming -> 🔥 Pumping
+[11:16:08] FastObs 3P2u… [pumping] chg5m: 47.56 (±0.00) score: 9.05 (±0.00) dd: —
+[11:16:08] Observer: consider 3P2u… (score 3/5) [3-tick trend]
+[11:16:08] Observer 3/5 for 3P2u… soft-watch; debounce active (no sell).
+[11:16:08] Observer: consider 3P2u… (3/5). Watching for uptick…
+[11:16:08] Sell decision: NO (cooldown)
+[11:16:08] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:16:08] Picking pump candidates from 6 leaders…
+[11:16:08] Evaluating leader 3P2u… badge="🔥 Pumping"
+[11:16:08] Evaluating leader FDgS… badge="🔥 Pumping"
+[11:16:08] Evaluating leader AhbP… badge="🔥 Pumping"
+[11:16:08] Evaluating leader Gn3z… badge="Warming"
+[11:16:08] Pre-pump factors: f5m=0.400 fA=0.000 fZ=1.000 fB=0.000
+[11:16:08] Pre-pump score Gn3z… pre=0.408 zV1=2.74 a5/1=1.00 chg5m=20.49
+[11:16:08] Evaluating leader BsWG… badge="Warming"
+[11:16:08] Evaluating leader 2v8V… badge="Warming"
+[11:16:08] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:08] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=9.26
+[11:16:08] Pump picks (fallback): using top Pumping with relaxed accel gate.
+[11:16:08] Pump picks: [{"mint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","badge":"🔥 Pumping","pumpScore":15.34,"liqUsd":41594.05,"v1h":3365.4191666666666,"chg5m":64.74,"chg1h":64.74,"meta":{"accel5to1":0,"accel1to6":1,"buy":0,"zV1":2.738445882692685,"liqScale":0.9238083301369071,"pMean":0.00011677664015079437,"rug":{"worst5m":47.56,"sev":0,"rugFactor":1},"risingNow":true,"trendUp":true},"primed":false,"nb":true,"pre":0,"score":34.826767693157656},{"mint":"AhbPuFSpj56YNnVCCkVYvpW6gH89MNY9wuMscGPHpump","badge":"🔥 Pumping","pumpScore":9.97,"liqUsd":56969.97,"v1h":86171.28749999999,"chg5m":31.35,"chg1h":19.37,"meta":{"accel5to1":0,"accel1to6":1,"buy":0,"zV1":2.6455915616638004,"liqScale":0.9511307227821948,"pMean":0.00018426286589024298,"rug":{"worst5m":13.92,"sev":0,"rugFactor":1},"risingNow":true,"trendUp":true},"primed":false,"nb":true,"pre":0,"score":18.812109949743892},{"mint":"FDgSegoxrdpsct21YVeAbC9dWeTwTxA8Cceeh8BPpump","badge":"🔥 Pumping","pumpScore":10.49,"liqUsd":51185.63,"v1h":15581.637916666667,"chg5m":11.45,"chg1h":117,"meta":{"accel5to1":0,"accel1to6":1,"buy":0,"zV1":2.7384458826927305,"liqScale":0.9418313075252789,"pMean":0.00018078249086892975,"rug":{"worst5m":5.05,"sev":0,"rugFactor":1},"risingNow":true,"trendUp":true},"primed":false,"nb":true,"pre":0,"score":7.393730153004281}]
+[11:16:08] FastObs 3P2u… [pumping] chg5m: 64.74 (+17.18) score: 15.34 (+6.29) dd: —
+[11:16:09] Bot active. Time until end: 47093s :: hit "refresh" to reset all stats.
+[11:16:09] FastObs badge 3P2u…: 🔥 Pumping -> Warming
+[11:16:09] FastObs 3P2u… [warming] chg5m: 64.74 (+17.18) score: 13.10 (+4.05) dd: —
+[11:16:09] Fetching SOL balance for 5d6U…
+[11:16:09] Syncing positions from cache …
+[11:16:09] Loaded position cache for 5d6U… with 1 entries.
+[11:16:09] Position cache to list for 5d6U… 1 entries.
+[11:16:09] Balance: 0.012441 SOL
+[11:16:12] Bot active. Time until end: 47091s :: hit "refresh" to reset all stats.
+[11:16:12] URGENT: momentum drop (3/5) for 3P2u… flagged for immediate sell.
+[11:16:12] Fetching SOL balance for 5d6U…
+[11:16:12] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:16:12] Picking pump candidates from 6 leaders…
+[11:16:12] Evaluating leader 3P2u… badge="Warming"
+[11:16:12] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.516 fB=0.000
+[11:16:12] Pre-pump score 3P2u… pre=0.377 zV1=0.77 a5/1=1.00 chg5m=64.74
+[11:16:12] Evaluating leader FDgS… badge="Warming"
+[11:16:12] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.558 fB=0.000
+[11:16:12] Pre-pump score FDgS… pre=0.387 zV1=0.84 a5/1=1.00 chg5m=11.45
+[11:16:12] Evaluating leader AhbP… badge="Warming"
+[11:16:12] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.558 fB=0.000
+[11:16:12] Pre-pump score AhbP… pre=0.387 zV1=0.84 a5/1=1.00 chg5m=31.35
+[11:16:12] Evaluating leader BsWG… badge="Warming"
+[11:16:12] Evaluating leader Gn3z… badge="Warming"
+[11:16:12] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.516 fB=0.000
+[11:16:12] Pre-pump score Gn3z… pre=0.197 zV1=0.77 a5/1=1.00 chg5m=20.49
+[11:16:12] Evaluating leader 2v8V… badge="Warming"
+[11:16:12] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:12] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=9.26
+[11:16:12] Observer: consider 3P2u… (score 3/5) [3-tick trend]
+[11:16:12] Evaluating sell for 3P2u… size 88530.476926
+[11:16:12] Valuation quote params: {"inputMint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","amountUi":88530.476926,"dec":6,"slippageBps":200}
+[11:16:12] Balance: 0.012441 SOL
+[11:16:12] FastObs 3P2u… [warming] chg5m: 64.74 (±0.00) score: 13.10 (±0.00) dd: —
+[11:16:12] JUP fetch: GET https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=88530476926&slippageBps=200&restrictIntermediateTokens=true
+[11:16:12] JUP resp: 200 https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=88530476926&slippageBps=200&restrictIntermediateTokens=true
+[11:16:12] Valuation: ~0.059843 SOL
+[11:16:12] Observer 3/5 for 3P2u… soft-watch; debounce active (no sell).
+[11:16:12] Observer: consider 3P2u… (3/5). Watching for uptick…
+[11:16:12] Sell decision: sell_partial (TP 20.03% (50%))
+[11:16:12] Loaded position cache for 5d6U… with 1 entries.
+[11:16:12] Saved position cache for 5d6U… with 1 entries.
+[11:16:12] Updated position cache for 5d6U… mint 3P2u… size 88530.476926
+[11:16:12] Valuation quote params: {"inputMint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","amountUi":44265.238463,"dec":6,"slippageBps":200}
+[11:16:12] FastObs 3P2u… [warming] chg5m: 64.74 (±0.00) score: 13.10 (±0.00) dd: 0.00%
+[11:16:12] JUP fetch: GET https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=44265238463&slippageBps=200&restrictIntermediateTokens=true
+[11:16:13] JUP resp: 200 https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=44265238463&slippageBps=200&restrictIntermediateTokens=true
+[11:16:13] Valuation: ~0.029881 SOL
+[11:16:13] Sell-side fee ATA not configured for this mint; no fee collected.
+[11:16:13] Loaded position cache for 5d6U… with 1 entries.
+[11:16:13] Saved position cache for 5d6U… with 1 entries.
+[11:16:13] Updated position cache for 5d6U… mint 3P2u… size 88530.476926
+[11:16:13] Quote params: {"inputMint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","outputMint":"So11111111111111111111111111111111111111112","amountUi":44265.238463,"inDecimals":6,"slippageBps":200,"restrictIntermediateTokens":"false","feeBps":0}
+[11:16:13] JUP cache hit: https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=44265238463&slippageBps=200&restrictIntermediateTokens=true
+[11:16:13] Quote: {"inAmount":"44265238463","outAmount":"29881435","routePlanLen":1}
+[11:16:13] Swap body: {"hasFee":false,"feeBps":0,"useSharedAccounts":false,"asLegacy":false}
+[11:16:13] JUP fetch: POST https://lite-api.jup.ag/swap/v1/swap
+[11:16:13] JUP resp: 200 https://lite-api.jup.ag/swap/v1/swap
+[11:16:14] Swap sent: oPccqzMf3qKPtjK8E1m7BRTH3CKThNR26rGSzRRVdNepGS23Svzf7LaCHZaQdHmeixTNskkBEDBkzLdbEGfCWUa
+[11:16:14] Explorer: https://solscan.io/tx/oPccqzMf3qKPtjK8E1m7BRTH3CKThNR26rGSzRRVdNepGS23Svzf7LaCHZaQdHmeixTNskkBEDBkzLdbEGfCWUa
+[11:16:15] Bot active. Time until end: 47088s :: hit "refresh" to reset all stats.
+[11:16:15] Fetching SOL balance for 5d6U…
+[11:16:15] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:16:15] FastObs 3P2u… [warming] chg5m: 64.74 (±0.00) score: 13.08 (−0.02) dd: 0.00%
+[11:16:15] Balance: 0.012441 SOL
+[11:16:16] Loaded position cache for 5d6U… with 1 entries.
+[11:16:16] Saved position cache for 5d6U… with 1 entries.
+[11:16:16] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:16] Valuation quote params: {"inputMint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","amountUi":44265.238463,"dec":6,"slippageBps":200}
+[11:16:16] Sold 44265.238463 3P2u… -> ~0.029881 SOL (TP 20.03% (50%))
+[11:16:16] JUP fetch: GET https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=44265238463&slippageBps=200&restrictIntermediateTokens=true
+[11:16:16] JUP resp: 200 https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=44265238463&slippageBps=200&restrictIntermediateTokens=true
+[11:16:16] Valuation: ~0.029660 SOL
+[11:16:16] Loaded position cache for 5d6U… with 1 entries.
+[11:16:16] Saved position cache for 5d6U… with 1 entries.
+[11:16:16] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:16] Loaded position cache for 5d6U… with 1 entries.
+[11:16:16] Saved position cache for 5d6U… with 1 entries.
+[11:16:16] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:16] FastObs 3P2u… [warming] chg5m: 64.74 (±0.00) score: 13.08 (−0.02) dd: -100.00%
+[11:16:17] Loaded position cache for 5d6U… with 1 entries.
+[11:16:17] Saved position cache for 5d6U… with 1 entries.
+[11:16:17] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:17] Loaded position cache for 5d6U… with 1 entries.
+[11:16:17] Saved position cache for 5d6U… with 1 entries.
+[11:16:17] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:18] Loaded position cache for 5d6U… with 1 entries.
+[11:16:18] Saved position cache for 5d6U… with 1 entries.
+[11:16:18] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:18] Bot active. Time until end: 47085s :: hit "refresh" to reset all stats.
+[11:16:18] Fetching SOL balance for 5d6U…
+[11:16:18] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:16:18] FastObs 3P2u… [warming] chg5m: 64.74 (±0.00) score: 13.24 (+0.14) dd: -100.00%
+[11:16:18] Balance: 0.042021 SOL
+[11:16:18] Loaded position cache for 5d6U… with 1 entries.
+[11:16:18] Saved position cache for 5d6U… with 1 entries.
+[11:16:18] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:19] Loaded position cache for 5d6U… with 1 entries.
+[11:16:19] Saved position cache for 5d6U… with 1 entries.
+[11:16:19] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:19] Loaded position cache for 5d6U… with 1 entries.
+[11:16:19] Saved position cache for 5d6U… with 1 entries.
+[11:16:19] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:20] Loaded position cache for 5d6U… with 1 entries.
+[11:16:20] Saved position cache for 5d6U… with 1 entries.
+[11:16:20] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:20] Loaded position cache for 5d6U… with 1 entries.
+[11:16:20] Saved position cache for 5d6U… with 1 entries.
+[11:16:20] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:21] Loaded position cache for 5d6U… with 1 entries.
+[11:16:21] Saved position cache for 5d6U… with 1 entries.
+[11:16:21] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:21] Bot active. Time until end: 47082s :: hit "refresh" to reset all stats.
+[11:16:21] FastObs 3P2u… [warming] chg5m: 64.74 (±0.00) score: 13.24 (+0.16) dd: -100.00%
+[11:16:21] Fetching SOL balance for 5d6U…
+[11:16:21] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:16:21] Balance: 0.042021 SOL
+[11:16:21] Loaded position cache for 5d6U… with 1 entries.
+[11:16:21] Saved position cache for 5d6U… with 1 entries.
+[11:16:21] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:22] Loaded position cache for 5d6U… with 1 entries.
+[11:16:22] Saved position cache for 5d6U… with 1 entries.
+[11:16:22] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:22] Loaded position cache for 5d6U… with 1 entries.
+[11:16:22] Saved position cache for 5d6U… with 1 entries.
+[11:16:22] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:22] Loaded position cache for 5d6U… with 1 entries.
+[11:16:22] Saved position cache for 5d6U… with 1 entries.
+[11:16:22] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:23] Loaded position cache for 5d6U… with 1 entries.
+[11:16:23] Saved position cache for 5d6U… with 1 entries.
+[11:16:23] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:23] Loaded position cache for 5d6U… with 1 entries.
+[11:16:23] Saved position cache for 5d6U… with 1 entries.
+[11:16:23] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:24] Bot active. Time until end: 47079s :: hit "refresh" to reset all stats.
+[11:16:24] Fetching SOL balance for 5d6U…
+[11:16:24] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:16:24] Balance: 0.042021 SOL
+[11:16:24] FastObs 3P2u… [warming] chg5m: 64.74 (±0.00) score: 13.24 (±0.00) dd: -100.00%
+[11:16:24] Loaded position cache for 5d6U… with 1 entries.
+[11:16:24] Saved position cache for 5d6U… with 1 entries.
+[11:16:24] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:24] Loaded position cache for 5d6U… with 1 entries.
+[11:16:24] Saved position cache for 5d6U… with 1 entries.
+[11:16:24] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:25] Loaded position cache for 5d6U… with 1 entries.
+[11:16:25] Saved position cache for 5d6U… with 1 entries.
+[11:16:25] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:25] Loaded position cache for 5d6U… with 1 entries.
+[11:16:25] Saved position cache for 5d6U… with 1 entries.
+[11:16:25] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:26] Loaded position cache for 5d6U… with 1 entries.
+[11:16:26] Saved position cache for 5d6U… with 1 entries.
+[11:16:26] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:26] Loaded position cache for 5d6U… with 1 entries.
+[11:16:26] Saved position cache for 5d6U… with 1 entries.
+[11:16:26] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:27] Bot active. Time until end: 47076s :: hit "refresh" to reset all stats.
+[11:16:27] FastObs 3P2u… [warming] chg5m: 64.74 (±0.00) score: 12.65 (−0.59) dd: -100.00%
+[11:16:27] Fetching SOL balance for 5d6U…
+[11:16:27] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:16:27] Balance: 0.042021 SOL
+[11:16:27] Loaded position cache for 5d6U… with 1 entries.
+[11:16:27] Saved position cache for 5d6U… with 1 entries.
+[11:16:27] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:28] Loaded position cache for 5d6U… with 1 entries.
+[11:16:28] Saved position cache for 5d6U… with 1 entries.
+[11:16:28] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:28] Loaded position cache for 5d6U… with 1 entries.
+[11:16:28] Saved position cache for 5d6U… with 1 entries.
+[11:16:28] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:29] Loaded position cache for 5d6U… with 1 entries.
+[11:16:29] Saved position cache for 5d6U… with 1 entries.
+[11:16:29] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:29] Loaded position cache for 5d6U… with 1 entries.
+[11:16:29] Saved position cache for 5d6U… with 1 entries.
+[11:16:29] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:30] Bot active. Time until end: 47073s :: hit "refresh" to reset all stats.
+[11:16:30] Fetching SOL balance for 5d6U…
+[11:16:30] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:16:30] Balance: 0.042021 SOL
+[11:16:30] Loaded position cache for 5d6U… with 1 entries.
+[11:16:30] Saved position cache for 5d6U… with 1 entries.
+[11:16:30] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:30] Loaded position cache for 5d6U… with 1 entries.
+[11:16:30] Saved position cache for 5d6U… with 1 entries.
+[11:16:30] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:31] Loaded position cache for 5d6U… with 1 entries.
+[11:16:31] Saved position cache for 5d6U… with 1 entries.
+[11:16:31] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:31] Loaded position cache for 5d6U… with 1 entries.
+[11:16:31] Saved position cache for 5d6U… with 1 entries.
+[11:16:31] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:32] Loaded position cache for 5d6U… with 1 entries.
+[11:16:32] Saved position cache for 5d6U… with 1 entries.
+[11:16:32] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:32] Blacklist set (stage 1/3, 2m) for 3P2u… until 11:18:32
+[11:16:32] URGENT: momentum drop (3/5) for 3P2u… flagged for immediate sell.
+[11:16:32] Loaded position cache for 5d6U… with 1 entries.
+[11:16:32] Saved position cache for 5d6U… with 1 entries.
+[11:16:32] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:33] Loaded position cache for 5d6U… with 1 entries.
+[11:16:33] Saved position cache for 5d6U… with 1 entries.
+[11:16:33] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:33] Bot active. Time until end: 47070s :: hit "refresh" to reset all stats.
+[11:16:33] Fetching SOL balance for 5d6U…
+[11:16:33] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:16:33] Balance: 0.042021 SOL
+[11:16:33] FastObs 3P2u… [warming] chg5m: 64.74 (±0.00) score: 13.24 (+0.59) dd: -100.00%
+[11:16:33] Loaded position cache for 5d6U… with 1 entries.
+[11:16:33] Saved position cache for 5d6U… with 1 entries.
+[11:16:33] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:33] Loaded position cache for 5d6U… with 1 entries.
+[11:16:33] Saved position cache for 5d6U… with 1 entries.
+[11:16:33] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:34] Loaded position cache for 5d6U… with 1 entries.
+[11:16:34] Saved position cache for 5d6U… with 1 entries.
+[11:16:34] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:34] Loaded position cache for 5d6U… with 1 entries.
+[11:16:34] Saved position cache for 5d6U… with 1 entries.
+[11:16:34] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:35] Loaded position cache for 5d6U… with 1 entries.
+[11:16:35] Saved position cache for 5d6U… with 1 entries.
+[11:16:35] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:35] Loaded position cache for 5d6U… with 1 entries.
+[11:16:35] Saved position cache for 5d6U… with 1 entries.
+[11:16:35] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:36] Bot active. Time until end: 47067s :: hit "refresh" to reset all stats.
+[11:16:36] Fetching SOL balance for 5d6U…
+[11:16:36] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:16:36] Loaded position cache for 5d6U… with 1 entries.
+[11:16:36] Saved position cache for 5d6U… with 1 entries.
+[11:16:36] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:36] FastObs 3P2u… [warming] chg5m: 64.74 (±0.00) score: 12.65 (±0.00) dd: -100.00%
+[11:16:36] Balance: 0.042021 SOL
+[11:16:36] Loaded position cache for 5d6U… with 1 entries.
+[11:16:36] Position cache to list for 5d6U… 1 entries.
+[11:16:36] Loaded position cache for 5d6U… with 1 entries.
+[11:16:36] Saved position cache for 5d6U… with 1 entries.
+[11:16:36] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:37] Valuation quote params: {"inputMint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","amountUi":44265.238463,"dec":6,"slippageBps":200}
+[11:16:37] JUP fetch: GET https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=44265238463&slippageBps=200&restrictIntermediateTokens=true
+[11:16:37] JUP resp: 200 https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=44265238463&slippageBps=200&restrictIntermediateTokens=true
+[11:16:37] Valuation: ~0.029525 SOL
+[11:16:37] Loaded position cache for 5d6U… with 1 entries.
+[11:16:37] Saved position cache for 5d6U… with 1 entries.
+[11:16:37] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:37] Loaded position cache for 5d6U… with 1 entries.
+[11:16:37] Saved position cache for 5d6U… with 1 entries.
+[11:16:37] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:37] Partial sell PnL: +0.004954 SOL | Money made: 0.589910 SOL ($112)
+[11:16:37] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:16:37] Picking pump candidates from 6 leaders…
+[11:16:37] Evaluating leader 3P2u… badge="Warming"
+[11:16:37] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:37] Pre-pump score 3P2u… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=64.74
+[11:16:37] Evaluating leader FDgS… badge="Warming"
+[11:16:37] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:16:37] Pre-pump score FDgS… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=11.45
+[11:16:37] Evaluating leader AhbP… badge="Warming"
+[11:16:37] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:37] Pre-pump score AhbP… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=31.35
+[11:16:37] Evaluating leader BsWG… badge="Warming"
+[11:16:37] Evaluating leader Gn3z… badge="Warming"
+[11:16:37] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:37] Pre-pump score Gn3z… pre=0.158 zV1=0.00 a5/1=1.00 chg5m=20.49
+[11:16:37] Evaluating leader 2v8V… badge="Warming"
+[11:16:37] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:37] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=9.26
+[11:16:38] FastObs 3P2u… [warming] chg5m: 64.74 (±0.00) score: 12.65 (−0.59) dd: -100.00%
+[11:16:39] Bot active. Time until end: 47064s :: hit "refresh" to reset all stats.
+[11:16:39] FastObs 3P2u… [warming] chg5m: 64.74 (±0.00) score: 12.65 (±0.00) dd: -100.00%
+[11:16:39] Fetching SOL balance for 5d6U…
+[11:16:39] Balance: 0.042021 SOL
+[11:16:39] Syncing positions from cache …
+[11:16:39] Loaded position cache for 5d6U… with 1 entries.
+[11:16:39] Position cache to list for 5d6U… 1 entries.
+[11:16:39] Urgent sell for 3P2u… (momentum drop (3/5)); bypassing notional/cooldowns.
+[11:16:42] Observer: consider 3P2u… (score 3/5) [3-tick trend]
+[11:16:42] Evaluating sell for 3P2u… size 44265.238463
+[11:16:42] Valuation quote params: {"inputMint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","amountUi":44265.238463,"dec":6,"slippageBps":200}
+[11:16:42] Bot active. Time until end: 47061s :: hit "refresh" to reset all stats.
+[11:16:42] Fetching SOL balance for 5d6U…
+[11:16:42] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:16:42] Picking pump candidates from 6 leaders…
+[11:16:42] Evaluating leader 3P2u… badge="Warming"
+[11:16:42] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:42] Pre-pump score 3P2u… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=64.74
+[11:16:42] Evaluating leader FDgS… badge="Warming"
+[11:16:42] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:42] Pre-pump score FDgS… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=11.45
+[11:16:42] Evaluating leader AhbP… badge="Warming"
+[11:16:42] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:42] Pre-pump score AhbP… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=31.35
+[11:16:42] Evaluating leader BsWG… badge="Warming"
+[11:16:42] Evaluating leader Gn3z… badge="Warming"
+[11:16:42] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:16:42] Pre-pump score Gn3z… pre=0.415 zV1=1.00 a5/1=1.00 chg5m=20.49
+[11:16:42] Evaluating leader 2v8V… badge="Warming"
+[11:16:42] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.667 fB=0.000
+[11:16:42] Pre-pump score 2v8V… pre=0.000 zV1=1.00 a5/1=1.00 chg5m=9.26
+[11:16:42] JUP fetch: GET https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=44265238463&slippageBps=200&restrictIntermediateTokens=true
+[11:16:42] Balance: 0.042021 SOL
+[11:16:42] JUP resp: 200 https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=44265238463&slippageBps=200&restrictIntermediateTokens=true
+[11:16:42] Valuation: ~0.030777 SOL
+[11:16:42] Sell decision: sell_all (observer detection system)
+[11:16:42] Loaded position cache for 5d6U… with 1 entries.
+[11:16:42] Saved position cache for 5d6U… with 1 entries.
+[11:16:42] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:42] Sell-side fee ATA not configured for this mint; no fee collected.
+[11:16:42] FastObs 3P2u… [warming] chg5m: 64.74 (±0.00) score: 12.65 (±0.00) dd: 0.00%
+[11:16:42] Loaded position cache for 5d6U… with 1 entries.
+[11:16:42] Saved position cache for 5d6U… with 1 entries.
+[11:16:42] Updated position cache for 5d6U… mint 3P2u… size 44265.238463
+[11:16:42] Quote params: {"inputMint":"3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump","outputMint":"So11111111111111111111111111111111111111112","amountUi":44265.238463,"inDecimals":6,"slippageBps":200,"restrictIntermediateTokens":"false","feeBps":0}
+[11:16:42] JUP cache hit: https://lite-api.jup.ag/swap/v1/quote?inputMint=3P2uouSrBzDy2cRoBFzy1bmpZrxq8DUCz1bU2Xujpump&outputMint=So11111111111111111111111111111111111111112&amount=44265238463&slippageBps=200&restrictIntermediateTokens=true
+[11:16:42] Quote: {"inAmount":"44265238463","outAmount":"30777348","routePlanLen":1}
+[11:16:42] Swap body: {"hasFee":false,"feeBps":0,"useSharedAccounts":false,"asLegacy":false}
+[11:16:42] JUP fetch: POST https://lite-api.jup.ag/swap/v1/swap
+[11:16:42] JUP resp: 200 https://lite-api.jup.ag/swap/v1/swap
+[11:16:43] Swap sent: c37npu35s2vzyrKuDcv5yY9DgcK88WnsZ9iZDp1jnroaVr5VTSKSnhuFEQxoPnV5jf9bc57nx49Qymr11dPCX6K
+[11:16:43] Explorer: https://solscan.io/tx/c37npu35s2vzyrKuDcv5yY9DgcK88WnsZ9iZDp1jnroaVr5VTSKSnhuFEQxoPnV5jf9bc57nx49Qymr11dPCX6K
+[11:16:45] Bot active. Time until end: 47058s :: hit "refresh" to reset all stats.
+[11:16:45] Fetching SOL balance for 5d6U…
+[11:16:45] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:16:45] Balance: 0.072584 SOL
+[11:16:46] Loaded position cache for 5d6U… with 1 entries.
+[11:16:46] Saved position cache for 5d6U… with 0 entries.
+[11:16:46] Removed from position cache for 5d6U… mint 3P2u…
+[11:16:46] Sold 44265.238463 3P2u… -> ~0.030777 SOL (observer detection system)
+[11:16:46] Full sell PnL: +0.018314 SOL | Money made: 0.608224 SOL ($115)
+[11:16:46] Loaded position cache for 5d6U… with 0 entries.
+[11:16:46] Removed from position cache for 5d6U… mint 3P2u…
+[11:16:46] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:16:46] Picking pump candidates from 6 leaders…
+[11:16:46] Evaluating leader 3P2u… badge="Warming"
+[11:16:46] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:46] Pre-pump score 3P2u… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=64.74
+[11:16:46] Evaluating leader FDgS… badge="Warming"
+[11:16:46] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:46] Pre-pump score FDgS… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=11.45
+[11:16:46] Evaluating leader AhbP… badge="Warming"
+[11:16:46] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:46] Pre-pump score AhbP… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=31.35
+[11:16:46] Evaluating leader BsWG… badge="Warming"
+[11:16:46] Evaluating leader Gn3z… badge="Warming"
+[11:16:46] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:46] Pre-pump score Gn3z… pre=0.248 zV1=0.00 a5/1=1.00 chg5m=20.49
+[11:16:46] Evaluating leader 2v8V… badge="Warming"
+[11:16:46] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.000 fB=0.000
+[11:16:46] Pre-pump score 2v8V… pre=0.000 zV1=0.00 a5/1=1.00 chg5m=9.26
+[11:16:48] Bot active. Time until end: 47055s :: hit "refresh" to reset all stats.
+[11:16:48] Fetching SOL balance for 5d6U…
+[11:16:48] Balance: 0.072584 SOL
+[11:16:48] Syncing positions from cache …
+[11:16:48] Loaded position cache for 5d6U… with 0 entries.
+[11:16:48] Position cache to list for 5d6U… 0 entries.
+[11:16:48] Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!
+[11:16:48] Picking pump candidates from 6 leaders…
+[11:16:48] Evaluating leader 3P2u… badge="Warming"
+[11:16:48] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.449 fB=0.000
+[11:16:48] Pre-pump score 3P2u… pre=0.270 zV1=0.67 a5/1=1.00 chg5m=64.58
+[11:16:48] Evaluating leader AhbP… badge="Warming"
+[11:16:48] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.492 fB=0.000
+[11:16:48] Pre-pump score AhbP… pre=0.281 zV1=0.74 a5/1=1.00 chg5m=30.37
+[11:16:48] Evaluating leader FDgS… badge="Warming"
+[11:16:48] Evaluating leader BsWG… badge="Warming"
+[11:16:48] Pre-pump factors: f5m=0.400 fA=0.000 fZ=0.492 fB=0.000
+[11:16:48] Pre-pump score BsWG… pre=0.371 zV1=0.74 a5/1=1.00 chg5m=11.17
+[11:16:48] Evaluating leader DyRA… badge="Warming"
+[11:16:48] Evaluating leader 9yZ5… badge="Calm"
+[11:16:50] Fast observer stopped.
+[11:16:50] Auto trading stopped

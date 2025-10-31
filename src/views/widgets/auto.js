@@ -149,6 +149,7 @@ let state = {
   sellCooldownMs: 20000,  
   staleMinsToDeRisk: 4, 
   singlePositionMode: true,
+  minNetEdgePct: -8,
 
   // Auto wallet mode
   autoWalletPub: "",        
@@ -202,6 +203,9 @@ let state = {
   warmingAutoReleaseSecs: 45,
   // money made tracker
   moneyMadeSol: 0,
+  hideMoneyMade: false,           
+  logNetBalance: true,          
+  solSessionStartLamports: 0,
 };
 // init global user interface
 let timer = null;
@@ -1368,6 +1372,49 @@ async function jupFetch(path, opts) {
   }
 }
 
+async function quoteGeneric(inputMint, outputMint, amountRaw, slippageBps) {
+  try {
+    const base = await getJupBase();
+    const isLite = /lite-api\.jup\.ag/i.test(base);
+
+    let amtStr = "1";
+    try {
+      if (typeof amountRaw === "string") {
+        const bi = BigInt(amountRaw);
+        amtStr = bi > 0n ? amountRaw : "1";
+      } else {
+        const n = Math.floor(Number(amountRaw || 0));
+        amtStr = n > 0 ? String(n) : "1";
+      }
+    } catch { amtStr = "1"; }
+
+    // primary 
+    const u1 = new URL("/swap/v1/quote", "https://fdv.lol");
+    u1.searchParams.set("inputMint", inputMint);
+    u1.searchParams.set("outputMint", outputMint);
+    u1.searchParams.set("amount", amtStr);
+    u1.searchParams.set("slippageBps", String(Math.max(1, slippageBps | 0)));
+    u1.searchParams.set("restrictIntermediateTokens", String(true));
+    const r1 = await jupFetch(u1.pathname + u1.search);
+    if (r1?.ok) return await r1.json();
+
+    // fallback 
+    if (!isLite) {
+      const u2 = new URL("/swap/v1/quote", "https://fdv.lol");
+      u2.searchParams.set("inputMint", inputMint);
+      u2.searchParams.set("outputMint", outputMint);
+      u2.searchParams.set("amount", amtStr);
+      u2.searchParams.set("slippageBps", String(Math.max(1, slippageBps | 0)));
+      u2.searchParams.set("restrictIntermediateTokens", String(false));
+      const r2 = await jupFetch(u2.pathname + u2.search);
+      if (r2?.ok) return await r2.json();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function quoteOutSol(inputMint, amountUi, inDecimals) {
   if (!Number.isFinite(amountUi) || amountUi <= 0) {
     log("Valuation skip: zero size.");
@@ -1420,6 +1467,68 @@ async function quoteOutSol(inputMint, amountUi, inDecimals) {
   }
 }
 
+async function requiredOutAtaRentIfMissing(ownerPubkeyStr, outMint) {
+  try {
+    if (!outMint || outMint === SOL_MINT) return 0;
+    const hasOut = await ataExists(ownerPubkeyStr, outMint);
+    if (hasOut) return 0;
+    return await tokenAccountRentLamports();
+  } catch { return 0; }
+}
+
+async function estimateRoundtripEdgePct(ownerPub, outMint, buySolUi, { slippageBps }) {
+  try {
+    const buyLamports = Math.floor(Number(buySolUi || 0) * 1e9);
+    if (!Number.isFinite(buyLamports) || buyLamports <= 0) return null;
+
+    const fwd = await quoteGeneric(SOL_MINT, outMint, buyLamports, slippageBps);
+    const outRaw = Number(fwd?.outAmount || 0);
+    if (!outRaw || outRaw <= 0) return null;
+
+    const back = await quoteGeneric(outMint, SOL_MINT, outRaw, slippageBps);
+    const backLamports = Number(back?.outAmount || 0);
+    if (!backLamports || backLamports <= 0) return null;
+
+    // Fees
+    const feeBps = Number(getPlatformFeeBps() || 0);
+    const platformL = Math.floor(backLamports * (feeBps / 10_000)); // sell-side fee
+    const txFeesL = TX_FEE_BUFFER_LAMPORTS; // estimate once
+    const ataRentL = await requiredOutAtaRentIfMissing(ownerPub, outMint); // one-time, refundable later if closed
+
+    const recurringL = platformL + txFeesL;
+    const edgeL_inclOnetime = backLamports - buyLamports - recurringL - Math.max(0, ataRentL);
+    const edgeL_noOnetime   = backLamports - buyLamports - recurringL;
+
+    const pct          = (edgeL_inclOnetime / Math.max(1, buyLamports)) * 100;
+    const pctNoOnetime = (edgeL_noOnetime   / Math.max(1, buyLamports)) * 100;
+
+    logObj("Roundtrip edge breakdown", {
+      buySol: buyLamports/1e9,
+      backSol: backLamports/1e9,
+      platformBps: feeBps,
+      platformSol: platformL/1e9,
+      txFeesSol: txFeesL/1e9,
+      ataRentSol: ataRentL/1e9,
+      netSolInclOnetime: edgeL_inclOnetime/1e9,
+      netSolNoOnetime: edgeL_noOnetime/1e9,
+      pctInclOnetime: Number(pct.toFixed(2)),
+      pctNoOnetime: Number(pctNoOnetime.toFixed(2)),
+    });
+
+    return {
+      pct,
+      pctNoOnetime,
+      sol: edgeL_inclOnetime / 1e9,
+      feesLamports: recurringL + Math.max(0, ataRentL),
+      ataRentLamports: Math.max(0, ataRentL),
+      recurringLamports: recurringL,
+      forward: fwd,
+      backward: back
+    };
+  } catch {
+    return null;
+  }
+}
 async function executeSwapWithConfirm(opts, { retries = 2, confirmMs = 15000 } = {}) {
   let slip = Math.max(150, Number(opts.slippageBps ?? state.slippageBps ?? 150) | 0);
   const isBuy = (opts?.inputMint === SOL_MINT && opts?.outputMint && opts.outputMint !== SOL_MINT); 
@@ -1456,7 +1565,6 @@ async function executeSwapWithConfirm(opts, { retries = 2, confirmMs = 15000 } =
         }).catch(() => false);
         if (ok) return { ok: true, sig, slip };
 
-        // Avoid duplicate buys: do not retry a buy after first send
         if (isBuy) {
           log("Buy sent; skipping retries and relying on pending credit.");
           return { ok: false, sig, slip };
@@ -1499,15 +1607,6 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       throw new Error("INVALID_MINT");
     }
 
-    if (feeBps > 0) {
-      feeAccount = FEE_ATAS[inputMint] || null;
-      if (feeAccount) {
-        log(`Fee enabled: ATA ${feeAccount.slice(0,4)}… @ ${feeBps} bps`);
-      } else {
-        log("No hardcoded fee ATA for input mint; fees not collected this swap.");
-      }
-    }
-
     const inDecimals = await getMintDecimals(inputMint);
     let baseSlip = Math.max(150, Number(slippageBps ?? state.slippageBps ?? 150) | 0); 
     const isBuy = (inputMint === SOL_MINT && outputMint !== SOL_MINT); 
@@ -1526,6 +1625,18 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     const isSell = (inputMint !== SOL_MINT) && (outputMint === SOL_MINT);
     let restrictIntermediates = isSell ? "false" : "true";
 
+    // Platform fee's only on sell.
+    if (feeBps > 0 && isSell) {
+      feeAccount = FEE_ATAS[inputMint] || null;
+      if (feeAccount) {
+        log(`Fee (sell-only) enabled: ATA ${feeAccount.slice(0,4)}… @ ${feeBps} bps`);
+      } else {
+        log("Sell-side fee ATA not configured for this mint; no fee collected.");
+      }
+    } else if (feeBps > 0 && isBuy) {
+      log(`Fees:${feeBps}% only on sell up.`);
+    }
+
     // Track pre-split balance and a reconciler only for split-sell fallbacks
     let _preSplitUi = 0;
     let _decHint = await getMintDecimals(inputMint).catch(() => 6);
@@ -1535,6 +1646,11 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         _preSplitUi = Number(b0.sizeUi || 0);
         if (Number.isFinite(b0.decimals)) _decHint = b0.decimals;
       } catch {}
+    }
+
+    if (isBuy) {
+      const rentSol = (_preBuyRent/1e9).toFixed(6);
+      log(`Buy cost breakdown: input=${(amountRaw/1e9).toFixed(6)} SOL + ataRent≈${rentSol}`);
     }
 
     async function notePendingBuySeed() {
@@ -1661,7 +1777,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       }
     }
 
-    const isRouteErr = (codeOrMsg) => /ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|0x1788/i.test(String(codeOrMsg||""));
+    // const isRouteErr = (codeOrMsg) => /ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|0x1788/i.test(String(codeOrMsg||""));
     // let sawRouteDust = false;
 
     const first = await buildAndSend(false);
@@ -1758,7 +1874,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         ...(feeAccount && feeBps > 0 ? { feeAccount, platformFeeBps: feeBps } : {}),
       };
       logObj("Swap body", { hasFee: !!feeAccount, feeBps: feeAccount ? feeBps : 0, useSharedAccounts: !!useSharedAccounts, asLegacy: !!asLegacy });
-
+ 
       const sRes = await jupFetch(`/swap/v1/swap`, {
         method: "POST",
         headers: { "Content-Type":"application/json", accept: "application/json" },
@@ -4189,6 +4305,30 @@ async function tick() {
 
       const buySol = buyLamports / 1e9;
 
+      try {
+        const edge = await estimateRoundtripEdgePct(kp.publicKey.toBase58(), mint, buySol, { slippageBps: state.slippageBps });
+        const needPct = Number.isFinite(Number(state.minNetEdgePct)) ? Number(state.minNetEdgePct) : -8;
+        if (!edge) { log(`Skip ${mint.slice(0,4)}… (no round-trip quote)`); continue; }
+
+        // ata is often missing
+        const gaugePct = edge.ataRentLamports > 0 ? edge.pctNoOnetime : edge.pct;
+
+        if (!Number.isFinite(gaugePct)) {
+          log(`Skip ${mint.slice(0,4)}… (invalid edge)`);
+          continue;
+        }
+        if (gaugePct < needPct) {
+          const incl = Number(edge.pct?.toFixed?.(2));
+          const excl = Number(edge.pctNoOnetime?.toFixed?.(2));
+          log(`Skip ${mint.slice(0,4)}… net edge ${gaugePct.toFixed(2)}% (${excl}% excl-ATA, ${incl}% incl-ATA) < ${needPct.toFixed(2)}%`);
+          continue;
+        }
+        log(`Edge OK ${mint.slice(0,4)}… net≈${gaugePct.toFixed(2)}% (${(edge.pctNoOnetime||edge.pct).toFixed(2)}% excl-ATA)`);
+      } catch {
+        log(`Skip ${mint.slice(0,4)}… (edge calc failed)`);
+        continue;
+      }
+
       const ownerStr = kp.publicKey.toBase58();
       const prevPos  = state.positions[mint];
       const basePos  = prevPos || { costSol: 0, hwmSol: 0, acquiredAt: now() };
@@ -4701,7 +4841,7 @@ export function initAutoWidget(container = document.body) {
     </div>
     </div>
     <div class="fdv-bot-footer" style="margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
-      <span>Version: 0.0.2.8</span>
+      <span>Version: 0.0.2.9</span>
     </div>
   `;
 
