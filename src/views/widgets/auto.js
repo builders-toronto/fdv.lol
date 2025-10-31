@@ -51,6 +51,20 @@ function _clamp(n, lo, hi) { const x = Number(n); return Number.isFinite(x) ? Ma
 
 function now() { return Date.now(); }
 
+function _markRpcStress(e, ms = 2000) {
+  try {
+    const s = String(e?.message || e || "");
+    if (/429|Too Many Requests|403|Forbidden/i.test(s)) {
+      window._fdvRpcStressUntil = now() + Math.max(500, ms|0);
+    }
+  } catch {}
+}
+
+function rpcBackoffLeft() {
+  const t = Number(window._fdvRpcStressUntil || 0);
+  return Math.max(0, t - now());
+}
+
 function fmtUsd(n) {
   const x = Number(n || 0);
   if (!Number.isFinite(x)) return "$0.00";
@@ -127,7 +141,7 @@ let state = {
   lastTradeTs: 0,
   trailPct: 6,                 
   minProfitToTrailPct: 3,     
-  coolDownSecsAfterBuy: 60,    
+  coolDownSecsAfterBuy: 20,    
   minHoldSecs: 0,  
   maxHoldSecs: 50,           
   partialTpPct: 50,            
@@ -181,8 +195,8 @@ let state = {
   dynamicHoldEnabled: true,
   // Badge status selection
   rideWarming: true,
-  warmingMinProfitPct: 1.0,
-  warmingDecayPctPerMin: 0.25,      
+  warmingMinProfitPct: 4,
+  warmingDecayPctPerMin: 0.50,      
   warmingDecayDelaySecs: 15,         
   warmingMinProfitFloorPct: -2.0,   
   warmingAutoReleaseSecs: 45,
@@ -444,11 +458,10 @@ function optimisticSeedBuy(ownerStr, mint, estUi, decimals, buySol, sig = "") {
 async function getTxWithMeta(sig) {
   try {
     const conn = await getConn();
-    // finalized preferred; falls back to confirmed if not found yet
     let tx = await conn.getTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "finalized" });
     if (!tx) tx = await conn.getTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
     return tx || null;
-  } catch { return null; }
+  } catch (e) { _markRpcStress(e, 1500); return null; }
 }
 
 async function reconcileBuyFromTx(sig, ownerPub, expectedMint) {
@@ -499,15 +512,17 @@ function enqueuePendingCredit({ owner, mint, addCostSol = 0, decimalsHint = 6, b
     lastTriedAt: 0,
   });
   log(`Queued pending credit watch for ${mint.slice(0,4)}… for up to ${(state.pendingGraceMs/1000|0)}s.`);
+  startPendingCreditWatchdog();
 }
 
 async function processPendingCredits() {
   if (!_pendingCredits || _pendingCredits.size === 0) return;
+  if (rpcBackoffLeft() > 0) return;
   const nowTs = now();
   for (const [key, entry] of Array.from(_pendingCredits.entries())) {
     if (!entry?.owner || !entry?.mint) { _pendingCredits.delete(key); continue; }
     if (!entry || nowTs > entry.until) { _pendingCredits.delete(key); continue; }
-    if (entry.lastTriedAt && (nowTs - entry.lastTriedAt) < 300) continue;
+    if (entry.lastTriedAt && (now() - entry.lastTriedAt) < 300) continue;
     try {
       entry.lastTriedAt = nowTs;
 
@@ -557,6 +572,27 @@ async function processPendingCredits() {
   }
 }
 
+function stopPendingCreditWatchdog() {
+  try { if (window._fdvPendWatch) clearInterval(window._fdvPendWatch); } catch {}
+  window._fdvPendWatch = null;
+}
+
+function startPendingCreditWatchdog() {
+  if (window._fdvPendWatch) return;
+  let startedAt = now();
+  window._fdvPendWatch = setInterval(async () => {
+    try {
+      if (now() - startedAt > 180_000) { stopPendingCreditWatchdog(); return; }
+      if (!_pendingCredits || _pendingCredits.size === 0) { stopPendingCreditWatchdog(); return; }
+      if (rpcBackoffLeft() > 0) return;
+      const kp = await getAutoKeypair().catch(()=>null);
+      if (!kp) return;
+      await processPendingCredits().catch(()=>{});
+      await reconcileFromOwnerScan(kp.publicKey.toBase58()).catch(()=>{});
+    } catch {}
+  }, 1200);
+  log("Pending-credit watchdog running.");
+}
 
 function loadPosCache(ownerPubkeyStr) {
   if (localStorage.getItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr) === null) {
@@ -800,11 +836,17 @@ async function requiredAtaLamportsForSwap(ownerPubkeyStr, inputMint, outputMint)
 
 async function loadSplToken() {
   if (window.splToken) return window.splToken;
+  const set = (m) => { window.splToken = m; return m; };
   try {
-    const m = await import("https://esm.sh/@solana/spl-token@0.4.6?bundle");
-    window.splToken = m;
-    return m;
+    const m = await import("https://cdn.jsdelivr.net/npm/@solana/spl-token@0.4.14/+esm");
+    return set(m);
+  } catch {}
+  try {
+    const m = await import("https://esm.sh/@solana/spl-token@0.4.14?bundle");
+    return set(m);
   } catch {
+  }
+  try {
     const { PublicKey } = await loadWeb3();
     const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
     const TOKEN_2022_PROGRAM_ID = new PublicKey("TokenzQdBNb1KzYrNU3G1bqbp1VZr1z7jWmzuXyaS6uJ");
@@ -815,8 +857,15 @@ async function loadSplToken() {
       return addr;
     }
     const m = { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddress };
-    window.splToken = m;
-    return m;
+    return set(m);
+  } catch {
+    const m = {
+      TOKEN_PROGRAM_ID: null,
+      TOKEN_2022_PROGRAM_ID: null,
+      ASSOCIATED_TOKEN_PROGRAM_ID: null,
+      getAssociatedTokenAddress: async () => null
+    };
+    return set(m);
   }
 }
 
@@ -856,65 +905,49 @@ async function unwrapWsolIfAny(signerOrOwner) {
     window._fdvUnwrapInflight.set(ownerStr, true);
 
     try {
-      const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, createCloseAccountInstruction } = await loadSplToken();
+      const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, createCloseAccountInstruction, getAssociatedTokenAddress } = await loadSplToken();
+      const progs = [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].filter(Boolean);
+
+      const atapks = [];
+      for (const pid of progs) {
+        try {
+          const mint = new PublicKey(SOL_MINT);
+          const ataAny = await getAssociatedTokenAddress(mint, ownerPk, true, pid);
+          const ata = typeof ataAny === "string" ? new PublicKey(ataAny) : ataAny;
+          if (ata) atapks.push({ pid, ata });
+        } catch {}
+      }
 
       const ixs = [];
-      const programs = [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].filter(Boolean);
-
-      const addCloseIx = (ataPk, progId) => {
+      for (const { pid, ata } of atapks) {
         try {
+          const ai = await conn.getAccountInfo(ata, "processed").catch(e => { _markRpcStress(e, 1500); return null; });
+          if (!ai) continue;
           if (typeof createCloseAccountInstruction === "function") {
-            return createCloseAccountInstruction(ataPk, ownerPk, ownerPk, [], progId);
+            ixs.push(createCloseAccountInstruction(ata, ownerPk, ownerPk, [], pid));
+          } else {
+            ixs.push(new TransactionInstruction({
+              programId: pid,
+              keys: [
+                { pubkey: ata,     isSigner: false, isWritable: true },
+                { pubkey: ownerPk, isSigner: false, isWritable: true },
+                { pubkey: ownerPk, isSigner: true,  isWritable: false },
+              ],
+              data: Uint8Array.of(9),
+            }));
           }
-        } catch {}
-        return new TransactionInstruction({
-          programId: progId,
-          keys: [
-            { pubkey: ataPk,   isSigner: false, isWritable: true }, // account
-            { pubkey: ownerPk, isSigner: false, isWritable: true }, // destination
-            { pubkey: ownerPk, isSigner: true,  isWritable: false },// owner
-          ],
-          data: Uint8Array.of(9),
-        });
-      };
-
-      for (const pid of programs) {
-        try {
-          const resp = await conn.getParsedTokenAccountsByOwner(ownerPk, { programId: pid }, "processed");
-          for (const it of resp?.value || []) {
-            try {
-              const info = it?.account?.data?.parsed?.info;
-              if (!info || String(info.mint || "") !== SOL_MINT) continue;
-
-              const ataPk = it?.pubkey?.toBase58 ? it.pubkey : new PublicKey(String(it?.pubkey || ""));
-              const ai = await conn.getAccountInfo(ataPk, "processed").catch(() => null);
-              if (!ai) continue; // nothing to close
-
-              ixs.push(addCloseIx(ataPk, pid));
-            } catch {}
-          }
-        } catch {}
+        } catch (e) { _markRpcStress(e, 1500); }
       }
 
       if (!ixs.length) return false;
 
-      // Send in small chunks
-      const sendBatch = async (chunk) => {
-        const tx = new Transaction();
-        for (const ix of chunk) tx.add(ix);
-        tx.feePayer = ownerPk;
-        tx.recentBlockhash = (await conn.getLatestBlockhash("processed")).blockhash;
-        tx.sign(signer);
-        const sig = await conn.sendRawTransaction(tx.serialize(), { preflightCommitment: "processed", maxRetries: 2 });
-        log(`WSOL unwrap sent: ${sig}`);
-        return sig;
-      };
-
-      if (ixs.length <= 2) {
-        await sendBatch(ixs);
-      } else {
-        for (const ix of ixs) { try { await sendBatch([ix]); } catch {} }
-      }
+      const tx = new Transaction();
+      for (const ix of ixs) tx.add(ix);
+      tx.feePayer = ownerPk;
+      tx.recentBlockhash = (await conn.getLatestBlockhash("processed")).blockhash;
+      tx.sign(signer);
+      const sig = await conn.sendRawTransaction(tx.serialize(), { preflightCommitment: "processed", maxRetries: 2 });
+      log(`WSOL unwrap sent: ${sig}`);
       return true;
     } finally {
       window._fdvUnwrapInflight.delete(ownerStr);
@@ -927,7 +960,7 @@ async function unwrapWsolIfAny(signerOrOwner) {
   }
 }
 
-async function confirmSig(sig, { commitment = "confirmed", timeoutMs = 12000, pollMs = 300, requireFinalized = false } = {}) {
+async function confirmSig(sig, { commitment = "confirmed", timeoutMs = 12000, pollMs = 700, requireFinalized = false } = {}) {
   const conn = await getConn();
   const start = now();
   while (now() - start < timeoutMs) {
@@ -940,8 +973,9 @@ async function confirmSig(sig, { commitment = "confirmed", timeoutMs = 12000, po
         if (ok) return true;
         if (v.err) return false;
       }
-    } catch {}
-    await new Promise(r => setTimeout(r, pollMs));
+    } catch (e) { _markRpcStress(e, 1500); }
+    const left = rpcBackoffLeft();
+    await new Promise(r => setTimeout(r, left > 0 ? left : pollMs));
   }
   return false;
 }
@@ -986,22 +1020,23 @@ async function waitForTokenCredit(ownerPubkeyStr, mintStr, { timeoutMs = 8000, p
     if (Array.isArray(atas) && atas.length) {
       for (const { ata } of atas) {
         try {
-          const res = await conn.getTokenAccountBalance(ata, "processed");
+          const res = await conn.getTokenAccountBalance(ata, "confirmed");
           if (res?.value) {
             const ui = Number(res.value.uiAmount || 0);
             const dec = Number.isFinite(res.value.decimals) ? res.value.decimals : undefined;
             if (ui > 0) return { sizeUi: ui, decimals: Number.isFinite(dec) ? dec : decimals };
           }
-        } catch {}
+        } catch (e) { _markRpcStress(e, 1500); }
       }
     }
+    // Fallback owner scans (confirmed) if plan allows
     try {
       const { PublicKey } = await loadWeb3();
       const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = await loadSplToken();
       const ownerPk = new PublicKey(ownerPubkeyStr);
       const tryScan = async (pid) => {
         if (!pid) return null;
-        const resp = await conn.getParsedTokenAccountsByOwner(ownerPk, { programId: pid }, "processed");
+        const resp = await conn.getParsedTokenAccountsByOwner(ownerPk, { programId: pid }, "confirmed");
         for (const it of resp?.value || []) {
           const info = it?.account?.data?.parsed?.info;
           if (String(info?.mint || "") !== mintStr) continue;
@@ -1015,9 +1050,9 @@ async function waitForTokenCredit(ownerPubkeyStr, mintStr, { timeoutMs = 8000, p
       const hit1 = await tryScan(TOKEN_PROGRAM_ID);
       const hit2 = hit1 || await tryScan(TOKEN_2022_PROGRAM_ID);
       if (hit2 && Number(hit2.sizeUi || 0) > 0) return hit2;
-    } catch {}
-    await new Promise(r => setTimeout(r, pollMs));
-    // Refresh ATAs once mid-loop
+    } catch (e) { _markRpcStress(e, 2000); }
+    const left = rpcBackoffLeft();
+    await new Promise(r => setTimeout(r, left > 0 ? left : pollMs));
     try { if (!atas || !atas.length) atas = await getOwnerAtas(ownerPubkeyStr, mintStr); } catch {}
   }
   return { sizeUi: 0, decimals };
@@ -1387,6 +1422,9 @@ async function quoteOutSol(inputMint, amountUi, inDecimals) {
 
 async function executeSwapWithConfirm(opts, { retries = 2, confirmMs = 15000 } = {}) {
   let slip = Math.max(150, Number(opts.slippageBps ?? state.slippageBps ?? 150) | 0);
+  const isBuy = (opts?.inputMint === SOL_MINT && opts?.outputMint && opts.outputMint !== SOL_MINT); 
+  if (isBuy) slip = Math.min(300, Math.max(200, slip));
+
   const prevDefer = !!window._fdvDeferSeed;
   window._fdvDeferSeed = true;
   let lastSig = null;
@@ -1471,7 +1509,9 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     }
 
     const inDecimals = await getMintDecimals(inputMint);
-    const baseSlip = Math.max(150, Number(slippageBps ?? state.slippageBps ?? 150) | 0);
+    let baseSlip = Math.max(150, Number(slippageBps ?? state.slippageBps ?? 150) | 0); 
+    const isBuy = (inputMint === SOL_MINT && outputMint !== SOL_MINT); 
+    if (isBuy) baseSlip = Math.min(300, Math.max(200, baseSlip));
     const amountRaw = Math.max(1, Math.floor(amountUi * Math.pow(10, inDecimals)));
 
     let _preBuyRent = 0;
@@ -1744,10 +1784,11 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       try {
         const sig = await conn.sendRawTransaction(vtx.serialize(), { preflightCommitment: "processed", maxRetries: 3 });
         log(`Swap sent: ${sig}`);
+        try { log(`Explorer: https://solscan.io/tx/${sig}`); } catch {}
         try { if (isSell) setTimeout(() => _reconcileSplitSellRemainder(sig), 0); } catch {}
         try {
           if (inputMint === SOL_MINT || outputMint === SOL_MINT) {
-            setTimeout(() => { unwrapWsolIfAny(signer).catch(()=>{}); }, 0);
+            setTimeout(() => { unwrapWsolIfAny(signer).catch(()=>{}); }, 1200);
             setTimeout(() => { unwrapWsolIfAny(signer).catch(()=>{}); }, 1500);
           }
         } catch {}
@@ -1871,10 +1912,11 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
             return { ok: false, code: status, msg: "not confirmed" };
           }
           log(`Swap (manual send v1) sent: ${sig}`);
+          try { log(`Explorer: https://solscan.io/tx/${sig}`); } catch {}
           try { if (isSell) setTimeout(() => _reconcileSplitSellRemainder(sig), 0); } catch {}
           try {
             if (inputMint === SOL_MINT || outputMint === SOL_MINT) {
-              setTimeout(() => { unwrapWsolIfAny(signer).catch(()=>{}); }, 0);
+              setTimeout(() => { unwrapWsolIfAny(signer).catch(()=>{}); }, 1200);
               setTimeout(() => { unwrapWsolIfAny(signer).catch(()=>{}); }, 1500); 
             }
           } catch {}
@@ -2871,12 +2913,12 @@ async function getOwnerAtas(ownerPubkeyStr, mintStr) {
   return out;
 }
 
-async function getAtaBalanceUi(ownerPubkeyStr, mintStr, decimalsHint) {
+async function getAtaBalanceUi(ownerPubkeyStr, mintStr, decimalsHint, commitment = "confirmed") {
   const conn = await getConn();
   const atas = await getOwnerAtas(ownerPubkeyStr, mintStr);
   let best = null;
   for (const { ata } of atas) {
-    const res = await conn.getTokenAccountBalance(ata, "processed").catch(() => null);
+    const res = await conn.getTokenAccountBalance(ata, commitment).catch(e => { _markRpcStress(e, 1500); return null; });
     if (res?.value) {
       const sizeUi = Number(res.value.uiAmount || 0);
       const decimals = Number.isFinite(res.value.decimals) ? res.value.decimals : (await getMintDecimals(mintStr));
@@ -2889,7 +2931,7 @@ async function getAtaBalanceUi(ownerPubkeyStr, mintStr, decimalsHint) {
   }
   let existsAny = false;
   for (const { ata } of atas) {
-    const ai = await conn.getAccountInfo(ata, "processed").catch(() => null);
+    const ai = await conn.getAccountInfo(ata, commitment).catch(e => { _markRpcStress(e, 1500); return null; });
     existsAny = existsAny || !!ai;
   }
   const decimals = Number.isFinite(decimalsHint) ? decimalsHint : (await getMintDecimals(mintStr));
@@ -2904,8 +2946,17 @@ async function pruneZeroBalancePositions(ownerPubkeyStr, { limit = 8 } = {}) {
     let checked = 0;
     for (const mint of mints) {
       if (checked >= limit) break;
+
+      // Skip pruning during credit/size-sync grace window
+      const pos = state.positions[mint];
+      const ageMs = now() - Number(pos?.lastBuyAt || pos?.acquiredAt || 0);
+      const pendKey = _pcKey(ownerPubkeyStr, mint);
+      const hasPending = !!(_pendingCredits?.has?.(pendKey));
+      const grace = Math.max(8000, Number(state.pendingGraceMs || 20000));
+      if (hasPending || pos?.awaitingSizeSync === true || ageMs < grace) { checked++; continue; }
+
       try {
-        const b = await getAtaBalanceUi(ownerPubkeyStr, mint, state.positions[mint]?.decimals);
+        const b = await getAtaBalanceUi(ownerPubkeyStr, mint, state.positions[mint]?.decimals /* uses confirmed by default */);
         const ui = Number(b.sizeUi || 0);
         if (ui <= 1e-9) {
           removeFromPosCache(ownerPubkeyStr, mint);
@@ -2956,7 +3007,7 @@ async function listOwnerSplPositions(ownerPubkeyStr) {
   const seen = new Set();
   async function scan(programId) {
     try {
-      const resp = await conn.getParsedTokenAccountsByOwner(new PublicKey(ownerPubkeyStr), { programId }, "processed");
+      const resp = await conn.getParsedTokenAccountsByOwner(new PublicKey(ownerPubkeyStr), { programId }, "confirmed");
       for (const it of resp?.value || []) {
         const info = it?.account?.data?.parsed?.info;
         const mint = String(info?.mint || "");
@@ -3490,6 +3541,9 @@ async function evalAndMaybeSellPositions() {
         const warmingActive = !!(state.rideWarming && pos.warmingHold === true);
         const warmReq = warmingActive ? computeWarmingRequirement(pos, nowTs) : { req: Number(state.warmingMinProfitPct || 1), shouldAutoRelease: false };
 
+        let decision = null;
+
+
         if (warmingActive && warmReq.shouldAutoRelease) {
           pos.warmingHold = false;
           pos.warmingClearedAt = now();
@@ -3545,7 +3599,7 @@ async function evalAndMaybeSellPositions() {
           log(`${why} exit for ${mint.slice(0,4)}… ignoring min-notional (${curSol.toFixed(6)} SOL < ${minNotional}).`);
         }
 
-        let decision = d || shouldSell(pos, curSol, nowTs);
+        decision = d || shouldSell(pos, curSol, nowTs);
         if (forceRug) {
           decision = { action: "sell_all", reason: `rug sev=${rugSev.toFixed(2)}` };
         } else if (forcePumpDrop) {
@@ -4154,8 +4208,21 @@ async function tick() {
             optimisticSeedBuy(ownerStr, mint, Number(seed.sizeUi), Number(seed.decimals), buySol, res.sig || "");
             clearBuySeed(ownerStr, mint);
             log(`Buy unconfirmed for ${mint.slice(0,4)}… seeded pending credit watch.`);
-          } else {
-            log(`Buy not confirmed for ${mint.slice(0,4)}… skipping accounting.`);
+            } else {
+
+            if (res.sig) {
+              enqueuePendingCredit({
+                owner: ownerStr,
+                mint,
+                addCostSol: buySol,
+                decimalsHint: basePos.decimals,
+                basePos: { ...basePos, awaitingSizeSync: true },
+                sig: res.sig
+              });
+              log(`Buy not confirmed for ${mint.slice(0,4)}… enqueued tx-meta reconciliation.`);
+            } else {
+              log(`Buy not confirmed for ${mint.slice(0,4)}… skipping accounting.`);
+            }
           }
         } catch {
           log(`Buy not confirmed for ${mint.slice(0,4)}… skipping accounting.`);
@@ -4348,6 +4415,7 @@ function onToggle(on) {
        const hasOpen = Object.entries(state.positions||{}).some(([m,p]) => m!==SOL_MINT && Number(p?.sizeUi||0) > 0);
        if (hasOpen) setTimeout(() => { evalAndMaybeSellPositions().catch(()=>{}); }, 0);
      } catch {}
+     try { if (_pendingCredits && _pendingCredits.size > 0) startPendingCreditWatchdog(); } catch {}
      log("Auto trading stopped");
    }
    try { renderStatusLed(); } catch {}
@@ -4356,7 +4424,7 @@ function onToggle(on) {
 
 function load() {
   try { state = { ...state, ...(JSON.parse(localStorage.getItem(LS_KEY))||{}) }; } catch {}
-  state.slippageBps = Math.max(150, Number(state.slippageBps || 150) | 0);
+  state.slippageBps = Math.min(300, Math.max(200, Number(state.slippageBps ?? 250) | 0));
   state.minBuySol   = Math.max(MIN_JUP_SOL_IN, Number(state.minBuySol || MIN_JUP_SOL_IN));
   if (!Number.isFinite(state.warmingDecayPctPerMin)) state.warmingDecayPctPerMin = 0.25;
   if (!Number.isFinite(state.warmingDecayDelaySecs)) state.warmingDecayDelaySecs = 45;
