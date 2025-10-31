@@ -1008,7 +1008,7 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
   .adtagline{ -webkit-line-clamp: 2; font-size: .88rem }
   .adactions{ grid-column: 1 / -1; justify-content: stretch }
   .adbtn{ flex: 1; justify-content: center; padding: 10px 12px; }
-  .adicons{ display: none; } /* keep footprint minimal on small screens */
+  /* .adicons{ display: none; } keep footprint minimal on small screens */
 }
 
 /* Small phones: ultra-compact */
