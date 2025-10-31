@@ -36,6 +36,8 @@ const FEE_ATAS = {
   "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "BKWwTmwc7FDSRb82n5o76bycH3rKZ4Xqt87EjZ2rnUXB", 
 };
 
+
+
 const UI_LIMITS = {
   BUY_PCT_MIN: 0.01,  // 1%
   BUY_PCT_MAX: 0.50,  // 50%
@@ -149,7 +151,7 @@ let state = {
   sellCooldownMs: 20000,  
   staleMinsToDeRisk: 4, 
   singlePositionMode: true,
-  minNetEdgePct: -8,
+  minNetEdgePct: 0,
 
   // Auto wallet mode
   autoWalletPub: "",        
@@ -3055,6 +3057,46 @@ async function getAtaBalanceUi(ownerPubkeyStr, mintStr, decimalsHint, commitment
   return { sizeUi: 0, decimals, exists: existsAny };
 }
 
+async function closeEmptyTokenAtas(signer, mint) {
+  try {
+    const { PublicKey, Transaction } = await loadWeb3();
+    const conn = await getConn();
+    const { createCloseAccountInstruction } = await loadSplToken();
+    const ownerPk = signer.publicKey;
+    const owner = ownerPk.toBase58();
+
+    // Skip SOL
+    if (!mint || mint === SOL_MINT) return false;
+
+    const { ataExists: _ } = { ataExists }; // keep linter happy
+    const atas = await getOwnerAtas(owner, mint);
+    if (!atas?.length) return false;
+
+    const ixs = [];
+    for (const { ata, programId } of atas) {
+      try {
+        const bal = await conn.getTokenAccountBalance(ata, "processed").catch(()=>null);
+        const ui = Number(bal?.value?.uiAmount || 0);
+        if (ui <= 0) {
+          ixs.push(createCloseAccountInstruction(ata, ownerPk, ownerPk, [], programId));
+        }
+      } catch {}
+    }
+    if (!ixs.length) return false;
+
+    const tx = new Transaction();
+    for (const ix of ixs) tx.add(ix);
+    tx.feePayer = ownerPk;
+    tx.recentBlockhash = (await conn.getLatestBlockhash("processed")).blockhash;
+    tx.sign(signer);
+    const sig = await conn.sendRawTransaction(tx.serialize(), { preflightCommitment: "processed", maxRetries: 2 });
+    log(`Closed empty ATAs for ${mint.slice(0,4)}…: ${sig}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function pruneZeroBalancePositions(ownerPubkeyStr, { limit = 8 } = {}) {
   try {
     const mints = Object.keys(state.positions || {}).filter(m => m && m !== SOL_MINT);
@@ -3946,6 +3988,7 @@ async function evalAndMaybeSellPositions() {
             log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ~${estFullSol.toFixed(6)} SOL (${reason})`);
             const costSold = Number(pos.costSol || 0);
             await _addRealizedPnl(estFullSol, costSold, "Full sell PnL");
+            try { await closeEmptyTokenAtas(kp, mint); } catch {}
             delete state.positions[mint];
             removeFromPosCache(kp.publicKey.toBase58(), mint);
             save();
@@ -4310,8 +4353,7 @@ async function tick() {
         const needPct = Number.isFinite(Number(state.minNetEdgePct)) ? Number(state.minNetEdgePct) : -8;
         if (!edge) { log(`Skip ${mint.slice(0,4)}… (no round-trip quote)`); continue; }
 
-        // ata is often missing
-        const gaugePct = edge.ataRentLamports > 0 ? edge.pctNoOnetime : edge.pct;
+        const gaugePct = Number(edge.pctNoOnetime);
 
         if (!Number.isFinite(gaugePct)) {
           log(`Skip ${mint.slice(0,4)}… (invalid edge)`);
