@@ -137,5 +137,5 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-auto: knobs + gate buys on pctNoOnetime; only out ATA + 1x tx fee; add minNetEdgePct and edge breakdown logs
+knobs: pctNoOneTime gates and ATA prescences; auto minNetEdgePct:0
 
