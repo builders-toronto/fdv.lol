@@ -137,6 +137,6 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-feat(ui): multi‑buy and warming decay knobs; ATA fixes; better reset
+auto/knobs: soften bans, fix edge fee, and skip pre‑buy blacklist
 
 
