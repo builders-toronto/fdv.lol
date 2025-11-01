@@ -1275,7 +1275,7 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 /* Grid */
 .fdv-grid{
   display:grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 12px;
   margin-bottom: 12px;
 }

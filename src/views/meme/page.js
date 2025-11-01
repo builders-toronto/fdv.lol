@@ -377,7 +377,7 @@ function initInitialLoading() {
 
   initSearch(elQ, elQResults, elSearchWrap);
 
-  loadAndRenderAd().catch(() => {});
+  // loadAndRenderAd().catch(() => {});
 
   ensureMarqueeSlot(elCards);
 

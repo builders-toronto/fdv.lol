@@ -12,6 +12,7 @@ const FEE_RESERVE_PCT = 0.15;     // 15% of balance, more runway
 const TX_FEE_BUFFER_LAMPORTS  = 500_000;
 const SELL_TX_FEE_BUFFER_LAMPORTS = 500_000; 
 const EXTRA_TX_BUFFER_LAMPORTS     = 250_000;  
+const EDGE_TX_FEE_ESTIMATE_LAMPORTS = 150_000;
 const MIN_OPERATING_SOL            = 0.010;    
 const ROUTER_COOLDOWN_MS           = 60_000;
 const MINT_RUG_BLACKLIST_MS = 30 * 60 * 1000;
@@ -164,7 +165,7 @@ let state = {
   sellCooldownMs: 20000,  
   staleMinsToDeRisk: 4, 
   singlePositionMode: true,
-  minNetEdgePct: 0.1,
+  minNetEdgePct: -5, 
 
   // Auto wallet mode
   autoWalletPub: "",        
@@ -173,8 +174,8 @@ let state = {
   lifetimeMins: 60,         
   endAt: 0,                 
   buyPct: 0.2,              
-  minBuySol: 0.002,         
-  maxBuySol: 0.05,          
+  minBuySol: 0.006,         
+  maxBuySol: 0.01,          
   rpcUrl: "",             
 
   // Per-mint positions:
@@ -234,7 +235,7 @@ let state = {
 // init global user interface
 let timer = null;
 let logEl, toggleEl, startBtn, stopBtn, mintEl;
-let depAddrEl, depBalEl, lifeEl, recvEl, buyPctEl, minBuyEl, maxBuyEl;
+let depAddrEl, depBalEl, lifeEl, recvEl, buyPctEl, minBuyEl, maxBuyEl, minEdgeEl, multiEl, warmDecayEl;
 let ledEl;
 
 let _starting = false;
@@ -260,6 +261,8 @@ let _solPxCache = { ts: 0, usd: 0 };
 let _conn = null, _connUrl = "";
 
 let _connHdrKey = "";
+
+let _lastDepFetchTs = 0;
 
 function _pcKey(owner, mint) { return `${owner}:${mint}`; }
 
@@ -297,7 +300,7 @@ function flagUrgentSell(mint, reason = "observer", sev = 1) {
   if (prev.until && nowTs < prev.until) return; // cooldown
 
   m.set(mint, { reason, sev, until: nowTs + URGENT_SELL_COOLDOWN_MS });
-  setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+  if (soft) setMintBlacklist(mint); else setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
   log(`URGENT: ${reason} for ${mint.slice(0,4)}… flagged for immediate sell.`);
   wakeSellEval();
 }
@@ -1523,7 +1526,7 @@ async function estimateRoundtripEdgePct(ownerPub, outMint, buySolUi, { slippageB
     // Fees
     const feeBps = Number(getPlatformFeeBps() || 0);
     const platformL = Math.floor(backLamports * (feeBps / 10_000)); // sell-side fee
-    const txFeesL = TX_FEE_BUFFER_LAMPORTS; // estimate once
+    const txFeesL = EDGE_TX_FEE_ESTIMATE_LAMPORTS;
     const ataRentL = await requiredOutAtaRentIfMissing(ownerPub, outMint); // one-time, refundable later if closed
 
     const recurringL = platformL + txFeesL;
@@ -1665,7 +1668,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         log("Sell-side fee ATA not configured for this mint; no fee collected.");
       }
     } else if (feeBps > 0 && isBuy) {
-      log(`Fees:${feeBps}% only on sell up.`);
+      log(`Fees: ${(feeBps/100).toFixed(2)}% apply on sells only.`);
     }
 
     // Track pre-split balance and a reconciler only for split-sell fallbacks
@@ -2925,8 +2928,8 @@ async function pickTopPumper() {
 
   const s0 = await snapshot(mint);
   if (!s0) {
-    setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
-    log(`Observer: ${mint.slice(0,4)}… vanished from leaders; blacklisted 30m.`);
+    // setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+    log(`Observer: ${mint.slice(0,4)}… vanished from leaders;.`);
     return "";
   }
 
@@ -2943,8 +2946,8 @@ async function pickTopPumper() {
   }
 
   if (!sN) {
-    setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
-    log(`Observer: ${mint.slice(0,4)}… dropped during watch; blacklisted 30m.`);
+    // setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+    log(`Observer: ${mint.slice(0,4)}… dropped during pre-buy watch; skipping (no blacklist).`); 
     return "";
   }
 
@@ -3021,7 +3024,7 @@ async function observeMintOnce(mint, opts = {}) {
   };
 
   const it0 = findLeader();
-  if (!it0) { setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS); log(`Observer: ${mint.slice(0,4)}… not in leaders; blacklisted 30m.`); return { ok: false, passes: 0 }; }
+  if (!it0) { noteObserverConsider(mint, 30_000); log(`Observer: ${mint.slice(0,4)}… not in leaders; skip (no blacklist).`); return { ok: false, passes: 0 }; }
   const kp0 = it0.kp || {};
   const s0 = {
     pumpScore: safeNum(it0.pumpScore, 0),
@@ -3036,7 +3039,9 @@ async function observeMintOnce(mint, opts = {}) {
   while (now() - start < windowMs) {
     await new Promise(r => setTimeout(r, sampleMs));
     const itN = findLeader();
-    if (!itN) { setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS); log(`Observer: ${mint.slice(0,4)}… dropped; blacklisted 30m.`); return { ok: false, passes: 0 }; }
+    //if (!itN) { setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS); log(`Observer: ${mint.slice(0,4)}… dropped; blacklisted 30m.`); return { ok: false, passes: 0 }; }
+    if (!itN) { log(`Observer: ${mint.slice(0,4)}… dropped during watch; skip (no blacklist).`); return { ok: false, passes: 0 }; }
+   
     const kpN = itN.kp || {};
     sN = {
       pumpScore: safeNum(itN.pumpScore, 0),
@@ -3069,8 +3074,8 @@ async function observeMintOnce(mint, opts = {}) {
   if (last.pumpScore > base.pumpScore && last.chg5m > base.chg5m) passes++;
 
   if (passes < 3) {
-    setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
-    log(`Observer: reject ${mint.slice(0,4)}… (score ${passes}/5); blacklisted 30m.`);
+    setMintBlacklist(mint); // staged reverse log spam and broken holds (2m/15m/30m)
+    log(`Observer: reject ${mint.slice(0,4)}… (score ${passes}/5); staged blacklist.`);
     return { ok: false, passes };
   }
 
@@ -3166,29 +3171,72 @@ async function getAtaBalanceUi(ownerPubkeyStr, mintStr, decimalsHint, commitment
 
 async function closeEmptyTokenAtas(signer, mint) {
   try {
-    const { PublicKey, Transaction } = await loadWeb3();
+    const { PublicKey, Transaction, TransactionInstruction } = await loadWeb3();
     const conn = await getConn();
     const { createCloseAccountInstruction } = await loadSplToken();
+
     const ownerPk = signer.publicKey;
     const owner = ownerPk.toBase58();
 
     // Skip SOL
     if (!mint || mint === SOL_MINT) return false;
 
-    const { ataExists: _ } = { ataExists }; // keep linter happy
     const atas = await getOwnerAtas(owner, mint);
     if (!atas?.length) return false;
+
+    // Read SPL Token account amount by decoding raw data (amount at byte offset 64, le u64)
+    const isZeroBalance = async (ataPk) => {
+      try {
+        await rpcWait?.("ai", 300);
+        const ai = await conn.getAccountInfo(ataPk, "processed").catch(e => { _markRpcStress?.(e, 1500); return null; });
+        if (!ai || !ai.data) return false; // no account -> nothing to close
+        const raw =
+          ai.data instanceof Uint8Array
+            ? ai.data
+            : (Array.isArray(ai.data?.data) && typeof ai.data?.data[0] === "string")
+              ? Uint8Array.from(atob(ai.data.data[0]), c => c.charCodeAt(0))
+              : new Uint8Array();
+
+        if (raw.length < 72) return false; // unknown layout; skip
+        let amt = 0n;
+        try {
+          const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+          amt = view.getBigUint64(64, true); // le u64
+        } catch {
+          let x = 0n;
+          for (let i = 0; i < 8; i++) x |= BigInt(raw[64 + i] || 0) << (8n * BigInt(i));
+          amt = x;
+        }
+        return amt === 0n;
+      } catch (e) {
+        _markRpcStress?.(e, 2000);
+        return false;
+      }
+    };
 
     const ixs = [];
     for (const { ata, programId } of atas) {
       try {
-        const bal = await conn.getTokenAccountBalance(ata, "processed").catch(()=>null);
-        const ui = Number(bal?.value?.uiAmount || 0);
-        if (ui <= 0) {
+        const zero = await isZeroBalance(ata);
+        if (!zero) continue;
+
+        if (typeof createCloseAccountInstruction === "function") {
           ixs.push(createCloseAccountInstruction(ata, ownerPk, ownerPk, [], programId));
+        } else {
+          // Fallback manual CloseAccount (spl-token ix=9)
+          ixs.push(new TransactionInstruction({
+            programId,
+            keys: [
+              { pubkey: ata,     isSigner: false, isWritable: true },  // account to close
+              { pubkey: ownerPk, isSigner: false, isWritable: true },  // destination (refund rent)
+              { pubkey: ownerPk, isSigner: true,  isWritable: false }, // authority
+            ],
+            data: Uint8Array.of(9),
+          }));
         }
       } catch {}
     }
+
     if (!ixs.length) return false;
 
     const tx = new Transaction();
@@ -3200,6 +3248,136 @@ async function closeEmptyTokenAtas(signer, mint) {
     log(`Closed empty ATAs for ${mint.slice(0,4)}…: ${sig}`);
     return true;
   } catch {
+    return false;
+  }
+}
+
+async function closeAllEmptyAtas(signer) {
+  try {
+    if (!signer?.publicKey) return false;
+
+    const { Transaction, TransactionInstruction } = await loadWeb3();
+    const conn = await getConn();
+    const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, createCloseAccountInstruction } = await loadSplToken();
+
+    const ownerPk = signer.publicKey;
+    const owner = ownerPk.toBase58();
+
+    const mintSet = new Set();
+
+    for (const m of Object.keys(state.positions || {})) {
+      if (m && m !== SOL_MINT) mintSet.add(m);
+    }
+
+    try {
+      const cached = cacheToList(owner) || [];
+      for (const it of cached) { if (it?.mint && it.mint !== SOL_MINT) mintSet.add(it.mint); }
+    } catch {}
+
+    try {
+      const dust = dustCacheToList(owner) || [];
+      for (const it of dust) { if (it?.mint && it.mint !== SOL_MINT) mintSet.add(it.mint); }
+    } catch {}
+
+    mintSet.add(SOL_MINT);
+
+    const atas = [];
+    const seenAtas = new Set();
+    for (const mint of mintSet) {
+      try {
+        const recs = await getOwnerAtas(owner, mint); // PDA-only, no RPC list calls
+        for (const { ata, programId } of recs || []) {
+          const k = `${programId?.toBase58?.() || String(programId)}:${ata.toBase58()}`;
+          if (!seenAtas.has(k)) {
+            seenAtas.add(k);
+            atas.push({ ata, programId });
+          }
+        }
+      } catch {}
+    }
+    if (!atas.length) return false;
+
+    const isZeroBalance = async (ataPk) => {
+      try {
+        await rpcWait?.("ai", 250);
+        const ai = await conn.getAccountInfo(ataPk, "processed").catch(e => { _markRpcStress?.(e, 1500); return null; });
+        if (!ai || !ai.data) return false; // no account -> nothing to close
+        const raw =
+          ai.data instanceof Uint8Array
+            ? ai.data
+            : (Array.isArray(ai.data?.data) && typeof ai.data?.data[0] === "string")
+              ? Uint8Array.from(atob(ai.data.data[0]), c => c.charCodeAt(0))
+              : new Uint8Array();
+
+        if (raw.length < 72) return false; // unknown layout; skip
+        let amt = 0n;
+        try {
+          const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+          amt = view.getBigUint64(64, true); // le u64
+        } catch {
+          let x = 0n;
+          for (let i = 0; i < 8; i++) x |= BigInt(raw[64 + i] || 0) << (8n * BigInt(i));
+          amt = x;
+        }
+        return amt === 0n;
+      } catch (e) {
+        _markRpcStress?.(e, 2000);
+        return false;
+      }
+    };
+
+    // Build close instructions (only for zero-balance accounts that actually exist)
+    const closeIxs = [];
+    for (const { ata, programId } of atas) {
+      try {
+        const zero = await isZeroBalance(ata);
+        if (!zero) continue;
+
+        if (typeof createCloseAccountInstruction === "function") {
+          closeIxs.push(createCloseAccountInstruction(ata, ownerPk, ownerPk, [], programId));
+        } else {
+          // Fallback manual CloseAccount (spl-token ix=9)
+          closeIxs.push(new TransactionInstruction({
+            programId,
+            keys: [
+              { pubkey: ata,     isSigner: false, isWritable: true },  // account to close
+              { pubkey: ownerPk, isSigner: false, isWritable: true },  // destination (refund rent)
+              { pubkey: ownerPk, isSigner: true,  isWritable: false }, // authority
+            ],
+            data: Uint8Array.of(9),
+          }));
+        }
+      } catch {}
+    }
+    if (!closeIxs.length) return false;
+
+    // Batch send to avoid oversized transactions
+    const BATCH = 8;
+    const sigs = [];
+    for (let i = 0; i < closeIxs.length; i += BATCH) {
+      const slice = closeIxs.slice(i, i + BATCH);
+      try {
+        const tx = new Transaction();
+        for (const ix of slice) tx.add(ix);
+        tx.feePayer = ownerPk;
+        tx.recentBlockhash = (await conn.getLatestBlockhash("processed")).blockhash;
+        tx.sign(signer);
+        const sig = await conn.sendRawTransaction(tx.serialize(), { preflightCommitment: "processed", maxRetries: 2 });
+        sigs.push(sig);
+        await new Promise(r => setTimeout(r, 120));
+      } catch (e) {
+        _markRpcStress?.(e, 2000);
+        log(`Close-ATAs batch failed: ${e.message || e}`);
+      }
+    }
+
+    if (sigs.length > 0) {
+      log(`Closed ${closeIxs.length} empty ATAs (known set) in ${sigs.length} tx(s): ${sigs.join(", ")}`);
+      return true;
+    }
+    return false;
+  } catch (e) {
+    log(`Close-empty-ATAs failed: ${e.message || e}`);
     return false;
   }
 }
@@ -3771,8 +3949,8 @@ async function evalAndMaybeSellPositions() {
               const thr = Math.max(0, Number(state.observerDropSellAt ?? 3));
               if (p <= 2) {
                 forceObserverDrop = true;
-                setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
-                log(`Observer drop for ${mint.slice(0,4)}… (${p}/5 <= 2) forcing sell and blacklisting 30m.`);
+                setMintBlacklist(mint); // staged and progressive ban
+                log(`Observer drop for ${mint.slice(0,4)}… (${p}/5 <= 2) forcing sell (staged blacklist).`);
               } else if (p === 3 && thr >= 3) {
                 obsPasses = 3;
               }
@@ -4295,7 +4473,10 @@ async function tick() {
     if (lifeEl) lifeEl.value = String(remMins);
   }
   if (depBalEl && state.autoWalletPub) {
-    fetchSolBalance(state.autoWalletPub).then(b => { depBalEl.value = `${b.toFixed(4)} SOL`; }).catch(()=>{});
+    if (!_lastDepFetchTs || (now() - _lastDepFetchTs) > 5000) {
+      _lastDepFetchTs = now();
+      fetchSolBalance(state.autoWalletPub).then(b => { depBalEl.value = `${b.toFixed(4)} SOL`; }).catch(()=>{});
+    }
   }
 
   try { await processPendingCredits(); } catch {}
@@ -4465,10 +4646,14 @@ async function tick() {
 
       try {
         const edge = await estimateRoundtripEdgePct(kp.publicKey.toBase58(), mint, buySol, { slippageBps: state.slippageBps });
-        const needPct = Number.isFinite(Number(state.minNetEdgePct)) ? Number(state.minNetEdgePct) : -8;
+        let needPct = Number.isFinite(Number(state.minNetEdgePct)) ? Number(state.minNetEdgePct) : -8;
+        try {
+          const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
+          if (badgeNow === "pumping") needPct = needPct - 2.0; // allow a bit more friction on live pumps
+        } catch {}
         if (!edge) { log(`Skip ${mint.slice(0,4)}… (no round-trip quote)`); continue; }
 
-        const gaugePct = Number(edge.pctNoOnetime);
+        const gaugePct = Number(edge.ataRentLamports > 0 ? edge.pct : edge.pctNoOnetime);
 
         if (!Number.isFinite(gaugePct)) {
           log(`Skip ${mint.slice(0,4)}… (invalid edge)`);
@@ -4713,6 +4898,12 @@ function onToggle(on) {
        if (hasOpen) setTimeout(() => { evalAndMaybeSellPositions().catch(()=>{}); }, 0);
      } catch {}
      try { if (_pendingCredits && _pendingCredits.size > 0) startPendingCreditWatchdog(); } catch {}
+     setTimeout(() => {
+       Promise.resolve().then(async () => {
+         const kp = await getAutoKeypair().catch(()=>null);
+         if (kp) await closeAllEmptyAtas(kp);
+       }).catch(()=>{});
+     }, 0);
      log("Auto trading stopped");
    }
    try { renderStatusLed(); } catch {}
@@ -4723,8 +4914,9 @@ function load() {
   try { state = { ...state, ...(JSON.parse(localStorage.getItem(LS_KEY))||{}) }; } catch {}
   state.tickMs = Math.max(1200, Math.min(5000, Number(state.tickMs || 2000))); 
   state.slippageBps = Math.min(300, Math.max(200, Number(state.slippageBps ?? 250) | 0));
-  state.minBuySol   = Math.max(UI_LIMITS.MIN_BUY_SOL_MIN, Number(state.minBuySol ?? 0.006));
-  state.minNetEdgePct = Math.max(0, Number(state.minNetEdgePct ?? 0.6));
+  state.minBuySol   = Math.max(0.006, UI_LIMITS.MIN_BUY_SOL_MIN, Number(state.minBuySol ?? 0.008));
+  if (!Number.isFinite(state.minNetEdgePct)) state.minNetEdgePct = 0.6;
+
   state.coolDownSecsAfterBuy = Math.max(0, Math.min(12, Number(state.coolDownSecsAfterBuy || 8)));
   if (!Number.isFinite(state.warmingDecayPctPerMin)) state.warmingDecayPctPerMin = 0.25;
   if (!Number.isFinite(state.warmingDecayDelaySecs)) state.warmingDecayDelaySecs = 45;
@@ -4839,13 +5031,22 @@ export function initAutoWidget(container = document.body) {
       <label>Buy % of SOL <input data-auto-buyp type="number" step="0.1" min="${UI_LIMITS.BUY_PCT_MIN*100}" max="${UI_LIMITS.BUY_PCT_MAX*100}"/></label>
       <label>Min Buy (SOL) <input data-auto-minbuy type="number" step="0.0001" min="${UI_LIMITS.MIN_BUY_SOL_MIN}" max="${UI_LIMITS.MIN_BUY_SOL_MAX}"/></label>
       <label>Max Buy (SOL) <input data-auto-maxbuy type="number" step="0.0001" min="${UI_LIMITS.MAX_BUY_SOL_MIN}" max="${UI_LIMITS.MAX_BUY_SOL_MAX}"/></label>
-      <label>Hold Leader
+      <label>Min Edge (%) <input data-auto-minedge type="number" step="0.1" placeholder="-5 = allow -5%"/></label>
+      <label>Warming decay (%/min) <input data-auto-warmdecay type="number" step="0.01" min="0" max="5" placeholder="0.25"/></label>
+ 
+      <label>Multi-buy
+        <select data-auto-multi>
+          <option value="no" selected>No</option>
+          <option value="yes">Yes</option>
+        </select>
+      </label>
+     <label>Leader
         <select data-auto-hold>
           <option value="no">No</option>
           <option value="yes">Yes</option>
         </select>
       </label>
-      <label>Try to sell dust
+      <label>Dust
         <select data-auto-dust>
           <option value="no" selected>No</option>
           <option value="yes">Yes</option>
@@ -4866,9 +5067,9 @@ export function initAutoWidget(container = document.body) {
         <button class="btn" data-auto-help title="How the bot works">Help</button>
         <button class="btn" data-auto-log-copy title="Copy log">Log</button>
         <div class="fdv-modal" data-auto-modal
-             style="display:none; position:fixed; width: 100%; inset:0; z-index:9999; background:rgba(0, 0, 0, 1); align-items:center; justify-content:center;">
+             style="display:none; position:fixed; width: 100%; inset:0; z-index:9999; background:rgba(0, 0, 0, 1); align-items:center; justify-content:center;justify-content: flex-start;">
           <div class="fdv-modal-card"
-               style="background:var(--fdv-bg,#111); color:var(--fdv-fg,#fff);overflow:auto; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.5); padding:16px 20px;">
+               style="background:#000; color:var(--fdv-fg,#fff);overflow:auto; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.5); padding:16px 20px;">
             <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px;">
               <h3 style="margin:0; font-size:16px;">Auto Pump Bot</h3>
             </div>
@@ -5009,7 +5210,7 @@ export function initAutoWidget(container = document.body) {
     </div>
     </div>
     <div class="fdv-bot-footer" style="margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
-      <span>Version: 0.0.3.0</span>
+      <span>Version: 0.0.3.1</span>
     </div>
   `;
 
@@ -5098,6 +5299,11 @@ export function initAutoWidget(container = document.body) {
   buyPctEl  = wrap.querySelector("[data-auto-buyp]");
   minBuyEl  = wrap.querySelector("[data-auto-minbuy]");
   maxBuyEl  = wrap.querySelector("[data-auto-maxbuy]");
+  minEdgeEl = wrap.querySelector("[data-auto-minedge]");
+  multiEl   = wrap.querySelector("[data-auto-multi]");
+  warmDecayEl = wrap.querySelector("[data-auto-warmdecay]");
+
+
 
   const secExportBtn = wrap.querySelector("[data-auto-sec-export]");
   const rpcEl = wrap.querySelector("[data-auto-rpc]");
@@ -5119,6 +5325,10 @@ export function initAutoWidget(container = document.body) {
   buyPctEl.value  = (state.buyPct * 100).toFixed(2);
   minBuyEl.value  = state.minBuySol;
   maxBuyEl.value  = state.maxBuySol;
+  minEdgeEl.value = Number.isFinite(state.minNetEdgePct) ? String(state.minNetEdgePct) : "-5";
+  multiEl.value   = state.allowMultiBuy ? "yes" : "no";
+  warmDecayEl.value = String(Number.isFinite(state.warmingDecayPctPerMin) ? state.warmingDecayPctPerMin : 0.25);
+
 
   helpBtn.addEventListener("click", () => { modalEl.style.display = "flex"; });
   modalEl.addEventListener("click", (e) => { if (e.target === modalEl) modalEl.style.display = "none"; });
@@ -5368,6 +5578,11 @@ export function initAutoWidget(container = document.body) {
     save();
     log(`Ride Warming: ${state.rideWarming ? "ON" : "OFF"}`);
   });
+  multiEl.addEventListener("change", () => {
+    state.allowMultiBuy = (multiEl.value === "yes");
+    save();
+    log(`Multi-buy: ${state.allowMultiBuy ? "ON" : "OFF"}`);
+  });
   startBtn.addEventListener("click", () => onToggle(true));
   stopBtn.addEventListener("click", () => onToggle(false));
   wrap.querySelector("[data-auto-reset]").addEventListener("click", () => {
@@ -5377,6 +5592,9 @@ export function initAutoWidget(container = document.body) {
     state.avgEntryUsd = 0;
     state.lastTradeTs = 0;
     state.endAt = 0;
+    state.moneyMadeSol = 0;
+    state.solSessionStartLamports = 0;
+
     fetchSolBalance(state.autoWalletPub).then(b => { depBalEl.value = `${b.toFixed(4)} SOL`; }).catch(()=>{});
     save();
     log("Session stats refreshed");
@@ -5400,13 +5618,23 @@ export function initAutoWidget(container = document.body) {
     state.minBuySol = minBuy;
     state.maxBuySol = maxBuy;
 
+    const edge = Number(minEdgeEl.value);
+    const edgeClamped = Math.min(10, Math.max(-10, Number.isFinite(edge) ? edge : state.minNetEdgePct ?? -5));
+    state.minNetEdgePct = edgeClamped;
+    minEdgeEl.value = String(edgeClamped);
+
+    const wd = Number(warmDecayEl.value);
+    const wdClamped = Math.min(5, Math.max(0, Number.isFinite(wd) ? wd : (state.warmingDecayPctPerMin ?? 0.25)));
+    state.warmingDecayPctPerMin = wdClamped;
+    warmDecayEl.value = String(wdClamped);
+
     minBuyEl.value = String(minBuy);
     maxBuyEl.min = String(minBuy);
     maxBuyEl.value = String(maxBuy);
 
     save();
   };
-  [recvEl, lifeEl, buyPctEl, minBuyEl, maxBuyEl].forEach(el => {
+  [recvEl, lifeEl, buyPctEl, minBuyEl, maxBuyEl, minEdgeEl, warmDecayEl].forEach(el => {
     el.addEventListener("input", saveField);
     el.addEventListener("change", saveField);
   });
