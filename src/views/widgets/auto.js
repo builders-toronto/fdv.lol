@@ -1661,16 +1661,16 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
 
     // Platform fee's only on sell.
     if (feeBps > 0 && isSell) {
-      feeAccount = FEE_ATAS[inputMint] || null;
+      feeAccount = FEE_ATAS[outputMint] || (outputMint === SOL_MINT ? FEE_ATAS[SOL_MINT] : null);
       if (feeAccount) {
-        log(`Fee (sell-only) enabled: ATA ${feeAccount.slice(0,4)}… @ ${feeBps} bps`);
+        log(`Fee (sell-only) enabled on ${outputMint.slice(0,4)}…: ATA ${feeAccount.slice(0,4)}… @ ${feeBps} bps`);
       } else {
-        log("Sell-side fee ATA not configured for this mint; no fee collected.");
+        log(`Sell-side fee ATA not configured for output ${outputMint.slice(0,4)}…; no fee collected.`);
       }
     } else if (feeBps > 0 && isBuy) {
-      log(`Fees: ${(feeBps/100).toFixed(2)}% apply on sells only.`);
+      log(`Fees enabled (${feeBps} bps) but applied on sells only.`);
     }
-
+      
     // Track pre-split balance and a reconciler only for split-sell fallbacks
     let _preSplitUi = 0;
     let _decHint = await getMintDecimals(inputMint).catch(() => 6);
