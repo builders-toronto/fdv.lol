@@ -57,7 +57,8 @@ function _markRpcStress(e, ms = 2000) {
   try {
     const s = String(e?.message || e || "");
     if (/429|Too Many Requests|403|Forbidden/i.test(s)) {
-      window._fdvRpcStressUntil = now() + Math.max(500, ms|0);
+      const jitter = 500 + Math.floor(Math.random() * 2500);
+      window._fdvRpcStressUntil = now() + Math.max(500, ms | 0, 2500 + jitter);
     }
   } catch {}
 }
@@ -65,6 +66,17 @@ function _markRpcStress(e, ms = 2000) {
 function rpcBackoffLeft() {
   const t = Number(window._fdvRpcStressUntil || 0);
   return Math.max(0, t - now());
+}
+
+async function rpcWait(kind = "misc", minMs = 250) {
+  if (!window._fdvRpcLast) window._fdvRpcLast = new Map();
+  const nowTs = now();
+  const last = Number(window._fdvRpcLast.get(kind) || 0);
+  const stress = rpcBackoffLeft();
+  const jitter = Math.floor(Math.random() * 80);
+  const wait = Math.max(0, last + minMs - nowTs) + Math.min(3000, stress) + jitter;
+  if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  window._fdvRpcLast.set(kind, now());
 }
 
 function fmtUsd(n) {
@@ -131,6 +143,7 @@ const LS_KEY = "fdv_auto_bot_v1";
 let state = {
   enabled: false,
   mint: "",
+  tickMs: 2000,
   budgetUi: 0.5,  
   maxTrades: 6,  // legacy
   minSecsBetween: 90,
@@ -151,7 +164,7 @@ let state = {
   sellCooldownMs: 20000,  
   staleMinsToDeRisk: 4, 
   singlePositionMode: true,
-  minNetEdgePct: 0,
+  minNetEdgePct: 0.1,
 
   // Auto wallet mode
   autoWalletPub: "",        
@@ -203,6 +216,15 @@ let state = {
   warmingDecayDelaySecs: 15,         
   warmingMinProfitFloorPct: -2.0,   
   warmingAutoReleaseSecs: 45,
+  warmingUptickMinAccel: 1.01,        
+  warmingUptickMinPre: 0.50,         
+  warmingUptickMinDeltaChg5m: 0.05,   
+  warmingUptickMinDeltaScore: 0.02,   
+  warmingMinLiqUsd: 4000,             
+  warmingMinV1h: 800,
+  warmingPrimedConsec: 2, 
+
+
   // money made tracker
   moneyMadeSol: 0,
   hideMoneyMade: false,           
@@ -463,6 +485,7 @@ function optimisticSeedBuy(ownerStr, mint, estUi, decimals, buySol, sig = "") {
 
 async function getTxWithMeta(sig) {
   try {
+    await rpcWait("tx-meta", 800);
     const conn = await getConn();
     let tx = await conn.getTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "finalized" });
     if (!tx) tx = await conn.getTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
@@ -574,7 +597,11 @@ async function processPendingCredits() {
         log(`Credit detected for ${entry.mint.slice(0,4)}… synced to cache.`);
         _pendingCredits.delete(key);
       }
-    } catch {}
+    } catch (e) {
+      _markRpcStress(e, 3000);
+      // extend grace window a bit under rate limit
+      entry.until = Math.max(entry.until, now() + 4000);
+    }
   }
 }
 
@@ -596,7 +623,7 @@ function startPendingCreditWatchdog() {
       await processPendingCredits().catch(()=>{});
       await reconcileFromOwnerScan(kp.publicKey.toBase58()).catch(()=>{});
     } catch {}
-  }, 1200);
+  }, 2200);
   log("Pending-credit watchdog running.");
 }
 
@@ -1181,10 +1208,12 @@ async function fetchSolBalance(pubkeyStr) {
   if (!url) return 0;
   let lamports = 0;
   try {
+    await rpcWait("sol-balance", 400);
     log(`Fetching SOL balance for ${pubkeyStr.slice(0,4)}…`);
     const conn = await getConn();
     lamports = await conn.getBalance(new PublicKey(pubkeyStr));
   } catch (e) {
+    _markRpcStress(e, 2000);
     log(`Balance fetch failed: ${e.message || e}`);
     lamports = 0;
   }
@@ -2591,6 +2620,72 @@ function computePrePumpScore({ kp = {}, meta = {} }) {
   return score; // 0..1
 }
 
+function slope3(series, key) {
+  if (!Array.isArray(series) || series.length < 3) return 0;
+  const a = Number(series[0]?.[key] ?? 0);
+  const b = Number(series[1]?.[key] ?? a);
+  const c = Number(series[2]?.[key] ?? b);
+  return (c - a) / 2;
+}
+
+function detectWarmingUptick({ kp = {}, meta = {} }, cfg = state) {
+  const series = getLeaderSeries(kp.mint || "", 3) || [];
+  const chgSlope = slope3(series, "chg5m");
+  const scSlope  = slope3(series, "pumpScore");
+
+  const chg5m = safeNum(kp.change5m, 0);
+  const chg1h = safeNum(kp.change1h, 0);
+  const liq   = safeNum(kp.liqUsd, 0);
+  const v1h   = safeNum(kp.v1hTotal, 0);
+  const a51   = Math.max(1, safeNum(meta.accel5to1, 1));
+  const zV1   = Math.max(0, safeNum(meta.zV1, 0));
+  const rising= !!meta.risingNow, trendUp = !!meta.trendUp;
+
+  // Backside guard
+  const exp5m = Math.max(0, chg1h) / 12;
+  const accelRatio = exp5m > 0 ? (Math.max(0, chg5m) / exp5m) : 0;
+  const notBackside = accelRatio >= 0.4;
+
+  // Adaptive floors
+  const liqOk = liq >= Math.max(2500, Number(cfg.warmingMinLiqUsd || 4000));
+  const volOk = v1h >= Math.max(500,  Number(cfg.warmingMinV1h || 800));
+
+  // Pre-pump score with adaptive min
+  const pre = computePrePumpScore({ kp, meta });
+  let preMin = Math.max(0.40, Number(cfg.warmingUptickMinPre || 0.5));
+  if (!liqOk || !volOk) preMin += 0.05;           // weak liq/vol -> higher bar
+  if (a51 >= 1.04) preMin -= 0.03;                // strong accel -> lower bar
+
+  // Slopes and accel minimums
+  const needChgSlope = Number(cfg.warmingUptickMinDeltaChg5m || 0.05);
+  const needScSlope  = Number(cfg.warmingUptickMinDeltaScore || 0.02);
+  const needAccel    = Number(cfg.warmingUptickMinAccel || 1.01);
+
+  const ok =
+    rising && trendUp &&
+    notBackside &&
+    a51 >= needAccel &&
+    chgSlope >= needChgSlope &&
+    scSlope  >= needScSlope &&
+    pre >= preMin &&
+    (zV1 >= 0.6 || meta.buy >= 0.62);
+
+  // score proxies strength (0..1+): combine normalized components
+  const score = Math.max(0, Math.min(1,
+    0.35 * Math.min(1, (a51 - 1) / 0.06) +
+    0.25 * Math.min(1, chgSlope / (needChgSlope * 1.8)) +
+    0.20 * Math.min(1, scSlope  / (needScSlope  * 2.0)) +
+    0.20 * Math.min(1, Math.max(0, pre - preMin + 0.05) / 0.30)
+  ));
+
+  return { ok, score, chgSlope, scSlope, pre, preMin, a51, liq, v1h, notBackside };
+}
+
+function _getWarmPrimeStore() {
+  if (!window._fdvWarmPrime) window._fdvWarmPrime = new Map(); // mint -> { count, lastAt }
+  return window._fdvWarmPrime;
+}
+
 function pickPumpCandidates(take = 1, poolN = 3) {
   try {
     const wantN = state.rideWarming ? Math.max(poolN, 6) : poolN; // widen pool for warming
@@ -2608,9 +2703,7 @@ function pickPumpCandidates(take = 1, poolN = 3) {
 
       const chg5m = safeNum(kp.change5m, 0);
       const chg1h = safeNum(kp.change1h, 0);
-      const accel5to1 = safeNum(meta.accel5to1, 1); // treat 0/undefined as neutral 1.0
-      const a51Eff = accel5to1 > 0 ? accel5to1 : 1.0;
-      // Record series EARLY so pre-pump can see 3-tick trend
+      // Record series EARLY so detector sees 3-tick trend
       recordLeaderSample(mint, {
         pumpScore: Number(it?.pumpScore || 0),
         liqUsd:    safeNum(kp.liqUsd, 0),
@@ -2621,40 +2714,52 @@ function pickPumpCandidates(take = 1, poolN = 3) {
 
       const allowWarming = state.rideWarming;
       const badgeNorm = normBadge(badge);
-      const isPumping = badgeNorm.includes("pumping");
-      const isWarming = badgeNorm.includes("warming");
+      const isPumping = badgeNorm === "pumping";
+      const isWarming = badgeNorm === "warming";
       if (!(isPumping || (allowWarming && isWarming))) continue;
 
-      const minChg5  = isPumping ? 0.8 : 0.4;  
-      // allow neutral accel for pumping
-      const minAccel = isPumping ? 1.00 : 0.98; 
+      // Strict pump gate
+      const minChg5  = isPumping ? 0.8 : 0.4;
+      const minAccel = isPumping ? 1.00 : 0.98;
 
+      // Backside guard
+      const exp5m = Math.max(0, chg1h) / 12;
+      const accelRatio = exp5m > 0 ? (Math.max(0, chg5m) / exp5m) : 0;
+      const notBackside = accelRatio >= 0.4;
+
+      // Primary microUp gate for pumping
       const microUp =
+        isPumping &&
         chg5m >= minChg5 &&
         meta.risingNow === true &&
         meta.trendUp === true &&
-        a51Eff >= minAccel;
+        Math.max(1, safeNum(meta.accel5to1, 1)) >= minAccel;
 
-      // Reject “post-spike drift” (backside) for both badges
-      const exp5m = Math.max(0, chg1h) / 12;
-      const accelRatio = exp5m > 0 ? (Math.max(0, chg5m) / exp5m) : (Math.max(0, chg5m) > 0 ? 1.2 : 0);
-      const notBackside = accelRatio >= 0.4;
-
-      // Pre-pump path for Warming (when microUp not yet true)
+      // Warming → Pump detector with hysteresis
       let primed = false;
       let pre = 0;
       if (!microUp && isWarming && allowWarming && notBackside) {
-        pre = computePrePumpScore({ kp, meta });
-        const PRE_THR = 0.45;
-        const zGate = safeNum(meta.zV1, 0) >= 0.8;
-        const smallUp = chg5m > 0.15;
-        const trendGate = meta.risingNow === true && meta.trendUp === true;
-        const accelGate = a51Eff >= 0.98;
-        if (trendGate && (pre >= PRE_THR || (zGate && smallUp && accelGate))) {
-          primed = true;
+        const res = detectWarmingUptick({ kp, meta });
+        pre = res.pre;
+        if (res.ok) {
+          const store = _getWarmPrimeStore();
+          const prev = store.get(mint) || { count: 0, lastAt: 0 };
+          const ttlMs = 15_000;
+          const within = now() - prev.lastAt < ttlMs;
+          const nextCount = within ? (prev.count + 1) : 1;
+          store.set(mint, { count: nextCount, lastAt: now() });
+          const need = Math.max(1, Number(state.warmingPrimedConsec || 2));
+          const okConsec = nextCount >= need;
+          primed = okConsec;
+          log(`Warming prime ${mint.slice(0,4)}… ${nextCount}/${need} (pre=${res.pre.toFixed(3)} a5/1=${res.a51.toFixed(2)} Δchg=${res.chgSlope.toFixed(3)} Δsc=${res.scSlope.toFixed(3)})`);
+        } else {
+          // reset streak if detector failed
+          try { _getWarmPrimeStore().delete(mint); } catch {}
         }
-        log(`Pre-pump score ${mint.slice(0,4)}… pre=${pre.toFixed(3)} zV1=${safeNum(meta.zV1,0).toFixed(2)} a5/1=${a51Eff.toFixed(2)} chg5m=${chg5m.toFixed(2)}`);
+      } else {
+        try { _getWarmPrimeStore().delete(mint); } catch {}
       }
+
       if (!(microUp && notBackside) && !primed) continue;
 
       const baseScore = scorePumpCandidate({ kp, pumpScore: it?.pumpScore, meta });
@@ -2683,10 +2788,11 @@ function pickPumpCandidates(take = 1, poolN = 3) {
     const strong = pool.filter(x => {
       const b = normBadge(x.badge);
       const isPump = (b === "pumping");
-      const minC5  = isPump ? 0.8 : 0.4;             
-      const minA   = isPump ? 1.00 : 0.98;            
-      const aEff   = safeNum(x.meta?.accel5to1, 1);    
+      const minC5  = isPump ? 0.8 : 0.4;
+      const minA   = isPump ? 1.00 : 0.98;
+      const aEff   = Math.max(1, safeNum(x.meta?.accel5to1, 1));
       if (x.primed) {
+        // warmed primed: still enforce trend/nb and minimal quality
         return (
           x.score >= top * 0.80 &&
           x.nb === true &&
@@ -2706,26 +2812,9 @@ function pickPumpCandidates(take = 1, poolN = 3) {
       );
     });
 
-    let base = strong;
-    if (!base.length) {
-      const alt = pool.filter(x =>
-        normBadge(x.badge) === "pumping" &&
-        x.nb === true &&
-        x.meta?.risingNow === true &&
-        x.meta?.trendUp === true &&
-        x.chg5m >= 0.6
-      );
-      if (alt.length) {
-        log("Pump picks (fallback): using top Pumping with relaxed accel gate.");
-        base = alt.sort((a,b)=>b.score-a.score);
-      }
-    }
-
-    const chosen = (base.length ? base : pool)
-      .slice(0, Math.max(1, take))
-      .map(x => x.mint);
-
-    logObj("Pump picks", (base.length ? base : pool).slice(0, poolN));
+    const base = strong.length ? strong : pool;
+    const chosen = base.slice(0, Math.max(1, take)).map(x => x.mint);
+    logObj("Pump picks", base.slice(0, poolN));
     return chosen;
   } catch {
     return [];
@@ -2844,9 +2933,10 @@ async function pickTopPumper() {
   // Shorter pre-buy watch to reduce missed rotations. 
   const start = now();
   let sN = s0;
-  const watchMs = 2500; // was ~5000ms
+  const watchMs = Math.max(1200, Math.floor((state.tickMs || 2000) * 0.9));
+  const stepMs  = Math.max(400, Math.floor(watchMs / 3));
   while (now() - start < watchMs) {
-    await new Promise(r => setTimeout(r, 700));
+    await new Promise(r => setTimeout(r, stepMs));
     const s1 = await snapshot(mint);
     if (!s1) { sN = null; break; }
     sN = s1;
@@ -2874,6 +2964,17 @@ async function pickTopPumper() {
     setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
     log(`Observer: reject ${mint.slice(0,4)}… (score ${passes}/5); blacklisted 30m.`);
     return "";
+  }
+
+  if (state.strictBuyFilter && !state.rideWarming) {
+    if (badgeNorm !== "pumping") {
+      noteObserverConsider(mint, 30_000);
+      return "";
+    }
+    if (passes < 4) {
+      noteObserverConsider(mint, 30_000);
+      return "";
+    }
   }
 
   if (passes === 3 && badgeNorm === "pumping") {
@@ -2907,8 +3008,13 @@ async function pickTopPumper() {
   return mint;
 }
 
-async function observeMintOnce(mint, { windowMs = 3000, sampleMs = 800, minPasses = 3, adjustHold = false } = {}) {
+async function observeMintOnce(mint, opts = {}) {
   if (!mint) return { ok: false, passes: 0 };
+
+  const windowMs = Number.isFinite(opts.windowMs) ? opts.windowMs : Math.max(1800, Math.floor((state.tickMs || 2000) * 1.1));
+  const sampleMs = Number.isFinite(opts.sampleMs) ? opts.sampleMs : Math.max(500, Math.floor(windowMs / 3.2));
+  const minPasses = Number.isFinite(opts.minPasses) ? opts.minPasses : 3;
+  const adjustHold = !!opts.adjustHold;
 
   const findLeader = () => {
     try { return (computePumpingLeaders(3) || []).find(x => x?.mint === mint) || null; } catch { return null; }
@@ -3033,6 +3139,7 @@ async function getOwnerAtas(ownerPubkeyStr, mintStr) {
 
 async function getAtaBalanceUi(ownerPubkeyStr, mintStr, decimalsHint, commitment = "confirmed") {
   const conn = await getConn();
+  await rpcWait("ata-balance", 450);
   const atas = await getOwnerAtas(ownerPubkeyStr, mintStr);
   let best = null;
   for (const { ata } of atas) {
@@ -4156,6 +4263,12 @@ async function switchToLeader(newMint) {
 async function tick() {
   // const endIn = state.endAt ? ((state.endAt - now())/1000).toFixed(0) : "0";
   if (!state.enabled) return;
+
+  if (rpcBackoffLeft() > 0) {
+    log("RPC backoff active; skipping tick.");
+    return;
+  }
+
   try {
     const leaders = computePumpingLeaders(3) || [];
     for (const it of leaders) {
@@ -4313,12 +4426,14 @@ async function tick() {
       const mint = buyCandidates[i];
       if (state.allowMultiBuy && mint !== picks[0]) {
         try {
-          const obs = await observeMintOnce(mint, { windowMs: 2500, sampleMs: 700, minPasses: 4, adjustHold: !!state.dynamicHoldEnabled });
-          if (!obs.ok) {
-            if (Number(obs.passes || 0) === 3) noteObserverConsider(mint, 30_000);
-            log(`Observer gate: ${mint.slice(0,4)}… scored ${obs.passes||0}/5 (<4). Skipping buy.`);
-            continue;
-          }
+          const wMs = Math.max(1800, Math.floor((state.tickMs || 2000) * 0.9));
+          const sMs = Math.max(450, Math.floor((state.tickMs || 2000) / 3.5));
+          const obs = await observeMintOnce(mint, {
+            windowMs: wMs,
+            sampleMs: sMs,
+            minPasses: 4,
+            adjustHold: !!state.dynamicHoldEnabled
+          });
         } catch {
           log(`Observer gate failed for ${mint.slice(0,4)}… Skipping buy.`);
           continue;
@@ -4550,7 +4665,7 @@ async function startAutoAsync() {
       try { await sweepDustToSolAtStart(); } catch {}
     }
     if (!timer && state.enabled) {
-      timer = setInterval(tick, 3000);
+      timer = setInterval(tick, Math.max(1200, Number(state.tickMs || 2000)));
       log("Auto trading started");
     }
     startFastObserver();
@@ -4606,15 +4721,26 @@ function onToggle(on) {
 
 function load() {
   try { state = { ...state, ...(JSON.parse(localStorage.getItem(LS_KEY))||{}) }; } catch {}
+  state.tickMs = Math.max(1200, Math.min(5000, Number(state.tickMs || 2000))); 
   state.slippageBps = Math.min(300, Math.max(200, Number(state.slippageBps ?? 250) | 0));
-  state.minBuySol   = Math.max(MIN_JUP_SOL_IN, Number(state.minBuySol || MIN_JUP_SOL_IN));
+  state.minBuySol   = Math.max(UI_LIMITS.MIN_BUY_SOL_MIN, Number(state.minBuySol ?? 0.006));
+  state.minNetEdgePct = Math.max(0, Number(state.minNetEdgePct ?? 0.6));
+  state.coolDownSecsAfterBuy = Math.max(0, Math.min(12, Number(state.coolDownSecsAfterBuy || 8)));
   if (!Number.isFinite(state.warmingDecayPctPerMin)) state.warmingDecayPctPerMin = 0.25;
   if (!Number.isFinite(state.warmingDecayDelaySecs)) state.warmingDecayDelaySecs = 45;
   if (!Number.isFinite(state.warmingMinProfitFloorPct)) state.warmingMinProfitFloorPct = -2.0;
   if (!Number.isFinite(state.warmingAutoReleaseSecs)) state.warmingAutoReleaseSecs = 90;
+  if (!Number.isFinite(state.warmingUptickMinAccel)) state.warmingUptickMinAccel = 1.01;
+  if (!Number.isFinite(state.warmingUptickMinPre)) state.warmingUptickMinPre = 0.50;
+  if (!Number.isFinite(state.warmingUptickMinDeltaChg5m)) state.warmingUptickMinDeltaChg5m = 0.05;
+  if (!Number.isFinite(state.warmingUptickMinDeltaScore)) state.warmingUptickMinDeltaScore = 0.02;
+  if (!Number.isFinite(state.warmingMinLiqUsd)) state.warmingMinLiqUsd = 4000;
+  if (!Number.isFinite(state.warmingMinV1h)) state.warmingMinV1h = 800;
+  if (!Number.isFinite(state.warmingPrimedConsec)) state.warmingPrimedConsec = 2;
+
+  if (typeof state.strictBuyFilter !== "boolean") state.strictBuyFilter = true;
 
   state.pendingGraceMs = Math.max(120_000, Number(state.pendingGraceMs || 120_000));
-
   save();
 }
 
@@ -4883,7 +5009,7 @@ export function initAutoWidget(container = document.body) {
     </div>
     </div>
     <div class="fdv-bot-footer" style="margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
-      <span>Version: 0.0.2.9</span>
+      <span>Version: 0.0.3.0</span>
     </div>
   `;
 
@@ -5291,7 +5417,7 @@ export function initAutoWidget(container = document.body) {
   warmingEl.value = state.rideWarming ? "yes" : "no";
   startBtn.disabled = !!state.enabled;
   stopBtn.disabled = !state.enabled;
-  if (state.enabled && !timer) timer = setInterval(tick, 5000);
+  if (state.enabled && !timer) timer = setInterval(tick, Math.max(1200, Number(state.tickMs || 2000)));
 
   if (state.autoWalletPub) {
     fetchSolBalance(state.autoWalletPub).then(b => { depBalEl.value = `${b.toFixed(4)} SOL`; }).catch(()=>{});
