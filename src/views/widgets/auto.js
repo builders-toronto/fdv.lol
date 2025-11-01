@@ -164,7 +164,7 @@ let state = {
   sellCooldownMs: 20000,  
   staleMinsToDeRisk: 4, 
   singlePositionMode: true,
-  minNetEdgePct: 0.1,
+  minNetEdgePct: -5, 
 
   // Auto wallet mode
   autoWalletPub: "",        
@@ -173,8 +173,8 @@ let state = {
   lifetimeMins: 60,         
   endAt: 0,                 
   buyPct: 0.2,              
-  minBuySol: 0.002,         
-  maxBuySol: 0.05,          
+  minBuySol: 0.006,         
+  maxBuySol: 0.01,          
   rpcUrl: "",             
 
   // Per-mint positions:
@@ -234,7 +234,7 @@ let state = {
 // init global user interface
 let timer = null;
 let logEl, toggleEl, startBtn, stopBtn, mintEl;
-let depAddrEl, depBalEl, lifeEl, recvEl, buyPctEl, minBuyEl, maxBuyEl;
+let depAddrEl, depBalEl, lifeEl, recvEl, buyPctEl, minBuyEl, maxBuyEl, minEdgeEl, multiEl, warmDecayEl;
 let ledEl;
 
 let _starting = false;
@@ -260,6 +260,8 @@ let _solPxCache = { ts: 0, usd: 0 };
 let _conn = null, _connUrl = "";
 
 let _connHdrKey = "";
+
+let _lastDepFetchTs = 0;
 
 function _pcKey(owner, mint) { return `${owner}:${mint}`; }
 
@@ -1665,7 +1667,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         log("Sell-side fee ATA not configured for this mint; no fee collected.");
       }
     } else if (feeBps > 0 && isBuy) {
-      log(`Fees:${feeBps}% only on sell up.`);
+      log(`Fees: ${(feeBps/100).toFixed(2)}% apply on sells only.`);
     }
 
     // Track pre-split balance and a reconciler only for split-sell fallbacks
@@ -4295,7 +4297,10 @@ async function tick() {
     if (lifeEl) lifeEl.value = String(remMins);
   }
   if (depBalEl && state.autoWalletPub) {
-    fetchSolBalance(state.autoWalletPub).then(b => { depBalEl.value = `${b.toFixed(4)} SOL`; }).catch(()=>{});
+    if (!_lastDepFetchTs || (now() - _lastDepFetchTs) > 5000) {
+      _lastDepFetchTs = now();
+      fetchSolBalance(state.autoWalletPub).then(b => { depBalEl.value = `${b.toFixed(4)} SOL`; }).catch(()=>{});
+    }
   }
 
   try { await processPendingCredits(); } catch {}
@@ -4723,8 +4728,9 @@ function load() {
   try { state = { ...state, ...(JSON.parse(localStorage.getItem(LS_KEY))||{}) }; } catch {}
   state.tickMs = Math.max(1200, Math.min(5000, Number(state.tickMs || 2000))); 
   state.slippageBps = Math.min(300, Math.max(200, Number(state.slippageBps ?? 250) | 0));
-  state.minBuySol   = Math.max(UI_LIMITS.MIN_BUY_SOL_MIN, Number(state.minBuySol ?? 0.006));
-  state.minNetEdgePct = Math.max(0, Number(state.minNetEdgePct ?? 0.6));
+  state.minBuySol   = Math.max(0.006, UI_LIMITS.MIN_BUY_SOL_MIN, Number(state.minBuySol ?? 0.008));
+  if (!Number.isFinite(state.minNetEdgePct)) state.minNetEdgePct = 0.6;
+
   state.coolDownSecsAfterBuy = Math.max(0, Math.min(12, Number(state.coolDownSecsAfterBuy || 8)));
   if (!Number.isFinite(state.warmingDecayPctPerMin)) state.warmingDecayPctPerMin = 0.25;
   if (!Number.isFinite(state.warmingDecayDelaySecs)) state.warmingDecayDelaySecs = 45;
@@ -4839,13 +4845,22 @@ export function initAutoWidget(container = document.body) {
       <label>Buy % of SOL <input data-auto-buyp type="number" step="0.1" min="${UI_LIMITS.BUY_PCT_MIN*100}" max="${UI_LIMITS.BUY_PCT_MAX*100}"/></label>
       <label>Min Buy (SOL) <input data-auto-minbuy type="number" step="0.0001" min="${UI_LIMITS.MIN_BUY_SOL_MIN}" max="${UI_LIMITS.MIN_BUY_SOL_MAX}"/></label>
       <label>Max Buy (SOL) <input data-auto-maxbuy type="number" step="0.0001" min="${UI_LIMITS.MAX_BUY_SOL_MIN}" max="${UI_LIMITS.MAX_BUY_SOL_MAX}"/></label>
-      <label>Hold Leader
+      <label>Min Edge (%) <input data-auto-minedge type="number" step="0.1" placeholder="-5 = allow -5%"/></label>
+      <label>Warming decay (%/min) <input data-auto-warmdecay type="number" step="0.01" min="0" max="5" placeholder="0.25"/></label>
+ 
+      <label>Multi-buy
+        <select data-auto-multi>
+          <option value="no" selected>No</option>
+          <option value="yes">Yes</option>
+        </select>
+      </label>
+     <label>Leader
         <select data-auto-hold>
           <option value="no">No</option>
           <option value="yes">Yes</option>
         </select>
       </label>
-      <label>Try to sell dust
+      <label>Dust
         <select data-auto-dust>
           <option value="no" selected>No</option>
           <option value="yes">Yes</option>
@@ -5098,6 +5113,11 @@ export function initAutoWidget(container = document.body) {
   buyPctEl  = wrap.querySelector("[data-auto-buyp]");
   minBuyEl  = wrap.querySelector("[data-auto-minbuy]");
   maxBuyEl  = wrap.querySelector("[data-auto-maxbuy]");
+  minEdgeEl = wrap.querySelector("[data-auto-minedge]");
+  multiEl   = wrap.querySelector("[data-auto-multi]");
+  warmDecayEl = wrap.querySelector("[data-auto-warmdecay]");
+
+
 
   const secExportBtn = wrap.querySelector("[data-auto-sec-export]");
   const rpcEl = wrap.querySelector("[data-auto-rpc]");
@@ -5119,6 +5139,10 @@ export function initAutoWidget(container = document.body) {
   buyPctEl.value  = (state.buyPct * 100).toFixed(2);
   minBuyEl.value  = state.minBuySol;
   maxBuyEl.value  = state.maxBuySol;
+  minEdgeEl.value = Number.isFinite(state.minNetEdgePct) ? String(state.minNetEdgePct) : "-5";
+  multiEl.value   = state.allowMultiBuy ? "yes" : "no";
+  warmDecayEl.value = String(Number.isFinite(state.warmingDecayPctPerMin) ? state.warmingDecayPctPerMin : 0.25);
+
 
   helpBtn.addEventListener("click", () => { modalEl.style.display = "flex"; });
   modalEl.addEventListener("click", (e) => { if (e.target === modalEl) modalEl.style.display = "none"; });
@@ -5368,6 +5392,11 @@ export function initAutoWidget(container = document.body) {
     save();
     log(`Ride Warming: ${state.rideWarming ? "ON" : "OFF"}`);
   });
+  multiEl.addEventListener("change", () => {
+    state.allowMultiBuy = (multiEl.value === "yes");
+    save();
+    log(`Multi-buy: ${state.allowMultiBuy ? "ON" : "OFF"}`);
+  });
   startBtn.addEventListener("click", () => onToggle(true));
   stopBtn.addEventListener("click", () => onToggle(false));
   wrap.querySelector("[data-auto-reset]").addEventListener("click", () => {
@@ -5377,6 +5406,9 @@ export function initAutoWidget(container = document.body) {
     state.avgEntryUsd = 0;
     state.lastTradeTs = 0;
     state.endAt = 0;
+    state.moneyMadeSol = 0;
+    state.solSessionStartLamports = 0;
+
     fetchSolBalance(state.autoWalletPub).then(b => { depBalEl.value = `${b.toFixed(4)} SOL`; }).catch(()=>{});
     save();
     log("Session stats refreshed");
@@ -5400,13 +5432,23 @@ export function initAutoWidget(container = document.body) {
     state.minBuySol = minBuy;
     state.maxBuySol = maxBuy;
 
+    const edge = Number(minEdgeEl.value);
+    const edgeClamped = Math.min(10, Math.max(-10, Number.isFinite(edge) ? edge : state.minNetEdgePct ?? -5));
+    state.minNetEdgePct = edgeClamped;
+    minEdgeEl.value = String(edgeClamped);
+
+    const wd = Number(warmDecayEl.value);
+    const wdClamped = Math.min(5, Math.max(0, Number.isFinite(wd) ? wd : (state.warmingDecayPctPerMin ?? 0.25)));
+    state.warmingDecayPctPerMin = wdClamped;
+    warmDecayEl.value = String(wdClamped);
+
     minBuyEl.value = String(minBuy);
     maxBuyEl.min = String(minBuy);
     maxBuyEl.value = String(maxBuy);
 
     save();
   };
-  [recvEl, lifeEl, buyPctEl, minBuyEl, maxBuyEl].forEach(el => {
+  [recvEl, lifeEl, buyPctEl, minBuyEl, maxBuyEl, minEdgeEl, warmDecayEl].forEach(el => {
     el.addEventListener("input", saveField);
     el.addEventListener("change", saveField);
   });
