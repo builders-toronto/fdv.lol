@@ -4563,14 +4563,18 @@ async function tick() {
     });
 
 
-    const buyCandidates = picks.filter(m => {
-      const pos = state.positions[m];
-      const allowRebuy = !!pos?.allowRebuy;
-      const eligibleSize = allowRebuy || Number(pos?.sizeUi || 0) <= 0;
-      const notPending = !pos?.awaitingSizeSync;
-      const notLocked  = !isMintLocked(m);
-      return eligibleSize && notPending && notLocked;
+    let buyCandidates = picks.filter(m => {
+       const pos = state.positions[m];
+       const allowRebuy = !!pos?.allowRebuy;
+       const eligibleSize = allowRebuy || Number(pos?.sizeUi || 0) <= 0;
+       const notPending = !pos?.awaitingSizeSync;
+       const notLocked  = !isMintLocked(m);
+       return eligibleSize && notPending && notLocked;
     });
+
+    if (!state.allowMultiBuy && buyCandidates.length > 1) {
+      buyCandidates = buyCandidates.slice(0, 1);
+    }
 
 
     if (!buyCandidates.length) { log("All picks already held or pending. Skipping buys."); return; }
@@ -4591,7 +4595,8 @@ async function tick() {
     let spent = 0;
     let buysDone = 0;
 
-    let loopN = leaderMode ? 1 : buyCandidates.length;
+    let loopN = leaderMode ? 1 : (state.allowMultiBuy ? buyCandidates.length : 1);
+
     try {
       if (!leaderMode && loopN > 1) {
         const rentL = await tokenAccountRentLamports();
@@ -4799,6 +4804,9 @@ async function tick() {
 
       if (leaderMode) break;
 
+      // no double buys
+      if (!state.allowMultiBuy) break;
+
       await new Promise(r => setTimeout(r, 150));
       if (remaining < minThreshold) break;
     }
@@ -4933,6 +4941,7 @@ function load() {
   if (typeof state.strictBuyFilter !== "boolean") state.strictBuyFilter = true;
 
   state.pendingGraceMs = Math.max(120_000, Number(state.pendingGraceMs || 120_000));
+  state.allowMultiBuy = false;
   save();
 }
 
@@ -5035,7 +5044,7 @@ export function initAutoWidget(container = document.body) {
       <label>Warming decay (%/min) <input data-auto-warmdecay type="number" step="0.01" min="0" max="5" placeholder="0.25"/></label>
  
       <label>Multi-buy
-        <select data-auto-multi>
+        <select data-auto-multi disabled>
           <option value="no" selected>No</option>
           <option value="yes">Yes</option>
         </select>
