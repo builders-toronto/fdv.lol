@@ -1,6 +1,6 @@
 import { esc } from "../formatters.js";
 import { formatPriceParts } from "../../../lib/formatPrice.js";
-import { getRugSignalForMint } from "../../meme/addons/pumping.js";
+import { getRugSignalForMint } from "../../meme/metrics/pumping.js";
 
 function renderPumpBadge({ badge, score, sev }) {
   let cls = "pill--neutral";

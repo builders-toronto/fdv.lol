@@ -222,7 +222,7 @@ function profileHtml({ title, description, primaryImage, secondaryImage, canonic
     <link rel="icon" type="image/png" href="/src/assets/images/icons/fdv.lol.ico" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/src/styles/global.css" />
+    <link rel="stylesheet" href="/src/assets/styles/global.css" />
 
     <script type="application/ld+json">
     {

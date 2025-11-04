@@ -1,11 +1,14 @@
 import { pipeline, stopPipelineStream } from '../../engine/pipeline.js';
-import { renderProfileView } from "../../views/profile/page.js";
-import { render } from '../../views/meme/page.js';
-import { renderShillContestView } from "../../views/shill/page.js"; 
-import { renderShillLeaderboardView } from "../../views/shill/leaderboard.js"; // ← add
+import { renderProfileView } from "../../vista/profile/page.js";
+import { renderHomeView } from '../../vista/meme/page.js';
+import { renderShillContestView } from "../../vista/shill/page.js"; 
+import { renderShillLeaderboardView } from "../../vista/shill/leaderboard.js"; 
 import { hideLoading } from '../../core/tools.js';
 
 let HOME_INTERVAL = null;
+
+let _pendingUpdate = null;
+let _updateQueued = false;
 
 const STREAM_KEY = 'fdv.stream.on';
 function loadStreamPref() {
@@ -24,7 +27,7 @@ function updateStreamButton() {
   const btn = document.getElementById('stream');
   if (!btn) return;
   btn.textContent = STREAM_ON ? 'Stream: On' : 'Stream: Off';
-  btn.setAttribute('aria-pressed', STREAM_ON ? 'true' : 'false'); // overwrite hardcoded value(BLOAT: fix this)
+  btn.setAttribute('aria-pressed', STREAM_ON ? 'true' : 'false'); 
 }
 function wireStreamButton() {
   const btn = document.getElementById('stream');
@@ -54,6 +57,7 @@ export function startHomeLoop(intervalMs = 10_000) {
   HOME_INTERVAL = setInterval(() => { runHome({ force: false }).catch(console.warn); }, intervalMs);
 }
 
+
 // Stream state
 export function setStreaming(on, { restart = true } = {}) {
   const next = !!on;
@@ -73,21 +77,35 @@ export function setStreaming(on, { restart = true } = {}) {
 }
 export function toggleStreaming() { setStreaming(!STREAM_ON); }
 
+function enqueueRender(payload) {
+  _pendingUpdate = payload;
+  if (_updateQueued) return;
+  _updateQueued = true;
+  queueMicrotask(() => {
+    _updateQueued = false;
+    const p = _pendingUpdate;
+    _pendingUpdate = null;
+    if (!p || !Array.isArray(p.items) || !p.items.length) return;
+    renderHomeView(p.items, p.ad || null, p.marquee || { trending: [], new: [] });
+  });
+}
+
 async function runHome({ force = false } = {}) {
   const pipe = await pipeline({
     force,
     stream: STREAM_ON,
     onUpdate: ({ items, ad, marquee }) => {
       if (Array.isArray(items) && items.length) {
-        render(items, ad || null, marquee || { trending: [], new: [] });
+        // Coalesce within the same microtask; no timing-based delay.
+        enqueueRender({ items, ad, marquee });
       }
     }
   });
   if (pipe && Array.isArray(pipe.items) && pipe.items.length) {
-    render(pipe.items, pipe.ad || null, pipe.marquee || { trending: [], new: [] });
+    // First payload goes through the same zero-delay coalescer.
+    enqueueRender({ items: pipe.items, ad: pipe.ad, marquee: pipe.marquee });
   }
 }
-
 export async function showHome({ force = false } = {}) {
   hideLoading();
   wireStreamButton();          // wire once

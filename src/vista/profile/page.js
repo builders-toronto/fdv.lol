@@ -4,14 +4,39 @@ import { scoreAndRecommendOne } from "../../core/calculate.js";
 import sanitizeToken from "./sanitizeToken.js";
 import renderShell from "./render/shell.js";
 import { loadAds, pickAd, adCard } from "../../ads/load.js";
-import { initSwap, bindSwapButtons } from "../widgets/swap.js";
-import { bindFavoriteButtons } from "../widgets/library.js";
 
-// Parts Refactor 2025
+
+import { widgets, registerCoreWidgets, prewarmDefaults } from "../widgets/loader.js";
+
+
 import { initHero } from "./parts/hero.js";
 import { initStatsAndCharts } from "./parts/stats.js";
 import { startProfileFeed } from "./parts/feed.js";
 import { startProfileMetrics } from "../../analytics/shill.js";
+
+
+try { registerCoreWidgets(); } catch {}
+try { prewarmDefaults(); } catch {}
+try {
+  widgets.register('swap', {
+    importer: () => import('../widgets/swap/index.js'),
+    init: ({ mod }) => {
+      if (typeof mod.initSwap === 'function') mod.initSwap();
+      if (typeof mod.bindSwapButtons === 'function') mod.bindSwapButtons(document);
+    },
+    eager: true,
+    once: true,
+  });
+} catch {}
+try {
+  widgets.register('favorites-bind', {
+    importer: () => import('../widgets/library/index.js'),
+    init: ({ mod }) => {
+      if (typeof mod.bindFavoriteButtons === 'function') mod.bindFavoriteButtons(document);
+    },
+    once: true,
+  });
+} catch {}
 
 function errorNotice(mount, msg) {
   mount.innerHTML = `<div class="wrap"><div class="small">Error: ${msg} <a data-link href="/">Home</a></div></div>`;
@@ -38,7 +63,7 @@ export async function renderProfileView(input, { onBack } = {}) {
   if (!document.querySelector('link[href="/src/styles/profile.css"]')) {
     const style = document.createElement("link");
     style.rel = "stylesheet";
-    style.href = "/src/styles/profile.css";
+    style.href = "/src/assets/styles/profile.css";
     document.head.appendChild(style);
   }
 
@@ -49,12 +74,7 @@ export async function renderProfileView(input, { onBack } = {}) {
   lastRenderedMint = mint;
 
   try {
-    if (!window.__fdvSwapBridge) window.__fdvSwapBridge = { inited: false };
-    if (!window.__fdvSwapBridge.inited) {
-      initSwap();
-      bindSwapButtons(document);
-      window.__fdvSwapBridge.inited = true;
-    }
+    await widgets.mount('swap');
   } catch {}
 
   const adsPromise = (async () => {
@@ -86,13 +106,7 @@ export async function renderProfileView(input, { onBack } = {}) {
   const token = sanitizeToken(raw);
   const scored = scoreAndRecommendOne(token);
 
-
-
-
   initHero({ token, scored, mint, onBack });
-
-
-
 
   const statsCtx = initStatsAndCharts({ token, scored, BUY_RULES, FDV_LIQ_PENALTY });
 
@@ -106,8 +120,7 @@ export async function renderProfileView(input, { onBack } = {}) {
   }).catch(() => {});
 
   runIdle(() => {
-    try { bindFavoriteButtons(document); } catch {}
-
+    try { widgets.mount('favorites-bind'); } catch {}
 
     (async () => {
       try {

@@ -16,5 +16,5 @@
 !/sitemap.xml
 !/robots.txt
 
-.DS_Store
-Thumbs.db/src/views/widgets/*.log
+*.log
+

@@ -32,7 +32,6 @@
   --gap-4: clamp(16px, 3vw, 28px);
   --ring: 0 0 0 .14rem color-mix(in oklab, var(--accent2) 40%, transparent);
   --ring-strong: 0 0 0 .22rem color-mix(in oklab, var(--accent2) 58%, transparent);
-  /* i suck at naming things help */
   --fdv-bg:#0b0f17; 
   --fdv-surface:#11151f; 
   --fdv-border:rgba(122, 222, 255, .28);
@@ -1130,7 +1129,8 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
     border-radius: 12px;
   }
   .adrow{
-    grid-template-columns: 48px 1fr auto;
+    grid-template-columns: 48px 1fr;
+    grid-auto-rows: auto;
     gap: 10px;
   }
   .adlogo{ width: 48px; height: 48px; border-radius: 10px }
@@ -1271,7 +1271,7 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
   cursor: default;
 }
 
-.fdv-status{ min-height:180px; background:#0b0f17; border:1px solid #172033; border-radius:12px; padding:10px; overflow:hidden; }
+.fdv-status{ min-height:180px; background:#0b0f17; border: 1px solid #172033; border-radius: 12px; padding: 10px; overflow: hidden; }
 .fdv-log{ white-space:pre-wrap; font-size:.9rem; height:160px; overflow:auto }
 .fdv-log .ok{ color:var(--fdv-ok) } .fdv-log .err{ color:var(--fdv-err) } .fdv-log .warn{ color:var(--fdv-warn) }
 

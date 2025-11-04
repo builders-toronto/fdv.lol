@@ -1,4 +1,4 @@
-import { searchTokensGlobal } from "../../data/dexscreener.js";
+import { searchTokensGlobal } from "../../../data/dexscreener.js";
 
 let abortCtl = null;
 let cache = new Map();          // query -> results[]

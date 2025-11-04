@@ -1,5 +1,5 @@
-import { FDV_FAV_ENDPOINT } from "../../config/env.js";
-import { fetchTokenInfo } from "../../data/dexscreener.js";
+import { FDV_FAV_ENDPOINT } from "../../../config/env.js";
+import { fetchTokenInfo } from "../../../data/dexscreener.js";
 
 const CACHE_KEY = "favboard_cache_v1";
 const META_STORE_PREFIX = "favboard_meta_v1:";

@@ -5,7 +5,7 @@ import {
   collectInstantSolana,          
 } from '../data/feeds.js';
 import { scoreAndRecommend } from '../core/calculate.js';
-import { elMetaBase, elTimeDerived } from '../views/meme/page.js'; 
+import { elMetaBase, elTimeDerived } from '../vista/meme/page.js'; 
 import { readCache } from '../core/tools.js';
 import { enrichMissingInfo } from '../data/dexscreener.js';
 import { loadAds, pickAd } from '../ads/load.js';

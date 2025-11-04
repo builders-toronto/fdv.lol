@@ -61,7 +61,6 @@ export const FDV_FAV_ENDPOINT = "https://fdv-lol-metrics.fdvlol.workers.dev/api/
 export const FDV_FEE_RECEIVER = "ENEKo7GEWM6jDTaHfN558bNHPodA9MB5azNiFvTK7ofm";
 
 
-
 export const JUP_SWAP   = (mint)=>`https://jup.ag/tokens/${encodeURIComponent(mint)}`;
 export const JUP_LIST_TTL_MS = 60 * 60 * 1000;
 export const EXPLORER   = (addr)=>`https://explorer.solana.com/address/${addr}`;

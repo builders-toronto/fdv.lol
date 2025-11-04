@@ -19,7 +19,7 @@ export function initHeader(createOpenLibraryButton, createOpenSearchButton, crea
   }
 
   ensureOpenLibraryHeaderBtn(createOpenLibraryButton);
-  ensureFavboardHeaderBtn(createOpenFavboardButton);
+  // ensureFavboardHeaderBtn(createOpenFavboardButton);
   ensureSearchHeaderBtn(createOpenSearchButton); 
 }
 
