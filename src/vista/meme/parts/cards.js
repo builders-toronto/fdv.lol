@@ -1,4 +1,4 @@
-import { createSendFavoriteButton } from '../../widgets/library.js';
+import { createSendFavoriteButton } from '../../widgets/library/index.js';
 import { sparklineSVG } from '../render/sparkline.js';
 import { pctChipsHTML } from '../render/chips.js';
 import { EXPLORER, FALLBACK_LOGO, JUP_SWAP, shortAddr } from '../../../config/env.js';
@@ -329,14 +329,13 @@ export function updateCardDOM(el, it) {
   }
 }
 
-// ---- Card Creation / Integration ----
 export function buildOrUpdateCard(existing, token) {
   if (!existing) {
     const el = document.createElement('div');
     el.className = 'card';
     el.dataset.key = token.mint || token.id;
     el.innerHTML = coinCard(token);
-    attachFavorite(el, token);
+    // attachFavorite(el, token);
     el.classList.add('is-entering');
     el.style.opacity = '0';
     el.style.transform = 'translateY(10px) scale(.98)';
@@ -344,7 +343,7 @@ export function buildOrUpdateCard(existing, token) {
     return el;
   }
   updateCardDOM(existing, token);
-  attachFavorite(existing, token);
+  // attachFavorite(existing, token);
   existing.style.willChange = 'transform,opacity';
   existing.classList.remove('is-exiting');
   return existing;

@@ -1,4 +1,4 @@
-import { initSwapSystem } from "../views/widgets/swap.js";
+import { initSwapSystem } from "../vista/widgets/swap/index.js";
 import { showHome, showProfile, showShill } from "./main/home.js";
 
 function initRouter({

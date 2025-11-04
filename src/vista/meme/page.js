@@ -4,22 +4,24 @@ import { loadAds, pickAd, adCard } from "../../ads/load.js";
 
 import { showHome } from '../../router/main/home.js';
 
-import { ensureAddonsUI } from './addons/register.js';
-import { ingestSnapshot } from './addons/ingest.js';
+import { ensureAddonsUI } from './metrics/register.js';
+import { ingestSnapshot } from './metrics/ingest.js';
 
 // Addons (KPI)
-import './addons/pumping.js';
-import './addons/three.js';
-import './addons/smq.js';
-import './addons/degen.js';
-import './addons/engagement.js';
-import './addons/das.js';
+import './metrics/pumping.js';
+import './metrics/three.js';
+import './metrics/smq.js';
+import './metrics/degen.js';
+import './metrics/engagement.js';
+import './metrics/das.js';
 
-import { initLibrary, createOpenLibraryButton } from '../widgets/library.js';
+// Swap direct init() calls for the widget loader VM
+import { widgets, registerCoreWidgets, prewarmDefaults } from '../widgets/loader.js';
 
-import { initSearch, createOpenSearchButton } from '../widgets/search.js';
-import { initFavboard, createOpenFavboardButton } from '../widgets/favboard.js';
-import { initAutoWidget } from '../widgets/auto.js';
+// Keep button factories for header
+import { createOpenLibraryButton } from '../widgets/library/index.js';
+import { createOpenSearchButton } from '../widgets/search/index.js';
+import { createOpenFavboardButton } from '../widgets/favboard/index.js';
 
 import {
   initHeader,
@@ -252,7 +254,7 @@ function paintNow() {
   try { syncSuggestionsAfterPaint(elQ, elQResults); } catch {}
 }
 
-export function render(items, adPick, marquee) {
+export function renderHomeView(items, adPick, marquee) {
   _latestItems = Array.isArray(items) ? items : [];
   _latestAd = adPick || _latestAd;
   _latestMarquee = marquee || null;
@@ -368,18 +370,28 @@ function initInitialLoading() {
 (function boot() {
   try { initHeader(createOpenLibraryButton, createOpenSearchButton, createOpenFavboardButton); } catch {}
   try { ensureAddonsUI(); } catch {}
-  try { initLibrary(); } catch {}
-  try { initFavboard(); } catch {}
+
+  try { registerCoreWidgets(); } catch {}
+  try { prewarmDefaults(); } catch {}
+
+  try { widgets.mount('auto'); } catch {}
   try {
-    const host = document.getElementById('hdrToolsPanels') || document.body;
-    initAutoWidget(host);
+    // Search needs inputs from this page
+    widgets.mount('search', { elQ, elQResults, elSearchWrap });
   } catch {}
 
-  initSearch(elQ, elQResults, elSearchWrap);
+  // try { initLibrary(); } catch {}
+  // try { initFavboard(); } catch {}
+  // try {
+  //   const host = document.getElementById('hdrToolsPanels') || document.body;
+  //   initAutoWidget(host);
+  // } catch {}
 
-  // loadAndRenderAd().catch(() => {});
+  // initSearch(elQ, elQResults, elSearchWrap);
 
-  ensureMarqueeSlot(elCards);
+  // // loadAndRenderAd().catch(() => {});
+
+  // ensureMarqueeSlot(elCards);
 
   wireSort();
   wireSearch();

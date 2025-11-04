@@ -1,7 +1,7 @@
-import { createSendFavoriteButton, createOpenLibraryButton } from "../../widgets/library.js";
+import { createSendFavoriteButton, createOpenLibraryButton } from "../../widgets/library/index.js";
 import { wireNavigation, wireCopy } from "../render/interactions.js";
 import { FALLBACK_LOGO } from "../../../config/env.js";
-import { createSwapButton } from "../../widgets/swap.js";
+import { createSwapButton } from "../../widgets/swap/index.js";
 import { buildSocialLinksHtml } from "../../../lib/socialBuilder.js";
 
 export function initHero({ token, scored, mint, onBack }) {

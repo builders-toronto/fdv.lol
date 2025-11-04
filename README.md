@@ -137,6 +137,8 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
+Vista: A long, narrow, or distant view, often through an opening like a street or valle
+
 auto/knobs: soften bans, fix edge fee, and skip pre‑buy blacklist
 
 

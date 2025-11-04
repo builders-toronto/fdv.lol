@@ -1,4 +1,4 @@
-import { computePumpingLeaders, getRugSignalForMint } from "../meme/addons/pumping.js";
+import { computePumpingLeaders, getRugSignalForMint } from "../../meme/metrics/pumping.js";
 
 // Dust orders and minimums are blocked due to Jupiter route failures and 400 errors.
 // please export wallet.json to recover any dust funds.
@@ -8,12 +8,15 @@ const SOL_MINT = "So11111111111111111111111111111111111111112";
 const MIN_JUP_SOL_IN = 0.001;
 const MIN_SELL_SOL_OUT = 0.004;
 const FEE_RESERVE_MIN = 0.0002;   // rent
-const FEE_RESERVE_PCT = 0.15;     // 15% of balance, more runway
+const FEE_RESERVE_PCT = 0.08;     // 8% reserve (was 15%)
+const MIN_SELL_CHUNK_SOL = 0.01;  // allow micro exits (was 0.02)
+const SMALL_SELL_FEE_FLOOR = 0.03;      // disable fee below this est out
+const AVOID_NEW_ATA_SOL_FLOOR = 0.05;   // don't open new ATAs if SOL below this
 const TX_FEE_BUFFER_LAMPORTS  = 500_000;
 const SELL_TX_FEE_BUFFER_LAMPORTS = 500_000; 
 const EXTRA_TX_BUFFER_LAMPORTS     = 250_000;  
 const EDGE_TX_FEE_ESTIMATE_LAMPORTS = 150_000;
-const MIN_OPERATING_SOL            = 0.010;    
+const MIN_OPERATING_SOL            = 0.007;  
 const ROUTER_COOLDOWN_MS           = 60_000;
 const MINT_RUG_BLACKLIST_MS = 30 * 60 * 1000;
 const MINT_BLACKLIST_STAGES_MS =  [2 * 60 * 1000, 15 * 60 * 1000, MINT_RUG_BLACKLIST_MS];
@@ -42,8 +45,8 @@ const FEE_ATAS = {
 const UI_LIMITS = {
   BUY_PCT_MIN: 0.01,  // 1%
   BUY_PCT_MAX: 0.50,  // 50%
-  MIN_BUY_SOL_MIN: Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN), // ≥ router-safe sell floor
-  MIN_BUY_SOL_MAX: 1,    // cap min order size at 1 SOL
+  MIN_BUY_SOL_MIN: 0.01, // ≥ ~0.01 SOL floor (was 0.03)
+  MIN_BUY_SOL_MAX: 1,    // cap min order size at 1 SOL       
   MAX_BUY_SOL_MIN: Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN),
   MAX_BUY_SOL_MAX: 5,    // cap max order size at 5 SOL
   LIFE_MINS_MIN: 0,
@@ -174,8 +177,8 @@ let state = {
   lifetimeMins: 60,         
   endAt: 0,                 
   buyPct: 0.2,              
-  minBuySol: 0.006,         
-  maxBuySol: 0.01,          
+  minBuySol: 0.01,
+  maxBuySol: 0.02,       
   rpcUrl: "",             
 
   // Per-mint positions:
@@ -217,13 +220,16 @@ let state = {
   warmingDecayDelaySecs: 15,         
   warmingMinProfitFloorPct: -2.0,   
   warmingAutoReleaseSecs: 45,
-  warmingUptickMinAccel: 1.01,        
-  warmingUptickMinPre: 0.50,         
-  warmingUptickMinDeltaChg5m: 0.05,   
-  warmingUptickMinDeltaScore: 0.02,   
+  warmingUptickMinAccel: 1.001,        
+  warmingUptickMinPre: 0.35,         
+  warmingUptickMinDeltaChg5m: 0.012,   
+  warmingUptickMinDeltaScore: 0.006,   
   warmingMinLiqUsd: 4000,             
   warmingMinV1h: 800,
-  warmingPrimedConsec: 2, 
+  warmingPrimedConsec: 1, 
+  warmingMaxLossPct: 10,           // early stop if PnL <= -10% within window
+  warmingMaxLossWindowSecs: 30,    // window after buy for the max-loss guard
+  warmingEdgeMinExclPct: 0,     
 
 
   // money made tracker
@@ -300,6 +306,7 @@ function flagUrgentSell(mint, reason = "observer", sev = 1) {
   if (prev.until && nowTs < prev.until) return; // cooldown
 
   m.set(mint, { reason, sev, until: nowTs + URGENT_SELL_COOLDOWN_MS });
+  const soft = Number(sev || 0) < 0.75;
   if (soft) setMintBlacklist(mint); else setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
   log(`URGENT: ${reason} for ${mint.slice(0,4)}… flagged for immediate sell.`);
   wakeSellEval();
@@ -735,7 +742,12 @@ function isMintInDustCache(ownerPubkeyStr, mint) {
 }
 
 function minSellNotionalSol() {
-  return Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN * 1.05, Number(state.dustMinSolOut || 0));
+  return Math.max(
+    MIN_SELL_SOL_OUT,
+    MIN_JUP_SOL_IN * 1.05,
+    Number(state.dustMinSolOut || 0),
+    MIN_SELL_CHUNK_SOL
+  );
 }
 
 async function sanitizeDustCache(ownerPubkeyStr) {
@@ -814,7 +826,7 @@ function normalizePercent(v) {
 }
 
 async function getCfg() {
-  try { return (await import("./swap.js"))?.CFG || {}; } catch { return {}; }
+  try { return (await import("../swap/index.js"))?.CFG || {}; } catch { return {}; }
 }
 
 async function getJupBase() {
@@ -1632,6 +1644,8 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     const feeBps = Number(getPlatformFeeBps() || 0);
     let feeAccount = null;
     let lastErrCode = "";
+    // If we saw router dust we will avoid splits (configured below)
+    const DISABLE_SPLIT_ON_ROUTER_DUST = true;
 
     try {
       const okIn  = await isValidPubkeyStr(inputMint);
@@ -1657,20 +1671,12 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     const restrictAllowed = !isLite;
 
     const isSell = (inputMint !== SOL_MINT) && (outputMint === SOL_MINT);
+    // Sells: allow intermediates by default
     let restrictIntermediates = isSell ? "false" : "true";
 
-    // Platform fee's only on sell.
-    if (feeBps > 0 && isSell) {
-      feeAccount = FEE_ATAS[outputMint] || (outputMint === SOL_MINT ? FEE_ATAS[SOL_MINT] : null);
-      if (feeAccount) {
-        log(`Fee (sell-only) enabled on ${outputMint.slice(0,4)}…: ATA ${feeAccount.slice(0,4)}… @ ${feeBps} bps`);
-      } else {
-        log(`Sell-side fee ATA not configured for output ${outputMint.slice(0,4)}…; no fee collected.`);
-      }
-    } else if (feeBps > 0 && isBuy) {
-      log(`Fees enabled (${feeBps} bps) but applied on sells only.`);
-    }
-      
+    // Defer fee decision until after quoting (we will disable fee on small sells)
+    let quoteIncludesFee = false;
+
     // Track pre-split balance and a reconciler only for split-sell fallbacks
     let _preSplitUi = 0;
     let _decHint = await getMintDecimals(inputMint).catch(() => 6);
@@ -1743,7 +1749,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       } catch {}
     }
     
-    function buildQuoteUrl({ outMint, slipBps, restrict, asLegacy = false, amountOverrideRaw }) {
+    function buildQuoteUrl({ outMint, slipBps, restrict, asLegacy = false, amountOverrideRaw, withFee = false }) {
       const u = new URL("/swap/v1/quote", "https://fdv.lol");
       const amt = Number.isFinite(amountOverrideRaw) ? amountOverrideRaw : amountRaw;
       u.searchParams.set("inputMint", inputMint);
@@ -1751,15 +1757,22 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       u.searchParams.set("amount", String(amt));
       u.searchParams.set("slippageBps", String(slipBps));
       u.searchParams.set("restrictIntermediateTokens", String(isLite ? true : (restrict === "false" ? false : true)));
-      if (feeAccount && feeBps > 0) u.searchParams.set("platformFeeBps", String(feeBps));
+      // Only include fee when explicitly allowed for this sell
+      if (withFee && feeBps > 0 && feeAccount) u.searchParams.set("platformFeeBps", String(feeBps));
       if (asLegacy) u.searchParams.set("asLegacyTransaction", "true");
       return u;
     }
 
-    const q = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: restrictIntermediates });
+    // Decide fee receiver (sell-only) but don't include it until we know out amount
+    if (feeBps > 0 && isSell) {
+      const acct = FEE_ATAS[outputMint] || (outputMint === SOL_MINT ? FEE_ATAS[SOL_MINT] : null);
+      feeAccount = acct || null;
+    }
+
+    const q = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: restrictIntermediates, withFee: false });
     logObj("Quote params", {
       inputMint, outputMint, amountUi, inDecimals, slippageBps: baseSlip,
-      restrictIntermediateTokens: restrictIntermediates, feeBps: feeAccount ? feeBps : 0
+      restrictIntermediateTokens: restrictIntermediates, feeBps: 0
     });
 
     let quote;
@@ -1771,7 +1784,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       if (!qRes.ok) {
         if (isSell) {
           const altRestrict = (restrictIntermediates === "false" ? "true" : (restrictAllowed ? "false" : "true"));
-          const alt = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: altRestrict });
+          const alt = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: altRestrict, withFee: false });
           log(`Primary sell quote failed (${qRes.status}). Retrying with restrictIntermediateTokens=${alt.searchParams.get("restrictIntermediateTokens")} …`);
           const qRes2 = await jupFetch(alt.pathname + alt.search);
           if (qRes2.ok) {
@@ -1780,7 +1793,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
           } else {
             const body = await qRes2.text().catch(()=> "");
             log(`Sell quote retry failed: ${body || qRes2.status}`);
-            haveQuote = false; // defer to split fallbacks
+            haveQuote = false; // defer to fallbacks
           }
         } else {
           throw new Error(`quote ${qRes.status}`);
@@ -1790,12 +1803,36 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         haveQuote = true;
       }
       if (haveQuote) {
+        // For sells, decide whether to apply platform fee based on estimated out
+        if (isSell) {
+          const outRaw = Number(quote?.outAmount || 0);
+          const outSol = outRaw / 1e9;
+          const eligible = feeBps > 0 && feeAccount && outSol >= SMALL_SELL_FEE_FLOOR;
+          if (eligible) {
+            // Re-quote with fee included once to keep quote and swap aligned
+            const qFee = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: restrictIntermediates, withFee: true });
+            const qFeeRes = await jupFetch(qFee.pathname + qFee.search);
+            if (qFeeRes.ok) {
+              quote = await qFeeRes.json();
+              quoteIncludesFee = true;
+              log(`Sell fee enabled @ ${feeBps} bps (est out ${outSol.toFixed(6)} SOL)`);
+            } else {
+              log("Fee quote failed; proceeding without fee for this sell.");
+              quoteIncludesFee = false;
+            }
+          } else {
+            // Disable fee on small sells
+            feeAccount = null;
+            quoteIncludesFee = false;
+            if (outSol > 0) log(`Small sell detected (${outSol.toFixed(6)} SOL). Fee disabled.`);
+          }
+        }
         logObj("Quote", { inAmount: quote?.inAmount, outAmount: quote?.outAmount, routePlanLen: quote?.routePlan?.length });
       }
     } catch (e) {
       if (!isSell) throw e;
       haveQuote = false;
-      log(`Sell quote error; will try split fallbacks: ${e.message || e}`);
+      log(`Sell quote error; will try fallbacks: ${e.message || e}`);
     }
   }
 
@@ -1803,7 +1840,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     // Skip tiny sells outright (no retries/fallbacks)
     if (isSell) {
       const outRaw = Number(quote?.outAmount || 0); // lamports
-      const minOutLamports = Math.floor(Math.max(MIN_SELL_SOL_OUT, Number(state.dustMinSolOut || 0)) * 1e9);
+      const minOutLamports = Math.floor(minSellNotionalSol() * 1e9);
       if (!Number.isFinite(outRaw) || outRaw <= 0 || outRaw < minOutLamports) {
         log(`Sell below minimum; skipping (${(outRaw/1e9).toFixed(6)} SOL < ${(minOutLamports/1e9).toFixed(6)})`);
         log('Consider exporting your wallet and selling DUST manually.');
@@ -1817,6 +1854,8 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     const first = await buildAndSend(false);
     if (first.ok) { await notePendingBuySeed(); await seedCacheIfBuy(); return first.sig; }
     if (!first.ok) lastErrCode = first.code || lastErrCode;
+
+    // Try shared accounts if needed
     if (first.code === "NOT_SUPPORTED") {
       log("Retrying with shared accounts …");
       const second = await buildAndSend(true);
@@ -1828,6 +1867,30 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       if (fallback.ok) { await notePendingBuySeed(); await seedCacheIfBuy(); return fallback.sig; }
       if (!fallback.ok) lastErrCode = fallback.code || lastErrCode;
     }
+
+    // Escalate on NO_ROUTE/ROUTER_DUST: high slip + no fee + relaxed path, full-size only
+    if (isSell && (/ROUTER_DUST|NO_ROUTE/i.test(String(lastErrCode || "")))) {
+      try {
+        const slip2 = 2000;
+        const rFlag = restrictAllowed ? "false" : "true";
+        // remove fee for retry
+        quoteIncludesFee = false;
+        feeAccount = null;
+        const q2 = buildQuoteUrl({ outMint: outputMint, slipBps: slip2, restrict: rFlag, withFee: false });
+        log(`Dust/route fallback: slip=${slip2} bps, no fee, relaxed route …`);
+        const r2 = await jupFetch(q2.pathname + q2.search);
+        if (r2.ok) {
+          quote = await r2.json();
+          const a = await buildAndSend(false, true);
+          if (a.ok) { await seedCacheIfBuy(); return a.sig; }
+          if (!a.ok) lastErrCode = a.code || lastErrCode;
+          const b = await buildAndSend(true, true);
+          if (b.ok) { await seedCacheIfBuy(); return b.sig; }
+          if (!b.ok) lastErrCode = b.code || lastErrCode;
+        }
+      } catch {}
+    }
+
 
     {
       const manualSeq = [
@@ -1843,7 +1906,6 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       }
     }
 
-   
     async function seedCacheIfBuy() {
       if (window._fdvDeferSeed) return;
       if (inputMint === SOL_MINT && outputMint !== SOL_MINT) {
@@ -2172,31 +2234,41 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       } catch {}
 
       try {
-        const slipSplit = 2000;
-        for (const f of SPLIT_FRACTIONS) {
-          const partRaw = Math.max(1, Math.floor(amountRaw * f));
-          if (partRaw <= 0) continue;
+      const slipSplit = 2000;
+      for (const f of SPLIT_FRACTIONS) {
+        const partRaw = Math.max(1, Math.floor(amountRaw * f));
+        if (partRaw <= 0) continue;
 
-          const restrictOptions = restrictAllowed ? ["false", "true"] : ["true"];
-          for (const restrict of restrictOptions) {
-            const qP = buildQuoteUrl({ outMint: outputMint, slipBps: slipSplit, restrict, amountOverrideRaw: partRaw });
-            log(`Split-sell quote f=${f} restrict=${restrict} slip=${slipSplit}…`);
-            const rP = await jupFetch(qP.pathname + qP.search);
-            if (!rP.ok) continue;
+        const restrictOptions = restrictAllowed ? ["false", "true"] : ["true"];
+        for (const restrict of restrictOptions) {
+          const qP = buildQuoteUrl({ outMint: outputMint, slipBps: slipSplit, restrict, amountOverrideRaw: partRaw, withFee: false });
+          log(`Split-sell quote f=${f} restrict=${restrict} slip=${slipSplit}…`);
+          const rP = await jupFetch(qP.pathname + qP.search);
+          if (!rP.ok) continue;
 
-            quote = await rP.json();
-            const tries = [
-              () => buildAndSend(false, false),
-              () => buildAndSend(true, false),
-              () => buildAndSend(false, true),
-              () => buildAndSend(true, true),
-            ];
-            for (const t of tries) {
-              try {
-                const res = await t();
-                if (res?.ok) {
-                  log(`Split-sell succeeded at ${Math.round(f*100)}% of position.`);
-                  try { setMintBlacklist(inputMint, MINT_RUG_BLACKLIST_MS); log(`Split-sell: blacklisted ${inputMint.slice(0,4)}… for 30m.`); } catch {}
+          const quotePart = await rP.json();
+          const outPartRaw = Number(quotePart?.outAmount || 0);
+          const outPartSol = outPartRaw / 1e9;
+          // Skip splits that fall below chunk floor
+          if (!Number.isFinite(outPartSol) || outPartSol < MIN_SELL_CHUNK_SOL) {
+            log(`Split f=${f} est out ${outPartSol.toFixed(6)} SOL < ${MIN_SELL_CHUNK_SOL}; skipping this chunk.`);
+            continue;
+          }
+
+          // Use no-fee for small chunks
+          quote = quotePart;
+          const tries = [
+            () => buildAndSend(false, false),
+            () => buildAndSend(true, false),
+            () => buildAndSend(false, true),
+            () => buildAndSend(true, true),
+          ];
+          for (const t of tries) {
+            try {
+              const res = await t();
+              if (res?.ok) {
+                log(`Split-sell succeeded at ${Math.round(f*100)}% of position.`);
+                try { setMintBlacklist(inputMint, MINT_RUG_BLACKLIST_MS); log(`Split-sell: blacklisted ${inputMint.slice(0,4)}… for 30m.`); } catch {}
                   try {
                     if (isSell) {
                       const dec = Number.isFinite(_decHint) ? _decHint : (Number.isFinite(inDecimals) ? inDecimals : 6);
@@ -2426,7 +2498,9 @@ function scorePumpCandidate(it) {
     0.08 * Math.max(0, accelRatio - 0.8) + 
     0.08 * Math.max(0, accel5to1 - 1) +    
     (risingNow && trendUp ? 0.06 : 0) +    
-    0.04 * pScore;                         
+    0.04 * pScore; 
+    
+  log(`Pump score calc for ${it.mint?.slice(0,4)}… : c5=${c5.toFixed(2)} c1=${c1.toFixed(2)} lVol=${lVol.toFixed(2)} lLiq=${lLiq.toFixed(2)} accelRatio=${accelRatio.toFixed(2)} accel5to1=${accel5to1.toFixed(2)} risingNow=${risingNow} trendUp=${trendUp} pScore=${pScore.toFixed(2)} => score=${score.toFixed(2)}`);
 
   return score;
 }
@@ -2578,23 +2652,26 @@ function computePrePumpScore({ kp = {}, meta = {} }) {
   const buy   = safeNum(meta.buy, 0);
 
   const a51raw = safeNum(meta.accel5to1, 1);
-  const a51   = a51raw > 0 ? a51raw : 1;
+  let a51   = a51raw > 0 ? a51raw : 1;
   const zv1   = Math.max(0, safeNum(meta.zV1, 0));
   const risingNow = !!meta.risingNow;
   const trendUp   = !!meta.trendUp;
 
+  // Treat missing accel as slight accel when flow is strong
+  const hasFlow = (zv1 >= 0.8 || buy >= 0.60);
+  if (a51 <= 1 && hasFlow) a51 = 1.01;
+
   const f5m = (chg5m > 0 && chg5m < 0.9) ? Math.min(1, chg5m / 0.9) : (chg5m >= 0.9 ? 0.4 : 0);
 
   // Volume acceleration (5m vs 1h) and decayed zV1
-  const fA  = Math.max(0, Math.min(1, (a51 - 1) / 0.08)); // 1.08 -> 1.0
-  const fZ  = Math.max(0, Math.min(1, zv1 / 1.5));        // zV1≈1.5 => 1.0
+  const fA  = Math.max(0, Math.min(1, (a51 - 1) / 0.05)); // was 0.08 -> more sensitive
+  const fZ  = Math.max(0, Math.min(1, zv1 / 1.5));
 
-  // Buy skew helps
-  const fB  = Math.max(0, Math.min(1, (buy - 0.56) / 0.12)); // 0.68 => 1.0
+  // Buy skew helps (slightly wider band)
+  const fB  = Math.max(0, Math.min(1, (buy - 0.58) / 0.10));
 
   log(`Pre-pump factors: f5m=${f5m.toFixed(3)} fA=${fA.toFixed(3)} fZ=${fZ.toFixed(3)} fB=${fB.toFixed(3)}`);
 
-  // Recent trend from 3-tick leader series
   const series = getLeaderSeries(kp.mint || "", 3);
   let fT = 0;
   if (series && series.length >= 3) {
@@ -2606,12 +2683,10 @@ function computePrePumpScore({ kp = {}, meta = {} }) {
     fT = 0.6;
   }
 
-  // Backside guard: if 1h is huge, 5m should be at least ~40% of uniform pace
   const exp5m = Math.max(0, chg1h) / 12;
   const accelRatio = exp5m > 0 ? (Math.max(0, chg5m) / exp5m) : 0;
-  const notBackside = accelRatio >= 0.4 ? 1 : 0;
+  const notBackside = accelRatio >= 0.4;
 
-  // Weighted blend emphasizing acceleration + volume + trend confirmation
   const score = (
     0.30 * fA +
     0.25 * fZ +
@@ -2630,58 +2705,116 @@ function slope3(series, key) {
   const c = Number(series[2]?.[key] ?? b);
   return (c - a) / 2;
 }
+function delta3(series, key) {
+  if (!Array.isArray(series) || series.length < 3) return 0;
+  const a = Number(series[0]?.[key] ?? 0);
+  const c = Number(series[2]?.[key] ?? a);
+  return c - a;
+}
+function slope3pm(series, key) {
+  if (!Array.isArray(series) || series.length < 3) return 0;
+  const a = series[0]; const c = series[2];
+  const dv = Number(c?.[key] ?? 0) - Number(a?.[key] ?? 0);
+  const dtm = Math.max(1e-3, (Number(c?.ts || 0) - Number(a?.ts || 0)) / 60000); // minutes
+  return dv / dtm;
+}
 
 function detectWarmingUptick({ kp = {}, meta = {} }, cfg = state) {
   const series = getLeaderSeries(kp.mint || "", 3) || [];
-  const chgSlope = slope3(series, "chg5m");
-  const scSlope  = slope3(series, "pumpScore");
+  const chgDelta    = delta3(series, "chg5m");
+  const chgSlopeMin = slope3pm(series, "chg5m");   // per-minute
+  const scDelta     = delta3(series, "pumpScore");
+  const scSlopeMin  = slope3pm(series, "pumpScore");
 
   const chg5m = safeNum(kp.change5m, 0);
   const chg1h = safeNum(kp.change1h, 0);
   const liq   = safeNum(kp.liqUsd, 0);
   const v1h   = safeNum(kp.v1hTotal, 0);
-  const a51   = Math.max(1, safeNum(meta.accel5to1, 1));
-  const zV1   = Math.max(0, safeNum(meta.zV1, 0));
+
+  // Inputs that often come in missing/zero
+  let a51   = Math.max(1, safeNum(meta.accel5to1, 1));
+  const zV1 = Math.max(0, safeNum(meta.zV1, 0));
+  const buy = Math.max(0, safeNum(meta.buy, 0));
   const rising= !!meta.risingNow, trendUp = !!meta.trendUp;
 
   // Backside guard
   const exp5m = Math.max(0, chg1h) / 12;
-  const accelRatio = exp5m > 0 ? (Math.max(0, chg5m) / exp5m) : 0;
-  const notBackside = accelRatio >= 0.4;
+  const accelRatio = exp5m > 0 ? (Math.max(0, chg5m) / exp5m) : 1;
+  let notBackside = true;
+  if (chg1h > 0.6) notBackside = accelRatio >= 0.35;
+  else if (chg1h > 0.2) notBackside = accelRatio >= 0.30;
 
-  // Adaptive floors
+  // Floors
   const liqOk = liq >= Math.max(2500, Number(cfg.warmingMinLiqUsd || 4000));
   const volOk = v1h >= Math.max(500,  Number(cfg.warmingMinV1h || 800));
 
-  // Pre-pump score with adaptive min
-  const pre = computePrePumpScore({ kp, meta });
-  let preMin = Math.max(0.40, Number(cfg.warmingUptickMinPre || 0.5));
-  if (!liqOk || !volOk) preMin += 0.05;           // weak liq/vol -> higher bar
-  if (a51 >= 1.04) preMin -= 0.03;                // strong accel -> lower bar
+  // Flow heuristics (looser)
+  const hasFlow = (zV1 >= (cfg.warmingFlowMin ?? 0.35)) || (buy >= (cfg.warmingBuyMin ?? 0.55));
+  if (a51 <= 1.0 && hasFlow) a51 = 1.01;
 
-  // Slopes and accel minimums
-  const needChgSlope = Number(cfg.warmingUptickMinDeltaChg5m || 0.05);
-  const needScSlope  = Number(cfg.warmingUptickMinDeltaScore || 0.02);
-  const needAccel    = Number(cfg.warmingUptickMinAccel || 1.01);
+  // Pre-pump score + adaptive minimum (respect config; lower clamp)
+  const pre = computePrePumpScore({ kp, meta });
+  let preMin = Number(cfg.warmingUptickMinPre ?? 0.35);
+  preMin = Math.max(0.30, preMin);
+  if (!liqOk || !volOk) preMin += 0.03;
+  if (a51 >= 1.02) preMin -= 0.05;
+  if (zV1 >= 1.0)  preMin -= 0.03;
+  if (chgSlopeMin >= 25) preMin -= 0.06;
+  if (scSlopeMin  >= 10) preMin -= 0.04;
+  preMin = Math.max(0.33, preMin);
+
+  // Thresholds
+  const needDeltaChg = Number(cfg.warmingUptickMinDeltaChg5m ?? 0.012);
+  const needDeltaSc  = Number(cfg.warmingUptickMinDeltaScore ?? 0.006);
+
+  // Allow price-slope OR delta to pass even if risingNow=false
+  const slopeOk = (chgDelta >= needDeltaChg) || (chgSlopeMin >= needDeltaChg * 3.0);
+
+  // Accel waiver under strong score/price slope
+  let accelOk  = a51 >= (hasFlow ? (Number(cfg.warmingUptickMinAccel ?? 1.001) - 0.005) : Number(cfg.warmingUptickMinAccel ?? 1.001));
+  if (scSlopeMin >= needDeltaSc * 2.5 || chgSlopeMin >= needDeltaChg * 2.0) accelOk = true;
+
+  const strongFlow = (zV1 >= Math.max(0.7, (cfg.warmingFlowStrong ?? 0.7))) || (buy >= Math.max(0.58, (cfg.warmingBuyStrong ?? 0.58)));
+  const scoreSlopeOk =
+    (scDelta >= needDeltaSc) ||
+    (scSlopeMin >= needDeltaSc * 2.0) ||
+    (strongFlow && (chgSlopeMin >= needDeltaChg * 2.0 || a51 >= ((cfg.warmingUptickMinAccel ?? 1.001) + 0.004)));
+
+  // Trend gate: accept score-slope alone as a trigger
+  const trendGate =
+    (rising && trendUp) ||
+    slopeOk ||
+    (scDelta >= needDeltaSc) ||
+    (scSlopeMin >= needDeltaSc * 2.0);
+
+  // Flow gate can be waived by strong score-slope
+  const flowGate = hasFlow || (scSlopeMin >= needDeltaSc * 2.5);
 
   const ok =
-    rising && trendUp &&
+    trendGate &&
     notBackside &&
-    a51 >= needAccel &&
-    chgSlope >= needChgSlope &&
-    scSlope  >= needScSlope &&
+    accelOk &&
+    scoreSlopeOk &&
     pre >= preMin &&
-    (zV1 >= 0.6 || meta.buy >= 0.62);
+    flowGate;
 
-  // score proxies strength (0..1+): combine normalized components
+  try {
+    const key = `_fdvWarmDbg:${kp.mint || "?"}`;
+    const last = window[key] || 0;
+    if (now() - last > 900) {
+      window[key] = now();
+      log(`WarmingChk ${String((kp.mint||"").slice(0,4))}… ok=${ok} a5/1=${a51.toFixed(3)} Δchg=${chgDelta.toFixed(3)} Δsc=${scDelta.toFixed(3)} slope=${chgSlopeMin.toFixed(3)}/m pre=${pre.toFixed(3)}>=${preMin.toFixed(3)} zV1=${zV1.toFixed(2)} buy=${buy.toFixed(2)} nb=${notBackside}`);
+    }
+  } catch {}
+
   const score = Math.max(0, Math.min(1,
     0.35 * Math.min(1, (a51 - 1) / 0.06) +
-    0.25 * Math.min(1, chgSlope / (needChgSlope * 1.8)) +
-    0.20 * Math.min(1, scSlope  / (needScSlope  * 2.0)) +
+    0.25 * Math.min(1, (chgDelta) / (needDeltaChg * 2.5)) +
+    0.20 * Math.min(1, (scDelta)  / (needDeltaSc  * 3.0)) +
     0.20 * Math.min(1, Math.max(0, pre - preMin + 0.05) / 0.30)
   ));
 
-  return { ok, score, chgSlope, scSlope, pre, preMin, a51, liq, v1h, notBackside };
+  return { ok, score, chgSlope: chgSlopeMin, scSlope: scSlopeMin, pre, preMin, a51, liq, v1h, notBackside };
 }
 
 function _getWarmPrimeStore() {
@@ -2738,12 +2871,24 @@ function pickPumpCandidates(take = 1, poolN = 3) {
         meta.trendUp === true &&
         Math.max(1, safeNum(meta.accel5to1, 1)) >= minAccel;
 
-      // Warming → Pump detector with hysteresis
       let primed = false;
       let pre = 0;
+      let chgSlope = 0;
+      let scSlope  = 0;
+
+      const risingNow = !!meta.risingNow;
+
+      if (!risingNow) {
+        log(`Rising now false for ${mint.slice(0,4)}… using slope-based warm check`);
+      }
+
       if (!microUp && isWarming && allowWarming && notBackside) {
+        log(`Checking warming uptick for ${mint.slice(0,4)}… With Data: chg5m=${chg5m.toFixed(3)} chg1h=${chg1h.toFixed(3)} accel5to1=${safeNum(meta.accel5to1,1).toFixed(3)} IS MICROUP: ${microUp}`);
         const res = detectWarmingUptick({ kp, meta });
+        log(`Warming uptick detection result for ${mint.slice(0,4)}: ${JSON.stringify(res)}`);
         pre = res.pre;
+        chgSlope = Number(res.chgSlope || 0);
+        scSlope  = Number(res.scSlope  || 0);
         if (res.ok) {
           const store = _getWarmPrimeStore();
           const prev = store.get(mint) || { count: 0, lastAt: 0 };
@@ -2756,7 +2901,6 @@ function pickPumpCandidates(take = 1, poolN = 3) {
           primed = okConsec;
           log(`Warming prime ${mint.slice(0,4)}… ${nextCount}/${need} (pre=${res.pre.toFixed(3)} a5/1=${res.a51.toFixed(2)} Δchg=${res.chgSlope.toFixed(3)} Δsc=${res.scSlope.toFixed(3)})`);
         } else {
-          // reset streak if detector failed
           try { _getWarmPrimeStore().delete(mint); } catch {}
         }
       } else {
@@ -2780,6 +2924,8 @@ function pickPumpCandidates(take = 1, poolN = 3) {
         primed,
         nb: notBackside,
         pre,
+        chgSlope,
+        scSlope,
         score: finalScore,
       });
     }
@@ -2795,14 +2941,14 @@ function pickPumpCandidates(take = 1, poolN = 3) {
       const minA   = isPump ? 1.00 : 0.98;
       const aEff   = Math.max(1, safeNum(x.meta?.accel5to1, 1));
       if (x.primed) {
-        // warmed primed: still enforce trend/nb and minimal quality
+        const flowOk = safeNum(x.meta?.zV1, 0) >= 0.50 || safeNum(x.meta?.buy, 0) >= 0.60;
+        const slopeGate = (Number(x.chgSlope || 0) >= 15) || (Number(x.scSlope || 0) >= 8);
         return (
           x.score >= top * 0.80 &&
           x.nb === true &&
-          x.meta?.risingNow === true &&
-          x.meta?.trendUp === true &&
+          ((x.meta?.risingNow === true && x.meta?.trendUp === true) || slopeGate) &&
           (x.chg5m > 0 || aEff >= 0.98) &&
-          safeNum(x.meta?.zV1, 0) >= 0.50
+          flowOk
         );
       }
       return (
@@ -3829,13 +3975,11 @@ function startFastObserver() {
         // Suppress urgency while unsynced/warming or during post-buy cooldown
         const ageMs = now() - Number(pos.lastBuyAt || pos.acquiredAt || 0);
         const postBuyCooldownMs = Math.max(20_000, Number(state.coolDownSecsAfterBuy || 0) * 1000);
-        if (
-          pos.awaitingSizeSync === true ||
-          (state.rideWarming && pos.warmingHold === true) ||
-          ageMs < Math.max(URGENT_SELL_MIN_AGE_MS, postBuyCooldownMs)
-        ) {
-          continue;
-        }
+
+        const inWarmingHold = !!(state.rideWarming && pos.warmingHold === true);
+        if (pos.awaitingSizeSync === true) continue;
+        if (!inWarmingHold && ageMs < Math.max(URGENT_SELL_MIN_AGE_MS, postBuyCooldownMs)) continue;
+
 
         const r = fastDropCheck(mint, pos);
         if (r.trigger) flagUrgentSell(mint, r.reason, r.sev);
@@ -3962,7 +4106,9 @@ async function evalAndMaybeSellPositions() {
 
         {
           const postBuyCooldownMs = Math.max(20_000, Number(state.coolDownSecsAfterBuy || 0) * 1000);
-          if (!leaderMode && ageMs < postBuyCooldownMs && (forceObserverDrop || forcePumpDrop)) {
+          const inWarmingHold = !!(state.rideWarming && pos.warmingHold === true);
+          if (!leaderMode && ageMs < postBuyCooldownMs && (forceObserverDrop || forcePumpDrop) && !inWarmingHold) {
+
             log(`Post-buy cooldown active (${Math.round(ageMs/1000)}s); suppressing volatility sell for ${mint.slice(0,4)}…`);
             forceObserverDrop = false;
             forcePumpDrop = false;
@@ -3986,17 +4132,17 @@ async function evalAndMaybeSellPositions() {
 
         let decision = null;
 
-
-        if (warmingActive && warmReq.shouldAutoRelease) {
-          pos.warmingHold = false;
-          pos.warmingClearedAt = now();
-          save();
-          log(`Warming auto-released for ${mint.slice(0,4)}… after ${warmReq.elapsedTotalSec}s. Normal sell rules restored.`);
-        } else if (warmingActive && pnlPct >= warmReq.req) {
-          pos.warmingHold = false;
-          pos.warmingClearedAt = now();
-          save();
-          log(`Warming profit met for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% ≥ ${warmReq.req.toFixed(2)}%). Normal sell rules restored.`);
+        if (warmingActive && pos.warmingHold === true) {
+          const windowMs = Math.max(5_000, Number(state.warmingMaxLossWindowSecs || 30) * 1000);
+          const maxLoss = Math.max(1, Number(state.warmingMaxLossPct || 10));
+          const warmAgeMs = nowTs - Number(pos.warmingHoldAt || pos.lastBuyAt || pos.acquiredAt || 0);
+          if (warmAgeMs <= windowMs && pnlPct <= -maxLoss) {
+            log(`Warming max-loss hit for ${mint.slice(0,4)}… (${pnlPct.toFixed(2)}% ≤ -${maxLoss}%). Forcing sell.`);
+            pos.warmingHold = false;
+            pos.warmingClearedAt = now();
+            save();
+            forceObserverDrop = true; // reuse same bypass path
+          }
         }
 
         if (warmingActive && pos.warmingHold === true && !warmReq.shouldAutoRelease && pnlPct < warmReq.req && !forceRug) {
@@ -4054,7 +4200,7 @@ async function evalAndMaybeSellPositions() {
           log(`Max-hold reached for ${mint.slice(0,4)}… forcing sell.`);
         }
 
-        if (warmingActive && pos.warmingHold === true && pnlPct < warmReq.req && decision && decision.action !== "none" && !/rug/i.test(decision.reason || "")) {
+        if (warmingActive && pos.warmingHold === true && !warmReq.shouldAutoRelease && pnlPct < warmReq.req && decision && decision.action !== "none" && !/rug|warming-max-loss/i.test(decision.reason || "")) {
           log(`Warming hold: skipping sell (${decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
           decision = { action: "none", reason: "warming-hold-until-profit" };
         }
@@ -4548,11 +4694,16 @@ async function tick() {
     }
 
     const solBal = await fetchSolBalance(kp.publicKey.toBase58());
+    if (solBal < 0.05) {
+      log(`SOL low (${solBal.toFixed(4)}); skipping new buys to avoid router dust.`);
+      return;
+    }
     const ceiling = await computeSpendCeiling(kp.publicKey.toBase58(), { solBalHint: solBal });
 
     const desired      = Math.min(state.maxBuySol, Math.max(state.minBuySol, solBal * state.buyPct));
     const minThreshold = Math.max(state.minBuySol, MIN_SELL_SOL_OUT);
-    let plannedTotal   = Math.min(ceiling.spendableSol, Math.min(state.maxBuySol, state.carrySol + desired));
+    let plannedTotal   = Math.min(ceiling.spendableSol, Math.min(state.maxBuySol, desired));
+
 
     logObj("Buy sizing (pre-split)", {
       solBal: Number(solBal).toFixed(6),
@@ -4564,17 +4715,18 @@ async function tick() {
 
 
     let buyCandidates = picks.filter(m => {
-       const pos = state.positions[m];
-       const allowRebuy = !!pos?.allowRebuy;
-       const eligibleSize = allowRebuy || Number(pos?.sizeUi || 0) <= 0;
-       const notPending = !pos?.awaitingSizeSync;
-       const notLocked  = !isMintLocked(m);
-       return eligibleSize && notPending && notLocked;
+      const pos = state.positions[m];
+      const allowRebuy = !!pos?.allowRebuy;
+      const eligibleSize = allowRebuy || Number(pos?.sizeUi || 0) <= 0;
+      const notPending = !pos?.awaitingSizeSync;
+      const notLocked  = !isMintLocked(m);
+      return eligibleSize && notPending && notLocked;
     });
 
     if (!state.allowMultiBuy && buyCandidates.length > 1) {
       buyCandidates = buyCandidates.slice(0, 1);
     }
+
 
 
     if (!buyCandidates.length) { log("All picks already held or pending. Skipping buys."); return; }
@@ -4629,6 +4781,10 @@ async function tick() {
       const target = Math.max(minThreshold, remaining / left);
 
       const reqRent = await requiredAtaLamportsForSwap(kp.publicKey.toBase58(), SOL_MINT, mint);
+      if (reqRent > 0 && solBal < AVOID_NEW_ATA_SOL_FLOOR) {
+        log(`Skipping ${mint.slice(0,4)}… (SOL ${solBal.toFixed(4)} < ${AVOID_NEW_ATA_SOL_FLOOR}, would open new ATA). Try adding more SOL`);
+        continue;
+      }
       const candidateBudgetLamports = Math.max(0, remainingLamports - reqRent - TX_FEE_BUFFER_LAMPORTS);
       const targetLamports = Math.floor(target * 1e9);
       let buyLamports = Math.min(targetLamports, Math.floor(remaining * 1e9), candidateBudgetLamports);
@@ -4655,6 +4811,14 @@ async function tick() {
         try {
           const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
           if (badgeNow === "pumping") needPct = needPct - 2.0; // allow a bit more friction on live pumps
+          if (badgeNow === "warming") {
+            const minEx = Math.max(0, Number(state.warmingEdgeMinExclPct ?? 0));
+            if (!edge) { log(`Skip ${mint.slice(0,4)}… (no round-trip quote)`); continue; }
+            if (Number(edge.pctNoOnetime) < minEx) {
+              log(`Skip ${mint.slice(0,4)}… warming edge excl-ATA ${Number(edge.pctNoOnetime).toFixed(2)}% < ${minEx}%`);
+              continue;
+            }
+          }
         } catch {}
         if (!edge) { log(`Skip ${mint.slice(0,4)}… (no round-trip quote)`); continue; }
 
@@ -4811,7 +4975,7 @@ async function tick() {
       if (remaining < minThreshold) break;
     }
 
-    state.carrySol = Math.max(0, state.carrySol + desired - spent);
+    state.carrySol = 0; // disable carry accumulation after buy attempts
     if (buysDone > 0) {
       state.lastTradeTs = now();
       save();
@@ -4920,9 +5084,31 @@ function onToggle(on) {
 
 function load() {
   try { state = { ...state, ...(JSON.parse(localStorage.getItem(LS_KEY))||{}) }; } catch {}
+
+  // Migrate old-stored warming thresholds to relaxed defaults (tuned for small balances)
+  if (!Number.isFinite(state.warmingUptickMinPre) || state.warmingUptickMinPre > 0.35) state.warmingUptickMinPre = 0.35;
+  if (!Number.isFinite(state.warmingUptickMinAccel) || state.warmingUptickMinAccel > 1.001) state.warmingUptickMinAccel = 1.001;
+  if (!Number.isFinite(state.warmingUptickMinDeltaChg5m) || state.warmingUptickMinDeltaChg5m > 0.015) state.warmingUptickMinDeltaChg5m = 0.012;
+  if (!Number.isFinite(state.warmingUptickMinDeltaScore) || state.warmingUptickMinDeltaScore > 0.015) state.warmingUptickMinDeltaScore = 0.006;
+  if (!Number.isFinite(state.warmingPrimedConsec) || state.warmingPrimedConsec > 1) state.warmingPrimedConsec = 1;
+  if (!Number.isFinite(state.warmingMaxLossPct)) state.warmingMaxLossPct = 10;
+  if (!Number.isFinite(state.warmingMaxLossWindowSecs)) state.warmingMaxLossWindowSecs = 30;
+  if (!Number.isFinite(state.warmingEdgeMinExclPct)) state.warmingEdgeMinExclPct = 0;
+
+  // Debug surface
+  try {
+    logObj("Warming thresholds", {
+      minPre: state.warmingUptickMinPre,
+      minAccel: state.warmingUptickMinAccel,
+      dChg: state.warmingUptickMinDeltaChg5m,
+      dScore: state.warmingUptickMinDeltaScore,
+      primeConsec: state.warmingPrimedConsec
+    });
+  } catch {}
+
   state.tickMs = Math.max(1200, Math.min(5000, Number(state.tickMs || 2000))); 
   state.slippageBps = Math.min(300, Math.max(200, Number(state.slippageBps ?? 250) | 0));
-  state.minBuySol   = Math.max(0.006, UI_LIMITS.MIN_BUY_SOL_MIN, Number(state.minBuySol ?? 0.008));
+  state.minBuySol   = Math.max(0.01, UI_LIMITS.MIN_BUY_SOL_MIN, Number(state.minBuySol ?? 0.01)); // 0.01 floor
   if (!Number.isFinite(state.minNetEdgePct)) state.minNetEdgePct = 0.6;
 
   state.coolDownSecsAfterBuy = Math.max(0, Math.min(12, Number(state.coolDownSecsAfterBuy || 8)));
@@ -4930,13 +5116,13 @@ function load() {
   if (!Number.isFinite(state.warmingDecayDelaySecs)) state.warmingDecayDelaySecs = 45;
   if (!Number.isFinite(state.warmingMinProfitFloorPct)) state.warmingMinProfitFloorPct = -2.0;
   if (!Number.isFinite(state.warmingAutoReleaseSecs)) state.warmingAutoReleaseSecs = 90;
-  if (!Number.isFinite(state.warmingUptickMinAccel)) state.warmingUptickMinAccel = 1.01;
-  if (!Number.isFinite(state.warmingUptickMinPre)) state.warmingUptickMinPre = 0.50;
-  if (!Number.isFinite(state.warmingUptickMinDeltaChg5m)) state.warmingUptickMinDeltaChg5m = 0.05;
-  if (!Number.isFinite(state.warmingUptickMinDeltaScore)) state.warmingUptickMinDeltaScore = 0.02;
+  if (!Number.isFinite(state.warmingUptickMinAccel)) state.warmingUptickMinAccel = 1.001;
+  if (!Number.isFinite(state.warmingUptickMinPre)) state.warmingUptickMinPre = 0.35;
+  if (!Number.isFinite(state.warmingUptickMinDeltaChg5m)) state.warmingUptickMinDeltaChg5m = 0.012;
+  if (!Number.isFinite(state.warmingUptickMinDeltaScore)) state.warmingUptickMinDeltaScore = 0.006;
   if (!Number.isFinite(state.warmingMinLiqUsd)) state.warmingMinLiqUsd = 4000;
   if (!Number.isFinite(state.warmingMinV1h)) state.warmingMinV1h = 800;
-  if (!Number.isFinite(state.warmingPrimedConsec)) state.warmingPrimedConsec = 2;
+  if (!Number.isFinite(state.warmingPrimedConsec)) state.warmingPrimedConsec = 1;
 
   if (typeof state.strictBuyFilter !== "boolean") state.strictBuyFilter = true;
 
@@ -5219,7 +5405,7 @@ export function initAutoWidget(container = document.body) {
     </div>
     </div>
     <div class="fdv-bot-footer" style="margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
-      <span>Version: 0.0.3.1</span>
+      <span>Version: 0.0.3.2</span>
     </div>
   `;
 
@@ -5311,6 +5497,18 @@ export function initAutoWidget(container = document.body) {
   minEdgeEl = wrap.querySelector("[data-auto-minedge]");
   multiEl   = wrap.querySelector("[data-auto-multi]");
   warmDecayEl = wrap.querySelector("[data-auto-warmdecay]");
+
+  setTimeout(() => {
+  try {
+    logObj("Warming thresholds", {
+      minPre: state.warmingUptickMinPre,
+      minAccel: state.warmingUptickMinAccel,
+      dChg: state.warmingUptickMinDeltaChg5m,
+      dScore: state.warmingUptickMinDeltaScore,
+      primeConsec: state.warmingPrimedConsec
+    });
+  } catch {}
+}, 0);
 
 
 
