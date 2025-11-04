@@ -11,7 +11,7 @@ const FEE_RESERVE_MIN = 0.0002;   // rent
 const FEE_RESERVE_PCT = 0.08;     // 8% reserve (was 15%)
 const MIN_SELL_CHUNK_SOL = 0.01;  // allow micro exits (was 0.02)
 const SMALL_SELL_FEE_FLOOR = 0.03;      // disable fee below this est out
-const AVOID_NEW_ATA_SOL_FLOOR = 0.05;   // don't open new ATAs if SOL below this
+const AVOID_NEW_ATA_SOL_FLOOR = 0.04;   // don't open new ATAs if SOL below this
 const TX_FEE_BUFFER_LAMPORTS  = 500_000;
 const SELL_TX_FEE_BUFFER_LAMPORTS = 500_000; 
 const EXTRA_TX_BUFFER_LAMPORTS     = 250_000;  
@@ -153,7 +153,7 @@ let state = {
   minSecsBetween: 90,
   buyScore: 1.2,
   takeProfitPct: 12,
-  stopLossPct: 8,
+  stopLossPct: 4,
   slippageBps: 250,
   holdingsUi: 0,
   avgEntryUsd: 0,
@@ -169,6 +169,7 @@ let state = {
   staleMinsToDeRisk: 4, 
   singlePositionMode: true,
   minNetEdgePct: -5, 
+  edgeSafetyBufferPct: 0.2,
 
   // Auto wallet mode
   autoWalletPub: "",        
@@ -199,6 +200,7 @@ let state = {
   // Safeties
   seedBuyCache: true,
   observerDropSellAt: 3,
+  observerGraceSecs: 45,
   // Observer hysteresis settings
   observerDropMinAgeSecs: 5,   
   observerDropConsec: 2,     
@@ -215,7 +217,7 @@ let state = {
   dynamicHoldEnabled: true,
   // Badge status selection
   rideWarming: true,
-  warmingMinProfitPct: 4,
+  warmingMinProfitPct: 2,
   warmingDecayPctPerMin: 0.50,      
   warmingDecayDelaySecs: 15,         
   warmingMinProfitFloorPct: -2.0,   
@@ -227,9 +229,19 @@ let state = {
   warmingMinLiqUsd: 4000,             
   warmingMinV1h: 800,
   warmingPrimedConsec: 1, 
-  warmingMaxLossPct: 10,           // early stop if PnL <= -10% within window
+  warmingMaxLossPct: 6,           // early stop if PnL <= -10% within window
   warmingMaxLossWindowSecs: 30,    // window after buy for the max-loss guard
-  warmingEdgeMinExclPct: 0,     
+  warmingEdgeMinExclPct: null,     
+
+  // Rebound gate
+  reboundGateEnabled: true,         
+  reboundLookbackSecs: 45,       
+  reboundMaxDeferSecs: 20,         
+  reboundHoldMs: 4000,             
+  reboundMinScore: 0.34,            
+  reboundMinChgSlope: 12,           
+  reboundMinScSlope: 8,             
+  reboundMinPnLPct: -15,            
 
 
   // money made tracker
@@ -243,6 +255,8 @@ let timer = null;
 let logEl, toggleEl, startBtn, stopBtn, mintEl;
 let depAddrEl, depBalEl, lifeEl, recvEl, buyPctEl, minBuyEl, maxBuyEl, minEdgeEl, multiEl, warmDecayEl;
 let ledEl;
+let advBoxEl, warmMinPEl, warmFloorEl, warmDelayEl, warmReleaseEl, warmMaxLossEl, warmMaxWindowEl, warmConsecEl, warmEdgeEl;
+
 
 let _starting = false;
 
@@ -588,14 +602,19 @@ async function processPendingCredits() {
           }
         } catch {}
       }
-
       if (sizeUi > 0) {
         const prevPos = state.positions[entry.mint] || entry.basePos || { costSol: 0, hwmSol: 0, acquiredAt: now() };
+
+        const alreadySynced = (prevPos.awaitingSizeSync === false) && Number(prevPos.sizeUi || 0) > 0;
+        const nextCost = alreadySynced
+          ? Number(prevPos.costSol || 0)
+          : Number(prevPos.costSol || 0) + Number(entry.addCostSol || 0);
+
         const pos = {
           ...prevPos,
           sizeUi,
           decimals: dec,
-          costSol: Number(prevPos.costSol || 0) + Number(entry.addCostSol || 0),
+          costSol: nextCost,
           hwmSol: Math.max(Number(prevPos.hwmSol || 0), Number(entry.addCostSol || 0)),
           lastBuyAt: now(),
           lastSeenAt: now(),
@@ -609,7 +628,6 @@ async function processPendingCredits() {
       }
     } catch (e) {
       _markRpcStress(e, 3000);
-      // extend grace window a bit under rate limit
       entry.until = Math.max(entry.until, now() + 4000);
     }
   }
@@ -2598,6 +2616,27 @@ function _getSeriesStore() {
    return window._fdvLeaderSeries;
 }
 
+function slope3(series, key) {
+  if (!Array.isArray(series) || series.length < 3) return 0;
+  const a = Number(series[0]?.[key] ?? 0);
+  const b = Number(series[1]?.[key] ?? a);
+  const c = Number(series[2]?.[key] ?? b);
+  return (c - a) / 2;
+}
+function delta3(series, key) {
+  if (!Array.isArray(series) || series.length < 3) return 0;
+  const a = Number(series[0]?.[key] ?? 0);
+  const c = Number(series[2]?.[key] ?? a);
+  return c - a;
+}
+function slope3pm(series, key) {
+  if (!Array.isArray(series) || series.length < 3) return 0;
+  const a = series[0]; const c = series[2];
+  const dv = Number(c?.[key] ?? 0) - Number(a?.[key] ?? 0);
+  const dtm = Math.max(1e-3, (Number(c?.ts || 0) - Number(a?.ts || 0)) / 60000); // minutes
+  return dv / dtm;
+}
+
 function recordLeaderSample(mint, sample) {
   if (!mint) return;
   const s = _getSeriesStore();
@@ -2698,25 +2737,85 @@ function computePrePumpScore({ kp = {}, meta = {} }) {
   return score; // 0..1
 }
 
-function slope3(series, key) {
-  if (!Array.isArray(series) || series.length < 3) return 0;
-  const a = Number(series[0]?.[key] ?? 0);
-  const b = Number(series[1]?.[key] ?? a);
-  const c = Number(series[2]?.[key] ?? b);
-  return (c - a) / 2;
+function computeReboundSignal(mint) {
+  try {
+    const series = getLeaderSeries(mint, 3);
+    if (!Array.isArray(series) || series.length < 3) return { ok: false, why: "no-series" };
+
+    const last = series[series.length - 1] || {};
+    const kp = {
+      mint,
+      change5m: safeNum(last.chg5m, 0),
+      change1h: safeNum(last.chg1h, 0),
+      liqUsd:   safeNum(last.liqUsd, 0),
+      v1h:      safeNum(last.v1h, 0),
+    };
+
+    // Build a minimal meta based on slopes to keep detector meaningful
+    const c5 = Math.max(0, kp.change5m);
+    const c1 = Math.max(0, kp.change1h);
+    const exp5m = c1 / 12;
+    const accel5to1 = exp5m > 1e-9 ? Math.max(1, c5 / exp5m) : (c5 > 0 ? 1.02 : 1);
+    const zV1 = Math.max(0, kp.v1h) / 1000; // rough z-score proxy (scaled)
+    const chgSlopeMin = slope3pm(series, "chg5m");
+    const scSlopeMin  = slope3pm(series, "pumpScore");
+    const risingNow   = chgSlopeMin > 0 || (delta3(series, "chg5m") > 0);
+    const trendUp     = scSlopeMin > 0 && (delta3(series, "pumpScore") > 0);
+
+    const meta = { accel5to1, zV1, buy: 0.58, risingNow, trendUp };
+
+    const res = detectWarmingUptick({ kp, meta }, state);
+    const score = Number(res?.score || 0);
+    const chgS  = Number(res?.chgSlope || chgSlopeMin || 0);
+    const scS   = Number(res?.scSlope || scSlopeMin || 0);
+
+    const okSlope = (chgS >= Math.max(6, Number(state.reboundMinChgSlope || 12))) &&
+                    (scS  >= Math.max(4, Number(state.reboundMinScSlope  || 8)));
+
+    const ok = !!res?.ok || okSlope || score >= Math.max(0.25, Number(state.reboundMinScore || 0.34));
+    const why = res?.ok ? "warming-ok" : (okSlope ? "slope-ok" : (score >= (state.reboundMinScore||0.34) ? "score-ok" : "weak"));
+    return { ok, why, score, chgSlope: chgS, scSlope: scS };
+  } catch {
+    return { ok: false, why: "error" };
+  }
 }
-function delta3(series, key) {
-  if (!Array.isArray(series) || series.length < 3) return 0;
-  const a = Number(series[0]?.[key] ?? 0);
-  const c = Number(series[2]?.[key] ?? a);
-  return c - a;
-}
-function slope3pm(series, key) {
-  if (!Array.isArray(series) || series.length < 3) return 0;
-  const a = series[0]; const c = series[2];
-  const dv = Number(c?.[key] ?? 0) - Number(a?.[key] ?? 0);
-  const dtm = Math.max(1e-3, (Number(c?.ts || 0) - Number(a?.ts || 0)) / 60000); // minutes
-  return dv / dtm;
+
+function shouldDeferSellForRebound(mint, pos, pnlPct, nowTs, reason = "") {
+  try {
+    if (!state.reboundGateEnabled) return false;
+    if (!mint || !pos) return false;
+
+    // Don’t defer on rugs or profit-taking
+    if (/rug/i.test(reason || "")) return false;
+    if (/TP|take\s*profit/i.test(reason || "")) return false;
+
+    const ageMs = nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0);
+    const lookbackMs = Math.max(5_000, Number(state.reboundLookbackSecs || 45) * 1000);
+    if (ageMs > lookbackMs) return false;
+
+    // Avoid deep losers
+    const minPnl = Number(state.reboundMinPnLPct || -15);
+    if (Number.isFinite(pnlPct) && pnlPct <= minPnl) return false;
+
+    // Cap total deferral time
+    const startedAt = Number(pos.reboundDeferStartedAt || 0);
+    const maxDefMs = Math.max(4_000, Number(state.reboundMaxDeferSecs || 20) * 1000);
+    if (startedAt && (nowTs - startedAt) > maxDefMs) return false;
+
+    const sig = computeReboundSignal(mint);
+    if (!sig.ok) return false;
+
+    // Initialize deferral window
+    if (!pos.reboundDeferStartedAt) pos.reboundDeferStartedAt = nowTs;
+    pos.reboundDeferUntil = nowTs + Math.max(1000, Number(state.reboundHoldMs || 4000));
+    pos.reboundDeferCount = Number(pos.reboundDeferCount || 0) + 1;
+    save();
+
+    log(`Rebound gate: holding ${mint.slice(0,4)}… (${sig.why}; score=${sig.score.toFixed(3)} chgSlope=${sig.chgSlope.toFixed(2)}/m scSlope=${sig.scSlope.toFixed(2)}/m)`);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function detectWarmingUptick({ kp = {}, meta = {} }, cfg = state) {
@@ -4027,7 +4126,7 @@ async function evalAndMaybeSellPositions() {
           log(`Skip sell eval for ${mint.slice(0,4)}… (no size)`);
           continue;
         }
-
+        const inSellGuard = Number(pos.sellGuardUntil || 0) > nowTs;
         const ownerStr = kp.publicKey.toBase58();
         const pendKey = _pcKey(ownerStr, mint);
         const hasPending = !!(_pendingCredits?.has?.(pendKey));
@@ -4038,7 +4137,7 @@ async function evalAndMaybeSellPositions() {
           continue;
         }
 
-        // Leader-hold: only sell on rug; otherwise keep holding
+        
         if (leaderMode) {
           const sig0 = getRugSignalForMint(mint);
           if (!(sig0?.rugged)) {
@@ -4047,7 +4146,7 @@ async function evalAndMaybeSellPositions() {
           }
           log(`Leader-hold: RUG detected for ${mint.slice(0,4)}… sev=${Number(sig0.sev||0).toFixed(2)}. Forcing sell.`);
         }
-
+        
         let forceRug = false;
         let rugSev = 0;
         let forcePumpDrop = false;
@@ -4058,8 +4157,10 @@ async function evalAndMaybeSellPositions() {
           if (ageMs < URGENT_SELL_MIN_AGE_MS) {
             log(`Urgent sell suppressed (warmup ${Math.round(ageMs/1000)}s) for ${mint.slice(0,4)}…`);
           } else {
-            // In leader mode, allow urgent only if it’s a rug (extra guard)
-            if (!leaderMode || /rug/i.test(String(urgent.reason||""))) {
+            const isRugUrg = /rug/i.test(String(urgent.reason||""));
+            if (inSellGuard && !isRugUrg) {
+              log(`Sell guard active; deferring urgent sell for ${mint.slice(0,4)}…`);
+            } else {
               forceObserverDrop = true;
               rugSev = Number(urgent.sev || 1);
               log(`Urgent sell for ${mint.slice(0,4)}… (${urgent.reason}); bypassing notional/cooldowns.`);
@@ -4092,9 +4193,13 @@ async function evalAndMaybeSellPositions() {
               recordObserverPasses(mint, p);
               const thr = Math.max(0, Number(state.observerDropSellAt ?? 3));
               if (p <= 2) {
-                forceObserverDrop = true;
-                setMintBlacklist(mint); // staged and progressive ban
-                log(`Observer drop for ${mint.slice(0,4)}… (${p}/5 <= 2) forcing sell (staged blacklist).`);
+                if (inSellGuard) {
+                  log(`Sell guard active; suppressing observer drop (${p}/5) for ${mint.slice(0,4)}…`);
+                } else {
+                  forceObserverDrop = true;
+                  setMintBlacklist(mint); // staged and progressive ban
+                  log(`Observer drop for ${mint.slice(0,4)}… (${p}/5 <= 2) forcing sell (staged blacklist).`);
+                }
               } else if (p === 3 && thr >= 3) {
                 obsPasses = 3;
               }
@@ -4107,9 +4212,8 @@ async function evalAndMaybeSellPositions() {
         {
           const postBuyCooldownMs = Math.max(20_000, Number(state.coolDownSecsAfterBuy || 0) * 1000);
           const inWarmingHold = !!(state.rideWarming && pos.warmingHold === true);
-          if (!leaderMode && ageMs < postBuyCooldownMs && (forceObserverDrop || forcePumpDrop) && !inWarmingHold) {
-
-            log(`Post-buy cooldown active (${Math.round(ageMs/1000)}s); suppressing volatility sell for ${mint.slice(0,4)}…`);
+          if (!leaderMode && (inSellGuard || ageMs < postBuyCooldownMs) && (forceObserverDrop || forcePumpDrop) && !inWarmingHold && !forceRug) {
+            log(`Volatility sell guard active; suppressing observer/pump drop for ${mint.slice(0,4)}…`);
             forceObserverDrop = false;
             forcePumpDrop = false;
           }
@@ -4160,9 +4264,13 @@ async function evalAndMaybeSellPositions() {
         if (!forceRug && !forcePumpDrop && !forceObserverDrop && obsPasses === 3) {
           const should = shouldForceSellAtThree(mint, pos, curSol, nowTs);
           if (should) {
-            forceObserverDrop = true;
-            setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
-            log(`Observer 3/5 debounced -> forcing sell (${mint.slice(0,4)}…) and blacklisting 30m.`);
+            if (inSellGuard) {
+              log(`Sell guard active; deferring 3/5 observer sell for ${mint.slice(0,4)}…`);
+            } else {
+              forceObserverDrop = true;
+              setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+              log(`Observer 3/5 debounced -> forcing sell (${mint.slice(0,4)}…) and blacklisting 30m.`);
+            }
           } else {
             log(`Observer 3/5 for ${mint.slice(0,4)}… soft-watch; debounce active (no sell).`);
             noteObserverConsider(mint, 30_000);
@@ -4206,17 +4314,38 @@ async function evalAndMaybeSellPositions() {
         }
 
 
-        if (!decision) {
-          const staleMins = Math.max(0, Number(state.staleMinsToDeRisk || 0));
-          const isStale = staleMins > 0 && pos.acquiredAt && (nowTs - pos.acquiredAt) > staleMins * 60_000;
-          if (isStale && curSol >= minNotional) {
-            decision = { action: "sell_all", reason: `stale>${staleMins}m` };
+
+
+        if (decision && decision.action !== "none" && !forceRug) {
+          // If we are already in a rebound deferral window, honor it until expiry
+          const stillDeferred = Number(pos.reboundDeferUntil || 0) > nowTs;
+          if (stillDeferred) {
+            log(`Rebound gate: deferral active for ${mint.slice(0,4)}… skipping sell this tick.`);
+            decision = { action: "none", reason: "rebound-deferral" };
           } else {
-            decision = shouldSell(pos, curSol, nowTs);
+            const wantDefer = shouldDeferSellForRebound(mint, pos, pnlPct, nowTs, decision.reason || "");
+            if (wantDefer) {
+              decision = { action: "none", reason: "rebound-predict-hold" };
+              // wake a re-eval when the small deferral window expires
+              const waitMs = Math.max(800, Number(state.reboundHoldMs || 4000));
+              setTimeout(() => { try { wakeSellEval(); } catch {} }, waitMs);
+            } else {
+              // clear deferral markers if any
+              if (pos.reboundDeferUntil || pos.reboundDeferStartedAt) {
+                delete pos.reboundDeferUntil;
+                delete pos.reboundDeferStartedAt;
+                delete pos.reboundDeferCount;
+                save();
+              }
+            }
           }
         }
+
         log(`Sell decision: ${decision.action !== "none" ? decision.action : "NO"} (${decision.reason || "criteria not met"})`);
         if (decision.action === "none") continue;
+
+
+
 
         // Jupiter 0x1788 = cooldown
         if (!forceExpire && window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
@@ -4807,34 +4936,54 @@ async function tick() {
 
       try {
         const edge = await estimateRoundtripEdgePct(kp.publicKey.toBase58(), mint, buySol, { slippageBps: state.slippageBps });
-        let needPct = Number.isFinite(Number(state.minNetEdgePct)) ? Number(state.minNetEdgePct) : -8;
-        try {
-          const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
-          if (badgeNow === "pumping") needPct = needPct - 2.0; // allow a bit more friction on live pumps
-          if (badgeNow === "warming") {
-            const minEx = Math.max(0, Number(state.warmingEdgeMinExclPct ?? 0));
-            if (!edge) { log(`Skip ${mint.slice(0,4)}… (no round-trip quote)`); continue; }
-            if (Number(edge.pctNoOnetime) < minEx) {
-              log(`Skip ${mint.slice(0,4)}… warming edge excl-ATA ${Number(edge.pctNoOnetime).toFixed(2)}% < ${minEx}%`);
-              continue;
-            }
-          }
-        } catch {}
+        // let needPct = Number.isFinite(Number(state.minNetEdgePct)) ? Number(state.minNetEdgePct) : -8;
+        // try {
+        //   const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
+        //   if (badgeNow === "pumping") needPct = needPct - 2.0; // allow a bit more friction on live pumps
+        //   if (badgeNow === "warming") {
+        //     const minEx = Math.max(0, Number(state.warmingEdgeMinExclPct ?? 0));
+        //     if (!edge) { log(`Skip ${mint.slice(0,4)}… (no round-trip quote)`); continue; }
+        //     if (Number(edge.pctNoOnetime) < minEx) {
+        //       log(`Skip ${mint.slice(0,4)}… warming edge excl-ATA ${Number(edge.pctNoOnetime).toFixed(2)}% < ${minEx}%`);
+        //       continue;
+        //     }
+        //   }
+        // } catch {}
+        const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
         if (!edge) { log(`Skip ${mint.slice(0,4)}… (no round-trip quote)`); continue; }
 
-        const gaugePct = Number(edge.ataRentLamports > 0 ? edge.pct : edge.pctNoOnetime);
+        const baseUser = Number.isFinite(state.minNetEdgePct) ? state.minNetEdgePct : -4;
+        const warmOverride = state.warmingEdgeMinExclPct;
+        const hasWarmOverride = typeof warmOverride === "number" && Number.isFinite(warmOverride);
+        const warmUser = hasWarmOverride ? warmOverride : baseUser;
+        const buffer   = Math.max(0, Number(state.edgeSafetyBufferPct || 0.2));
 
-        if (!Number.isFinite(gaugePct)) {
-          log(`Skip ${mint.slice(0,4)}… (invalid edge)`);
+        const hasOnetime = Number(edge.ataRentLamports || 0) > 0;
+        const incl = Number(edge.pct);          // includes one-time ATA rent
+        const excl = Number(edge.pctNoOnetime); // excludes one-time ATA rent
+        const pumping = (badgeNow === "pumping");
+
+        const needExcl = pumping
+          ? (baseUser - 2.0)
+          : (badgeNow === "warming" ? warmUser : baseUser);
+
+        let needIncl = needExcl;
+        if (pumping && hasOnetime) needIncl = baseUser;
+
+        const pass = hasOnetime
+          ? (Number.isFinite(incl) && incl >= (needIncl + buffer))
+          : (Number.isFinite(excl) && excl >= (needExcl + buffer));
+
+        if (!pass) {
+          const inclStr = Number.isFinite(incl) ? incl.toFixed(2) : "—";
+          const exclStr = Number.isFinite(excl) ? excl.toFixed(2) : "—";
+          const needStr = (hasOnetime ? needIncl : needExcl).toFixed(2);
+          const srcStr  = (badgeNow === "warming" && hasWarmOverride) ? " (warming override)" : "";
+          log(`Skip ${mint.slice(0,4)}… net edge ${hasOnetime ? inclStr : exclStr}% < ${needStr}% (+${buffer.toFixed(2)} buffer)${srcStr}`);
           continue;
         }
-        if (gaugePct < needPct) {
-          const incl = Number(edge.pct?.toFixed?.(2));
-          const excl = Number(edge.pctNoOnetime?.toFixed?.(2));
-          log(`Skip ${mint.slice(0,4)}… net edge ${gaugePct.toFixed(2)}% (${excl}% excl-ATA, ${incl}% incl-ATA) < ${needPct.toFixed(2)}%`);
-          continue;
-        }
-        log(`Edge OK ${mint.slice(0,4)}… net≈${gaugePct.toFixed(2)}% (${(edge.pctNoOnetime||edge.pct).toFixed(2)}% excl-ATA)`);
+
+        log(`Edge OK ${mint.slice(0,4)}… net≈${(hasOnetime ? incl : excl).toFixed(2)}% (${excl.toFixed(2)}% excl-ATA)`);
       } catch {
         log(`Skip ${mint.slice(0,4)}… (edge calc failed)`);
         continue;
@@ -4911,6 +5060,7 @@ async function tick() {
       if (Number(got.sizeUi || 0) > 0) {
         const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
         const warmingHold = !!(state.rideWarming && badgeNow === "warming");
+        const guardMs = Math.max(10_000, Number(state.observerGraceSecs || 0) * 1000);
         const pos = {
           ...basePos,
           sizeUi: got.sizeUi,
@@ -4925,10 +5075,12 @@ async function tick() {
           warmingHold: warmingHold,
           warmingHoldAt: warmingHold ? now() : undefined,
           warmingMinProfitPct: Number(state.warmingMinProfitPct || 1),
+          sellGuardUntil: now() + guardMs,    
         };
         state.positions[mint] = pos;
         updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
         save();
+        try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
         log(`Bought ~${buySol.toFixed(4)} SOL -> ${mint.slice(0,4)}…`);
         clearObserverConsider(mint);
         await _logMoneyMade();
@@ -4936,6 +5088,7 @@ async function tick() {
         log(`Buy confirmed for ${mint.slice(0,4)}… but no token credit yet; will sync later.`);
         const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
         const warmingHold = !!(state.rideWarming && badgeNow === "warming");
+        const guardMs = Math.max(10_000, Number(state.observerGraceSecs || 0) * 1000);
         const pos = {
           ...basePos,
           costSol: Number(basePos.costSol || 0) + buySol,
@@ -4947,6 +5100,7 @@ async function tick() {
           warmingHold: warmingHold,
           warmingHoldAt: warmingHold ? now() : undefined,
           warmingMinProfitPct: Number(state.warmingMinProfitPct || 1),
+          sellGuardUntil: now() + guardMs,     
         };
         state.positions[mint] = pos;
         save();
@@ -5084,34 +5238,26 @@ function onToggle(on) {
 
 function load() {
   try { state = { ...state, ...(JSON.parse(localStorage.getItem(LS_KEY))||{}) }; } catch {}
-
-  // Migrate old-stored warming thresholds to relaxed defaults (tuned for small balances)
   if (!Number.isFinite(state.warmingUptickMinPre) || state.warmingUptickMinPre > 0.35) state.warmingUptickMinPre = 0.35;
   if (!Number.isFinite(state.warmingUptickMinAccel) || state.warmingUptickMinAccel > 1.001) state.warmingUptickMinAccel = 1.001;
   if (!Number.isFinite(state.warmingUptickMinDeltaChg5m) || state.warmingUptickMinDeltaChg5m > 0.015) state.warmingUptickMinDeltaChg5m = 0.012;
   if (!Number.isFinite(state.warmingUptickMinDeltaScore) || state.warmingUptickMinDeltaScore > 0.015) state.warmingUptickMinDeltaScore = 0.006;
   if (!Number.isFinite(state.warmingPrimedConsec) || state.warmingPrimedConsec > 1) state.warmingPrimedConsec = 1;
-  if (!Number.isFinite(state.warmingMaxLossPct)) state.warmingMaxLossPct = 10;
+  if (!Number.isFinite(state.warmingMaxLossPct)) state.warmingMaxLossPct = 6;  
   if (!Number.isFinite(state.warmingMaxLossWindowSecs)) state.warmingMaxLossWindowSecs = 30;
-  if (!Number.isFinite(state.warmingEdgeMinExclPct)) state.warmingEdgeMinExclPct = 0;
+  // if (!Number.isFinite(state.warmingEdgeMinExclPct)) state.warmingEdgeMinExclPct = 0;
+    // if (!Number.isFinite(state.warmingEdgeMinExclPct)) delete state.warmingEdgeMinExclPct;
+  if (typeof state.warmingEdgeMinExclPct !== "number" || !Number.isFinite(state.warmingEdgeMinExclPct)) {
+    delete state.warmingEdgeMinExclPct;
+  }
 
-  // Debug surface
-  try {
-    logObj("Warming thresholds", {
-      minPre: state.warmingUptickMinPre,
-      minAccel: state.warmingUptickMinAccel,
-      dChg: state.warmingUptickMinDeltaChg5m,
-      dScore: state.warmingUptickMinDeltaScore,
-      primeConsec: state.warmingPrimedConsec
-    });
-  } catch {}
-
-  state.tickMs = Math.max(1200, Math.min(5000, Number(state.tickMs || 2000))); 
-  state.slippageBps = Math.min(300, Math.max(200, Number(state.slippageBps ?? 250) | 0));
-  state.minBuySol   = Math.max(0.01, UI_LIMITS.MIN_BUY_SOL_MIN, Number(state.minBuySol ?? 0.01)); // 0.01 floor
-  if (!Number.isFinite(state.minNetEdgePct)) state.minNetEdgePct = 0.6;
-
-  state.coolDownSecsAfterBuy = Math.max(0, Math.min(12, Number(state.coolDownSecsAfterBuy || 8)));
+  if (!Number.isFinite(state.reboundLookbackSecs)) state.reboundLookbackSecs = 45;
+  if (!Number.isFinite(state.reboundMaxDeferSecs)) state.reboundMaxDeferSecs = 20;
+  if (!Number.isFinite(state.reboundHoldMs)) state.reboundHoldMs = 4000;
+  if (!Number.isFinite(state.reboundMinScore)) state.reboundMinScore = 0.34;
+  if (!Number.isFinite(state.reboundMinChgSlope)) state.reboundMinChgSlope = 12;
+  if (!Number.isFinite(state.reboundMinScSlope)) state.reboundMinScSlope = 8;
+  if (!Number.isFinite(state.reboundMinPnLPct)) state.reboundMinPnLPct = -15;
   if (!Number.isFinite(state.warmingDecayPctPerMin)) state.warmingDecayPctPerMin = 0.25;
   if (!Number.isFinite(state.warmingDecayDelaySecs)) state.warmingDecayDelaySecs = 45;
   if (!Number.isFinite(state.warmingMinProfitFloorPct)) state.warmingMinProfitFloorPct = -2.0;
@@ -5123,9 +5269,17 @@ function load() {
   if (!Number.isFinite(state.warmingMinLiqUsd)) state.warmingMinLiqUsd = 4000;
   if (!Number.isFinite(state.warmingMinV1h)) state.warmingMinV1h = 800;
   if (!Number.isFinite(state.warmingPrimedConsec)) state.warmingPrimedConsec = 1;
+  if (!Number.isFinite(state.edgeSafetyBufferPct)) state.edgeSafetyBufferPct = 0.2;
 
+  if (!Number.isFinite(state.minNetEdgePct)) state.minNetEdgePct = -4;
+
+  if (typeof state.reboundGateEnabled !== "boolean") state.reboundGateEnabled = true;
   if (typeof state.strictBuyFilter !== "boolean") state.strictBuyFilter = true;
 
+  state.tickMs = Math.max(1200, Math.min(5000, Number(state.tickMs || 2000))); 
+  state.slippageBps = Math.min(300, Math.max(200, Number(state.slippageBps ?? 250) | 0));
+  state.minBuySol   = Math.max(0.01, UI_LIMITS.MIN_BUY_SOL_MIN, Number(state.minBuySol ?? 0.01)); // 0.01 floor
+  state.coolDownSecsAfterBuy = Math.max(0, Math.min(12, Number(state.coolDownSecsAfterBuy || 8)));
   state.pendingGraceMs = Math.max(120_000, Number(state.pendingGraceMs || 120_000));
   state.allowMultiBuy = false;
   save();
@@ -5254,6 +5408,19 @@ export function initAutoWidget(container = document.body) {
         </select>
       </label>
     </div>
+    <details class="fdv-advanced" data-auto-adv style="margin:8px 0;">
+      <summary style="cursor:pointer; user-select:none;">Advanced</summary>
+      <div class="fdv-grid" style="margin-top:8px;">
+        <label>Warming min profit (%) <input data-auto-warm-minp type="number" step="0.1" min="-50" max="50" placeholder="2"/></label>
+        <label>Warming floor (%) <input data-auto-warm-floor type="number" step="0.1" min="-50" max="50" placeholder="-2"/></label>
+        <label>Decay delay (s) <input data-auto-warm-delay type="number" step="1" min="0" max="600" placeholder="15"/></label>
+        <label>Auto release (s) <input data-auto-warm-release type="number" step="1" min="0" max="600" placeholder="45"/></label>
+        <label>Max loss (%) <input data-auto-warm-maxloss type="number" step="0.1" min="1" max="50" placeholder="6"/></label>
+        <label>Max loss window (s) <input data-auto-warm-window type="number" step="1" min="5" max="180" placeholder="30"/></label>
+        <label>Primed consec <input data-auto-warm-consec type="number" step="1" min="1" max="3" placeholder="1"/></label>
+        <label>Edge min excl (%) <input data-auto-warm-edge type="number" step="0.1" min="-10" max="10" placeholder="(optional)"/></label>
+      </div>
+    </details>
     <div class="fdv-hold-time-slider"></div>
     <div class="fdv-log" data-auto-log style="position:relative;">
     </div>
@@ -5405,7 +5572,7 @@ export function initAutoWidget(container = document.body) {
     </div>
     </div>
     <div class="fdv-bot-footer" style="margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
-      <span>Version: 0.0.3.2</span>
+      <span>Version: 0.0.3.3</span>
     </div>
   `;
 
@@ -5498,6 +5665,17 @@ export function initAutoWidget(container = document.body) {
   multiEl   = wrap.querySelector("[data-auto-multi]");
   warmDecayEl = wrap.querySelector("[data-auto-warmdecay]");
 
+  //advancced
+  advBoxEl        = wrap.querySelector("[data-auto-adv]");
+  warmMinPEl      = wrap.querySelector("[data-auto-warm-minp]");
+  warmFloorEl     = wrap.querySelector("[data-auto-warm-floor]");
+  warmDelayEl     = wrap.querySelector("[data-auto-warm-delay]");
+  warmReleaseEl   = wrap.querySelector("[data-auto-warm-release]");
+  warmMaxLossEl   = wrap.querySelector("[data-auto-warm-maxloss]");
+  warmMaxWindowEl = wrap.querySelector("[data-auto-warm-window]");
+  warmConsecEl    = wrap.querySelector("[data-auto-warm-consec]");
+  warmEdgeEl      = wrap.querySelector("[data-auto-warm-edge]");
+
   setTimeout(() => {
   try {
     logObj("Warming thresholds", {
@@ -5536,6 +5714,18 @@ export function initAutoWidget(container = document.body) {
   multiEl.value   = state.allowMultiBuy ? "yes" : "no";
   warmDecayEl.value = String(Number.isFinite(state.warmingDecayPctPerMin) ? state.warmingDecayPctPerMin : 0.25);
 
+  if (warmMinPEl)      warmMinPEl.value      = String(Number.isFinite(state.warmingMinProfitPct) ? state.warmingMinProfitPct : 2);
+  if (warmFloorEl)     warmFloorEl.value     = String(Number.isFinite(state.warmingMinProfitFloorPct) ? state.warmingMinProfitFloorPct : -2);
+  if (warmDelayEl)     warmDelayEl.value     = String(Number.isFinite(state.warmingDecayDelaySecs) ? state.warmingDecayDelaySecs : 15);
+  if (warmReleaseEl)   warmReleaseEl.value   = String(Number.isFinite(state.warmingAutoReleaseSecs) ? state.warmingAutoReleaseSecs : 45);
+  if (warmMaxLossEl)   warmMaxLossEl.value   = String(Number.isFinite(state.warmingMaxLossPct) ? state.warmingMaxLossPct : 6);
+  if (warmMaxWindowEl) warmMaxWindowEl.value = String(Number.isFinite(state.warmingMaxLossWindowSecs) ? state.warmingMaxLossWindowSecs : 30);
+  if (warmConsecEl)    warmConsecEl.value    = String(Number.isFinite(state.warmingPrimedConsec) ? state.warmingPrimedConsec : 1);
+  if (warmEdgeEl) {
+    warmEdgeEl.value = (typeof state.warmingEdgeMinExclPct === "number" && Number.isFinite(state.warmingEdgeMinExclPct))
+      ? String(state.warmingEdgeMinExclPct)
+      : "";
+  }
 
   helpBtn.addEventListener("click", () => { modalEl.style.display = "flex"; });
   modalEl.addEventListener("click", (e) => { if (e.target === modalEl) modalEl.style.display = "none"; });
@@ -5839,12 +6029,55 @@ export function initAutoWidget(container = document.body) {
     maxBuyEl.min = String(minBuy);
     maxBuyEl.value = String(maxBuy);
 
+    
+
     save();
   };
   [recvEl, lifeEl, buyPctEl, minBuyEl, maxBuyEl, minEdgeEl, warmDecayEl].forEach(el => {
     el.addEventListener("input", saveField);
     el.addEventListener("change", saveField);
   });
+
+    function saveAdvanced() {
+    const n = (v) => Number(v);
+    const clamp = (v, lo, hi, def) => {
+      const x = Number(v);
+      return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : def;
+    };
+
+    state.warmingMinProfitPct       = clamp(n(warmMinPEl?.value),      -50, 50, 2);
+    state.warmingMinProfitFloorPct  = clamp(n(warmFloorEl?.value),     -50, 50, -2);
+    state.warmingDecayDelaySecs     = clamp(n(warmDelayEl?.value),       0, 600, 15);
+    state.warmingAutoReleaseSecs    = clamp(n(warmReleaseEl?.value),     0, 600, 45);
+    state.warmingMaxLossPct         = clamp(n(warmMaxLossEl?.value),     1,  50, 6);
+    state.warmingMaxLossWindowSecs  = clamp(n(warmMaxWindowEl?.value),   5, 180, 30);
+    state.warmingPrimedConsec       = clamp(n(warmConsecEl?.value),      1,   3, 1);
+
+    const edge = Number(warmEdgeEl?.value);
+    if (Number.isFinite(edge)) {
+      state.warmingEdgeMinExclPct = Math.min(10, Math.max(-10, edge));
+    } else {
+      if (typeof state.warmingEdgeMinExclPct !== "undefined") delete state.warmingEdgeMinExclPct;
+    }
+
+    if (warmMinPEl)      warmMinPEl.value      = String(state.warmingMinProfitPct);
+    if (warmFloorEl)     warmFloorEl.value     = String(state.warmingMinProfitFloorPct);
+    if (warmDelayEl)     warmDelayEl.value     = String(state.warmingDecayDelaySecs);
+    if (warmReleaseEl)   warmReleaseEl.value   = String(state.warmingAutoReleaseSecs);
+    if (warmMaxLossEl)   warmMaxLossEl.value   = String(state.warmingMaxLossPct);
+    if (warmMaxWindowEl) warmMaxWindowEl.value = String(state.warmingMaxLossWindowSecs);
+    if (warmConsecEl)    warmConsecEl.value    = String(state.warmingPrimedConsec);
+    if (warmEdgeEl)      warmEdgeEl.value      = (typeof state.warmingEdgeMinExclPct === "number") ? String(state.warmingEdgeMinExclPct) : "";
+
+    save();
+  }
+
+  [warmMinPEl, warmFloorEl, warmDelayEl, warmReleaseEl, warmMaxLossEl, warmMaxWindowEl, warmConsecEl, warmEdgeEl]
+    .filter(Boolean)
+    .forEach(el => {
+      el.addEventListener("input", saveAdvanced);
+      el.addEventListener("change", saveAdvanced);
+    });
 
   if (toggleEl) toggleEl.value = state.enabled ? "yes" : "no";
   holdEl.value = state.holdUntilLeaderSwitch ? "yes" : "no";
