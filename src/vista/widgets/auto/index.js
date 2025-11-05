@@ -199,6 +199,7 @@ let state = {
 
   // Safeties
   seedBuyCache: true,
+  USDCfallbackEnabled: true,
   observerDropSellAt: 3,
   observerGraceSecs: 45,
   // Observer hysteresis settings
@@ -2217,6 +2218,10 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
 
       try {
         const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        if (!state.USDCfallbackEnabled) {
+          log("USDC fallback disabled; aborting expensive fallback attempt.");
+          return null;
+        }
         const slip3 = 2000;
         const rFlag = restrictAllowed ? "false" : "true";
         const q3 = buildQuoteUrl({ outMint: USDC, slipBps: slip3, restrict: rFlag });
@@ -2450,7 +2455,7 @@ async function sweepAllToSolAndReturn() {
       log(`Sold ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
       const costSold = Number(state.positions[mint]?.costSol || 0);
       await _addRealizedPnl(estSol, costSold, "Unwind PnL");
-
+      try { await closeEmptyTokenAtas(signer, mint); } catch {}
       if (state.positions[mint]) { delete state.positions[mint]; save(); }
       removeFromPosCache(owner, mint);
       if (item.from === "dust") removeFromDustCache(owner, mint);
@@ -2461,6 +2466,7 @@ async function sweepAllToSolAndReturn() {
 
   // Return SOL to recipient
   try { await unwrapWsolIfAny(signer); } catch {}
+  try { await closeAllEmptyAtas(signer); } catch {}
   const bal = await conn.getBalance(signer.publicKey).catch(()=>0);
   const rent = 0.001 * 1e9;
   const sendLamports = Math.max(0, bal - Math.ceil(rent));
@@ -3835,6 +3841,7 @@ async function sweepNonSolToSolAtStart() {
       log(`Startup sweep sold ${sizeUi.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
       const costSold = Number(state.positions[mint]?.costSol || 0);
       await _addRealizedPnl(estSol, costSold, "Startup sweep PnL");
+      try { await closeEmptyTokenAtas(kp, mint); } catch {}
       if (state.positions[mint]) { delete state.positions[mint]; save(); }
       removeFromPosCache(owner, mint);
       try { clearPendingCredit(owner, mint); } catch {}
@@ -3949,6 +3956,7 @@ async function sweepDustToSolAtStart() {
         removeFromPosCache(owner, mint);
         try { clearPendingCredit(owner, mint); } catch {}
         if (state.positions[mint]) { delete state.positions[mint]; save(); }
+        try { await closeEmptyTokenAtas(kp, mint); } catch {}
         log(`Dust sweep sold ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
         sold++;
       }
@@ -4424,6 +4432,7 @@ async function evalAndMaybeSellPositions() {
                 log(`Sold ${sellUi2.toFixed(6)} ${mint.slice(0,4)}… -> ~${estFullSol.toFixed(6)} SOL (${reason})`);
                 const costSold = Number(pos.costSol || 0);
                 await _addRealizedPnl(estFullSol, costSold, "Full sell PnL");
+                try { await closeEmptyTokenAtas(kp, mint); } catch {}
                 delete state.positions[mint];
                 removeFromPosCache(kp.publicKey.toBase58(), mint);
                 try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
@@ -4685,6 +4694,7 @@ async function switchToLeader(newMint) {
         log(`Rotated out: ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
         const costSold = Number(state.positions[mint]?.costSol || 0);
         await _addRealizedPnl(estSol, costSold, "Rotation PnL");
+        try { await closeEmptyTokenAtas(kp, mint); } catch {}
         delete state.positions[mint];
         removeFromPosCache(owner, mint);
         save();
