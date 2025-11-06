@@ -1,8 +1,5 @@
 import { computePumpingLeaders, getRugSignalForMint } from "../../meme/metrics/pumping.js";
 
-// Dust orders and minimums are blocked due to Jupiter route failures and 400 errors.
-// please export wallet.json to recover any dust funds.
-
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
 const MIN_JUP_SOL_IN = 0.001;
@@ -28,6 +25,8 @@ const MINT_OP_LOCK_MS = 30_000;
 const BUY_SEED_TTL_MS = 60_000;
 const BUY_LOCK_MS = 5_000;
 const FAST_OBS_LOG_INTERVAL_MS = 200; 
+const RUG_FORCE_SELL_SEVERITY = 0.60;
+const EARLY_URGENT_WINDOW_MS = 15_000; // buyers remorse
 
 
 const POSCACHE_KEY_PREFIX = "fdv_poscache_v1:";
@@ -36,11 +35,9 @@ const DUSTCACHE_KEY_PREFIX = "fdv_dustcache_v1:";
 
 
 const FEE_ATAS = {
-  [SOL_MINT]: "4FSwzXe544mW2BLYqAAjcyBmFFHYgMbnA1XUdtGUeST8",  // Buy me a coffee
+  [SOL_MINT]: "4FSwzXe544mW2BLYqAAjcyBmFFHYgMbnA1XUdtGUeST8",  
   "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "BKWwTmwc7FDSRb82n5o76bycH3rKZ4Xqt87EjZ2rnUXB", 
 };
-
-
 
 const UI_LIMITS = {
   BUY_PCT_MIN: 0.01,  // 1%
@@ -147,7 +144,7 @@ const LS_KEY = "fdv_auto_bot_v1";
 let state = {
   enabled: false,
   mint: "",
-  tickMs: 2000,
+  tickMs: 1000,
   budgetUi: 0.5,  
   maxTrades: 6,  // legacy
   minSecsBetween: 90,
@@ -1235,6 +1232,34 @@ async function getConn() {
   return _conn;
 }
 
+async function _getMultipleAccountsInfoBatched(conn, pubkeys, { commitment = "processed", batchSize = 95, kind = "gmai" } = {}) {
+  const out = [];
+  for (let i = 0; i < pubkeys.length; i += batchSize) {
+    const slice = pubkeys.slice(i, i + batchSize);
+    try {
+      await rpcWait?.(kind, 350);
+      const arr = await conn.getMultipleAccountsInfo(slice, commitment).catch(e => { _markRpcStress?.(e, 2000); return new Array(slice.length).fill(null); });
+      out.push(...(arr || new Array(slice.length).fill(null)));
+    } catch (e) {
+      _markRpcStress?.(e, 2000);
+      out.push(...new Array(slice.length).fill(null));
+    }
+  }
+  return out;
+}
+
+function _readSplAmountFromRaw(rawU8) {
+  if (!rawU8 || rawU8.length < 72) return null;
+  try {
+    const view = new DataView(rawU8.buffer, rawU8.byteOffset, rawU8.byteLength);
+    return view.getBigUint64(64, true); // le u64 at offset 64
+  } catch {
+    let x = 0n;
+    for (let i = 0; i < 8; i++) x |= BigInt(rawU8[64 + i] || 0) << (8n * BigInt(i));
+    return x;
+  }
+}
+
 async function fetchSolBalance(pubkeyStr) {
   if (!pubkeyStr) return 0;
   const { PublicKey } = await loadWeb3();
@@ -1343,6 +1368,37 @@ async function ensureAutoWallet() {
   state.autoWalletSecret = bs58.default.encode(kp.secretKey);
   save();
   return state.autoWalletPub;
+}
+
+function estimateProportionalCostSolForSell(mint, amountUi) {
+  try {
+    const pos = state.positions?.[mint];
+    const sz = Number(pos?.sizeUi || 0);
+    const cost = Number(pos?.costSol || 0);
+    if (sz > 0 && amountUi > 0) return (cost * (amountUi / sz));
+  } catch {}
+  return null; // unknown cost => no fee
+}
+
+function shouldAttachFeeForSell({ mint, amountRaw, inDecimals, quoteOutLamports }) {
+  try {
+    const dec = Number.isFinite(inDecimals) ? inDecimals : 6;
+    const amountUi = Number(amountRaw || 0) / Math.pow(10, dec);
+    if (!(amountUi > 0)) return false;
+
+    const estOutSol = Number(quoteOutLamports || 0) / 1e9;
+    if (!(estOutSol > 0)) return false;
+
+    if (estOutSol < SMALL_SELL_FEE_FLOOR) return false;
+
+    const estCostSold = estimateProportionalCostSolForSell(mint, amountUi);
+    if (estCostSold === null) return false; // unknown cost -> don't charge
+
+    const estPnl = estOutSol - estCostSold;
+    return estPnl > 0; // we only fee when the user makes something
+  } catch {
+    return false;
+  }
 }
 
 async function jupFetch(path, opts) {
@@ -1541,7 +1597,7 @@ async function requiredOutAtaRentIfMissing(ownerPubkeyStr, outMint) {
   } catch { return 0; }
 }
 
-async function estimateRoundtripEdgePct(ownerPub, outMint, buySolUi, { slippageBps }) {
+async function estimateRoundtripEdgePct(ownerPub, outMint, buySolUi, { slippageBps, dynamicFee = true } = {}) {
   try {
     const buyLamports = Math.floor(Number(buySolUi || 0) * 1e9);
     if (!Number.isFinite(buyLamports) || buyLamports <= 0) return null;
@@ -1556,11 +1612,30 @@ async function estimateRoundtripEdgePct(ownerPub, outMint, buySolUi, { slippageB
 
     // Fees
     const feeBps = Number(getPlatformFeeBps() || 0);
-    const platformL = Math.floor(backLamports * (feeBps / 10_000)); // sell-side fee
     const txFeesL = EDGE_TX_FEE_ESTIMATE_LAMPORTS;
-    const ataRentL = await requiredOutAtaRentIfMissing(ownerPub, outMint); // one-time, refundable later if closed
+    const ataRentL = await requiredOutAtaRentIfMissing(ownerPub, outMint); // one-time
 
+    const outSol = backLamports / 1e9;
+    const buySol = buyLamports / 1e9;
+    let appliedFeeBps = feeBps;
+
+    if (dynamicFee) {
+      if (!(outSol >= SMALL_SELL_FEE_FLOOR)) {
+        appliedFeeBps = 0;
+      } else {
+        // fee's only on profitable buys
+        const feeSol = outSol * (feeBps / 10_000);
+        const pnlNoFee = outSol - buySol;
+        const pnlWithFee = outSol - feeSol - buySol;
+        if (!(pnlWithFee > 0) || !(pnlNoFee > 0)) {
+          appliedFeeBps = 0;
+        }
+      }
+    }
+
+    const platformL = Math.floor(backLamports * (appliedFeeBps / 10_000));
     const recurringL = platformL + txFeesL;
+
     const edgeL_inclOnetime = backLamports - buyLamports - recurringL - Math.max(0, ataRentL);
     const edgeL_noOnetime   = backLamports - buyLamports - recurringL;
 
@@ -1570,7 +1645,8 @@ async function estimateRoundtripEdgePct(ownerPub, outMint, buySolUi, { slippageB
     logObj("Roundtrip edge breakdown", {
       buySol: buyLamports/1e9,
       backSol: backLamports/1e9,
-      platformBps: feeBps,
+      platformBpsConfigured: feeBps,
+      platformBpsApplied: appliedFeeBps,
       platformSol: platformL/1e9,
       txFeesSol: txFeesL/1e9,
       ataRentSol: ataRentL/1e9,
@@ -1587,6 +1663,7 @@ async function estimateRoundtripEdgePct(ownerPub, outMint, buySolUi, { slippageB
       feesLamports: recurringL + Math.max(0, ataRentL),
       ataRentLamports: Math.max(0, ataRentL),
       recurringLamports: recurringL,
+      platformBpsApplied: appliedFeeBps,
       forward: fwd,
       backward: back
     };
@@ -1594,6 +1671,7 @@ async function estimateRoundtripEdgePct(ownerPub, outMint, buySolUi, { slippageB
     return null;
   }
 }
+
 async function executeSwapWithConfirm(opts, { retries = 2, confirmMs = 15000 } = {}) {
   let slip = Math.max(150, Number(opts.slippageBps ?? state.slippageBps ?? 150) | 0);
   const isBuy = (opts?.inputMint === SOL_MINT && opts?.outputMint && opts.outputMint !== SOL_MINT); 
@@ -1663,8 +1741,6 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     const feeBps = Number(getPlatformFeeBps() || 0);
     let feeAccount = null;
     let lastErrCode = "";
-    // If we saw router dust we will avoid splits (configured below)
-    const DISABLE_SPLIT_ON_ROUTER_DUST = true;
 
     try {
       const okIn  = await isValidPubkeyStr(inputMint);
@@ -1783,9 +1859,10 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     }
 
     // Decide fee receiver (sell-only) but don't include it until we know out amount
+    let feeDestCandidate = null;
     if (feeBps > 0 && isSell) {
       const acct = FEE_ATAS[outputMint] || (outputMint === SOL_MINT ? FEE_ATAS[SOL_MINT] : null);
-      feeAccount = acct || null;
+      feeDestCandidate = acct || null;
     }
 
     const q = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: restrictIntermediates, withFee: false });
@@ -1866,6 +1943,62 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         throw new Error("BELOW_MIN_NOTIONAL");
       }
     }
+
+      if (isSell && feeDestCandidate) {
+        try {
+          const outRawNoFee = Number(quote?.outAmount || 0);
+          const profitableNoFee = shouldAttachFeeForSell({
+            mint: inputMint,
+            amountRaw: amountRaw,
+            inDecimals: inDecimals,
+            quoteOutLamports: outRawNoFee
+          });
+
+          if (profitableNoFee) {
+            const qFee = buildQuoteUrl({
+              outMint: outputMint,
+              slipBps: baseSlip,
+              restrict: restrictIntermediates,
+              withFee: true
+            });
+            const qFeeRes = await jupFetch(qFee.pathname + qFee.search);
+            if (qFeeRes.ok) {
+              const quoteWithFee = await qFeeRes.json();
+              const outRawWithFee = Number(quoteWithFee?.outAmount || 0);
+              const stillProfitable = shouldAttachFeeForSell({
+                mint: inputMint,
+                amountRaw: amountRaw,
+                inDecimals: inDecimals,
+                quoteOutLamports: outRawWithFee
+              });
+              if (stillProfitable) {
+                quote = quoteWithFee;
+                feeAccount = feeDestCandidate;
+                quoteIncludesFee = true;
+                const outSol = outRawWithFee / 1e9;
+                log(`Sell fee enabled @ ${feeBps} bps (est PnL>0, out ${outSol.toFixed(6)} SOL).`);
+              } else {
+                // Keep no-fee quote if fee would remove profit
+                feeAccount = null;
+                quoteIncludesFee = false;
+                log("Fee suppressed: adding fee removes estimated profit (keeping no-fee sell).");
+              }
+            } else {
+              feeAccount = null;
+              quoteIncludesFee = false;
+              log("Fee quote failed; proceeding without fee for this sell.");
+            }
+          } else {
+            feeAccount = null;
+            quoteIncludesFee = false;
+            log("No estimated profit; fee disabled for this sell.");
+          }
+        } catch {
+          feeAccount = null;
+          quoteIncludesFee = false;
+          log("Profit check failed; fee disabled for this sell.");
+        }
+      }
 
     // const isRouteErr = (codeOrMsg) => /ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|0x1788/i.test(String(codeOrMsg||""));
     // let sawRouteDust = false;
@@ -2257,39 +2390,92 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       } catch {}
 
       try {
-      const slipSplit = 2000;
-      for (const f of SPLIT_FRACTIONS) {
-        const partRaw = Math.max(1, Math.floor(amountRaw * f));
-        if (partRaw <= 0) continue;
+        const slipSplit = 2000;
+        for (const f of SPLIT_FRACTIONS) {
+          const partRaw = Math.max(1, Math.floor(amountRaw * f));
+          if (partRaw <= 0) continue;
 
-        const restrictOptions = restrictAllowed ? ["false", "true"] : ["true"];
-        for (const restrict of restrictOptions) {
-          const qP = buildQuoteUrl({ outMint: outputMint, slipBps: slipSplit, restrict, amountOverrideRaw: partRaw, withFee: false });
-          log(`Split-sell quote f=${f} restrict=${restrict} slip=${slipSplit}…`);
-          const rP = await jupFetch(qP.pathname + qP.search);
-          if (!rP.ok) continue;
+          const restrictOptions = restrictAllowed ? ["false", "true"] : ["true"];
+          for (const restrict of restrictOptions) {
+            const qP = buildQuoteUrl({ outMint: outputMint, slipBps: slipSplit, restrict, amountOverrideRaw: partRaw, withFee: false });
+            log(`Split-sell quote f=${f} restrict=${restrict} slip=${slipSplit}…`);
+            const rP = await jupFetch(qP.pathname + qP.search);
+            if (!rP.ok) continue;
 
-          const quotePart = await rP.json();
-          const outPartRaw = Number(quotePart?.outAmount || 0);
-          const outPartSol = outPartRaw / 1e9;
-          // Skip splits that fall below chunk floor
-          if (!Number.isFinite(outPartSol) || outPartSol < MIN_SELL_CHUNK_SOL) {
-            log(`Split f=${f} est out ${outPartSol.toFixed(6)} SOL < ${MIN_SELL_CHUNK_SOL}; skipping this chunk.`);
-            continue;
-          }
+            const quotePart = await rP.json();
+            const outPartRaw = Number(quotePart?.outAmount || 0);
+            const outPartSol = outPartRaw / 1e9;
+            // Skip splits that fall below chunk floor
+            if (!Number.isFinite(outPartSol) || outPartSol < MIN_SELL_CHUNK_SOL) {
+              log(`Split f=${f} est out ${outPartSol.toFixed(6)} SOL < ${MIN_SELL_CHUNK_SOL}; skipping this chunk.`);
+              continue;
+            }
 
-          // Use no-fee for small chunks
-          quote = quotePart;
-          const tries = [
-            () => buildAndSend(false, false),
-            () => buildAndSend(true, false),
-            () => buildAndSend(false, true),
-            () => buildAndSend(true, true),
-          ];
-          for (const t of tries) {
-            try {
-              const res = await t();
-              if (res?.ok) {
+            // Profit-first fee for this chunk
+            let chunkFeeAccount = null;
+            if (feeBps > 0 && feeDestCandidate) {
+              try {
+                const decIn = Number.isFinite(inDecimals) ? inDecimals : _decHint ?? 6;
+                const profitableChunkNoFee = shouldAttachFeeForSell({
+                  mint: inputMint,
+                  amountRaw: partRaw,
+                  inDecimals: decIn,
+                  quoteOutLamports: outPartRaw
+                });
+                if (profitableChunkNoFee) {
+                  const qPFee = buildQuoteUrl({ outMint: outputMint, slipBps: slipSplit, restrict, amountOverrideRaw: partRaw, withFee: true });
+                  const rPFee = await jupFetch(qPFee.pathname + qPFee.search);
+                  if (rPFee.ok) {
+                    const quotePartWithFee = await rPFee.json();
+                    const outPartRawWithFee = Number(quotePartWithFee?.outAmount || 0);
+                    const stillProfChunk = shouldAttachFeeForSell({
+                      mint: inputMint,
+                      amountRaw: partRaw,
+                      inDecimals: decIn,
+                      quoteOutLamports: outPartRawWithFee
+                    });
+                    if (stillProfChunk) {
+                      quote = quotePartWithFee;
+                      chunkFeeAccount = feeDestCandidate;
+                      log(`Split-sell fee enabled @ ${feeBps} bps for f=${f}.`);
+                    } else {
+                      quote = quotePart;
+                      chunkFeeAccount = null;
+                      log(`Split-sell fee suppressed (removes profit) for f=${f}.`);
+                    }
+                  } else {
+                    quote = quotePart;
+                    chunkFeeAccount = null;
+                    log("Split-sell fee quote failed; proceeding without fee.");
+                  }
+                } else {
+                  quote = quotePart;
+                  chunkFeeAccount = null;
+                  log("Split-sell no estimated profit; fee disabled for this chunk.");
+                }
+              } catch {
+                quote = quotePart;
+                chunkFeeAccount = null;
+                log("Split-sell profit check failed; fee disabled for this chunk.");
+              }
+            } else {
+              quote = quotePart;
+            }
+
+            // Temporarily apply per-chunk fee decision
+            const prevFeeAccount = feeAccount;
+            feeAccount = chunkFeeAccount;
+
+            const tries = [
+              () => buildAndSend(false, false),
+              () => buildAndSend(true, false),
+              () => buildAndSend(false, true),
+              () => buildAndSend(true, true),
+            ];
+            for (const t of tries) {
+              try {
+                const res = await t();
+                if (res?.ok) {
                 log(`Split-sell succeeded at ${Math.round(f*100)}% of position.`);
                 try { setMintBlacklist(inputMint, MINT_RUG_BLACKLIST_MS); log(`Split-sell: blacklisted ${inputMint.slice(0,4)}… for 30m.`); } catch {}
                   try {
@@ -2336,6 +2522,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
                 }
               } catch {}
             }
+            feeAccount = prevFeeAccount;
           }
         }
       } catch (e) {
@@ -3432,60 +3619,44 @@ async function closeEmptyTokenAtas(signer, mint) {
     // Skip SOL
     if (!mint || mint === SOL_MINT) return false;
 
+    if (rpcBackoffLeft() > 0) { log("Backoff active; deferring per-mint ATA close."); return false; }
+
     const atas = await getOwnerAtas(owner, mint);
     if (!atas?.length) return false;
 
-    // Read SPL Token account amount by decoding raw data (amount at byte offset 64, le u64)
-    const isZeroBalance = async (ataPk) => {
-      try {
-        await rpcWait?.("ai", 300);
-        const ai = await conn.getAccountInfo(ataPk, "processed").catch(e => { _markRpcStress?.(e, 1500); return null; });
-        if (!ai || !ai.data) return false; // no account -> nothing to close
-        const raw =
-          ai.data instanceof Uint8Array
-            ? ai.data
-            : (Array.isArray(ai.data?.data) && typeof ai.data?.data[0] === "string")
+    // Batch fetch account infos once
+    const infos = await _getMultipleAccountsInfoBatched(conn, atas.map(a => a.ata), { commitment: "processed", batchSize: 95, kind: "gmai-close-one" });
+
+    const ixs = [];
+    for (let i = 0; i < atas.length; i++) {
+      const { ata, programId } = atas[i];
+      const ai = infos[i];
+      if (!ai || !ai.data) continue;
+
+      // Normalize raw bytes from AccountInfo
+      const raw =
+        ai.data instanceof Uint8Array
+          ? ai.data
+          : (Array.isArray(ai.data?.data) && typeof ai.data?.data[0] === "string")
               ? Uint8Array.from(atob(ai.data.data[0]), c => c.charCodeAt(0))
               : new Uint8Array();
 
-        if (raw.length < 72) return false; // unknown layout; skip
-        let amt = 0n;
-        try {
-          const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
-          amt = view.getBigUint64(64, true); // le u64
-        } catch {
-          let x = 0n;
-          for (let i = 0; i < 8; i++) x |= BigInt(raw[64 + i] || 0) << (8n * BigInt(i));
-          amt = x;
-        }
-        return amt === 0n;
-      } catch (e) {
-        _markRpcStress?.(e, 2000);
-        return false;
+      const amt = _readSplAmountFromRaw(raw);
+      if (amt === null || amt > 0n) continue; // only close zero-balance
+
+      if (typeof createCloseAccountInstruction === "function") {
+        ixs.push(createCloseAccountInstruction(ata, ownerPk, ownerPk, [], programId));
+      } else {
+        ixs.push(new TransactionInstruction({
+          programId,
+          keys: [
+            { pubkey: ata,     isSigner: false, isWritable: true },
+            { pubkey: ownerPk, isSigner: false, isWritable: true },
+            { pubkey: ownerPk, isSigner: true,  isWritable: false },
+          ],
+          data: Uint8Array.of(9),
+        }));
       }
-    };
-
-    const ixs = [];
-    for (const { ata, programId } of atas) {
-      try {
-        const zero = await isZeroBalance(ata);
-        if (!zero) continue;
-
-        if (typeof createCloseAccountInstruction === "function") {
-          ixs.push(createCloseAccountInstruction(ata, ownerPk, ownerPk, [], programId));
-        } else {
-          // Fallback manual CloseAccount (spl-token ix=9)
-          ixs.push(new TransactionInstruction({
-            programId,
-            keys: [
-              { pubkey: ata,     isSigner: false, isWritable: true },  // account to close
-              { pubkey: ownerPk, isSigner: false, isWritable: true },  // destination (refund rent)
-              { pubkey: ownerPk, isSigner: true,  isWritable: false }, // authority
-            ],
-            data: Uint8Array.of(9),
-          }));
-        }
-      } catch {}
     }
 
     if (!ixs.length) return false;
@@ -3506,6 +3677,8 @@ async function closeEmptyTokenAtas(signer, mint) {
 async function closeAllEmptyAtas(signer) {
   try {
     if (!signer?.publicKey) return false;
+
+    if (rpcBackoffLeft() > 0) { log("Backoff active; deferring global ATA close."); return false; }
 
     const { Transaction, TransactionInstruction } = await loadWeb3();
     const conn = await getConn();
@@ -3548,57 +3721,39 @@ async function closeAllEmptyAtas(signer) {
     }
     if (!atas.length) return false;
 
-    const isZeroBalance = async (ataPk) => {
-      try {
-        await rpcWait?.("ai", 250);
-        const ai = await conn.getAccountInfo(ataPk, "processed").catch(e => { _markRpcStress?.(e, 1500); return null; });
-        if (!ai || !ai.data) return false; // no account -> nothing to close
-        const raw =
-          ai.data instanceof Uint8Array
-            ? ai.data
-            : (Array.isArray(ai.data?.data) && typeof ai.data?.data[0] === "string")
+    // Batch fetch all ATA infos once (chunked)
+    const infos = await _getMultipleAccountsInfoBatched(conn, atas.map(a => a.ata), { commitment: "processed", batchSize: 95, kind: "gmai-close-all" });
+
+    // Build close instructions only for zero-balance existent accounts
+    const closeIxs = [];
+    for (let i = 0; i < atas.length; i++) {
+      const { ata, programId } = atas[i];
+      const ai = infos[i];
+      if (!ai || !ai.data) continue;
+
+      const raw =
+        ai.data instanceof Uint8Array
+          ? ai.data
+          : (Array.isArray(ai.data?.data) && typeof ai.data?.data[0] === "string")
               ? Uint8Array.from(atob(ai.data.data[0]), c => c.charCodeAt(0))
               : new Uint8Array();
 
-        if (raw.length < 72) return false; // unknown layout; skip
-        let amt = 0n;
-        try {
-          const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
-          amt = view.getBigUint64(64, true); // le u64
-        } catch {
-          let x = 0n;
-          for (let i = 0; i < 8; i++) x |= BigInt(raw[64 + i] || 0) << (8n * BigInt(i));
-          amt = x;
-        }
-        return amt === 0n;
-      } catch (e) {
-        _markRpcStress?.(e, 2000);
-        return false;
+      const amt = _readSplAmountFromRaw(raw);
+      if (amt === null || amt > 0n) continue;
+
+      if (typeof createCloseAccountInstruction === "function") {
+        closeIxs.push(createCloseAccountInstruction(ata, ownerPk, ownerPk, [], programId));
+      } else {
+        closeIxs.push(new TransactionInstruction({
+          programId,
+          keys: [
+            { pubkey: ata,     isSigner: false, isWritable: true },
+            { pubkey: ownerPk, isSigner: false, isWritable: true },
+            { pubkey: ownerPk, isSigner: true,  isWritable: false },
+          ],
+          data: Uint8Array.of(9),
+        }));
       }
-    };
-
-    // Build close instructions (only for zero-balance accounts that actually exist)
-    const closeIxs = [];
-    for (const { ata, programId } of atas) {
-      try {
-        const zero = await isZeroBalance(ata);
-        if (!zero) continue;
-
-        if (typeof createCloseAccountInstruction === "function") {
-          closeIxs.push(createCloseAccountInstruction(ata, ownerPk, ownerPk, [], programId));
-        } else {
-          // Fallback manual CloseAccount (spl-token ix=9)
-          closeIxs.push(new TransactionInstruction({
-            programId,
-            keys: [
-              { pubkey: ata,     isSigner: false, isWritable: true },  // account to close
-              { pubkey: ownerPk, isSigner: false, isWritable: true },  // destination (refund rent)
-              { pubkey: ownerPk, isSigner: true,  isWritable: false }, // authority
-            ],
-            data: Uint8Array.of(9),
-          }));
-        }
-      } catch {}
     }
     if (!closeIxs.length) return false;
 
@@ -3608,6 +3763,7 @@ async function closeAllEmptyAtas(signer) {
     for (let i = 0; i < closeIxs.length; i += BATCH) {
       const slice = closeIxs.slice(i, i + BATCH);
       try {
+        await rpcWait?.("tx-close", 350);
         const tx = new Transaction();
         for (const ix of slice) tx.add(ix);
         tx.feePayer = ownerPk;
@@ -4033,11 +4189,11 @@ function shouldSell(pos, curSol, nowTs) {
 function fastDropCheck(mint, pos) {
   try {
     const sig = getRugSignalForMint(mint);
-    if (sig?.rugged) return { trigger: true, reason: `rug sev=${Number(sig.sev||0).toFixed(2)}`, sev: Number(sig.sev||1) };
 
-
-
-
+    const sev = Number(sig?.sev ?? 0);
+    if (sig?.rugged && sev >= RUG_FORCE_SELL_SEVERITY) {
+      return { trigger: true, reason: `rug sev=${sev.toFixed(2)}`, sev };
+    }
 
     const badge = String(sig?.badge || "").toLowerCase();
     if (badge.includes("calm")) {
@@ -4051,8 +4207,6 @@ function fastDropCheck(mint, pos) {
         }
       }
     }
-
-
 
     const series = getLeaderSeries(mint, 3);
     if (series && series.length >= 3) {
@@ -4076,19 +4230,23 @@ function startFastObserver() {
         if (!mint || mint === SOL_MINT) continue;
         if (Number(pos.sizeUi || 0) <= 0) continue;
 
-        // Always log
         logFastObserverSample(mint, pos);
 
-        // Suppress urgency while unsynced/warming or during post-buy cooldown
         const ageMs = now() - Number(pos.lastBuyAt || pos.acquiredAt || 0);
         const postBuyCooldownMs = Math.max(20_000, Number(state.coolDownSecsAfterBuy || 0) * 1000);
-
         const inWarmingHold = !!(state.rideWarming && pos.warmingHold === true);
+
+        const r = fastDropCheck(mint, pos);
+
+        if (r.trigger && ageMs < EARLY_URGENT_WINDOW_MS && Number(r.sev || 0) >= 0.6) {
+          flagUrgentSell(mint, r.reason, r.sev);
+          continue;
+        }
+
+        // Suppress general urgency while unsynced/warming or during post-buy cooldown
         if (pos.awaitingSizeSync === true) continue;
         if (!inWarmingHold && ageMs < Math.max(URGENT_SELL_MIN_AGE_MS, postBuyCooldownMs)) continue;
 
-
-        const r = fastDropCheck(mint, pos);
         if (r.trigger) flagUrgentSell(mint, r.reason, r.sev);
       }
     } catch {}
@@ -4144,7 +4302,6 @@ async function evalAndMaybeSellPositions() {
           log(`Sell skip ${mint.slice(0,4)}… awaiting credit/size sync (${Math.round(ageMs/1000)}s).`);
           continue;
         }
-
         
         if (leaderMode) {
           const sig0 = getRugSignalForMint(mint);
@@ -4175,6 +4332,7 @@ async function evalAndMaybeSellPositions() {
             }
           }
         }
+
         try {
           const sig = getRugSignalForMint(mint);
           recordBadgeTransition(mint, sig.badge);
@@ -4916,8 +5074,8 @@ async function tick() {
           continue;
         }
       }
-      const left = Math.max(1, loopN - i);
-      const target = Math.max(minThreshold, remaining / left);
+      // const left = Math.max(1, loopN - i);
+      const target = Math.min(plannedTotal, remaining);
 
       const reqRent = await requiredAtaLamportsForSwap(kp.publicKey.toBase58(), SOL_MINT, mint);
       if (reqRent > 0 && solBal < AVOID_NEW_ATA_SOL_FLOOR) {
@@ -4945,7 +5103,12 @@ async function tick() {
       const buySol = buyLamports / 1e9;
 
       try {
-        const edge = await estimateRoundtripEdgePct(kp.publicKey.toBase58(), mint, buySol, { slippageBps: state.slippageBps });
+        const edge = await estimateRoundtripEdgePct(
+          kp.publicKey.toBase58(),
+          mint,
+          buySol,
+          { slippageBps: state.slippageBps, dynamicFee: true }
+        );
         // let needPct = Number.isFinite(Number(state.minNetEdgePct)) ? Number(state.minNetEdgePct) : -8;
         // try {
         //   const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
@@ -4980,20 +5143,28 @@ async function tick() {
         let needIncl = needExcl;
         if (pumping && hasOnetime) needIncl = baseUser;
 
-        const pass = hasOnetime
-          ? (Number.isFinite(incl) && incl >= (needIncl + buffer))
-          : (Number.isFinite(excl) && excl >= (needExcl + buffer));
+        const useIncl = hasOnetime;
+        const curEdge = useIncl ? incl : excl;
+        const baseNeed = useIncl ? needIncl : needExcl;
+        const needWithBuf = baseNeed + buffer;
+
+        const pass = Number.isFinite(curEdge) && (curEdge >= needWithBuf);
 
         if (!pass) {
           const inclStr = Number.isFinite(incl) ? incl.toFixed(2) : "—";
           const exclStr = Number.isFinite(excl) ? excl.toFixed(2) : "—";
-          const needStr = (hasOnetime ? needIncl : needExcl).toFixed(2);
           const srcStr  = (badgeNow === "warming" && hasWarmOverride) ? " (warming override)" : "";
-          log(`Skip ${mint.slice(0,4)}… net edge ${hasOnetime ? inclStr : exclStr}% < ${needStr}% (+${buffer.toFixed(2)} buffer)${srcStr}`);
+          log(
+            `Skip ${mint.slice(0,4)}… net edge ${useIncl ? inclStr : exclStr}% < ${needWithBuf.toFixed(2)}%` +
+            ` (need ${baseNeed.toFixed(2)}% + ${buffer.toFixed(2)} buffer; mode=${useIncl ? "incl-ATA" : "excl-ATA"})${srcStr}`
+          );
           continue;
         }
 
-        log(`Edge OK ${mint.slice(0,4)}… net≈${(hasOnetime ? incl : excl).toFixed(2)}% (${excl.toFixed(2)}% excl-ATA)`);
+        log(
+          `Edge OK ${mint.slice(0,4)}… net≈${curEdge.toFixed(2)}% (thr ${needWithBuf.toFixed(2)}%,` +
+          ` excl-ATA=${excl.toFixed(2)}%)`
+        );
       } catch {
         log(`Skip ${mint.slice(0,4)}… (edge calc failed)`);
         continue;
@@ -5127,6 +5298,7 @@ async function tick() {
       }
 
       spent += buySol;
+      plannedTotal = Math.max(0, plannedTotal - buySol);
       buysDone++;
       _buyBatchUntil = now() + (state.multiBuyBatchMs|0);
 
@@ -5186,7 +5358,7 @@ async function startAutoAsync() {
       try { await sweepDustToSolAtStart(); } catch {}
     }
     if (!timer && state.enabled) {
-      timer = setInterval(tick, Math.max(1200, Number(state.tickMs || 2000)));
+      timer = setInterval(tick, Math.max(1200, Number(state.tickMs || 1000)));
       log("Auto trading started");
     }
     startFastObserver();
@@ -5582,7 +5754,7 @@ export function initAutoWidget(container = document.body) {
     </div>
     </div>
     <div class="fdv-bot-footer" style="margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
-      <span>Version: 0.0.3.3</span>
+      <span>Version: 0.0.3.4</span>
     </div>
   `;
 

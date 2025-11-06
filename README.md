@@ -137,6 +137,5 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-ui(auto): Advanced warming knobs + tuning" -m "Add Advanced dropdown with warming controls (min profit, floor, decay delay, auto-release, max-loss pct/window, primed consec, edge min excl). Wire to state with clamps + persistence. Log warming thresholds on init. Add optional warming edge override for round-trip gating; keep main grid 'decay %/min' knob.
-
+feat(auto): dynamic fees, bug fixes, urgent sells, better rug/observer, hardened swaps
 
