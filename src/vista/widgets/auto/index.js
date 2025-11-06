@@ -601,6 +601,17 @@ async function processPendingCredits() {
         } catch {}
       }
       if (sizeUi > 0) {
+        try {
+          const seedUi = Number(entry.basePos?.sizeUi || 0);
+          const ageMs  = now() - Number(entry.startedAt || now());
+          const partial = seedUi > 0 && sizeUi < seedUi * 0.5;
+          const withinWarmup = ageMs < Math.min(30_000, Math.max(10_000, Number(entry.until || now()) - Number(entry.startedAt || now())));
+          if (partial && withinWarmup) {
+            log(`Pending-credit: small credit ${sizeUi.toFixed(6)} < seed ${seedUi.toFixed(6)} — waiting to reconcile.`);
+            entry.until = Math.max(entry.until, now() + 4000);
+            continue;
+          }
+        } catch {}
         const prevPos = state.positions[entry.mint] || entry.basePos || { costSol: 0, hwmSol: 0, acquiredAt: now() };
 
         const alreadySynced = (prevPos.awaitingSizeSync === false) && Number(prevPos.sizeUi || 0) > 0;
@@ -1380,26 +1391,26 @@ function estimateProportionalCostSolForSell(mint, amountUi) {
   return null; // unknown cost => no fee
 }
 
-function shouldAttachFeeForSell({ mint, amountRaw, inDecimals, quoteOutLamports }) {
-  try {
-    const dec = Number.isFinite(inDecimals) ? inDecimals : 6;
-    const amountUi = Number(amountRaw || 0) / Math.pow(10, dec);
-    if (!(amountUi > 0)) return false;
+// function shouldAttachFeeForSell({ mint, amountRaw, inDecimals, quoteOutLamports }) {
+//   try {
+//     const dec = Number.isFinite(inDecimals) ? inDecimals : 6;
+//     const amountUi = Number(amountRaw || 0) / Math.pow(10, dec);
+//     if (!(amountUi > 0)) return false;
 
-    const estOutSol = Number(quoteOutLamports || 0) / 1e9;
-    if (!(estOutSol > 0)) return false;
+//     const estOutSol = Number(quoteOutLamports || 0) / 1e9;
+//     if (!(estOutSol > 0)) return false;
 
-    if (estOutSol < SMALL_SELL_FEE_FLOOR) return false;
+//     if (estOutSol < SMALL_SELL_FEE_FLOOR) return false;
 
-    const estCostSold = estimateProportionalCostSolForSell(mint, amountUi);
-    if (estCostSold === null) return false; // unknown cost -> don't charge
+//     const estCostSold = estimateProportionalCostSolForSell(mint, amountUi);
+//     if (estCostSold === null) return false; // unknown cost -> don't charge
 
-    const estPnl = estOutSol - estCostSold;
-    return estPnl > 0; // we only fee when the user makes something
-  } catch {
-    return false;
-  }
-}
+//     const estPnl = estOutSol - estCostSold;
+//     return estPnl > 0; // we only fee when the user makes something
+//   } catch {
+//     return false;
+//   }
+// }
 
 async function jupFetch(path, opts) {
   const base = await getJupBase();
@@ -2097,7 +2108,8 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
             outMint: outputMint,
             slipBps: baseSlip,
             restrict: restrictIntermediates, // keep same, forced true on lite
-            asLegacy: true
+            asLegacy: true,
+            withFee: !!(feeAccount && feeBps > 0)
           });
           const qResL = await jupFetch(qLegacy.pathname + qLegacy.search);
           if (!qResL.ok) {
@@ -2328,7 +2340,12 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       try {
         const slip2 = 2000;
         const rFlag = restrictAllowed ? "false" : "true";
-        const q2 = buildQuoteUrl({ outMint: outputMint, slipBps: slip2, restrict: rFlag });
+        const q2 = buildQuoteUrl({
+          outMint: outputMint,
+          slipBps: slip2,
+          restrict: rFlag,
+          withFee: !!(feeAccount && feeBps > 0)
+        });
         log(`Tiny-notional fallback: relax route, slip=${slip2} bps …`);
         const r2 = await jupFetch(q2.pathname + q2.search);
         if (r2.ok) {
@@ -2930,6 +2947,52 @@ function computePrePumpScore({ kp = {}, meta = {} }) {
   return score; // 0..1
 }
 
+function shouldAttachFeeForSell({ mint, amountRaw, inDecimals, quoteOutLamports }) {
+  try {
+    const dec = Number.isFinite(inDecimals) ? inDecimals : 6;
+    const amountUi = Number(amountRaw || 0) / Math.pow(10, dec);
+    if (!(amountUi > 0)) return false;
+
+    const estOutSol = Number(quoteOutLamports || 0) / 1e9;
+    if (!(estOutSol > 0)) return false;
+
+    if (estOutSol < SMALL_SELL_FEE_FLOOR) return false;
+
+    const estCostSold = estimateProportionalCostSolForSell(mint, amountUi);
+    if (estCostSold === null) return false; // unknown cost -> don't charge
+
+    const estPnl = estOutSol - estCostSold;
+    return estPnl > 0; // we only fee when the user makes something
+  } catch {
+    return false;
+  }
+}
+
+function estimateNetExitSolFromQuote({ mint, amountUi, inDecimals, quoteOutLamports }) {
+  try {
+    const amountRaw = Math.max(1, Math.floor(Number(amountUi || 0) * Math.pow(10, Number(inDecimals || 6))));
+    const attachFee = shouldAttachFeeForSell({
+      mint,
+      amountRaw,
+      inDecimals: Number(inDecimals || 6),
+      quoteOutLamports: Number(quoteOutLamports || 0),
+    });
+
+    const feeBps = Number(getPlatformFeeBps() || 0);
+    const platformL = attachFee ? Math.floor(Number(quoteOutLamports || 0) * (feeBps / 10_000)) : 0;
+    const txL = EDGE_TX_FEE_ESTIMATE_LAMPORTS; // conservative recurring estimate
+    const netL = Math.max(0, Number(quoteOutLamports || 0) - platformL - txL);
+    return {
+      netSol: netL / 1e9,
+      feeApplied: attachFee,
+      platformLamports: platformL,
+      txLamports: txL,
+    };
+  } catch {
+    return { netSol: Math.max(0, Number(quoteOutLamports || 0) - EDGE_TX_FEE_ESTIMATE_LAMPORTS) / 1e9, feeApplied: false, platformLamports: 0, txLamports: EDGE_TX_FEE_ESTIMATE_LAMPORTS };
+  }
+}
+
 function computeReboundSignal(mint) {
   try {
     const series = getLeaderSeries(mint, 3);
@@ -2978,9 +3041,16 @@ function shouldDeferSellForRebound(mint, pos, pnlPct, nowTs, reason = "") {
     if (!state.reboundGateEnabled) return false;
     if (!mint || !pos) return false;
 
-    // Don’t defer on rugs or profit-taking
+
+
+
+
     if (/rug/i.test(reason || "")) return false;
     if (/TP|take\s*profit/i.test(reason || "")) return false;
+
+    
+
+
 
     const ageMs = nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0);
     const lookbackMs = Math.max(5_000, Number(state.reboundLookbackSecs || 45) * 1000);
@@ -4394,6 +4464,21 @@ async function evalAndMaybeSellPositions() {
           pos.lastQuotedAt = nowTs;
         }
 
+        const outLamports = Math.floor(Math.max(0, curSol) * 1e9);
+        const decIn = Number.isFinite(pos.decimals) ? pos.decimals : 6;
+        const net = estimateNetExitSolFromQuote({
+          mint,
+          amountUi: sz,
+          inDecimals: decIn,
+          quoteOutLamports: outLamports
+        });
+        const curSolNet = net.netSol;
+
+        if (Number.isFinite(curSol) && Number.isFinite(curSolNet)) {
+          log(`Edge-aware valuation ${mint.slice(0,4)}… raw≈${curSol.toFixed(6)} SOL, net≈${curSolNet.toFixed(6)} SOL${net.feeApplied ? " (fee)" : ""}`);
+        }
+
+
         const pxNow  = sz > 0 ? (curSol / sz) : 0;
         const pxCost = sz > 0 ? (Number(pos.costSol || 0) / sz) : 0;
         const pnlPct = (pxNow > 0 && pxCost > 0) ? ((pxNow - pxCost) / pxCost) * 100 : 0;
@@ -4448,8 +4533,9 @@ async function evalAndMaybeSellPositions() {
         let d = null;
 
 
+        // but run PnL/TP/SL on NET
         if (curSol < minNotional && !forceExpire && !forceRug && !forcePumpDrop && !forceObserverDrop) {
-          d = shouldSell(pos, curSol, nowTs);
+          d = shouldSell(pos, curSolNet, nowTs);
           const dustMin = Math.max(MIN_SELL_SOL_OUT, Number(state.dustMinSolOut || 0));
           if (!(state.dustExitEnabled && d.action === "sell_all" && curSol >= dustMin)) {
             log(`Skip sell eval ${mint.slice(0,4)}… (notional ${curSol.toFixed(6)} SOL < ${minNotional})`);
@@ -4479,11 +4565,8 @@ async function evalAndMaybeSellPositions() {
           decision = { action: "none", reason: "warming-hold-until-profit" };
         }
 
-
-
-
         if (decision && decision.action !== "none" && !forceRug) {
-          // If we are already in a rebound deferral window, honor it until expiry
+          // If we are already in a rebound deferral window, honor it until expiry! this include net pnl
           const stillDeferred = Number(pos.reboundDeferUntil || 0) > nowTs;
           if (stillDeferred) {
             log(`Rebound gate: deferral active for ${mint.slice(0,4)}… skipping sell this tick.`);
@@ -4492,11 +4575,9 @@ async function evalAndMaybeSellPositions() {
             const wantDefer = shouldDeferSellForRebound(mint, pos, pnlPct, nowTs, decision.reason || "");
             if (wantDefer) {
               decision = { action: "none", reason: "rebound-predict-hold" };
-              // wake a re-eval when the small deferral window expires
               const waitMs = Math.max(800, Number(state.reboundHoldMs || 4000));
               setTimeout(() => { try { wakeSellEval(); } catch {} }, waitMs);
             } else {
-              // clear deferral markers if any
               if (pos.reboundDeferUntil || pos.reboundDeferStartedAt) {
                 delete pos.reboundDeferUntil;
                 delete pos.reboundDeferStartedAt;
@@ -5459,7 +5540,7 @@ function load() {
   if (typeof state.strictBuyFilter !== "boolean") state.strictBuyFilter = true;
 
   state.tickMs = Math.max(1200, Math.min(5000, Number(state.tickMs || 2000))); 
-  state.slippageBps = Math.min(300, Math.max(200, Number(state.slippageBps ?? 250) | 0));
+  state.slippageBps = Math.min(250, Math.max(150, Number(state.slippageBps ?? 200) | 0));
   state.minBuySol   = Math.max(0.01, UI_LIMITS.MIN_BUY_SOL_MIN, Number(state.minBuySol ?? 0.01)); // 0.01 floor
   state.coolDownSecsAfterBuy = Math.max(0, Math.min(12, Number(state.coolDownSecsAfterBuy || 8)));
   state.pendingGraceMs = Math.max(120_000, Number(state.pendingGraceMs || 120_000));
