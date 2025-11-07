@@ -70,7 +70,7 @@ function ensureStyles() {
     .fdv-pill { display:inline-flex; align-items:center; gap:6px; padding:3px 8px; border-radius:999px; background: rgba(148,163,184,.10); border:1px solid rgba(122,222,255,.14); font-size:12px; }
     .fdv-pill.link { cursor:pointer; background: rgba(123,241,255,.06); border-color: rgba(122,222,255,.22); color: var(--muted); }
     .fdv-lib-table { width:100%; border-collapse:collapse; }
-    .fdv-lib-table th, .fdv-lib-table td { padding:8px; text-align:left; border-bottom:1px solid rgba(122,222,255,.10); }
+    .fdv-lib-table th, .fdv-lib-table td { padding:8px; text-align:left; border-bottom:1px solid rgba(122,222,255,.10); overflow:scroll; }
     .fdv-up { color:#19c37d; } .fdv-down { color:#ff6f6f; }
   `;
   const st = document.createElement("style");
