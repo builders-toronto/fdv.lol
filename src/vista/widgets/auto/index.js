@@ -42,7 +42,7 @@ const FEE_ATAS = {
 const UI_LIMITS = {
   BUY_PCT_MIN: 0.01,  // 1%
   BUY_PCT_MAX: 0.50,  // 50%
-  MIN_BUY_SOL_MIN: 0.01, // ≥ ~0.01 SOL floor (was 0.03)
+  MIN_BUY_SOL_MIN: 0.06, // ≥ ~0.01 SOL floor (was 0.03)
   MIN_BUY_SOL_MAX: 1,    // cap min order size at 1 SOL       
   MAX_BUY_SOL_MIN: Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN),
   MAX_BUY_SOL_MAX: 5,    // cap max order size at 5 SOL
@@ -175,8 +175,8 @@ let state = {
   lifetimeMins: 60,         
   endAt: 0,                 
   buyPct: 0.2,              
-  minBuySol: 0.01,
-  maxBuySol: 0.02,       
+  minBuySol: 0.06,
+  maxBuySol: 0.12,       
   rpcUrl: "",             
 
   // Per-mint positions:
@@ -2711,28 +2711,39 @@ function scorePumpCandidate(it) {
 
   const c5 = Math.max(0, chg5m);
   const c1 = Math.log1p(Math.max(0, chg1h)); 
-
   const exp5m = Math.max(0, chg1h) / 12;
   const accelRatio = exp5m > 0 ? (c5 / exp5m) : (c5 > 0 ? 1.2 : 0);
-
   const lLiq = Math.log1p(liq / 5000);
   const lVol = Math.log1p(v1h / 1000);
 
+  // Weighted score
+  const w = {
+    c5: 0.50 * c5,
+    c1: 0.12 * c1,
+    lVol: 0.14 * lVol,
+    lLiq: 0.08 * lLiq,
+    accelRatio: 0.08 * Math.max(0, accelRatio - 0.8),
+    accel5to1: 0.08 * Math.max(0, accel5to1 - 1),
+    flags: (risingNow && trendUp ? 0.06 : 0),
+    pScore: 0.04 * pScore,
+  };
   const score =
-    0.50 * c5 +          
-    0.12 * c1 +          
-    0.14 * lVol +
-    0.08 * lLiq +
-    0.08 * Math.max(0, accelRatio - 0.8) + 
-    0.08 * Math.max(0, accel5to1 - 1) +    
-    (risingNow && trendUp ? 0.06 : 0) +    
-    0.04 * pScore; 
-    
-  log(`Pump score calc for ${it.mint?.slice(0,4)}… : c5=${c5.toFixed(2)} c1=${c1.toFixed(2)} lVol=${lVol.toFixed(2)} lLiq=${lLiq.toFixed(2)} accelRatio=${accelRatio.toFixed(2)} accel5to1=${accel5to1.toFixed(2)} risingNow=${risingNow} trendUp=${trendUp} pScore=${pScore.toFixed(2)} => score=${score.toFixed(2)}`);
+    w.c5 + w.c1 + w.lVol + w.lLiq + w.accelRatio + w.accel5to1 + w.flags + w.pScore;
+
+  const mintStr = String(it?.mint || it?.kp?.mint || "");
+  const tag = mintStr ? `${mintStr.slice(0,4)}…` : "(unknown)";
+  const nf = (x) => (Number.isFinite(x) ? x : 0);
+
+  log(`Pump score calc for ${tag}… : c5=${nf(c5).toFixed(2)} c1=${nf(c1).toFixed(2)} lVol=${nf(lVol).toFixed(2)} lLiq=${nf(lLiq).toFixed(2)} accelRatio=${nf(accelRatio).toFixed(2)} accel5to1=${safeNum(accel5to1,0).toFixed(2)} risingNow=${risingNow} trendUp=${trendUp} pScore=${nf(pScore).toFixed(2)} => score=${nf(score).toFixed(2)}`);
+
+  log(
+    `Score breakdown ${tag}: ` +
+    `0.50*c5=${w.c5.toFixed(2)}, 0.12*c1=${w.c1.toFixed(2)}, 0.14*lVol=${w.lVol.toFixed(2)}, 0.08*lLiq=${w.lLiq.toFixed(2)}, ` +
+    `0.08*accelRatio=${w.accelRatio.toFixed(2)}, 0.08*accel5to1=${w.accel5to1.toFixed(2)}, flags=${w.flags.toFixed(2)}, 0.04*pScore=${w.pScore.toFixed(2)}`
+  );
 
   return score;
 }
-
 function setMintBlacklist(mint, ms = MINT_RUG_BLACKLIST_MS) {
   if (!mint) return;
   if (!window._fdvMintBlacklist) window._fdvMintBlacklist = new Map();
@@ -3271,7 +3282,7 @@ function pickPumpCandidates(take = 1, poolN = 3) {
 
       if (!(microUp && notBackside) && !primed) continue;
 
-      const baseScore = scorePumpCandidate({ kp, pumpScore: it?.pumpScore, meta });
+      const baseScore = scorePumpCandidate({ mint, kp, pumpScore: it?.pumpScore, meta });
       const finalScore = primed ? baseScore * 0.92 : baseScore;
 
       pool.push({
@@ -5206,38 +5217,51 @@ async function tick() {
         const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
         if (!edge) { log(`Skip ${mint.slice(0,4)}… (no round-trip quote)`); continue; }
 
+        const hasOnetime = Number(edge.ataRentLamports || 0) > 0;
+        const incl = Number(edge.pct);          // includes one‑time ATA rent
+        const excl = Number(edge.pctNoOnetime); // excludes one‑time ATA rent
+        const pumping = (badgeNow === "pumping");
+
         const baseUser = Number.isFinite(state.minNetEdgePct) ? state.minNetEdgePct : -4;
         const warmOverride = state.warmingEdgeMinExclPct;
         const hasWarmOverride = typeof warmOverride === "number" && Number.isFinite(warmOverride);
         const warmUser = hasWarmOverride ? warmOverride : baseUser;
         const buffer   = Math.max(0, Number(state.edgeSafetyBufferPct || 0.2));
 
-        const hasOnetime = Number(edge.ataRentLamports || 0) > 0;
-        const incl = Number(edge.pct);          // includes one-time ATA rent
-        const excl = Number(edge.pctNoOnetime); // excludes one-time ATA rent
-        const pumping = (badgeNow === "pumping");
-
+        // Threshold to compare against (always exclude ATA rent for profitability check)
         const needExcl = pumping
           ? (baseUser - 2.0)
           : (badgeNow === "warming" ? warmUser : baseUser);
 
-        let needIncl = needExcl;
-        if (pumping && hasOnetime) needIncl = baseUser;
-
-        const useIncl = hasOnetime;
-        const curEdge = useIncl ? incl : excl;
-        const baseNeed = useIncl ? needIncl : needExcl;
+        const baseNeed = needExcl;
         const needWithBuf = baseNeed + buffer;
+
+        // Profitability check should ignore ATA rent since it is refundable on close
+        const curEdge = excl;
+
+        try {
+          const fwdLen = Number(edge?.forward?.routePlan?.length || edge?.forward?.routePlanLen || 0);
+          const backLen= Number(edge?.backward?.routePlan?.length || edge?.backward?.routePlanLen || 0);
+          const feeBps = Number(edge?.platformBpsApplied || 0);
+          const fricSolRec = Number(edge.recurringLamports || 0) / 1e9; // recurring only
+          const fricPct = buySol > 0 ? (fricSolRec / buySol) * 100 : 0;
+          const ataSol = Number(edge.ataRentLamports || 0) / 1e9;
+          const mode    = "excl-ATA";
+          log(
+            `Edge gate ${mint.slice(0,4)}… mode=${mode} (ATA rent excluded; refundable); ` +
+            `curEdge=${curEdge.toFixed(2)}% need=${baseNeed.toFixed(2)}% buf=${buffer.toFixed(2)}% thr=${needWithBuf.toFixed(2)}%; ` +
+            `fee=${feeBps}bps, routes fwd=${fwdLen} back=${backLen}, ` +
+            `friction≈${fricSolRec.toFixed(6)} SOL (${fricPct.toFixed(2)}% of buy ${buySol.toFixed(6)} SOL), ataRent≈${ataSol.toFixed(6)} SOL`
+          );
+        } catch {}
 
         const pass = Number.isFinite(curEdge) && (curEdge >= needWithBuf);
 
         if (!pass) {
-          const inclStr = Number.isFinite(incl) ? incl.toFixed(2) : "—";
-          const exclStr = Number.isFinite(excl) ? excl.toFixed(2) : "—";
           const srcStr  = (badgeNow === "warming" && hasWarmOverride) ? " (warming override)" : "";
           log(
-            `Skip ${mint.slice(0,4)}… net edge ${useIncl ? inclStr : exclStr}% < ${needWithBuf.toFixed(2)}%` +
-            ` (need ${baseNeed.toFixed(2)}% + ${buffer.toFixed(2)} buffer; mode=${useIncl ? "incl-ATA" : "excl-ATA"})${srcStr}`
+            `Skip ${mint.slice(0,4)}… net edge ${curEdge.toFixed(2)}% < ${needWithBuf.toFixed(2)}%` +
+            ` (need ${baseNeed.toFixed(2)}% + ${buffer.toFixed(2)} buffer; mode=excl-ATA)${srcStr}`
           );
           continue;
         }
@@ -5541,7 +5565,7 @@ function load() {
 
   state.tickMs = Math.max(1200, Math.min(5000, Number(state.tickMs || 2000))); 
   state.slippageBps = Math.min(250, Math.max(150, Number(state.slippageBps ?? 200) | 0));
-  state.minBuySol   = Math.max(0.01, UI_LIMITS.MIN_BUY_SOL_MIN, Number(state.minBuySol ?? 0.01)); // 0.01 floor
+  state.minBuySol = Math.max(0.06, UI_LIMITS.MIN_BUY_SOL_MIN, Number(state.minBuySol ?? 0.06)); 
   state.coolDownSecsAfterBuy = Math.max(0, Math.min(12, Number(state.coolDownSecsAfterBuy || 8)));
   state.pendingGraceMs = Math.max(120_000, Number(state.pendingGraceMs || 120_000));
   state.allowMultiBuy = false;
