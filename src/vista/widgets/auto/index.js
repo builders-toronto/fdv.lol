@@ -28,6 +28,9 @@ const FAST_OBS_LOG_INTERVAL_MS = 200;
 const RUG_FORCE_SELL_SEVERITY = 0.60;
 const EARLY_URGENT_WINDOW_MS = 15_000; // buyers remorse
 
+const MAX_DOM_LOG_LINES = 300;      
+const MAX_LOG_MEM_LINES = 50000;
+
 
 const POSCACHE_KEY_PREFIX = "fdv_poscache_v1:";
 
@@ -94,13 +97,25 @@ function isPlanUpgradeError(e) {
 }
 
 function log(msg) {
+  if (!window._fdvLogBuffer) window._fdvLogBuffer = [];
+  const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  const buf = window._fdvLogBuffer;
+  buf.push(line);
+  if (buf.length > MAX_LOG_MEM_LINES) {
+    buf.splice(0, buf.length - Math.floor(MAX_LOG_MEM_LINES * 0.9)); // trim oldest
+  }
+
   if (!logEl) return;
   const d = document.createElement("div");
-  d.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  d.textContent = line;
   logEl.appendChild(d);
+
+  const max = Math.max(100, Number(MAX_DOM_LOG_LINES || 600));
+  while (logEl.children.length > max) {
+    try { logEl.removeChild(logEl.firstChild); } catch {}
+  }
   logEl.scrollTop = logEl.scrollHeight;
 }
-
 function logObj(label, obj) {
   try { log(`${label}: ${JSON.stringify(obj)}`); } catch {}
 }
@@ -228,7 +243,7 @@ let state = {
   warmingMinV1h: 800,
   warmingPrimedConsec: 1, 
   warmingMaxLossPct: 6,           // early stop if PnL <= -10% within window
-  warmingMaxLossWindowSecs: 30,    // window after buy for the max-loss guard
+  warmingMaxLossWindowSecs: 60,    // window after buy for the max-loss guard
   warmingEdgeMinExclPct: null,     
 
   // Rebound gate
@@ -254,7 +269,6 @@ let logEl, toggleEl, startBtn, stopBtn, mintEl;
 let depAddrEl, depBalEl, lifeEl, recvEl, buyPctEl, minBuyEl, maxBuyEl, minEdgeEl, multiEl, warmDecayEl;
 let ledEl;
 let advBoxEl, warmMinPEl, warmFloorEl, warmDelayEl, warmReleaseEl, warmMaxLossEl, warmMaxWindowEl, warmConsecEl, warmEdgeEl;
-
 
 let _starting = false;
 
@@ -350,6 +364,8 @@ function _fmtDelta(a, b, digits = 2) {
   return `${b.toFixed(digits)} (${sign}${Math.abs(d).toFixed(digits)})`;
 }
 function _normNum(n) { return Number.isFinite(n) ? n : null; }
+
+
 function logFastObserverSample(mint, pos) {
   try {
     const store = _getFastObsLogStore();
@@ -394,6 +410,7 @@ function logFastObserverSample(mint, pos) {
     }
   } catch {}
 }
+
 
 function clearPendingCredit(owner, mint) {
   try { if (_pendingCredits) _pendingCredits.delete(_pcKey(owner, mint)); } catch {}
@@ -5228,7 +5245,6 @@ async function tick() {
         const warmUser = hasWarmOverride ? warmOverride : baseUser;
         const buffer   = Math.max(0, Number(state.edgeSafetyBufferPct || 0.2));
 
-        // Threshold to compare against (always exclude ATA rent for profitability check)
         const needExcl = pumping
           ? (baseUser - 2.0)
           : (badgeNow === "warming" ? warmUser : baseUser);
@@ -5236,7 +5252,6 @@ async function tick() {
         const baseNeed = needExcl;
         const needWithBuf = baseNeed + buffer;
 
-        // Profitability check should ignore ATA rent since it is refundable on close
         const curEdge = excl;
 
         try {
@@ -5531,7 +5546,7 @@ function load() {
   if (!Number.isFinite(state.warmingUptickMinDeltaScore) || state.warmingUptickMinDeltaScore > 0.015) state.warmingUptickMinDeltaScore = 0.006;
   if (!Number.isFinite(state.warmingPrimedConsec) || state.warmingPrimedConsec > 1) state.warmingPrimedConsec = 1;
   if (!Number.isFinite(state.warmingMaxLossPct)) state.warmingMaxLossPct = 6;  
-  if (!Number.isFinite(state.warmingMaxLossWindowSecs)) state.warmingMaxLossWindowSecs = 30;
+  if (!Number.isFinite(state.warmingMaxLossWindowSecs)) state.warmingMaxLossWindowSecs = 60;
   // if (!Number.isFinite(state.warmingEdgeMinExclPct)) state.warmingEdgeMinExclPct = 0;
     // if (!Number.isFinite(state.warmingEdgeMinExclPct)) delete state.warmingEdgeMinExclPct;
   if (typeof state.warmingEdgeMinExclPct !== "number" || !Number.isFinite(state.warmingEdgeMinExclPct)) {
@@ -5577,12 +5592,11 @@ function save() {
 }
 
 function copyLog() {
-  if (!logEl) return false;
   try {
-    const lines = Array.from(logEl.children)
-      .filter(n => n && n.tagName === "DIV")
-      .map(n => n.textContent || "");
-    const text = lines.join("\n");
+    const buf = Array.isArray(window._fdvLogBuffer) ? window._fdvLogBuffer : null;
+    const text = (buf && buf.length) 
+      ? buf.join("\n")
+      : Array.from(logEl?.children || []).filter(n => n?.tagName === "DIV").map(n => n.textContent || "").join("\n");
     if (!text) { log("Log is empty."); return false; }
     navigator.clipboard.writeText(text)
       .then(() => log("Log copied to clipboard"))
@@ -5859,7 +5873,7 @@ export function initAutoWidget(container = document.body) {
     </div>
     </div>
     <div class="fdv-bot-footer" style="margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
-      <span>Version: 0.0.3.4</span>
+      <span>Version: 0.0.3.5</span>
     </div>
   `;
 
@@ -6006,7 +6020,7 @@ export function initAutoWidget(container = document.body) {
   if (warmDelayEl)     warmDelayEl.value     = String(Number.isFinite(state.warmingDecayDelaySecs) ? state.warmingDecayDelaySecs : 15);
   if (warmReleaseEl)   warmReleaseEl.value   = String(Number.isFinite(state.warmingAutoReleaseSecs) ? state.warmingAutoReleaseSecs : 45);
   if (warmMaxLossEl)   warmMaxLossEl.value   = String(Number.isFinite(state.warmingMaxLossPct) ? state.warmingMaxLossPct : 6);
-  if (warmMaxWindowEl) warmMaxWindowEl.value = String(Number.isFinite(state.warmingMaxLossWindowSecs) ? state.warmingMaxLossWindowSecs : 30);
+  if (warmMaxWindowEl) warmMaxWindowEl.value = String(Number.isFinite(state.warmingMaxLossWindowSecs) ? state.warmingMaxLossWindowSecs : 60);
   if (warmConsecEl)    warmConsecEl.value    = String(Number.isFinite(state.warmingPrimedConsec) ? state.warmingPrimedConsec : 1);
   if (warmEdgeEl) {
     warmEdgeEl.value = (typeof state.warmingEdgeMinExclPct === "number" && Number.isFinite(state.warmingEdgeMinExclPct))
