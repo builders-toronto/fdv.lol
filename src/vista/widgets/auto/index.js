@@ -271,6 +271,7 @@ let logEl, toggleEl, startBtn, stopBtn, mintEl;
 let depAddrEl, depBalEl, lifeEl, recvEl, buyPctEl, minBuyEl, maxBuyEl, minEdgeEl, multiEl, warmDecayEl;
 let ledEl;
 let advBoxEl, warmMinPEl, warmFloorEl, warmDelayEl, warmReleaseEl, warmMaxLossEl, warmMaxWindowEl, warmConsecEl, warmEdgeEl;
+let reboundScoreEl, reboundLookbackEl;
 
 let _starting = false;
 
@@ -362,7 +363,7 @@ function _getFastObsLogStore() {
 function _fmtDelta(a, b, digits = 2) {
   if (!Number.isFinite(a) || !Number.isFinite(b)) return "—";
   const d = b - a;
-  const sign = d > 0 ? "+" : d < 0 ? "−" : "±";
+  const sign = d > 0 ? "+" : d < 0 ? "-" : "±";
   return `${b.toFixed(digits)} (${sign}${Math.abs(d).toFixed(digits)})`;
 }
 function _normNum(n) { return Number.isFinite(n) ? n : null; }
@@ -5342,8 +5343,8 @@ async function tick() {
         if (!edge) { log(`Skip ${mint.slice(0,4)}… (no round-trip quote)`); continue; }
 
         const hasOnetime = Number(edge.ataRentLamports || 0) > 0;
-        const incl = Number(edge.pct);          // includes one‑time ATA rent
-        const excl = Number(edge.pctNoOnetime); // excludes one‑time ATA rent
+        const incl = Number(edge.pct);          // includes one-time ATA rent
+        const excl = Number(edge.pctNoOnetime); // excludes one-time ATA rent
         const pumping = (badgeNow === "pumping");
 
         const baseUser = Number.isFinite(state.minNetEdgePct) ? state.minNetEdgePct : -4;
@@ -5382,8 +5383,8 @@ async function tick() {
         if (!pass) {
           const srcStr  = (badgeNow === "warming" && hasWarmOverride) ? " (warming override)" : "";
           log(
-            `Skip ${mint.slice(0,4)}… net edge ${curEdge.toFixed(2)}% < ${needWithBuf.toFixed(2)}%` +
-            ` (need ${baseNeed.toFixed(2)}% + ${buffer.toFixed(2)} buffer; mode=excl-ATA)${srcStr}`
+            `Skip ${mint.slice(0,4)}… net edge ${curEdge.toFixed(2)}% < ${needWithBuf.toFixed(2)}% ` +
+            `(need=${baseNeed.toFixed(2)}% + buffer=${buffer.toFixed(2)}% => thr=${needWithBuf.toFixed(2)}%; mode=excl-ATA)${srcStr}`
           );
           continue;
         }
@@ -5827,6 +5828,8 @@ export function initAutoWidget(container = document.body) {
         <label>Max loss window (s) <input data-auto-warm-window type="number" step="1" min="5" max="180" placeholder="30"/></label>
         <label>Primed consec <input data-auto-warm-consec type="number" step="1" min="1" max="3" placeholder="1"/></label>
         <label>Edge min excl (%) <input data-auto-warm-edge type="number" step="0.1" min="-10" max="10" placeholder="(optional)"/></label>
+        <label>Rebound min score <input data-auto-rebound-score type="number" step="0.01" min="0" max="5" placeholder="0.34"/></label>
+        <label>Rebound lookback (s) <input data-auto-rebound-lookback type="number" step="1" min="5" max="180" placeholder="45"/></label>
       </div>
     </details>
     <div class="fdv-hold-time-slider"></div>
@@ -5867,14 +5870,16 @@ export function initAutoWidget(container = document.body) {
                    <li>Generate the auto wallet and fund it with SOL. Recommended minimum: <strong>$7</strong>.</li>
                    <li>Set a Recipient to receive funds on End & Return.</li>
                    <li>Tune Buy %, Min/Max Buy, Slippage.</li>
-                   <li>Click Start. Bot ticks every 5s and respects cooldowns.</li>
+                   <li>Enable “Warming” and set Warming min profit (%) ≈ 2 (decay ≈ 0.25%/min, floor -2%).</li>
+                   <li>Configure the round-trip edge gate: set Min Edge (%) baseline, and optionally Advanced → Edge min excl (%) for warming (excludes ATA rent). Recommend −2% to −3%.</li>
+                   <li>Click Start. Bot ticks every 1s and respects cooldowns.</li>
                    <li>If you hit issues, reach out on Telegram: <a href="https://t.me/fdvlolgroup" target="_blank">fdvlolgroup</a>.</li>
                  </ol>
                </div>
                <div>
                  <strong>Guidelines</strong>
                  <ul style="margin:6px 0 0 18px;">
-                   <li>Keep at least <strong>$7</strong> in SOL to cover router minimums, ATA rent, and fees.</li>
+                   <li>Keep at least <strong>$20</strong> in SOL to cover router minimums, ATA rent, and fees.</li>
                    <li>Dust protection: very small orders are skipped; sells below min-notional are blocked unless dust-exit is enabled.</li>
                    <li>Use a CORS-enabled RPC; some plans may block owner scans (the bot adapts).</li>
                  </ul>
@@ -5888,7 +5893,7 @@ export function initAutoWidget(container = document.body) {
                   <li>Under heavy API load, increase Min Quote Interval to reduce rate limits.</li>
                   <li>Use a fast CORS RPC and add auth headers if needed; verify with RPC preflight.</li>
                   <li>Export wallet.json periodically; use it to manually recover dust if needed.</li>
-                  <li>Adjust slippage if swaps fail often; start at 150–300 bps, cap near 2000 bps.</li>
+                  <li>Adjust slippage if swaps fail often; start at 150-300 bps, cap near 2000 bps.</li>
                   <li>Keep a small SOL runway for fees and ATAs; bot reserves are automatic.</li>
                 </ul>
               </div>
@@ -5934,31 +5939,63 @@ export function initAutoWidget(container = document.body) {
                  </ul>
                </div>
              </div>
-             <div data-auto-tab-panel="release" style="display:none;">
+              <div data-auto-tab-panel="release" style="display:none;">
                <div>
-                 <strong>Release v0.0.2.6: Highlights</strong>
+                 <strong>Release v0.0.3.5: Full Feature Overview</strong>
                  <ul style="margin:6px 0 0 18px;">
-                   <li>Observer system refinements: 3/5 soft-watch debounce, forced sells with hysteresis, dynamic hold tuning.</li>
-                   <li>Leader mode rotation polished: full/partial rotation with remainder reconciliation and router cooldowns.</li>
-                   <li>Optimistic buy seeding now accumulates multiple seeds; pending-credit reconciliation is more robust.</li>
-                   <li>Wallet Holdings panel shows Sellable vs Dust with live SOL and USD totals; quick export button.</li>
-                   <li>Stress-aware Jupiter client: inflight GET dedupe + safe Response clones; quote memoization with jittered pacing.</li>
-                   <li>Split-sell fallback upgrades: accurate proportional cost/hwm, cache updates, and dust promotion/cleanup.</li>
-                   <li>WSOL unwrap hardening: tolerant owner/ATA normalization and gated only for SOL-involved swaps.</li>
-                   <li>Per-mint router cooldowns applied consistently after route/dust errors and partial remainders.</li>
-                   <li>Startup sweeps for positions and dust with on-chain verification and safe cache pruning.</li>
-                   <li>Compute/spend ceiling improvements: fee/rent/runway buffers and multi-buy single-tick gating.</li>
+                   <li><b>Pumping Radar integration</b>: Leader sampling, 3-tick trend slopes, score breakdown, badge normalization (🔥 Pumping / Warming / Calm).</li>
+                   <li><b>Warming engine</b>: Slope-gated badge (cooling when regression slope down); uptick detector (Δchg5m / Δscore / per-minute slopes / accel5→1 / zV1 / buy skew) with priming and backside guard.</li>
+                   <li><b>Dynamic warming hold</b>: Per-position min profit requirement decays after delay (floor enforced); auto release timer + rise extension window; max-loss early abort in protection window.</li>
+                   <li><b>Rebound gate</b>: Short-age sell deferrals using configurable lookback, min score, change and score slopes, capped defer window and hold period; disables on rugs / TP / deep loss.</li>
+                   <li><b>Edge gating</b>: Round-trip Jupiter quote (SOL→token→SOL) with recurring vs one-time ATA rent split; excludes refundable ATA for threshold; baseline minNetEdgePct with safety buffer; warming override only when explicitly set.</li>
+                   <li><b>Observer system</b>: Pre-buy watch (passes: change/vol/liq/score + momentum boost); 3/5 soft-watch debounce; forced sells with hysteresis; dynamic maxHoldSecs tuning; sell guard windows after buys.</li>
+                   <li><b>Fast observer</b>: 40ms cadence badge & momentum sampling; urgent sell escalation for early severe rugs or pump→calm drawdowns.</li>
+                   <li><b>Rotation (Leader mode)</b>: Sell all non-leader tokens (partial remainder reconciliation / router cooldown) before new leader buy; optional continuous holding until leader changes.</li>
+                   <li><b>Split-sell fallback</b>: Adaptive fractions with permissive slippage & route relaxation; proportional cost/hwm adjustments; remainder classification (sellable vs dust).</li>
+                   <li><b>Dust management</b>: Startup sweep, on-demand sweep, min-notional enforcement, dust cache promotion/demotion, sanitization & invalid mint pruning.</li>
+                   <li><b>Pending credit reconciliation</b>: Optimistic seeding, tx meta parsing, ATA balance polling, timeout extension, watchdog with owner scan fallback for restricted RPC plans.</li>
+                   <li><b>Profit tracking</b>: Realized PnL accumulator (SOL + USD conversion), per-sell labeling (Full / Partial / Rotation / Unwind / Startup sweep).</li>
+                   <li><b>Risk controls</b>: Rug severity gating (force threshold vs staged blacklist), pump→calm drop ban window, progressive blacklist staging (2m / 15m / 30m), warming volatility suppression during guarded periods.</li>
+                   <li><b>Sizing & reserves</b>: Spend ceiling reserves (base + per-position sell buffers + runway), carry accumulation until order reaches router min, ATA rent preflight inclusion.</li>
+                   <li><b>Fee logic</b>: Dynamic platform fee only on profitable & non-dust sells; suppressed for small notional or loss; per-chunk evaluation for split sells.</li>
+                   <li><b>Valuation</b>: Edge-aware net exit estimator (platform + tx fee removal) vs raw; direct SOL quoting with restrictIntermediateTokens heuristics and cache memoization.</li>
+                   <li><b>Slippage escalation</b>: Retry ladder (buy: capped; sell: fallbacks including manual build, legacy mode, relaxed routes, USDC bridge, split strategy) with stress backoff.</li>
+                   <li><b>Router cooldowns</b>: Per-mint cooldown after route/dust errors & partial remainder events to avoid hammering failing paths.</li>
+                   <li><b>Account cleanup</b>: Zero-balance pruning, periodic ATA close (single / batch), WSOL unwrap attempts post SOL-involved swaps.</li>
+                   <li><b>State safeties</b>: Grace windows for pending credits, guarded sell suppression (cooldown, warming hold, rebound deferral), min/max clamps for tunable inputs.</li>
+                   <li><b>UI advanced knobs</b>: Warming profit / floor / decay rate / delay / auto release / max loss window / primed-consec; Edge min excl override; Rebound score & lookback; Dynamic hold enable; Range slider for base hold.</li>
+                   <li><b>Performance & stress handling</b>: RPC jittered pacing, 429 / rate-limit backoff tagging, quote inflight dedupe, short-lived quote cache, plan restriction detection & owner scan disable toggle.</li>
+                   <li><b>Export & recovery</b>: Wallet.json export, dust classification transparency, manual unwind to recipient, log copy utility.</li>
+                   <li><b>Version bump</b>: Consolidates warming slope gate, rebound deferrals, clarified edge threshold logging, explicit override parsing, and expanded release diagnostics.</li>
                  </ul>
                  <div style="margin-top:10px;">
-                   <strong>Fixes & stability</strong>
+                   <strong>Key Advanced Concepts</strong>
                    <ul style="margin:6px 0 0 18px;">
-                     <li>Eliminated duplicate buy sends: no retries after first buy submit; rely on pending-credit watcher.</li>
-                     <li>Fixed “body stream already read” by returning cloned Responses from inflight GET cache.</li>
-                     <li>Clears pending-credit watchers on full sells, rotations, dust sweeps, and remainders.</li>
-                     <li>Preflight balance checks for buys include ATA rent and fee buffers to prevent lamport shortfalls.</li>
-                     <li>Min-notional enforcement for sells and dust exits; safe classification to dust cache when needed.</li>
-                     <li>Improved public key handling and validation to avoid “Invalid public key input” noise.</li>
-                     <li>Safer owner scans with adaptive fallbacks and cache verification for restricted RPC plans.</li>
+                     <li><b>Warming decay</b>: req = max(floor, base - (decayPctPerMin * elapsedMinutes after delay)). Sell logic suppressed until req met or release window expires.</li>
+                     <li><b>Rebound defer</b>: If early sell trigger and slopes / score meet gates, positions get short timed extensions; repeated defers capped by maxDeferSecs.</li>
+                     <li><b>Priming</b>: Consecutive successful warming upticks counted; once count ≥ primedConsec the pump score is slightly attenuated (stability bias) but entry allowed.</li>
+                     <li><b>Backside guard</b>: Accel ratio vs implied hourly extrapolation filters late flattening; prevents false warming on decay legs.</li>
+                     <li><b>Edge threshold</b>: need = (badge-adjusted base or override) + safety buffer; pumping lowers base need; override ignored when input blank.</li>
+                   </ul>
+                 </div>
+                 <div style="margin-top:10px;">
+                   <strong>Stability & Fixes Since 0.0.2.6</strong>
+                   <ul style="margin:6px 0 0 18px;">
+                     <li>Accurate edge log formatting (no negative clamp confusion; override only when provided).</li>
+                     <li>Buy credit race reductions via seeded + tx meta reconciliation path.</li>
+                     <li>Improved warming extension messaging and release clarity.</li>
+                     <li>Refined rebound signal slope normalization (per-minute). </li>
+                     <li>Safer owner scan disable detection for restricted RPC plans.</li>
+                     <li>Follow us on Github for all updates and changes: <a href="https://github.com/builders-toronto/fdv.lol" target="_blank">github.com/builders-toronto/fdv.lol</a></li>
+                   </ul>
+                 </div>
+                 <div style="margin-top:10px;">
+                   <strong>Upgrade Guidance</strong>
+                   <ul style="margin:6px 0 0 18px;">
+                     <li>Leave warmingEdgeMinExclPct blank unless intentionally tightening friction.</li>
+                     <li>Raise reboundMinScore / slopes to reduce hold churn in volatile chop.</li>
+                     <li>Lower warmingDecayDelaySecs to accelerate profit requirement decay for shorter rotations.</li>
+                     <li>Increase edgeSafetyBufferPct for illiquid environments to avoid borderline negative net entries.</li>
                    </ul>
                  </div>
                </div>
@@ -6083,18 +6120,26 @@ export function initAutoWidget(container = document.body) {
   warmMaxWindowEl = wrap.querySelector("[data-auto-warm-window]");
   warmConsecEl    = wrap.querySelector("[data-auto-warm-consec]");
   warmEdgeEl      = wrap.querySelector("[data-auto-warm-edge]");
+  reboundScoreEl = wrap.querySelector("[data-auto-rebound-score]");
+  reboundLookbackEl = wrap.querySelector("[data-auto-rebound-lookback]");
 
   setTimeout(() => {
-  try {
-    logObj("Warming thresholds", {
-      minPre: state.warmingUptickMinPre,
-      minAccel: state.warmingUptickMinAccel,
-      dChg: state.warmingUptickMinDeltaChg5m,
-      dScore: state.warmingUptickMinDeltaScore,
-      primeConsec: state.warmingPrimedConsec
-    });
-  } catch {}
-}, 0);
+    try {
+      logObj("Warming thresholds", {
+        minPre: state.warmingUptickMinPre,
+        minAccel: state.warmingUptickMinAccel,
+        dChg: state.warmingUptickMinDeltaChg5m,
+        dScore: state.warmingUptickMinDeltaScore,
+        primeConsec: state.warmingPrimedConsec
+      });
+      logObj("Rebound thresholds", {
+        minScore: state.reboundMinScore,
+        lookbackSecs: state.reboundLookbackSecs,
+        chgSlopeMin: state.reboundMinChgSlope,
+        scSlopeMin: state.reboundMinScSlope
+      });
+    } catch {}
+  }, 0);  
 
 
 
@@ -6134,6 +6179,8 @@ export function initAutoWidget(container = document.body) {
       ? String(state.warmingEdgeMinExclPct)
       : "";
   }
+  if (reboundScoreEl) reboundScoreEl.value = String(Number.isFinite(state.reboundMinScore) ? state.reboundMinScore : 0.34);
+  if (reboundLookbackEl) reboundLookbackEl.value = String(Number.isFinite(state.reboundLookbackSecs) ? state.reboundLookbackSecs : 45);
 
   helpBtn.addEventListener("click", () => { modalEl.style.display = "flex"; });
   modalEl.addEventListener("click", (e) => { if (e.target === modalEl) modalEl.style.display = "none"; });
@@ -6446,7 +6493,7 @@ export function initAutoWidget(container = document.body) {
     el.addEventListener("change", saveField);
   });
 
-    function saveAdvanced() {
+  function saveAdvanced() {
     const n = (v) => Number(v);
     const clamp = (v, lo, hi, def) => {
       const x = Number(v);
@@ -6460,12 +6507,19 @@ export function initAutoWidget(container = document.body) {
     state.warmingMaxLossPct         = clamp(n(warmMaxLossEl?.value),     1,  50, 6);
     state.warmingMaxLossWindowSecs  = clamp(n(warmMaxWindowEl?.value),   5, 180, 30);
     state.warmingPrimedConsec       = clamp(n(warmConsecEl?.value),      1,   3, 1);
+    state.reboundMinScore       = clamp(n(reboundScoreEl?.value),     0, 5, 0.34);
+    state.reboundLookbackSecs   = clamp(n(reboundLookbackEl?.value),  5, 180, 45);
 
-    const edge = Number(warmEdgeEl?.value);
-    if (Number.isFinite(edge)) {
-      state.warmingEdgeMinExclPct = Math.min(10, Math.max(-10, edge));
+    const rawEdgeStr = (warmEdgeEl?.value ?? "").toString().trim();
+    if (rawEdgeStr.length > 0) {
+      const edgeVal = Number(rawEdgeStr);
+      if (Number.isFinite(edgeVal)) {
+        state.warmingEdgeMinExclPct = Math.min(10, Math.max(-10, edgeVal));
+      } else {
+        delete state.warmingEdgeMinExclPct;
+      }
     } else {
-      if (typeof state.warmingEdgeMinExclPct !== "undefined") delete state.warmingEdgeMinExclPct;
+      delete state.warmingEdgeMinExclPct;
     }
 
     if (warmMinPEl)      warmMinPEl.value      = String(state.warmingMinProfitPct);
@@ -6475,12 +6529,16 @@ export function initAutoWidget(container = document.body) {
     if (warmMaxLossEl)   warmMaxLossEl.value   = String(state.warmingMaxLossPct);
     if (warmMaxWindowEl) warmMaxWindowEl.value = String(state.warmingMaxLossWindowSecs);
     if (warmConsecEl)    warmConsecEl.value    = String(state.warmingPrimedConsec);
-    if (warmEdgeEl)      warmEdgeEl.value      = (typeof state.warmingEdgeMinExclPct === "number") ? String(state.warmingEdgeMinExclPct) : "";
+    if (warmEdgeEl)      warmEdgeEl.value      = (typeof state.warmingEdgeMinExclPct === "number")
+      ? String(state.warmingEdgeMinExclPct) : "";
+    if (reboundScoreEl)    reboundScoreEl.value    = String(state.reboundMinScore);
+    if (reboundLookbackEl) reboundLookbackEl.value = String(state.reboundLookbackSecs);
 
     save();
   }
 
-  [warmMinPEl, warmFloorEl, warmDelayEl, warmReleaseEl, warmMaxLossEl, warmMaxWindowEl, warmConsecEl, warmEdgeEl]
+  [warmMinPEl, warmFloorEl, warmDelayEl, warmReleaseEl, warmMaxLossEl, warmMaxWindowEl, warmConsecEl, warmEdgeEl,
+   reboundScoreEl, reboundLookbackEl]
     .filter(Boolean)
     .forEach(el => {
       el.addEventListener("input", saveAdvanced);
