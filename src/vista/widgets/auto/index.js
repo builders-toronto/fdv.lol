@@ -244,7 +244,9 @@ let state = {
   warmingPrimedConsec: 1, 
   warmingMaxLossPct: 6,           // early stop if PnL <= -10% within window
   warmingMaxLossWindowSecs: 60,    // window after buy for the max-loss guard
-  warmingEdgeMinExclPct: null,     
+  warmingEdgeMinExclPct: null,  
+  warmingExtendOnRise: true,
+  warmingExtendStepMs: 4000,  
 
   // Rebound gate
   reboundGateEnabled: true,         
@@ -1893,6 +1895,26 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
       feeDestCandidate = acct || null;
     }
 
+    // async function ensureQuoteHasFee(quoteObj) {
+    //   if (!feeDestCandidate) return { quote: quoteObj, useFee: false };
+    //   if (feeBps <= 0) return { quote: quoteObj, useFee: false };
+    //   const hasInQuote = Number(quoteObj?.platformFeeBps || quoteObj?.info?.platformFeeBps || 0) > 0;
+    //   if (hasInQuote) return { quote: quoteObj, useFee: true };
+    //   const qFee = buildQuoteUrl({
+    //     outMint: outputMint,
+    //     slipBps: baseSlip,
+    //     restrict: restrictIntermediates,
+    //     withFee: true
+    //   });
+    //   const qRes = await jupFetch(qFee.pathname + qFee.search);
+    //   if (qRes.ok) {
+    //     const qJson = await qRes.json();
+    //     const ok = Number(qJson?.platformFeeBps || qJson?.info?.platformFeeBps || 0) > 0;
+    //     return { quote: ok ? qJson : quoteObj, useFee: ok };
+    //   }
+    //   return { quote: quoteObj, useFee: false };
+    // } 
+
     const q = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: restrictIntermediates, withFee: false });
     logObj("Quote params", {
       inputMint, outputMint, amountUi, inDecimals, slippageBps: baseSlip,
@@ -3207,6 +3229,31 @@ function detectWarmingUptick({ kp = {}, meta = {} }, cfg = state) {
   return { ok, score, chgSlope: chgSlopeMin, scSlope: scSlopeMin, pre, preMin, a51, liq, v1h, notBackside };
 }
 
+function isWarmingHoldActive(mint, pos, warmReq, nowTs) {
+  try {
+    const warmingHold = !!(state.rideWarming && pos?.warmingHold === true);
+    if (!warmingHold) return { active: false };
+    // If base window not elapsed, hold is active
+    if (!warmReq?.shouldAutoRelease) return { active: true, reason: "timer" };
+
+    // After base window: optionally extend hold while rising
+    if (state.warmingExtendOnRise !== false) {
+      const until = Number(pos.warmingExtendUntil || 0);
+      if (until && nowTs < until) return { active: true, reason: "extend-window" };
+
+      const sig = computeReboundSignal(mint);
+      if (sig.ok) {
+        const step = Math.max(1000, Number(state.warmingExtendStepMs || state.reboundHoldMs || 4000));
+        pos.warmingExtendUntil = nowTs + step;
+        save();
+        log(`Warming extend: ${mint.slice(0,4)}… (${sig.why}; score=${sig.score.toFixed(3)} chgSlope=${sig.chgSlope.toFixed(2)}/m scSlope=${sig.scSlope.toFixed(2)}/m)`);
+        return { active: true, reason: "extend-signal" };
+      }
+    }
+  } catch {}
+  return { active: false };
+}
+
 function _getWarmPrimeStore() {
   if (!window._fdvWarmPrime) window._fdvWarmPrime = new Map(); // mint -> { count, lastAt }
   return window._fdvWarmPrime;
@@ -4434,13 +4481,24 @@ async function evalAndMaybeSellPositions() {
         try {
           const sig = getRugSignalForMint(mint);
           recordBadgeTransition(mint, sig.badge);
-          if (sig?.rugged) {
+
+          const badgeNorm = normBadge(sig.badge);
+          const sev = Number(sig?.sev ?? 0);
+          const sevThreshold =
+            badgeNorm === "warming"
+              ? Math.max(0.9, RUG_FORCE_SELL_SEVERITY + 0.30) 
+              : RUG_FORCE_SELL_SEVERITY;
+
+          if (sig?.rugged && sev >= sevThreshold) {
             forceRug = true;
-            rugSev = Number(sig.sev || 0);
+            rugSev = sev;
             setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
-            log(`Rug detected for ${mint.slice(0,4)}… sev=${rugSev.toFixed(2)}. Forcing sell and blacklisting 30m.`);
+            log(`Rug detected for ${mint.slice(0,4)}… sev=${rugSev.toFixed(2)} (thr=${sevThreshold.toFixed(2)}). Forcing sell and blacklisting 30m.`);
+          } else if (sig?.rugged) {
+            setMintBlacklist(mint);
+            log(`Rug soft-flag for ${mint.slice(0,4)}… sev=${sev.toFixed(2)} < ${sevThreshold.toFixed(2)} — staged blacklist, no forced sell.`);
           } else if (!leaderMode) {
-            const curNorm = normBadge(sig.badge);
+            const curNorm = badgeNorm;
             console.log(`Badge for ${mint.slice(0,4)}…: ${String(sig.badge||"").toLowerCase()} -> ${curNorm}`);
             if (curNorm === "calm" && isPumpDropBanned(mint)) {
               forcePumpDrop = true;
@@ -4513,6 +4571,21 @@ async function evalAndMaybeSellPositions() {
         const warmingActive = !!(state.rideWarming && pos.warmingHold === true);
         const warmReq = warmingActive ? computeWarmingRequirement(pos, nowTs) : { req: Number(state.warmingMinProfitPct || 1), shouldAutoRelease: false };
 
+        let warmingHoldActive = false;
+        if (warmingActive) {
+          const ext = isWarmingHoldActive(mint, pos, warmReq, nowTs);
+          warmingHoldActive = !!ext.active;
+          // If base window elapsed and no extension, clear warming hold
+          if (warmReq.shouldAutoRelease && !warmingHoldActive && pos.warmingHold === true) {
+            pos.warmingHold = false;
+            pos.warmingClearedAt = now();
+            delete pos.warmingExtendUntil;
+            save();
+            log(`Warming hold released to observer for ${mint.slice(0,4)}…`);
+          }
+        }
+
+
         let decision = null;
 
         if (warmingActive && pos.warmingHold === true) {
@@ -4528,7 +4601,31 @@ async function evalAndMaybeSellPositions() {
           }
         }
 
-        if (warmingActive && pos.warmingHold === true && !warmReq.shouldAutoRelease && pnlPct < warmReq.req && !forceRug) {
+
+
+
+
+        try {
+          const curSig = getRugSignalForMint(mint);
+          const curBadgeNorm = normBadge(curSig?.badge);
+          if (!forceRug && curBadgeNorm === "warming") {
+            const warmReqNow = computeWarmingRequirement(pos, nowTs);
+            if (pnlPct < warmReqNow.req) {
+              if (forceObserverDrop || forcePumpDrop) {
+                log(`Warming badge: suppressing volatility sell for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReqNow.req.toFixed(2)}%).`);
+              }
+              forceObserverDrop = false;
+              forcePumpDrop = false;
+            }
+          }
+        } catch {}
+
+
+
+
+
+
+        if (warmingHoldActive && pnlPct < warmReq.req && !forceRug) {
           if (forceObserverDrop || forcePumpDrop) {
             log(`Warming hold: suppressing volatility sell for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
           }
@@ -4536,10 +4633,16 @@ async function evalAndMaybeSellPositions() {
           forcePumpDrop = false;
         }
 
-        if (warmingActive && pos.warmingHold === true && !warmReq.shouldAutoRelease && pnlPct < warmReq.req && decision && decision.action !== "none" && !/rug/i.test(decision.reason || "")) {
+        if (warmingActive && pos.warmingHold === true && warmingHoldActive && pnlPct < warmReq.req && decision && decision.action !== "none" && !/rug/i.test(decision.reason || "")) {
           log(`Warming hold: skipping sell (${decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
           decision = { action: "none", reason: "warming-hold-until-profit" };
         }
+
+        if (warmingActive && pos.warmingHold === true && warmingHoldActive && pnlPct < warmReq.req && decision && decision.action !== "none" && !/rug|warming-max-loss/i.test(decision.reason || "")) {
+          log(`Warming hold: skipping sell (${decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
+          decision = { action: "none", reason: "warming-hold-until-profit" };
+        }
+
         if (!forceRug && !forcePumpDrop && !forceObserverDrop && obsPasses === 3) {
           const should = shouldForceSellAtThree(mint, pos, curSol, nowTs);
           if (should) {
@@ -5178,6 +5281,10 @@ async function tick() {
             minPasses: 4,
             adjustHold: !!state.dynamicHoldEnabled
           });
+          if (!obs.canBuy) {
+            log(`Observer gate: ${obs.reason || "conditions not met"} for ${mint.slice(0,4)}… Skipping buy.`);
+            continue;
+          }
         } catch {
           log(`Observer gate failed for ${mint.slice(0,4)}… Skipping buy.`);
           continue;
