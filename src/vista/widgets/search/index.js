@@ -4,7 +4,7 @@ let abortCtl = null;
 let cache = new Map();          // query -> results[]
 let current = [];
 let activeIndex = -1;
-let qEl, wrapEl, listEl, openBtn, closeBtn;
+let qEl, wrapEl, listEl, openBtn, closeBtn, searchInput;
 
 const DEBOUNCE_MS = 140;
 let debounceTimer = 0;
@@ -111,7 +111,7 @@ function ensurePanelDom() {
     panel.className = "fdv-search-panel";
     panel.innerHTML = `
       <div class="fdv-search-head">
-        <input id="q" class="fdv-search-input" type="text" placeholder="Search tokens, symbols or mint address…" />
+        <input id="q" class="fdv-search-input" type="text" placeholder="Search tokens, symbols or mint address…" data-search-input/>
         <button type="button" class="fdv-search-close" data-search-close>Close</button>
       </div>
       <div id="qResults" class="fdv-search-results" hidden></div>
@@ -121,6 +121,7 @@ function ensurePanelDom() {
   qEl    = panel.querySelector("#q");
   listEl = panel.querySelector("#qResults");
   closeBtn = panel.querySelector("[data-search-close]");
+  searchInput = panel.querySelector("[data-search-input]");
   if (closeBtn) closeBtn.addEventListener("click", closeSearchPanel);
 }
 
@@ -137,6 +138,7 @@ function openSearchPanel() {
 function closeSearchPanel() {
   isOpen = false;
   wrapEl?.classList.remove("open");
+  searchInput.value = "";
   hideList();
   clearIdleTimer();
 }

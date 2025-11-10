@@ -1,3 +1,33 @@
+import { fetchProfileMetrics } from "../../analytics/shill.js";
+
+async function renderProfileMetrics(mint) {
+  console.log("renderProfileMetrics called");
+  try {
+    console.log("renderProfileMetrics", { mint });
+    if (!mint) return;
+    const wrap = document.getElementById("profileMetrics");
+    if (!wrap) return;
+    const totalEl = document.getElementById("pmTotal");
+    const todayEl = document.getElementById("pmToday");
+    const last7El = document.getElementById("pm7d");
+    const infoEl = document.getElementById("pmInfo");
+
+    const m = await fetchProfileMetrics({ mint, sinceDays: 14, timeoutMs: 6000 });
+    console.log("profile metrics", m);
+    if (!m) { wrap.hidden = true; return; }
+
+    totalEl.textContent = String(m.total || 0);
+    todayEl.textContent = String(m.today || 0);
+    last7El.textContent = String(m.last7 || 0);
+    infoEl.textContent = `Since ${m.since}${m.lastTs ? ` • last: ${new Date(m.lastTs).toLocaleString()}` : ""}`;
+    wrap.hidden = false;
+  } catch (e) {
+    const wrap = document.getElementById("profileMetrics");
+    if (wrap) wrap.hidden = true;
+    console.log("error rendering profile metrics", e);
+  }
+}
+
 export async function renderShillContestView(input) {
   const elHeader = document.querySelector(".header");
   if (elHeader) elHeader.style.display = "none";
@@ -14,6 +44,16 @@ export async function renderShillContestView(input) {
 
   root.innerHTML = `
     <section class="shill__wrap">
+      ${mint ? `
+      <div class="shill__metrics" id="profileMetrics" hidden>
+        <h3>Profile page metrics</h3>
+        <div class="rows" style="display:flex;gap:16px;flex-wrap:wrap">
+          <div class="metric"><span class="lbl">Total visits</span> <span class="val" id="pmTotal">—</span></div>
+          <div class="metric"><span class="lbl">Today</span> <span class="val" id="pmToday">—</span></div>
+          <div class="metric"><span class="lbl">Last 7d</span> <span class="val" id="pm7d">—</span></div>
+        </div>
+        <div class="mini" id="pmInfo" style="opacity:.75;margin-top:6px"></div>
+      </div>` : ""}
       <header class="shill__header">
         <div class="lhs">
           <h1>Shill</h1>
@@ -55,6 +95,8 @@ export async function renderShillContestView(input) {
     </section>
   `;
 
+  // renderProfileMetrics(mint);
+
   const mod = await import("../../analytics/shill.js");
   const {
     makeShillShortlink,
@@ -72,27 +114,16 @@ export async function renderShillContestView(input) {
 
   const ownerIdOf = (h) => (h || "").trim();
 
-  function isValidSolAddr(s) {
-    return SOL_ADDR_RE.test(ownerIdOf(s));
-  }
+  function isValidSolAddr(s) { return SOL_ADDR_RE.test(ownerIdOf(s)); }
 
   function updateLimitUI() {
     const owner = ownerIdOf(handleIn.value);
     const valid = isValidSolAddr(owner);
-
-    // HTML5 validity + inline note
     handleIn.setCustomValidity(valid ? "" : "Invalid Solana address");
-    limitNote.textContent = valid
-      ? ""
-      : "";
-
-    // Respect creation limits only when valid
+    limitNote.textContent = valid ? "" : "";
     let remaining = 0;
-    if (valid) {
-      ({ remaining } = canCreateShillLink({ owner }));
-    }
+    if (valid) ({ remaining } = canCreateShillLink({ owner }));
     btnGen.disabled = !valid || remaining <= 0;
-
     if (valid) {
       limitNote.textContent = remaining > 0
         ? `You can create ${remaining} more link${remaining === 1 ? "" : "s"}.`
@@ -100,16 +131,15 @@ export async function renderShillContestView(input) {
     }
   }
 
-  // Async render to await server summaries
   const renderList = async () => {
     const owner = ownerIdOf(handleIn.value);
     const valid = isValidSolAddr(owner);
-    if (listWrap) listWrap.hidden = true; // hide while loading / when empty
+    if (listWrap) listWrap.hidden = true;
     if (links) links.innerHTML = "";
     try {
       const rows = await listShillLinks({ mint, owner: valid ? owner : "" });
       if (Array.isArray(rows) && rows.length > 0) {
-        const html = rows.map((r) => `
+        const html = rows.map(r => `
           <div class="shill__row" data-slug="${r.slug}">
             <div class="url"><a href="${r.url}" target="_blank" rel="noopener">${r.url}</a></div>
             <code class="slug">${r.slug}</code>
@@ -125,15 +155,15 @@ export async function renderShillContestView(input) {
             <code class="wallet slug url">${r.wallet_id || "—"}</code>    
           </div>
         `).join("");
-        if (links) links.innerHTML = html;
-        if (listWrap) listWrap.hidden = false;
+        links.innerHTML = html;
+        listWrap.hidden = false;
       } else {
-        if (links) links.innerHTML = "";
-        if (listWrap) listWrap.hidden = true;
+        links.innerHTML = "";
+        listWrap.hidden = true;
       }
     } catch {
-      if (links) links.innerHTML = "";
-      if (listWrap) listWrap.hidden = true;
+      links.innerHTML = "";
+      listWrap.hidden = true;
     }
   };
 
@@ -141,18 +171,18 @@ export async function renderShillContestView(input) {
     try {
       const owner = ownerIdOf(handleIn.value);
       if (!isValidSolAddr(owner)) { handleIn.reportValidity(); handleIn.focus(); return; }
-      const { url } = await makeShillShortlink({ mint, wallet_id: owner }); // awaits register + token
+      const { url } = await makeShillShortlink({ mint, wallet_id: owner });
       out.hidden = false;
       linkIn.value = url;
       await renderList();
       updateLimitUI();
     } catch (e) {
       let noteMessage = document.querySelector(".shill__card .note");
-      if (e?.code === "LIMIT") { 
+      if (e?.code === "LIMIT") {
         updateLimitUI();
         noteMessage.textContent = "...";
       } else {
-        console.error(e); 
+        console.error(e);
         noteMessage.textContent = "Service is temporarily unavailable.";
         noteMessage.style.color = "#d3414d";
       }
@@ -161,7 +191,7 @@ export async function renderShillContestView(input) {
 
   handleIn.addEventListener("input", async () => { updateLimitUI(); await renderList(); });
 
-  document.getElementById("btnCopy").addEventListener("click", async () => {
+  document.getElementById("btnCopy")?.addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText(linkIn.value);
       const b = document.getElementById("btnCopy");
@@ -225,7 +255,6 @@ export async function renderShillContestView(input) {
   const btnExport = document.getElementById("btnExportCsvEnc");
   if (btnExport) btnExport.addEventListener("click", exportEncryptedCsv);
 
-  // Delete handler
   links.addEventListener("click", async (e) => {
     const btn = e.target.closest?.("[data-del-shill]");
     if (!btn) return;
@@ -233,50 +262,23 @@ export async function renderShillContestView(input) {
     const ownerId = btn.getAttribute("data-owner-id") || null;
     const owner = ownerIdOf(handleIn.value);
     if (!slug) return;
-
-    const ok = confirm("Delete this shill link? This cannot be undone.");
-    if (!ok) return;
-
+    if (!confirm("Delete this shill link? This cannot be undone.")) return;
     const { deleteShillLink } = await import("../../analytics/shill.js");
-    const removed = deleteShillLink({ slug, owner, ownerId });
-    await renderList(); // will hide the section if now empty
+    deleteShillLink({ slug, owner, ownerId });
+    await renderList();
     updateLimitUI();
   });
 
-  // Initial render
   await renderList();
   updateLimitUI();
+  console.log("Rendering profile metrics...");
 }
 
 function ensureShillStyles() {
-  const href = "/src/styles/shill.css";
-  const id = "style-shill";
-  let link = document.getElementById(id);
-  if (!link) {
-    link = [...document.querySelectorAll('link[rel="stylesheet"]')].find(l => {
-      try { return (new URL(l.href, location.href)).pathname.endsWith("/src/styles/shill.css"); } catch { return false; }
-    });
+  if (!document.querySelector('link[href="/src/styles/shill.css"]')) {
+    const style = document.createElement("link");
+    style.rel = "stylesheet";
+    style.href = "/src/assets/styles/shill.css";
+    document.head.appendChild(style);
   }
-
-  if (!link) {
-    link = document.createElement("link");
-    link.id = id;
-    link.rel = "stylesheet";
-    link.href = href;
-    link.media = "all";
-    document.head.appendChild(link);
-  } else {
-    link.disabled = false;
-    if (link.rel !== "stylesheet") link.rel = "stylesheet";
-  }
-
-  if (link.sheet && link.sheet.cssRules != null) return Promise.resolve();
-
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = () => { if (!done) { done = true; resolve(); } };
-    link.addEventListener("load", finish, { once: true });
-    link.addEventListener("error", finish, { once: true });
-    setTimeout(finish, 150);
-  });
 }

@@ -10,6 +10,19 @@ let HOME_INTERVAL = null;
 let _pendingUpdate = null;
 let _updateQueued = false;
 
+const _lastView = { key: null, ts: 0 };
+function dedupeView(key, { force = false, windowMs = 300 } = {}) {
+  if (force) {
+    _lastView.key = key;
+    _lastView.ts = Date.now();
+    return false;
+  }
+  const now = Date.now();
+  if (_lastView.key === key && (now - _lastView.ts) < windowMs) return true;
+  _lastView.key = key;
+  _lastView.ts = now;
+  return false;
+}
 const STREAM_KEY = 'fdv.stream.on';
 function loadStreamPref() {
   try {
@@ -48,7 +61,6 @@ export function onStreamStateChange(handler) {
   return () => streamBus.removeEventListener('stream-state', fn);
 }
 
-// Loop control
 export function stopHomeLoop() {
   if (HOME_INTERVAL) { clearInterval(HOME_INTERVAL); HOME_INTERVAL = null; }
 }
@@ -57,9 +69,7 @@ export function startHomeLoop(intervalMs = 10_000) {
   HOME_INTERVAL = setInterval(() => { runHome({ force: false }).catch(console.warn); }, intervalMs);
 }
 
-
-// Stream state
-export function setStreaming(on, { restart = true } = {}) {
+export function setStreaming(on, { restart = true, skipInitial = false, startLoop = true } = {}) {
   const next = !!on;
   if (STREAM_ON === next && !restart) return;
   STREAM_ON = next;
@@ -70,8 +80,10 @@ export function setStreaming(on, { restart = true } = {}) {
   stopHomeLoop();
 
   if (STREAM_ON) {
-    runHome({ force: true }).catch(console.warn);
-    startHomeLoop();
+    if (!skipInitial) {
+      runHome({ force: true }).catch(console.warn);
+    }
+    if (startLoop) startHomeLoop();
   }
   emitStreamState();
 }
@@ -96,27 +108,43 @@ async function runHome({ force = false } = {}) {
     stream: STREAM_ON,
     onUpdate: ({ items, ad, marquee }) => {
       if (Array.isArray(items) && items.length) {
-        // Coalesce within the same microtask; no timing-based delay.
         enqueueRender({ items, ad, marquee });
       }
     }
   });
   if (pipe && Array.isArray(pipe.items) && pipe.items.length) {
-    // First payload goes through the same zero-delay coalescer.
     enqueueRender({ items: pipe.items, ad: pipe.ad, marquee: pipe.marquee });
   }
 }
 export async function showHome({ force = false } = {}) {
+  if (dedupeView('home', { force })) return;
+  wireStreamButton();
+
+  let initial;
+  if (isStreaming()) {
+    initial = runHome({ force }).catch(console.warn);
+    await initial;
+    startHomeLoop();
+  } else {
+    setStreaming(true, { skipInitial: true, startLoop: false });
+    initial = runHome({ force: true }).catch(console.warn);
+    await initial;
+    startHomeLoop();
+  }
   hideLoading();
-  wireStreamButton();          // wire once
-  setStreaming(true);          // default ON on arrival
-  runHome({ force }).catch(console.warn);
 }
 
-export async function showProfile({ mint }) {
-  try { renderProfileView(mint); } finally { hideLoading(); }
+export async function showProfile({ mint, force = false } = {}) {
+  if (dedupeView(`profile:${mint || ''}`, { force })) return;
+  try {
+    await renderProfileView(mint);
+  } finally {
+    hideLoading();
+  }
 }
-export async function showShill({ mint, leaderboard = false } = {}) {
+
+export async function showShill({ mint, leaderboard = false, force = false } = {}) {
+  if (dedupeView(`shill:${leaderboard ? 'lb' : 'contest'}:${mint || ''}`, { force })) return;
   try {
     if (leaderboard) {
       await renderShillLeaderboardView({ mint });

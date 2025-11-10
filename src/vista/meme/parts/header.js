@@ -50,7 +50,7 @@ export function ensureSearchHeaderBtn(createOpenSearchButton) {
           return b;
         };
 
-    const btn = factory({ label: '🔎 Search', className: 'fdv-lib-btn fdv-search-btn' });
+    const btn = factory({ label: 'Search 🔎', className: 'fdv-lib-btn fdv-search-btn' });
     btn.id = 'btnOpenSearch';
     btn.style.marginLeft = "8px";
     btn.style.marginBottom = "15px";

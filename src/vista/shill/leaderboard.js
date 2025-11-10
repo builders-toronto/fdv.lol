@@ -651,7 +651,7 @@ function ensureLeaderboardModalRoot() {
   wrap.className = "lbm-backdrop";
   wrap.innerHTML = `
     <div class="lbm-modal" role="dialog" aria-modal="true" aria-labelledby="lbm-title">
-      <button class="lbm-close" aria-label="Close">Close</button>
+      <button class="lbm-close btn" aria-label="Close">Close</button>
       <div class="lbm-body">
         <div class="lbm-header">
           <h3 id="lbm-title">Metrics</h3>
@@ -695,6 +695,8 @@ async function openMetricsModal({ mint, slug, owner = "" }) {
   title.textContent = `Metrics: ${slug}`;
   sub.textContent = `Token: ${mint}`;
   openToken.href = `/token/${mint}?ref=${slug}`;
+  openToken.style.cssFloat = "right";
+  openToken.style.styleFloat = "right";
   content.innerHTML = `<div class="lbm-empty">Loading…</div>`;
 
   try {

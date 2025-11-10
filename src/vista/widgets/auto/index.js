@@ -13,6 +13,8 @@ const TX_FEE_BUFFER_LAMPORTS  = 500_000;
 const SELL_TX_FEE_BUFFER_LAMPORTS = 500_000; 
 const EXTRA_TX_BUFFER_LAMPORTS     = 250_000;  
 const EDGE_TX_FEE_ESTIMATE_LAMPORTS = 150_000;
+const MIN_QUOTE_RAW_AMOUNT = 1_000;
+const MAX_CONSEC_SWAP_400 = 3;
 const MIN_OPERATING_SOL            = 0.007;  
 const ROUTER_COOLDOWN_MS           = 60_000;
 const MINT_RUG_BLACKLIST_MS = 30 * 60 * 1000;
@@ -247,6 +249,7 @@ let state = {
   warmingEdgeMinExclPct: null,  
   warmingExtendOnRise: true,
   warmingExtendStepMs: 4000,  
+  
 
   // Rebound gate
   reboundGateEnabled: true,         
@@ -1584,6 +1587,10 @@ async function quoteOutSol(inputMint, amountUi, inDecimals) {
 
   const dec = Number.isFinite(inDecimals) ? inDecimals : await getMintDecimals(inputMint);
   const raw = Math.max(1, Math.floor(amountUi * Math.pow(10, dec)));
+  if (raw < MIN_QUOTE_RAW_AMOUNT) {
+    log(`Valuation skip: amount below minimum quote size (${MIN_QUOTE_RAW_AMOUNT} raw).`);
+    return 0;
+  }
   const slip = Math.max(150, Number(state.slippageBps || 150) | 0);
   const base = await getJupBase();
   const isLite = /lite-api\.jup\.ag/i.test(base);
@@ -1763,6 +1770,24 @@ async function executeSwapWithConfirm(opts, { retries = 2, confirmMs = 15000 } =
   } finally {
     window._fdvDeferSeed = prevDefer;
   }
+}
+
+function _getSwap400Store() {
+  if (!window._fdvSwap400) window._fdvSwap400 = new Map();
+  return window._fdvSwap400;
+}
+
+function noteSwap400(inputMint, outputMint) {
+  try {
+     const k = `${inputMint}->${outputMint}`;
+     const m = _getSwap400Store();
+     const prev = m.get(k) || { count: 0 , lastAt: 0 };
+     const within = now() - prev.lastAt < 60_000;
+     const next = { count: (within ? prev.count : 0) + 1, lastAt: now() };
+     m.set(k, next);
+     log(`Noted swap 400 for ${k}: count=${next.count}`);
+     return next.count;
+  } catch { return 0;}
 }
 
 async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, slippageBps }) {
@@ -2181,14 +2206,23 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         body: JSON.stringify(body),
       });
       if (!sRes.ok) {
-        const errTxt = await sRes.text().catch(()=> "");
-        log(`Swap error body: ${errTxt || "(empty)"}`);
-        try {
-          const j = JSON.parse(errTxt || "{}");
-          return { ok: false, code: j?.errorCode || "", msg: j?.error || `swap ${sRes.status}` };
-        } catch {
-          return { ok: false, code: "", msg: `swap ${sRes.status}` };
+        let errTxt = "";
+        try { errTxt = await sRes.clone().text(); } catch {}
+        if (sRes.status === 400) {
+          const c = noteSwap400(inputMint, outputMint);
+            if (c >= MAX_CONSEC_SWAP_400) {
+              try { setRouterHold(inputMint, ROUTER_COOLDOWN_MS); } catch {}
+              log(`Swap 400 threshold reached (${c}) for ${inputMint.slice(0,4)}… -> cooldown applied.`);
+              return { ok: false, code: "NO_ROUTE", msg: "400 abort" };
+            }
+          return { ok: false, code: "NO_ROUTE", msg: `swap 400 ${errTxt.slice(0,120)}` };
         }
+      }
+      try {
+        const j = JSON.parse(errTxt || "{}");
+        return { ok: false, code: j?.errorCode || "", msg: j?.error || `swap ${sRes.status}` };
+      } catch {
+        return { ok: false, code: "", msg: `swap ${sRes.status}` }; 
       }
       const { swapTransaction } = await sRes.json();
       if (!swapTransaction) throw new Error("no swapTransaction");
@@ -2249,9 +2283,19 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
           body: JSON.stringify(body),
         });
         if (!iRes.ok) {
-          const errTxt = await iRes.text().catch(()=> "");
-          log(`Swap-instructions error: ${errTxt || iRes.status}`);
+          let errTxt = "";
+            try { errTxt = await iRes.clone().text(); } catch {}
+            if (iRes.status === 400) {
+              const c = noteSwap400(inputMint, outputMint);
+              if (c >= MAX_CONSEC_SWAP_400) {
+                try { setRouterHold(inputMint, ROUTER_COOLDOWN_MS); } catch {}
+                log(`Swap-instructions 400 threshold reached (${c}) for ${inputMint.slice(0,4)}… -> cooldown applied.`);
+                return { ok: false, code: "NO_ROUTE", msg: "400 abort" };
+              }
+              return { ok: false, code: "NO_ROUTE", msg: `swap-instr 400 ${errTxt.slice(0,120)}` };
+            }
           const isNoRoute = /NO_ROUTE|COULD_NOT_FIND_ANY_ROUTE/i.test(errTxt);
+          log(`Swap-instructions error: ${errTxt || iRes.status}`);
           return { ok: false, code: isNoRoute ? "NO_ROUTE" : "JUP_DOWN", msg: `swap-instructions ${iRes.status}` };
         }
 
@@ -2866,7 +2910,9 @@ function recordBadgeTransition(mint, badge) {
   const prevNorm = normBadge(prev.badge);
   const curNorm  = normBadge(badge);
   window._fdvMintBadgeAt.set(mint, { badge, ts: nowTs });
-  // Detect Pumping -> Calm transition and set a buy-ban window
+  if (prevNorm !== curNorm) {            
+    try { log(`Badge for ${mint.slice(0,4)}…: ${prevNorm} -> ${curNorm}`); } catch {}
+  }
   if (prevNorm === "pumping" && curNorm === "calm") {
     markPumpDropBan(mint, PUMP_TO_CALM_BAN_MS);
   }
@@ -5648,13 +5694,6 @@ function onToggle(on) {
 
 function load() {
   try { state = { ...state, ...(JSON.parse(localStorage.getItem(LS_KEY))||{}) }; } catch {}
-  if (!Number.isFinite(state.warmingUptickMinPre) || state.warmingUptickMinPre > 0.35) state.warmingUptickMinPre = 0.35;
-  if (!Number.isFinite(state.warmingUptickMinAccel) || state.warmingUptickMinAccel > 1.001) state.warmingUptickMinAccel = 1.001;
-  if (!Number.isFinite(state.warmingUptickMinDeltaChg5m) || state.warmingUptickMinDeltaChg5m > 0.015) state.warmingUptickMinDeltaChg5m = 0.012;
-  if (!Number.isFinite(state.warmingUptickMinDeltaScore) || state.warmingUptickMinDeltaScore > 0.015) state.warmingUptickMinDeltaScore = 0.006;
-  if (!Number.isFinite(state.warmingPrimedConsec) || state.warmingPrimedConsec > 1) state.warmingPrimedConsec = 1;
-  if (!Number.isFinite(state.warmingMaxLossPct)) state.warmingMaxLossPct = 6;  
-  if (!Number.isFinite(state.warmingMaxLossWindowSecs)) state.warmingMaxLossWindowSecs = 60;
   // if (!Number.isFinite(state.warmingEdgeMinExclPct)) state.warmingEdgeMinExclPct = 0;
     // if (!Number.isFinite(state.warmingEdgeMinExclPct)) delete state.warmingEdgeMinExclPct;
   if (typeof state.warmingEdgeMinExclPct !== "number" || !Number.isFinite(state.warmingEdgeMinExclPct)) {
@@ -5679,6 +5718,8 @@ function load() {
   if (!Number.isFinite(state.warmingMinLiqUsd)) state.warmingMinLiqUsd = 4000;
   if (!Number.isFinite(state.warmingMinV1h)) state.warmingMinV1h = 800;
   if (!Number.isFinite(state.warmingPrimedConsec)) state.warmingPrimedConsec = 1;
+  if (!Number.isFinite(state.warmingMaxLossPct)) state.warmingMaxLossPct = 6;  
+  if (!Number.isFinite(state.warmingMaxLossWindowSecs)) state.warmingMaxLossWindowSecs = 60;
   if (!Number.isFinite(state.edgeSafetyBufferPct)) state.edgeSafetyBufferPct = 0.2;
 
   if (!Number.isFinite(state.minNetEdgePct)) state.minNetEdgePct = -4;
@@ -5833,12 +5874,14 @@ export function initAutoWidget(container = document.body) {
       </div>
     </details>
     <div class="fdv-hold-time-slider"></div>
-    <div class="fdv-log" data-auto-log style="position:relative;">
+    <div class="fdv-log" data-auto-log>
+    <button class="btn" data-auto-log-expand title="Expand log">Expand</button>
     </div>
     <div class="fdv-actions">
     <div class="fdv-actions-left">
         <button class="btn" data-auto-help title="How the bot works">Help</button>
         <button class="btn" data-auto-log-copy title="Copy log">Log</button>
+      
         <div class="fdv-modal" data-auto-modal
              style="display:none; position:fixed; width: 100%; inset:0; z-index:9999; background:rgba(0, 0, 0, 1); align-items:center; justify-content:center;justify-content: flex-start;">
           <div class="fdv-modal-card"
@@ -6074,6 +6117,7 @@ export function initAutoWidget(container = document.body) {
   const dustEl  = wrap.querySelector("[data-auto-dust]");
   const warmingEl = wrap.querySelector("[data-auto-warming]");
   const helpBtn = wrap.querySelector("[data-auto-help]");
+  const expandBtn = wrap.querySelector("[data-auto-log-expand]");
   const modalEl = wrap.querySelector("[data-auto-modal]");
   const modalCloseEls = wrap.querySelectorAll("[data-auto-modal-close]");
   const tabBtns = modalEl.querySelectorAll("[data-auto-tab]");
@@ -6141,8 +6185,6 @@ export function initAutoWidget(container = document.body) {
     } catch {}
   }, 0);  
 
-
-
   const secExportBtn = wrap.querySelector("[data-auto-sec-export]");
   const rpcEl = wrap.querySelector("[data-auto-rpc]");
   const rpchEl = wrap.querySelector("[data-auto-rpch]");
@@ -6183,6 +6225,27 @@ export function initAutoWidget(container = document.body) {
   if (reboundLookbackEl) reboundLookbackEl.value = String(Number.isFinite(state.reboundLookbackSecs) ? state.reboundLookbackSecs : 45);
 
   helpBtn.addEventListener("click", () => { modalEl.style.display = "flex"; });
+  if (expandBtn && logEl) {
+    const setExpanded = (on) => {
+      logEl.classList.toggle("fdv-log-full", !!on);
+      expandBtn.textContent = on ? "Close" : "Expand";
+      expandBtn.setAttribute("aria-label", on ? "Close log" : "Expand log");
+      if (on) logEl.scrollTop = logEl.scrollHeight;
+    };
+
+    expandBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setExpanded(!logEl.classList.contains("fdv-log-full"));
+    });
+
+    // Allow ESC to close when expanded
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && logEl.classList.contains("fdv-log-full")) {
+        setExpanded(false);
+      }
+    });
+  }
   modalEl.addEventListener("click", (e) => { if (e.target === modalEl) modalEl.style.display = "none"; });
   modalCloseEls.forEach(btn => btn.addEventListener("click", () => { modalEl.style.display = "none"; }));
   document.addEventListener("keydown", (e) => {
