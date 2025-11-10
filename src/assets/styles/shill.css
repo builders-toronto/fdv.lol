@@ -152,7 +152,7 @@
     grid-template-columns: 1fr auto;
     gap: 8px 12px;
     padding: clamp(15px, 1.5vw, 16px);
-    /* border: 1px solid var(--fdv-ok); */
+    border: 1px solid color-mix(in oklab, var(--accent2) 38%, transparent);
     border-radius: var(--r);
     margin-block-end: 10px;
     /* fallback background */

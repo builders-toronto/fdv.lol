@@ -20,13 +20,13 @@ import { widgets, registerCoreWidgets, prewarmDefaults } from '../widgets/loader
 
 // Keep button factories for header
 import { createOpenLibraryButton } from '../widgets/library/index.js';
-import { createOpenSearchButton } from '../widgets/search/index.js';
-import { createOpenFavboardButton } from '../widgets/favboard/index.js';
+import { initSearch, createOpenSearchButton } from '../widgets/search/index.js';
+// import { createOpenFavboardButton } from '../widgets/favboard/index.js';
 
 import {
   initHeader,
   ensureOpenLibraryHeaderBtn,
-  ensureFavboardHeaderBtn
+  // ensureFavboardHeaderBtn
 } from './parts/header.js';
 
 import {
@@ -260,7 +260,7 @@ export function renderHomeView(items, adPick, marquee) {
   _latestMarquee = marquee || null;
 
   ensureOpenLibraryHeaderBtn();
-  ensureFavboardHeaderBtn();
+  // ensureFavboardHeaderBtn();
   try { ingestSnapshot(_latestItems); } catch {}
   renderMarquee(_latestMarquee);
 
@@ -368,7 +368,7 @@ function initInitialLoading() {
 }
 
 (function boot() {
-  try { initHeader(createOpenLibraryButton, createOpenSearchButton, createOpenFavboardButton); } catch {}
+  try { initHeader(createOpenLibraryButton, createOpenSearchButton); } catch {}
   try { ensureAddonsUI(); } catch {}
 
   try { registerCoreWidgets(); } catch {}
@@ -387,7 +387,7 @@ function initInitialLoading() {
   //   initAutoWidget(host);
   // } catch {}
 
-  // initSearch(elQ, elQResults, elSearchWrap);
+  initSearch(elQ, elQResults, elSearchWrap);
 
   // // loadAndRenderAd().catch(() => {});
 

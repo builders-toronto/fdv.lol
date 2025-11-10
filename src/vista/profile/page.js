@@ -5,15 +5,12 @@ import sanitizeToken from "./sanitizeToken.js";
 import renderShell from "./render/shell.js";
 import { loadAds, pickAd, adCard } from "../../ads/load.js";
 
-
 import { widgets, registerCoreWidgets, prewarmDefaults } from "../widgets/loader.js";
-
 
 import { initHero } from "./parts/hero.js";
 import { initStatsAndCharts } from "./parts/stats.js";
 import { startProfileFeed } from "./parts/feed.js";
-import { startProfileMetrics } from "../../analytics/shill.js";
-
+import { autoStartProfileMetrics } from "../../analytics/shill.js";
 
 try { registerCoreWidgets(); } catch {}
 try { prewarmDefaults(); } catch {}
@@ -46,7 +43,7 @@ const tokenCache = window.__tokenCache || (window.__tokenCache = new Map());
 
 const runIdle = (fn) => {
   if (typeof requestIdleCallback === "function") {
-    requestIdleCallback(() => { try { fn(); } catch {} }, { timeout: 1500 });
+    requestIdleCallback(() => { try { fn(); } catch {} }, { timeout: 100 });
   } else {
     setTimeout(() => { try { fn(); } catch {} }, 0);
   }
@@ -64,6 +61,13 @@ export async function renderProfileView(input, { onBack } = {}) {
     const style = document.createElement("link");
     style.rel = "stylesheet";
     style.href = "/src/assets/styles/profile.css";
+    document.head.appendChild(style);
+  }
+
+  if (!document.querySelector('link[href="/src/assets/styles/shill.css"]')) {
+    const style = document.createElement("link");
+    style.rel = "stylesheet";
+    style.href = "/src/assets/styles/shill.css";
     document.head.appendChild(style);
   }
 
@@ -129,7 +133,7 @@ export async function renderProfileView(input, { onBack } = {}) {
       } catch {}
     })();
 
-    try { startProfileMetrics({ mint }); } catch {}
+    try { autoStartProfileMetrics({ mint }); } catch {}
   });
 
   setTimeout(() => {

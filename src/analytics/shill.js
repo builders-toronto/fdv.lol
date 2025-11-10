@@ -63,6 +63,7 @@ const _nonce = (() => {
   // hex
   return [...a].map(b => b.toString(16).padStart(2, "0")).join("");
 })();
+
 async function _postJSON(url, payload, { keepalive = false } = {}) {
   const body = JSON.stringify(payload);
   const res = await fetch(url, {
@@ -95,6 +96,25 @@ function parseRefParam() {
   const dot = ref.indexOf(".");
   if (dot === -1) return { slug: ref, token: "" };
   return { slug: ref.slice(0, dot), token: ref.slice(dot + 1) };
+}
+
+async function _sendProfilePageEvent({ mint, keepalive = false }) {
+  try {
+    const mintOk = _sanitizeMint(mint);
+    if (!mintOk) return false;
+    const url = `${FDV_METRICS_BASE}/api/shill/profile_event`;
+    const payload = {
+      mint: mintOk,
+      path: location.pathname + location.search,
+      href: location.href,
+      referrer: document.referrer || "",
+      ua: navigator.userAgent || ""
+    };
+    const res = await _postJSON(url, payload, { keepalive });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 async function _sendEvent({ mint, slug, event, value = 1, keepalive = false }) {
@@ -360,18 +380,18 @@ export function startProfileShillAttribution({ mint }) {
   }, { passive: true } );
 }
 
-// NEW: start profile-page metrics (rich interactions)
 export function startProfileMetrics({ mint }) {
   const cleanMint = _sanitizeMint(mint);
   if (!cleanMint) return;
 
-  // Reuse base attribution (views, time_ms, trade_click, swap_start, wallet_connect, swap:confirmed→trade_click)
+  // Optional: reuse attribution for ref-based shill events (unchanged)
   try { startProfileShillAttribution({ mint: cleanMint }); } catch {}
 
-  const usp = new URLSearchParams(location.search);
-  const slug = usp.get("ref") || "";
+  // Fire one profile page event on load (no slug required)
+  _sendProfilePageEvent({ mint: cleanMint, keepalive: true }).catch(()=>{});
 
-  // Helper to bump safely
+  // Helper to bump safely for interaction events (kept as before)
+  const slug = "profile";
   const bump = (event, value = 1) => _bumpBoth({ slug, mint: cleanMint, field: "views", event, by: value });
 
   // Swap modal open (from buttons)
@@ -402,7 +422,6 @@ export function startProfileMetrics({ mint }) {
   document.getElementById("refresh")?.addEventListener("click", () => bump("refresh_click", 1), { passive: true });
   document.getElementById("stream")?.addEventListener("click", () => bump("stream_toggle", 1), { passive: true });
   document.getElementById("sort")?.addEventListener("change", () => bump("sort_change", 1), { passive: true });
-
 
   document.querySelector(".fdv-lib-heart")?.addEventListener("click", () => bump("favorite_add", 1), { passive: true });
 
@@ -442,6 +461,21 @@ export function startProfileMetrics({ mint }) {
   document.addEventListener("swap:confirmed", () => bump("swap_confirmed", 1), { passive: true });
 }
 
+function _mintFromPath() {
+  try {
+    const m = location.pathname.match(/\/token\/([^/?#]+)/);
+    return _sanitizeMint(m?.[1] || "");
+  } catch { return ""; }
+}
+
+export function autoStartProfileMetrics() {
+  console.log("mintShillSession");
+  const mint = _mintFromPath();
+  if (!mint) return;
+  try { startProfileMetrics({ mint }); } catch {}
+}
+
+
 export async function mintShillSession() {
   if (!_analyticsEnabled()) return null;
   try {
@@ -449,6 +483,66 @@ export async function mintShillSession() {
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; }
+}
+
+export async function fetchProfileMetrics({ mint, sinceDays = 14, timeoutMs = 5000 }) {
+  const mintOk = _sanitizeMint(mint);
+  if (!mintOk) return null;
+
+  const sinceIso = (() => {
+    const d = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
+    return d.toISOString().slice(0, 10);
+  })();
+
+  const ctl = new AbortController();
+  const to = setTimeout(() => { try { ctl.abort(); } catch {} }, timeoutMs);
+  try {
+    const url = `${FDV_METRICS_BASE}/api/shill/profile/ndjson?mint=${encodeURIComponent(mintOk)}&since=${encodeURIComponent(sinceIso)}`;
+    console.log("fetchProfileMetrics GET", url);
+    const res = await fetch(url, { signal: ctl.signal, cache: "no-store", credentials: "omit", mode: "cors" });
+    if (!res.ok) {
+      console.warn("fetchProfileMetrics non-OK", res.status);
+      return null;
+    }
+
+    const text = await res.text();
+    const byDay = Object.create(null);
+    let total = 0;
+    let firstTs = 0;
+    let lastTs = 0;
+
+    for (const line of text.split("\n")) {
+      if (!line || line[0] !== "{") continue;
+      try {
+        const e = JSON.parse(line);
+        if (!e || e.mint !== mintOk || e.kind !== "profile") continue;
+        const day = (e.day || (e.ts || "").slice(0, 10) || "");
+        if (day) byDay[day] = (byDay[day] || 0) + 1;
+        total++;
+        const t = e.ts ? Date.parse(e.ts) : 0;
+        if (t) {
+          if (!firstTs || t < firstTs) firstTs = t;
+          if (!lastTs || t > lastTs) lastTs = t;
+        }
+      } catch {}
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const todayCount = byDay[today] || 0;
+
+    let last7 = 0;
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      last7 += byDay[d] || 0;
+    }
+
+    return { total, today: todayCount, last7, byDay, firstTs, lastTs, since: sinceIso };
+  } catch (e) {
+    console.error("fetchProfileMetrics error", e);
+    return null;
+  } finally {
+    clearTimeout(to);
+  }
 }
 
 export function shillAnalyticsEnabled() { return _analyticsEnabled(); }
