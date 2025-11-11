@@ -232,7 +232,7 @@ let state = {
   dynamicHoldEnabled: true,
   // Badge status selection
   rideWarming: true,
-  warmingMinProfitPct: 2,
+  warmingMinProfitPct: 5,
   warmingDecayPctPerMin: 0.35,      
   warmingDecayDelaySecs: 20,         
   warmingMinProfitFloorPct: -2.0,   
@@ -243,7 +243,7 @@ let state = {
   warmingUptickMinDeltaScore: 0.006,   
   warmingMinLiqUsd: 4000,             
   warmingMinV1h: 800,
-  warmingPrimedConsec: 1, 
+  warmingPrimedConsec: 2, 
   warmingMaxLossPct: 8,           // early stop if PnL <= -10% within window
   warmingMaxLossWindowSecs: 30,    // window after buy for the max-loss guard
   warmingEdgeMinExclPct: null,  
@@ -3058,8 +3058,7 @@ function recordLeaderSample(mint, sample) {
     chg1h:     safeNum(sample.chg1h, 0),
   };
   list.push(row);
-  // Keep last 3 samples only (previous 3 ticks)
-  while (list.length > 3) list.shift();
+  while (list.length > 5) list.shift();
   s.set(mint, list);
 }
 
@@ -4683,20 +4682,55 @@ async function evalAndMaybeSellPositions() {
           pos.earlyNegScCount = scNeg ? (Number(pos.earlyNegScCount || 0) + 1) : 0;
 
           // chg5m relative drop from entry snapshot
-          const entryChg = Number(pos.entryChg5m || NaN);
-          if (Number.isFinite(entryChg) && entryChg > 0) {
-            const dropFrac = (entryChg - curChg5m) / Math.max(1e-6, entryChg);
-            if (dropFrac >= Math.max(0.30, Number(state.earlyExitChgDropFrac || 0.4))) {
-              forceEarlyFade = true;
-              earlyReason = `FAST_FADE chg5m -${(dropFrac*100).toFixed(1)}%`;
+            const entryChg = Number(pos.entryChg5m || NaN);
+            if (Number.isFinite(entryChg) && entryChg > 0) {
+              const dropFrac = (entryChg - curChg5m) / Math.max(1e-6, entryChg);
+              if (dropFrac >= Math.max(0.30, Number(state.earlyExitChgDropFrac || 0.4))) {
+                forceEarlyFade = true;
+                earlyReason = `FAST_FADE chg5m -${(dropFrac*100).toFixed(1)}%`;
+              }
             }
-          }
 
           if (!forceEarlyFade) {
             const needConsec = Math.max(1, Number(state.earlyExitConsec || 2));
             if (Number(pos.earlyNegScCount || 0) >= needConsec) {
               forceEarlyFade = true;
               earlyReason = `FAST_FADE scSlope ${scSlopeMin.toFixed(2)}/m x${pos.earlyNegScCount}`;
+            }
+          }
+
+          const extended = getLeaderSeries(mint, 5);
+          if (extended && extended.length >= 3) {
+            let changes = 0;
+            for (let i = 2; i < extended.length; i++) {
+              const a = Number(extended[i-2].chg5m || 0);
+              const b = Number(extended[i-1].chg5m || 0);
+              const c = Number(extended[i].chg5m   || 0);
+              const dir1 = Math.sign(b - a);
+              const dir2 = Math.sign(c - b);
+              if (dir1 && dir2 && dir1 !== dir2) changes++;
+            }
+
+            // Jiggler
+            if (!forceEarlyFade &&
+                changes >= 2 &&
+                scSlopeMin > Math.min(-2, Number(state.earlyExitScSlopeNeg || -10))) {
+              // Suppress early fade due to short-term alternating moves
+              pos.earlyNegScCount = 0;
+              earlyReason = "";
+              log(`Jiggle hold: ${mint.slice(0,4)}… direction changes=${changes} scSlope=${scSlopeMin.toFixed(2)}/m`);
+            }
+            if (extended.length === 5) {
+              let allDown = true;
+              for (let i = 1; i < extended.length; i++) {
+                if (!(Number(extended[i].chg5m || 0) < Number(extended[i-1].chg5m || 0))) {
+                  allDown = false; break;
+                }
+              }
+              if (allDown && scSlopeMin < 0) {
+                forceEarlyFade = true;
+                earlyReason = `DOWN_SLOPE_5 scSlope ${scSlopeMin.toFixed(2)}/m`;
+              }
             }
           }
 
