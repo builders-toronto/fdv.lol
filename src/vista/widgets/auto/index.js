@@ -174,12 +174,12 @@ let state = {
   lastTradeTs: 0,
   trailPct: 6,                 
   minProfitToTrailPct: 3,     
-  coolDownSecsAfterBuy: 20,    
+  coolDownSecsAfterBuy: 15,    
   minHoldSecs: 0,  
   maxHoldSecs: 50,           
   partialTpPct: 50,            
   minQuoteIntervalMs: 10000, 
-  sellCooldownMs: 20000,  
+  sellCooldownMs: 30000,  
   staleMinsToDeRisk: 4, 
   singlePositionMode: true,
   minNetEdgePct: -5, 
@@ -214,7 +214,7 @@ let state = {
   // Safeties
   seedBuyCache: true,
   USDCfallbackEnabled: true,
-  observerDropSellAt: 3,
+  observerDropSellAt: 4,
   observerGraceSecs: 45,
   // Observer hysteresis settings
   observerDropMinAgeSecs: 5,   
@@ -233,8 +233,8 @@ let state = {
   // Badge status selection
   rideWarming: true,
   warmingMinProfitPct: 2,
-  warmingDecayPctPerMin: 0.50,      
-  warmingDecayDelaySecs: 15,         
+  warmingDecayPctPerMin: 0.35,      
+  warmingDecayDelaySecs: 20,         
   warmingMinProfitFloorPct: -2.0,   
   warmingAutoReleaseSecs: 45,
   warmingUptickMinAccel: 1.001,        
@@ -244,8 +244,8 @@ let state = {
   warmingMinLiqUsd: 4000,             
   warmingMinV1h: 800,
   warmingPrimedConsec: 1, 
-  warmingMaxLossPct: 6,           // early stop if PnL <= -10% within window
-  warmingMaxLossWindowSecs: 60,    // window after buy for the max-loss guard
+  warmingMaxLossPct: 8,           // early stop if PnL <= -10% within window
+  warmingMaxLossWindowSecs: 30,    // window after buy for the max-loss guard
   warmingEdgeMinExclPct: null,  
   warmingExtendOnRise: true,
   warmingExtendStepMs: 4000,  
@@ -259,7 +259,31 @@ let state = {
   reboundMinScore: 0.34,            
   reboundMinChgSlope: 12,           
   reboundMinScSlope: 8,             
-  reboundMinPnLPct: -15,            
+  reboundMinPnLPct: -15,          
+  
+  // Fast eXit gate
+  fastExitEnabled: true,
+  fastExitSlipBps: 400,          
+  fastExitConfirmMs: 9000,      
+  fastHardStopPct: 2.5,          
+  fastTrailPct: 8,               
+  fastTrailArmPct: 5,            
+  fastNoHighTimeoutSec: 90,      
+  fastTp1Pct: 10,                
+  fastTp1SellPct: 30,
+  fastTp2Pct: 20,                
+  fastTp2SellPct: 30,
+  fastAlphaChgSlope: -8,         
+  fastAlphaScSlope: -25,         
+  fastAccelDropFrac: 0.5,        
+  fastAlphaZV1Floor: 0.3,        
+
+  // Early fade & late-entry filters
+  earlyExitChgDropFrac: 0.40,    
+  earlyExitScSlopeNeg: -40,      
+  earlyExitConsec: 3,            
+  lateEntryDomShare: 0.60,       
+  lateEntryMinPreMargin: 0.02,   
 
 
   // money made tracker
@@ -1371,6 +1395,80 @@ async function computeSpendCeiling(ownerPubkeyStr, { solBalHint } = {}) {
   };
 }
 
+function updateFastExitState(pos, pxNow, alpha, nowTs) {
+  try {
+    if (!Number.isFinite(pos.fastPeakPx) || pxNow > pos.fastPeakPx) {
+      pos.fastPeakPx = pxNow;
+      pos.fastPeakAt = nowTs;
+    }
+    if (!Number.isFinite(pos.fastAccelPeak) || alpha.accelRatio > pos.fastAccelPeak) {
+      pos.fastAccelPeak = alpha.accelRatio;
+    }
+    // Set backside once momentum AND score slope turn negative together
+    if (!pos.fastBackside && alpha.chgSlope < 0 && alpha.scSlope < 0) {
+      pos.fastBackside = true;
+      pos.fastBacksideAt = nowTs;
+    }
+  } catch {}
+}
+
+function checkFastExitTriggers(mint, pos, { pnlPct, pxNow, nowTs }) {
+  try {
+    if (!state.fastExitEnabled) return { action: "none" };
+
+    const alpha = computeFastAlphaMetrics(mint);
+    updateFastExitState(pos, pxNow, alpha, nowTs);
+
+    if (Number.isFinite(pnlPct) && pnlPct <= -Math.abs(state.fastHardStopPct)) {
+      return { action: "sell_all", reason: `FAST_HARD_STOP ${pnlPct.toFixed(2)}%` };
+    }
+
+    const armed = Number.isFinite(pnlPct) && pnlPct >= Math.max(0, state.fastTrailArmPct);
+    if (armed && Number.isFinite(pos.fastPeakPx) && pos.fastPeakPx > 0) {
+      const dropPct = pos.fastPeakPx > 0 ? ((pos.fastPeakPx - pxNow) / pos.fastPeakPx) * 100 : 0;
+      if (dropPct >= Math.max(1, state.fastTrailPct)) {
+        return { action: "sell_all", reason: `FAST_TRAIL -${dropPct.toFixed(2)}%` };
+      }
+    }
+
+    const stage = Number(pos.fastTpStage || 0);
+    if (Number.isFinite(pnlPct)) {
+      if (stage < 1 && pnlPct >= state.fastTp1Pct) {
+        pos.fastTpStage = 1;
+        return { action: "sell_partial", pct: Math.min(100, Math.max(1, state.fastTp1SellPct)), reason: `FAST_TP1 ${pnlPct.toFixed(2)}%` };
+      }
+      if (stage < 2 && pnlPct >= state.fastTp2Pct) {
+        pos.fastTpStage = 2;
+        return { action: "sell_partial", pct: Math.min(100, Math.max(1, state.fastTp2SellPct)), reason: `FAST_TP2 ${pnlPct.toFixed(2)}%` };
+      }
+    }
+
+    const peakAgeMs = nowTs - Number(pos.fastPeakAt || pos.lastBuyAt || pos.acquiredAt || 0);
+    const noHighTimeoutMs = Math.max(20_000, Number(state.fastNoHighTimeoutSec || 90) * 1000);
+    if (peakAgeMs >= noHighTimeoutMs && Number.isFinite(pnlPct) && pnlPct > 0) {
+      return { action: "sell_partial", pct: 50, reason: "FAST_TIME_STOP" };
+    }
+
+    if (alpha.chgSlope <= Math.min(-0.5, state.fastAlphaChgSlope) &&
+        alpha.scSlope  <= Math.min(-1, state.fastAlphaScSlope)) {
+      return { action: "sell_all", reason: `FAST_ALPHA_DECAY dP=${alpha.chgSlope.toFixed(2)}/m dS=${alpha.scSlope.toFixed(2)}/m` };
+    }
+
+    if (!alpha.risingNow && !alpha.trendUp) {
+      return { action: "sell_all", reason: "FAST_TREND_FLIP" };
+    }
+
+    const accelPeak = Number(pos.fastAccelPeak || 0);
+    if (accelPeak > 0 && alpha.accelRatio / accelPeak <= Math.max(0.1, state.fastAccelDropFrac) && alpha.zV1 <= Math.max(0, state.fastAlphaZV1Floor)) {
+      return { action: "sell_partial", pct: 50, reason: "FAST_ACCEL_DROP" };
+    }
+
+    return { action: "none" };
+  } catch {
+    return { action: "none" };
+  }
+}
+
 async function isValidPubkeyStr(s) {
   const key = String(s || "").trim();
   if (!key) return false;
@@ -2205,27 +2303,30 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         headers: { "Content-Type":"application/json", accept: "application/json" },
         body: JSON.stringify(body),
       });
+
       if (!sRes.ok) {
         let errTxt = "";
         try { errTxt = await sRes.clone().text(); } catch {}
         if (sRes.status === 400) {
           const c = noteSwap400(inputMint, outputMint);
-            if (c >= MAX_CONSEC_SWAP_400) {
-              try { setRouterHold(inputMint, ROUTER_COOLDOWN_MS); } catch {}
-              log(`Swap 400 threshold reached (${c}) for ${inputMint.slice(0,4)}… -> cooldown applied.`);
-              return { ok: false, code: "NO_ROUTE", msg: "400 abort" };
-            }
+          if (c >= MAX_CONSEC_SWAP_400) {
+            try { setRouterHold(inputMint, ROUTER_COOLDOWN_MS); } catch {}
+            log(`Swap 400 threshold reached (${c}) for ${inputMint.slice(0,4)}… -> cooldown applied.`);
+            return { ok: false, code: "NO_ROUTE", msg: "400 abort" };
+          }
           return { ok: false, code: "NO_ROUTE", msg: `swap 400 ${errTxt.slice(0,120)}` };
         }
+        try {
+          const j = JSON.parse(errTxt || "{}");
+          return { ok: false, code: j?.errorCode || "", msg: j?.error || `swap ${sRes.status}` };
+        } catch {
+          return { ok: false, code: "", msg: `swap ${sRes.status}` };
+        }
       }
-      try {
-        const j = JSON.parse(errTxt || "{}");
-        return { ok: false, code: j?.errorCode || "", msg: j?.error || `swap ${sRes.status}` };
-      } catch {
-        return { ok: false, code: "", msg: `swap ${sRes.status}` }; 
-      }
+
       const { swapTransaction } = await sRes.json();
-      if (!swapTransaction) throw new Error("no swapTransaction");
+      if (!swapTransaction) return { ok: false, code: "NO_SWAP_TX", msg: "no swapTransaction" };
+
       const raw = atob(swapTransaction);
       const rawBytes = new Uint8Array(raw.length);
       for (let i=0; i<raw.length; i++) rawBytes[i] = raw.charCodeAt(i);
@@ -3220,6 +3321,20 @@ function detectWarmingUptick({ kp = {}, meta = {} }, cfg = state) {
   if (zV1 >= 1.0)  preMin -= 0.03;
   if (chgSlopeMin >= 25) preMin -= 0.06;
   if (scSlopeMin  >= 10) preMin -= 0.04;
+
+  try {
+    const mintId = String(kp.mint || "");
+    if (mintId) {
+      if (!window._fdvPrevPre) window._fdvPrevPre = new Map();
+      const lastPre = Number(window._fdvPrevPre.get(mintId) || NaN);
+      if (Number.isFinite(lastPre)) {
+        preMin = Math.max(preMin, lastPre * 0.85);
+      }
+      // Update the rolling pre snapshot for the next tick
+      window._fdvPrevPre.set(mintId, pre);
+    }
+  } catch {}
+
   preMin = Math.max(0.33, preMin);
 
   // Thresholds
@@ -4554,6 +4669,43 @@ async function evalAndMaybeSellPositions() {
           }
         } catch {}
 
+        let forceEarlyFade = false;
+        let earlyReason = "";
+
+        try {
+          const series = getLeaderSeries(mint, 3);
+          const last = series && series.length ? series[series.length - 1] : null;
+          const curChg5m = Number(last?.chg5m || 0);
+          const scSlopeMin = slope3pm(series || [], "pumpScore");
+
+          // maintain consecutive negative score slope counter on position
+          const scNeg = Number(scSlopeMin) <= Math.min(-1, Number(state.earlyExitScSlopeNeg || -10));
+          pos.earlyNegScCount = scNeg ? (Number(pos.earlyNegScCount || 0) + 1) : 0;
+
+          // chg5m relative drop from entry snapshot
+          const entryChg = Number(pos.entryChg5m || NaN);
+          if (Number.isFinite(entryChg) && entryChg > 0) {
+            const dropFrac = (entryChg - curChg5m) / Math.max(1e-6, entryChg);
+            if (dropFrac >= Math.max(0.30, Number(state.earlyExitChgDropFrac || 0.4))) {
+              forceEarlyFade = true;
+              earlyReason = `FAST_FADE chg5m -${(dropFrac*100).toFixed(1)}%`;
+            }
+          }
+
+          if (!forceEarlyFade) {
+            const needConsec = Math.max(1, Number(state.earlyExitConsec || 2));
+            if (Number(pos.earlyNegScCount || 0) >= needConsec) {
+              forceEarlyFade = true;
+              earlyReason = `FAST_FADE scSlope ${scSlopeMin.toFixed(2)}/m x${pos.earlyNegScCount}`;
+            }
+          }
+
+          if (forceEarlyFade) {
+            forceObserverDrop = true; // reuse observer forced-sell path
+            log(`Early-exit: ${mint.slice(0,4)}… ${earlyReason} — overriding warming sell guard.`);
+          }
+        } catch {}
+
         if (!leaderMode && !forceRug && !forcePumpDrop) {
           try {
             const obs = await observeMintOnce(mint, { windowMs: 2000, sampleMs: 600, minPasses: 4, adjustHold: !!state.dynamicHoldEnabled });
@@ -4581,7 +4733,7 @@ async function evalAndMaybeSellPositions() {
         {
           const postBuyCooldownMs = Math.max(20_000, Number(state.coolDownSecsAfterBuy || 0) * 1000);
           const inWarmingHold = !!(state.rideWarming && pos.warmingHold === true);
-          if (!leaderMode && (inSellGuard || ageMs < postBuyCooldownMs) && (forceObserverDrop || forcePumpDrop) && !inWarmingHold && !forceRug) {
+          if (!leaderMode && (inSellGuard || ageMs < postBuyCooldownMs) && (forceObserverDrop || forcePumpDrop) && !inWarmingHold && !forceRug && !forceEarlyFade) {
             log(`Volatility sell guard active; suppressing observer/pump drop for ${mint.slice(0,4)}…`);
             forceObserverDrop = false;
             forcePumpDrop = false;
@@ -4611,10 +4763,20 @@ async function evalAndMaybeSellPositions() {
           log(`Edge-aware valuation ${mint.slice(0,4)}… raw≈${curSol.toFixed(6)} SOL, net≈${curSolNet.toFixed(6)} SOL${net.feeApplied ? " (fee)" : ""}`);
         }
 
-
         const pxNow  = sz > 0 ? (curSol / sz) : 0;
         const pxCost = sz > 0 ? (Number(pos.costSol || 0) / sz) : 0;
         const pnlPct = (pxNow > 0 && pxCost > 0) ? ((pxNow - pxCost) / pxCost) * 100 : 0;
+
+        // FAST EXIT: evaluate before any warming/observer/rebound gating
+        let decision = null;
+        let isFastExit = false;
+        const fast = checkFastExitTriggers(mint, pos, { pnlPct, pxNow, nowTs });
+        if (fast && fast.action !== "none") {
+          decision = { ...fast };
+          isFastExit = true;
+          log(`Fast-exit trigger for ${mint.slice(0,4)}… -> ${decision.action} (${decision.reason}${decision.pct ? ` ${decision.pct}%` : ""})`);
+        }
+
         const warmingActive = !!(state.rideWarming && pos.warmingHold === true);
         const warmReq = warmingActive ? computeWarmingRequirement(pos, nowTs) : { req: Number(state.warmingMinProfitPct || 1), shouldAutoRelease: false };
 
@@ -4622,7 +4784,6 @@ async function evalAndMaybeSellPositions() {
         if (warmingActive) {
           const ext = isWarmingHoldActive(mint, pos, warmReq, nowTs);
           warmingHoldActive = !!ext.active;
-          // If base window elapsed and no extension, clear warming hold
           if (warmReq.shouldAutoRelease && !warmingHoldActive && pos.warmingHold === true) {
             pos.warmingHold = false;
             pos.warmingClearedAt = now();
@@ -4631,9 +4792,6 @@ async function evalAndMaybeSellPositions() {
             log(`Warming hold released to observer for ${mint.slice(0,4)}…`);
           }
         }
-
-
-        let decision = null;
 
         if (warmingActive && pos.warmingHold === true) {
           const windowMs = Math.max(5_000, Number(state.warmingMaxLossWindowSecs || 30) * 1000);
@@ -4655,7 +4813,7 @@ async function evalAndMaybeSellPositions() {
         try {
           const curSig = getRugSignalForMint(mint);
           const curBadgeNorm = normBadge(curSig?.badge);
-          if (!forceRug && curBadgeNorm === "warming") {
+          if (!forceRug && curBadgeNorm === "warming" && !forceEarlyFade) {
             const warmReqNow = computeWarmingRequirement(pos, nowTs);
             if (pnlPct < warmReqNow.req) {
               if (forceObserverDrop || forcePumpDrop) {
@@ -4672,7 +4830,7 @@ async function evalAndMaybeSellPositions() {
 
 
 
-        if (warmingHoldActive && pnlPct < warmReq.req && !forceRug) {
+        if (warmingHoldActive && pnlPct < warmReq.req && !forceRug && !forceEarlyFade) {
           if (forceObserverDrop || forcePumpDrop) {
             log(`Warming hold: suppressing volatility sell for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
           }
@@ -4708,71 +4866,86 @@ async function evalAndMaybeSellPositions() {
 
         const baseMinNotional = Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN * 1.05);
         const minNotional = baseMinNotional;
-        let d = null;
 
-
-        // but run PnL/TP/SL on NET
-        if (curSol < minNotional && !forceExpire && !forceRug && !forcePumpDrop && !forceObserverDrop) {
-          d = shouldSell(pos, curSolNet, nowTs);
-          const dustMin = Math.max(MIN_SELL_SOL_OUT, Number(state.dustMinSolOut || 0));
-          if (!(state.dustExitEnabled && d.action === "sell_all" && curSol >= dustMin)) {
-            log(`Skip sell eval ${mint.slice(0,4)}… (notional ${curSol.toFixed(6)} SOL < ${minNotional})`);
-            continue;
-          } else {
-            log(`Dust exit enabled for ${mint.slice(0,4)}… (est ${curSol.toFixed(6)} SOL >= ${dustMin})`);
+        if (!isFastExit) {
+          // original min-notional and shouldSell evaluation
+          let d = null;
+          if (curSol < minNotional && !forceExpire && !forceRug && !forcePumpDrop && !forceObserverDrop) {
+            d = shouldSell(pos, curSolNet, nowTs);
+            const dustMin = Math.max(MIN_SELL_SOL_OUT, Number(state.dustMinSolOut || 0));
+            if (!(state.dustExitEnabled && d.action === "sell_all" && curSol >= dustMin)) {
+              log(`Skip sell eval ${mint.slice(0,4)}… (notional ${curSol.toFixed(6)} SOL < ${minNotional})`);
+              continue;
+            } else {
+              log(`Dust exit enabled for ${mint.slice(0,4)}… (est ${curSol.toFixed(6)} SOL >= ${dustMin})`);
+            }
+          } else if (curSol < minNotional && !forceExpire && (forceRug || forcePumpDrop || forceObserverDrop)) {
+            const why = forceRug ? "Rug" : (forcePumpDrop ? "Pump->Calm" : "Observer");
+            log(`${why} exit for ${mint.slice(0,4)}… ignoring min-notional (${curSol.toFixed(6)} SOL < ${minNotional}).`);
           }
-        } else if (curSol < minNotional && !forceExpire && (forceRug || forcePumpDrop || forceObserverDrop)) {
-          const why = forceRug ? "Rug" : (forcePumpDrop ? "Pump->Calm" : "Observer");
-          log(`${why} exit for ${mint.slice(0,4)}… ignoring min-notional (${curSol.toFixed(6)} SOL < ${minNotional}).`);
+          decision = decision || d || shouldSell(pos, curSol, nowTs);
+        } else {
+          // fast exit ignores min-notional and edge gates
+          decision = decision; // already set
         }
 
-        decision = d || shouldSell(pos, curSol, nowTs);
         if (forceRug) {
           decision = { action: "sell_all", reason: `rug sev=${rugSev.toFixed(2)}` };
         } else if (forcePumpDrop) {
           decision = { action: "sell_all", reason: "pump->calm" };
         } else if (forceObserverDrop) {
-          decision = { action: "sell_all", reason: "observer detection system" };
+          decision = { action: "sell_all", reason: earlyReason || "observer detection system" };
         } else if (forceExpire && (!decision || decision.action === "none")) {
           decision = { action: "sell_all", reason: `max-hold>${maxHold}s` };
           log(`Max-hold reached for ${mint.slice(0,4)}… forcing sell.`);
         }
 
-        if (warmingActive && pos.warmingHold === true && !warmReq.shouldAutoRelease && pnlPct < warmReq.req && decision && decision.action !== "none" && !/rug|warming-max-loss/i.test(decision.reason || "")) {
-          log(`Warming hold: skipping sell (${decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
-          decision = { action: "none", reason: "warming-hold-until-profit" };
+        if (!isFastExit) {
+          if (warmingHoldActive && pnlPct < warmReq.req && !forceRug) {
+            if (forceObserverDrop || forcePumpDrop) {
+              log(`Warming hold: suppressing volatility sell for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
+            }
+            forceObserverDrop = false;
+            forcePumpDrop = false;
+          }
+          // None
+        }
+
+        if (!isFastExit) {
+          if (warmingActive && pos.warmingHold === true && warmingHoldActive && pnlPct < warmReq.req && decision && decision.action !== "none" && !/rug|warming-max-loss/i.test(decision.reason || "") && !forceEarlyFade) {
+            log(`Warming hold: skipping sell (${decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
+            decision = { action: "none", reason: "warming-hold-until-profit" };
+          }
         }
 
         if (decision && decision.action !== "none" && !forceRug) {
-          // If we are already in a rebound deferral window, honor it until expiry! this include net pnl
-          const stillDeferred = Number(pos.reboundDeferUntil || 0) > nowTs;
-          if (stillDeferred) {
-            log(`Rebound gate: deferral active for ${mint.slice(0,4)}… skipping sell this tick.`);
-            decision = { action: "none", reason: "rebound-deferral" };
-          } else {
-            const wantDefer = shouldDeferSellForRebound(mint, pos, pnlPct, nowTs, decision.reason || "");
-            if (wantDefer) {
-              decision = { action: "none", reason: "rebound-predict-hold" };
-              const waitMs = Math.max(800, Number(state.reboundHoldMs || 4000));
-              setTimeout(() => { try { wakeSellEval(); } catch {} }, waitMs);
+          if (!isFastExit) {
+            const stillDeferred = Number(pos.reboundDeferUntil || 0) > nowTs;
+            if (stillDeferred) {
+              log(`Rebound gate: deferral active for ${mint.slice(0,4)}… skipping sell this tick.`);
+              decision = { action: "none", reason: "rebound-deferral" };
             } else {
-              if (pos.reboundDeferUntil || pos.reboundDeferStartedAt) {
-                delete pos.reboundDeferUntil;
-                delete pos.reboundDeferStartedAt;
-                delete pos.reboundDeferCount;
-                save();
+              const wantDefer = shouldDeferSellForRebound(mint, pos, pnlPct, nowTs, decision.reason || "");
+              if (wantDefer) {
+                decision = { action: "none", reason: "rebound-predict-hold" };
+                const waitMs = Math.max(800, Number(state.reboundHoldMs || 4000));
+                setTimeout(() => { try { wakeSellEval(); } catch {} }, waitMs);
+              } else {
+                if (pos.reboundDeferUntil || pos.reboundDeferStartedAt) {
+                  delete pos.reboundDeferUntil;
+                  delete pos.reboundDeferStartedAt;
+                  delete pos.reboundDeferCount;
+                  save();
+                }
               }
             }
           }
         }
 
-        log(`Sell decision: ${decision.action !== "none" ? decision.action : "NO"} (${decision.reason || "criteria not met"})`);
-        if (decision.action === "none") continue;
+        log(`Sell decision: ${decision && decision.action !== "none" ? decision.action : "NO"} (${decision?.reason || "criteria not met"})`);
+        if (!decision || decision.action === "none") continue;
 
-
-
-
-        // Jupiter 0x1788 = cooldown
+        // Jito/router cooldown checks remain (but we already bypassed gating)
         if (!forceExpire && window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
           const until = window._fdvRouterHold.get(mint);
           log(`Router cooldown for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`);
@@ -4782,17 +4955,19 @@ async function evalAndMaybeSellPositions() {
         _inFlight = true;
         lockMint(mint, "sell", Math.max(MINT_OP_LOCK_MS, Number(state.sellCooldownMs||20000)));
 
+        const exitSlip = Math.max(Number(state.slippageBps || 250), Number(state.fastExitSlipBps || 400));
+        const exitConfirmMs = isFastExit ? Math.max(6000, Number(state.fastExitConfirmMs || 9000)) : 15000;
+
         if (decision.action === "sell_partial") {
           const pct = Math.min(100, Math.max(1, Number(decision.pct || 50)));
           let sellUi = pos.sizeUi * (pct / 100);
-
           try {
             const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
             if (Number(b.sizeUi || 0) > 0) sellUi = Math.min(sellUi, Number(b.sizeUi));
           } catch {}
 
           const estSol = await quoteOutSol(mint, sellUi, pos.decimals).catch(() => 0);
-          if (estSol < minNotional) {
+          if (estSol < minNotional && !isFastExit) {
             if (curSol >= minNotional) {
               log(`Partial ${pct}% ${mint.slice(0,4)}… below min (${estSol.toFixed(6)} SOL < ${minNotional}). Escalating to full sell …`);
               let sellUi2 = pos.sizeUi;
@@ -4868,8 +5043,8 @@ async function evalAndMaybeSellPositions() {
           }
 
           const res = await executeSwapWithConfirm({
-            signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: state.slippageBps,
-          }, { retries: 1, confirmMs: 15000 });
+            signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: exitSlip,
+          }, { retries: isFastExit ? 0 : 1, confirmMs: exitConfirmMs });
 
           if (!res.ok) {
             if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
@@ -4879,8 +5054,8 @@ async function evalAndMaybeSellPositions() {
             continue;
           }
 
-          log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL (${(decision && decision.reason) ? decision.reason : "done"})`);
-
+          log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… (${decision.reason})`);
+   
           // Proportional cost basis for partial exits
           const prevCostSol = Number(pos.costSol || 0);
           const costSold = prevCostSol * (pct / 100);
@@ -4925,6 +5100,7 @@ async function evalAndMaybeSellPositions() {
 
           await _addRealizedPnl(estSol, costSold, "Partial sell PnL");
         } else {
+          // Full sell
           let sellUi = pos.sizeUi;
           try {
             const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
@@ -4932,8 +5108,8 @@ async function evalAndMaybeSellPositions() {
           } catch {}
 
           const res = await executeSwapWithConfirm({
-            signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: state.slippageBps,
-          }, { retries: 1, confirmMs: 15000 });
+            signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: exitSlip,
+          }, { retries: isFastExit ? 0 : 1, confirmMs: exitConfirmMs });
 
           if (!res.ok) {
             if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
@@ -5340,6 +5516,52 @@ async function tick() {
       // const left = Math.max(1, loopN - i);
       const target = Math.min(plannedTotal, remaining);
 
+      try {
+        const leadersNow = computePumpingLeaders(3) || [];
+        const itNow = leadersNow.find(x => x?.mint === mint);
+        if (itNow) {
+          const kpNow = itNow.kp || {};
+          const metaNow = itNow.meta || {};
+          const warm = detectWarmingUptick({ kp: { ...kpNow, mint }, meta: metaNow }, state);
+          const series = getLeaderSeries(mint, 3);
+          const scSlopeMin = slope3pm(series || [], "pumpScore");
+
+          // Reproduce score weights to measure c5 dominance
+          const chg5m = safeNum(kpNow.change5m, 0);
+          const chg1h = safeNum(kpNow.change1h, 0);
+          const liq   = safeNum(kpNow.liqUsd,   0);
+          const v1h   = safeNum(kpNow.v1hTotal, 0);
+          const accel5to1 = safeNum(metaNow.accel5to1, 1);
+          const risingNow = !!metaNow.risingNow;
+          const trendUp   = !!metaNow.trendUp;
+
+          const c5 = Math.max(0, chg5m);
+          const c1 = Math.log1p(Math.max(0, chg1h));
+          const exp5m = Math.max(0, chg1h) / 12;
+          const accelRatio = exp5m > 0 ? (c5 / exp5m) : (c5 > 0 ? 1.2 : 0);
+          const lLiq = Math.log1p(liq / 5000);
+          const lVol = Math.log1p(v1h / 1000);
+          const w = {
+            c5: 0.50 * c5,
+            c1: 0.12 * c1,
+            lVol: 0.14 * lVol,
+            lLiq: 0.08 * lLiq,
+            accelRatio: 0.08 * Math.max(0, accelRatio - 0.8),
+            accel5to1: 0.08 * Math.max(0, accel5to1 - 1),
+            flags: (risingNow && trendUp ? 0.06 : 0),
+            pScore: 0.04 * safeNum(itNow.pumpScore, 0),
+          };
+          const sumW = w.c5 + w.c1 + w.lVol + w.lLiq + w.accelRatio + w.accel5to1 + w.flags + w.pScore;
+          const c5Share = sumW > 0 ? (w.c5 / sumW) : 0;
+          const barelyPasses = Number(warm.pre || 0) < (Number(warm.preMin || 0) + Math.max(0.005, Number(state.lateEntryMinPreMargin || 0.02)));
+
+          if (c5Share >= Math.max(0.5, Number(state.lateEntryDomShare || 0.6)) && barelyPasses && !(scSlopeMin > 0)) {
+            log(`Exhaust spike filter: skip ${mint.slice(0,4)}… (c5 ${Math.round(c5Share*100)}% of score, pre ${warm.pre.toFixed(3)} ~ min ${warm.preMin.toFixed(3)}, scSlope=${scSlopeMin.toFixed(2)}/m ≤ 0)`);
+            continue;
+          }
+        }
+      } catch {}
+
       const reqRent = await requiredAtaLamportsForSwap(kp.publicKey.toBase58(), SOL_MINT, mint);
       if (reqRent > 0 && solBal < AVOID_NEW_ATA_SOL_FLOOR) {
         log(`Skipping ${mint.slice(0,4)}… (SOL ${solBal.toFixed(4)} < ${AVOID_NEW_ATA_SOL_FLOOR}, would open new ATA). Try adding more SOL`);
@@ -5516,6 +5738,20 @@ async function tick() {
         const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
         const warmingHold = !!(state.rideWarming && badgeNow === "warming");
         const guardMs = Math.max(10_000, Number(state.observerGraceSecs || 0) * 1000);
+        let entryChg5m = 0, entryPre = NaN, entryPreMin = NaN, entryScSlope = NaN;
+        try {
+          const leadersNow = computePumpingLeaders(3) || [];
+          const itNow = leadersNow.find(x => x?.mint === mint);
+          const kpNow = itNow?.kp || {};
+          const metaNow = itNow?.meta || {};
+          const warm = detectWarmingUptick({ kp: { ...kpNow, mint }, meta: metaNow }, state);
+          const series = getLeaderSeries(mint, 3);
+          entryChg5m = Number(series?.[series.length - 1]?.chg5m || kpNow.change5m || 0);
+          entryPre = Number(warm?.pre || NaN);
+          entryPreMin = Number(warm?.preMin || NaN);
+          entryScSlope = Number(slope3pm(series || [], "pumpScore") || NaN);
+        } catch {}
+
         const pos = {
           ...basePos,
           sizeUi: got.sizeUi,
@@ -5530,7 +5766,14 @@ async function tick() {
           warmingHold: warmingHold,
           warmingHoldAt: warmingHold ? now() : undefined,
           warmingMinProfitPct: Number(state.warmingMinProfitPct || 1),
-          sellGuardUntil: now() + guardMs,    
+          sellGuardUntil: now() + guardMs,
+
+          // early-fade baselines
+          entryChg5m,
+          entryPre,
+          entryPreMin,
+          entryScSlope,
+          earlyNegScCount: 0,
         };
         state.positions[mint] = pos;
         updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
@@ -5544,6 +5787,20 @@ async function tick() {
         const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
         const warmingHold = !!(state.rideWarming && badgeNow === "warming");
         const guardMs = Math.max(10_000, Number(state.observerGraceSecs || 0) * 1000);
+        let entryChg5m = 0, entryPre = NaN, entryPreMin = NaN, entryScSlope = NaN;
+        try {
+          const leadersNow = computePumpingLeaders(3) || [];
+          const itNow = leadersNow.find(x => x?.mint === mint);
+          const kpNow = itNow?.kp || {};
+          const metaNow = itNow?.meta || {};
+          const warm = detectWarmingUptick({ kp: { ...kpNow, mint }, meta: metaNow }, state);
+          const series = getLeaderSeries(mint, 3);
+          entryChg5m = Number(series?.[series.length - 1]?.chg5m || kpNow.change5m || 0);
+          entryPre = Number(warm?.pre || NaN);
+          entryPreMin = Number(warm?.preMin || NaN);
+          entryScSlope = Number(slope3pm(series || [], "pumpScore") || NaN);
+        } catch {}
+
         const pos = {
           ...basePos,
           costSol: Number(basePos.costSol || 0) + buySol,
@@ -5555,7 +5812,14 @@ async function tick() {
           warmingHold: warmingHold,
           warmingHoldAt: warmingHold ? now() : undefined,
           warmingMinProfitPct: Number(state.warmingMinProfitPct || 1),
-          sellGuardUntil: now() + guardMs,     
+          sellGuardUntil: now() + guardMs,
+
+          // early-fade baselines
+          entryChg5m,
+          entryPre,
+          entryPreMin,
+          entryScSlope,
+          earlyNegScCount: 0,
         };
         state.positions[mint] = pos;
         save();
@@ -5692,10 +5956,11 @@ function onToggle(on) {
    save();
 }
 
+// Load best case for users.
 function load() {
   try { state = { ...state, ...(JSON.parse(localStorage.getItem(LS_KEY))||{}) }; } catch {}
   // if (!Number.isFinite(state.warmingEdgeMinExclPct)) state.warmingEdgeMinExclPct = 0;
-    // if (!Number.isFinite(state.warmingEdgeMinExclPct)) delete state.warmingEdgeMinExclPct;
+  // if (!Number.isFinite(state.warmingEdgeMinExclPct)) delete state.warmingEdgeMinExclPct;
   if (typeof state.warmingEdgeMinExclPct !== "number" || !Number.isFinite(state.warmingEdgeMinExclPct)) {
     delete state.warmingEdgeMinExclPct;
   }
@@ -5720,12 +5985,36 @@ function load() {
   if (!Number.isFinite(state.warmingPrimedConsec)) state.warmingPrimedConsec = 1;
   if (!Number.isFinite(state.warmingMaxLossPct)) state.warmingMaxLossPct = 6;  
   if (!Number.isFinite(state.warmingMaxLossWindowSecs)) state.warmingMaxLossWindowSecs = 60;
-  if (!Number.isFinite(state.edgeSafetyBufferPct)) state.edgeSafetyBufferPct = 0.2;
+  if (!Number.isFinite(state.edgeSafetyBufferPct)) state.edgeSafetyBufferPct = 0.10;
 
   if (!Number.isFinite(state.minNetEdgePct)) state.minNetEdgePct = -4;
+  if (!Number.isFinite(state.fastExitSlipBps)) state.fastExitSlipBps = 400;
+  if (!Number.isFinite(state.fastExitConfirmMs)) state.fastExitConfirmMs = 9000;
+  if (!Number.isFinite(state.fastHardStopPct)) state.fastHardStopPct = 2.5;
+  if (!Number.isFinite(state.fastTrailPct)) state.fastTrailPct = 8;
+  if (!Number.isFinite(state.fastTrailArmPct)) state.fastTrailArmPct = 4;
+  if (!Number.isFinite(state.fastNoHighTimeoutSec)) state.fastNoHighTimeoutSec = 90;
+  if (!Number.isFinite(state.fastTp1Pct)) state.fastTp1Pct = 12;
+  if (!Number.isFinite(state.fastTp1SellPct)) state.fastTp1SellPct = 30;
+  if (!Number.isFinite(state.fastTp2Pct)) state.fastTp2Pct = 20;
+  if (!Number.isFinite(state.fastTp2SellPct)) state.fastTp2SellPct = 30;
+  if (!Number.isFinite(state.fastAlphaChgSlope)) state.fastAlphaChgSlope = -3;
+  if (!Number.isFinite(state.fastAlphaScSlope)) state.fastAlphaScSlope = -10;
+  if (!Number.isFinite(state.fastAccelDropFrac)) state.fastAccelDropFrac = 0.5;
+  if (!Number.isFinite(state.fastAlphaZV1Floor)) state.fastAlphaZV1Floor = 0.3;
+
+  if (!Number.isFinite(state.earlyExitChgDropFrac)) state.earlyExitChgDropFrac = 0.40;
+  if (!Number.isFinite(state.earlyExitScSlopeNeg)) state.earlyExitScSlopeNeg = -10;
+  if (!Number.isFinite(state.earlyExitConsec)) state.earlyExitConsec = 2;
+  if (!Number.isFinite(state.lateEntryDomShare)) state.lateEntryDomShare = 0.60;
+  if (!Number.isFinite(state.lateEntryMinPreMargin)) state.lateEntryMinPreMargin = 0.02;
 
   if (typeof state.reboundGateEnabled !== "boolean") state.reboundGateEnabled = true;
   if (typeof state.strictBuyFilter !== "boolean") state.strictBuyFilter = true;
+
+  if (typeof state.fastExitEnabled !== "boolean") state.fastExitEnabled = true;
+
+
 
   state.tickMs = Math.max(1200, Math.min(5000, Number(state.tickMs || 2000))); 
   state.slippageBps = Math.min(250, Math.max(150, Number(state.slippageBps ?? 200) | 0));
@@ -6060,7 +6349,7 @@ export function initAutoWidget(container = document.body) {
     </div>
     </div>
     <div class="fdv-bot-footer" style="margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
-      <span>Version: 0.0.3.5</span>
+      <span>Version: 0.0.3.6</span>
     </div>
   `;
 
