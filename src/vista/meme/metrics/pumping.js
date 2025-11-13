@@ -8,9 +8,9 @@ export const PUMP_HALFLIFE_DAYS   = 0.6;       // fast decay (~14.4h half-life)
 export const PUMP_MIN_LIQ_USD     = 6000;      // hard floor to avoid illiquid spikes
 export const PUMP_MIN_VOL_1H_USD  = 1500;      // minimum 1h volume gate
 export const PUMP_MIN_PRICE_USD   = 0;         // keep 0 to allow low-priced tokens; raise if needed
-export const PUMP_BADGE_SCORE        = 1.45;   // threshold score for "🔥 Pumping" badge
-export const PUMP_BADGE_CHANGE1H_PCT = 8;      // threshold 1h% change for "🔥 Pumping" badge
-export const PUMP_BADGE_ACCEL5TO1    = 1.06;   // threshold 5m->1h acceleration for "🔥 Pumping" badge
+export const PUMP_BADGE_SCORE        = 1.20;   // was 1.45
+export const PUMP_BADGE_CHANGE1H_PCT = 5;      // was 8
+export const PUMP_BADGE_ACCEL5TO1    = 1.03;   // was 1.06
 export const RUG_5M_DROP_PCT  = 10;            // 5m% drop to consider for rug severity
 export const RUG_MAX_PENALTY  = 0.9;           // max score penalty from rugging
 export const RUG_WINDOW_MIN   = 20;            // lookback window for rug detection (minutes)
@@ -215,18 +215,22 @@ export function computePumpingScoreForMint(records, nowTs) {
   })();
 
   let badge = 'Calm';
-  const strongScore = score >= 2.0;
+  const strongScore = score >= 1.6; // was 2.0 (looser)
+
   if (sev >= 1) {
     badge = 'Cooling';
   } else if (
-    ((strongScore && risingNow && trendUp) ||
-     (score >= PUMP_BADGE_SCORE &&
-      change1h >= PUMP_BADGE_CHANGE1H_PCT &&
-      accel5to1 >= PUMP_BADGE_ACCEL5TO1 &&
-      risingNow && trendUp))
+    // Loosen: allow Pump on slightly lower score and if either risingNow OR trendUp
+    (strongScore && (risingNow || trendUp)) ||
+    (score >= PUMP_BADGE_SCORE &&
+     (change1h >= PUMP_BADGE_CHANGE1H_PCT || accel5to1 >= PUMP_BADGE_ACCEL5TO1) &&
+     (risingNow || trendUp))
   ) {
     badge = '🔥 Pumping';
-  } else if (score >= 1.0 && (change1h > 0 || change6h > 0)) {
+  } else if (
+    // Loosen Warming: lower score floor and allow mild/early rises
+    score >= 0.6 && (change1h > 0 || change6h > 0 || change5m >= 0)
+  ) {
     badge = 'Warming';
   }
 
