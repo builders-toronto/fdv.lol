@@ -3204,6 +3204,7 @@ function estimateNetExitSolFromQuote({ mint, amountUi, inDecimals, quoteOutLampo
     return { netSol: Math.max(0, Number(quoteOutLamports || 0) - EDGE_TX_FEE_ESTIMATE_LAMPORTS) / 1e9, feeApplied: false, platformLamports: 0, txLamports: EDGE_TX_FEE_ESTIMATE_LAMPORTS };
   }
 }
+  
 
 function computeReboundSignal(mint) {
   try {
@@ -7012,6 +7013,10 @@ export function initAutoWidget(container = document.body) {
     maxBuyEl.min = String(minBuy);
     maxBuyEl.value = String(maxBuy);
 
+    if (recvEl) {
+      const recvVal = String(recvEl.value || "").trim();
+      state.recipientPub = recvVal;
+    }
     
 
     save();
