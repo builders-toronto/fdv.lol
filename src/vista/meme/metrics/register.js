@@ -1,18 +1,6 @@
 const REGISTRY = [];
 const STATE = new Map(); 
 
-// side load css
-// function ensureAddonStyles() {
-//   if (document.getElementById('addonStyles')) return;
-//   const css = `
-
-//   `;
-//   const st = document.createElement('style');
-//   st.id = 'addonStyles';
-//   st.textContent = css;
-//   document.head.appendChild(st);
-// }
-
 function getHeaderToolsStrip() {
   return document.getElementById('hdrTools') || null;
 }
@@ -37,9 +25,7 @@ function pct(v) {
   return { txt, cls: n >= 0 ? 'ch-pos' : 'ch-neg' };
 }
 
-// ---- UI for a single addon ----
 function ensureAddonUI(addon) {
-  // ensureAddonStyles();
   const strip = getHeaderToolsStrip();
   if (!strip) return null;
 
@@ -156,6 +142,9 @@ function renderAddon(addon) {
               <span class="pill"><span class="k">Liq</span><b>${liq}</b></span>
               <span class="pill"><span class="k">Vol</span><b>${vol}</b></span>
               ${metricHtml}
+            </div>
+            <div class="mint-data">
+              <code style="font-size:7px;">${row.mint}</code>
             </div>
           </div>
         </a>

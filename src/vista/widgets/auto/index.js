@@ -1381,6 +1381,7 @@ async function computeSpendCeiling(ownerPubkeyStr, { solBalHint } = {}) {
   const totalResLamports = Math.max(minRunwayLamports, baseReserveLamports + sellResLamports);
 
   const spendableLamports = Math.max(0, solLamports - totalResLamports);
+
   const spendableSol = spendableLamports / 1e9;
 
   return {
@@ -3563,8 +3564,20 @@ function pickPumpCandidates(take = 1, poolN = 3) {
         const leadersRaw = computePumpingLeaders(Math.max(poolN, 6)) || [];
         const firstPump = leadersRaw.find(x => normBadge(x.badge) === "pumping");
         if (firstPump?.mint) {
-          log(`Fallback pick (first pumping leader): ${firstPump.mint.slice(0,4)}…`);
-          return [firstPump.mint];
+        // we respect only strong warming uptick here
+          const mint = firstPump.mint;
+          const kp = { ...(firstPump.kp || {}), mint };
+          const meta = firstPump.meta || {};
+          const det = detectWarmingUptick({ kp, meta }, state);
+          const s = getLeaderSeries(mint, 3);
+          const scSlopeMin = slope3pm(s || [], "pumpScore");
+          const chgSlopeMin = slope3pm(s || [], "chg5m");
+          const risingNow = !!meta.risingNow;
+          if (det?.ok && ((scSlopeMin > 0 && chgSlopeMin > 0) || risingNow)) {
+            log(`Fallback pick (WarmDet ok, slopes healthy): ${mint.slice(0,4)}…`);
+            return [mint];
+          }
+          log(`Fallback pick rejected by WarmDet/slopes: ${mint.slice(0,4)}…`);
         }
       } catch {}
       return [];
@@ -3623,7 +3636,7 @@ function recordObserverPasses(mint, passes) {
   } else {
     r.consec3 = 0;
   }
-  // NEW: consecutive low (<=2) debounce
+    
   if (passes <= 2) {
     r.consecLow = (r.lastPasses <= 2) ? (Number(r.consecLow || 0) + 1) : 1;
   } else {
@@ -5701,6 +5714,7 @@ async function tick() {
           const warm = detectWarmingUptick({ kp: { ...kpNow, mint }, meta: metaNow }, state);
           const series = getLeaderSeries(mint, 3);
           const scSlopeMin = slope3pm(series || [], "pumpScore");
+          // const chgSlopeMin = slope3pm(series || [], "change5m");
 
           // Reproduce score weights to measure c5 dominance
           const chg5m = safeNum(kpNow.change5m, 0);
@@ -5735,6 +5749,25 @@ async function tick() {
             log(`Exhaust spike filter: skip ${mint.slice(0,4)}… (c5 ${Math.round(c5Share*100)}% of score, pre ${warm.pre.toFixed(3)} ~ min ${warm.preMin.toFixed(3)}, scSlope=${scSlopeMin.toFixed(2)}/m ≤ 0)`);
             continue;
           }
+
+          if (!((scSlopeMin > 0 && chgSlopeMin > 0) || metaNow.risingNow === true)) {
+            log(`Entry slopes not healthy; skip ${mint.slice(0,4)}… (scSlope=${scSlopeMin.toFixed(2)}/m, chgSlope=${chgSlopeMin.toFixed(2)}/m, risingNow=${!!metaNow.risingNow})`);
+            continue;
+          }
+
+          // TODO: price impact proxy?
+          // try {
+          //   const solPx = await getSolUsd();
+          //   const liq = Number(kpNow.liqUsd || 0);
+          //   if (solPx > 0 && liq > 0) {
+          //     const buyUsd = buySol * solPx;
+          //     const imp = buyUsd / liq; // ≈ price impact proxy
+          //     if (imp > 0.008) {
+          //       log(`Impact gate: skip ${mint.slice(0,4)}… est impact ${(imp*100).toFixed(2)}% > 0.80% (buy≈${fmtUsd(buyUsd)}, liq≈${fmtUsd(liq)})`);
+          //       continue;
+          //     }
+          //   }
+          // } catch {}
         }
       } catch {}
 
@@ -5748,15 +5781,27 @@ async function tick() {
       let buyLamports = Math.min(targetLamports, Math.floor(remaining * 1e9), candidateBudgetLamports);
 
       const minInLamports = Math.floor(MIN_JUP_SOL_IN * 1e9);
+
+      // const rentMinBuyLamports = reqRent > 0 ? Math.ceil(reqRent / 0.01) : 0;
+
       const minPerOrderLamports = Math.max(minInLamports, Math.floor(minThreshold * 1e9));
 
+      // if (rentMinBuyLamports > 0) minPerOrderLamports = Math.max(minPerOrderLamports, rentMinBuyLamports);
+
       if (buyLamports < minPerOrderLamports) {
-        // Not enough to place a router-safe and later sellable order; skip to avoid dust.
-        const need = (minPerOrderLamports - buyLamports) / 1e9;
+        // MEMES are volatile. we cannot limit ATA based off this.
+        // const need = (minPerOrderLamports - buyLamports) / 1e9;
+        // if (reqRent > 0) {
+        //   const carryPrev = Math.max(0, Number(state.carrySol || 0));
+        //   state.carrySol = Math.min(Number(state.maxBuySol || 0.05), carryPrev + (buyLamports / 1e9));
+        //   save();
+        //   log(`Accumulating (ATA rent amortize). Need ~${need.toFixed(6)} SOL more to open ATA; carry=${state.carrySol.toFixed(6)} SOL`);
+        //   continue;
+        // }
         if (reqRent > 0) {
-          log(`Skip ${mint.slice(0,4)}… (order ${ (buyLamports/1e9).toFixed(6) } SOL < min ${ (minPerOrderLamports/1e9).toFixed(6) } incl. ATA). Need ~${need.toFixed(6)} SOL more.`);
+          log(`Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < ATA amortized min ${(minPerOrderLamports/1e9).toFixed(6)}).`);
         } else {
-          log(`Skip ${mint.slice(0,4)}… (order ${ (buyLamports/1e9).toFixed(6) } SOL < min ${ (minPerOrderLamports/1e9).toFixed(6) }).`);
+          log(`Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < min ${(minPerOrderLamports/1e9).toFixed(6)}).`);
         }
         continue;
       }
@@ -5846,12 +5891,25 @@ async function tick() {
       const prevPos  = state.positions[mint];
       const basePos  = prevPos || { costSol: 0, hwmSol: 0, acquiredAt: now() };
 
+      let dynSlip = Math.max(150, Number(state.slippageBps || 150));
+      try {
+        const leadersNow = computePumpingLeaders(3) || [];
+        const itNow = leadersNow.find(x => x?.mint === mint);
+        const kpNow = itNow?.kp || {};
+        const solPx = await getSolUsd();
+        const liq = Number(kpNow.liqUsd || 0);
+        if (solPx > 0 && liq > 0) {
+          const imp = Math.max(0, Math.min(0.01, (buySol * solPx) / liq)); // cap at 1%
+          dynSlip = Math.min(600, Math.max(150, Math.floor(10000 * imp * 1.2)));
+        }
+      } catch {}
+
       const res = await executeSwapWithConfirm({
         signer: kp,
         inputMint: SOL_MINT,
         outputMint: mint,
         amountUi: buySol,
-        slippageBps: state.slippageBps,
+        slippageBps: dynSlip,
       }, { retries: 2, confirmMs: 15000 });
 
       if (!res.ok) {
@@ -6526,7 +6584,7 @@ export function initAutoWidget(container = document.body) {
     </div>
     </div>
     <div class="fdv-bot-footer" style="margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
-      <span>Version: 0.0.3.7</span>
+      <span>Version: 0.0.3.8</span>
     </div>
   `;
 
