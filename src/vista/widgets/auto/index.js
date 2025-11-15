@@ -21,7 +21,10 @@ const MINT_RUG_BLACKLIST_MS = 30 * 60 * 1000;
 const MINT_BLACKLIST_STAGES_MS =  [2 * 60 * 1000, 15 * 60 * 1000, MINT_RUG_BLACKLIST_MS];
 const URGENT_SELL_COOLDOWN_MS= 20_000; 
 const URGENT_SELL_MIN_AGE_MS = 7_000;
-const MAX_FIXED_COST_FRAC = 0.0075;
+// const MAX_FIXED_COST_FRAC = 0.0075;
+const MAX_RECURRING_COST_FRAC = 0.0075; // tx + platform fees <= 0.75% of order
+const MAX_ONETIME_COST_FRAC   = 0.02; 
+const ONE_TIME_COST_AMORTIZE  = 3;
 const FAST_OBS_INTERVAL_MS   = 40;    
 const SPLIT_FRACTIONS = [0.99, 0.98, 0.97, 0.96, 0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.50, 0.33, 0.25, 0.20];
 const MINT_OP_LOCK_MS = 30_000;
@@ -6165,12 +6168,18 @@ async function tick() {
           const okTicks = countConsecUp(series5, "pumpScore") >= needTicks && countConsecUp(series5, "chg5m") >= needTicks;
           const okSlopes = (scSlopeMin >= needSc) && (chgSlopeMin >= needChg);
           const c5DomThr = Math.max(0.6, Number(state.lateEntryDomShare || 0.65));
-          if (c5Share >= c5DomThr && barelyPasses && !(scSlopeMin > 0)) {
+
+          if (c5Share >= c5DomThr && barelyPasses && !(scSlopeMin > -1 || okTicks)) {
             log(`Exhaust spike filter: skip ${mint.slice(0,4)}… (c5 ${Math.round(c5Share*100)}% of score, pre ${warm.pre.toFixed(3)} ~ min ${warm.preMin.toFixed(3)}, scSlope=${scSlopeMin.toFixed(2)}/m ≤ 0)`);
             continue;
           }
-          if ((!risingNow || !trendUp) && !(okTicks && okSlopes)) {
-            log(`Sustain gate: skip ${mint.slice(0,4)}… (ticks ok=${okTicks} slopes ok=${okSlopes} rNow=${risingNow} tUp=${trendUp})`);
+          const needBoth = (!risingNow && !trendUp);
+          if (needBoth && !(okTicks && okSlopes)) {
+            log(`Sustain gate (strict): skip ${mint.slice(0,4)}… (ticks=${okTicks} slopes=${okSlopes})`);
+            continue;
+          }
+          if (!needBoth && (!risingNow || !trendUp) && !(okTicks || okSlopes)) {
+            log(`Sustain gate (lenient): skip ${mint.slice(0,4)}… (need ticks OR slopes; rNow=${risingNow} tUp=${trendUp})`);
             continue;
           }
         }
@@ -6192,10 +6201,13 @@ async function tick() {
       //const minPerOrderLamports = Math.max(minInLamports, Math.floor(minThreshold * 1e9));
       let minPerOrderLamports = Math.max(minInLamports, Math.floor(minThreshold * 1e9));
       try {
-        const recurringL = EDGE_TX_FEE_ESTIMATE_LAMPORTS;
-        const oneTimeL = Math.max(0, reqRent);
-        const needByFriction = Math.ceil((recurringL + oneTimeL) / MAX_FIXED_COST_FRAC);
-        minPerOrderLamports = Math.max(minPerOrderLamports, needByFriction);
+        const recurringL   = EDGE_TX_FEE_ESTIMATE_LAMPORTS;
+        const oneTimeL     = Math.max(0, reqRent);
+        const needByRecurr = Math.ceil(recurringL / Math.max(1e-12, MAX_RECURRING_COST_FRAC));
+        const needByOne    = Math.ceil(
+          oneTimeL / Math.max(1e-12, MAX_ONETIME_COST_FRAC * Math.max(1, ONE_TIME_COST_AMORTIZE))
+        );        const needByFrictionSplit = Math.max(needByRecurr, needByOne);
+        minPerOrderLamports = Math.max(minPerOrderLamports, needByFrictionSplit);
       } catch {}
 
 
@@ -6213,10 +6225,13 @@ async function tick() {
         // }
         if (reqRent > 0) {
           //log(`Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < ATA amortized min ${(minPerOrderLamports/1e9).toFixed(6)}).`);
-          log(`Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < friction-aware min ${(minPerOrderLamports/1e9).toFixed(6)}).`);
+          log(
+            `Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < friction-aware min ${(minPerOrderLamports/1e9).toFixed(6)}; ` +
+            `split guard rec=${(EDGE_TX_FEE_ESTIMATE_LAMPORTS/1e9).toFixed(6)} oneTime≈${(reqRent/1e9).toFixed(6)} amortN=${ONE_TIME_COST_AMORTIZE}).`
+          );
         } else {
-          //log(`Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < min ${(minPerOrderLamports/1e9).toFixed(6)}).`);
-          log(`Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < friction-aware min ${(minPerOrderLamports/1e9).toFixed(6)}).`);
+          //log(`Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < friction-aware min ${(minPerOrderLamports/1e9).toFixed(6)}).`);
+          log(`Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < friction-aware min ${(minPerOrderLamports/1e9).toFixed(6)}; recurring-only guard).`);
         }
         continue;
       }
