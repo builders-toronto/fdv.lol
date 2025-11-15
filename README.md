@@ -137,4 +137,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-feat: stealth wallet rotation + dynamic stop-loss; expose TP/SL/TRAIL/stealth in UI
+refactor(auto): schema-driven defaults + unified load() preload
