@@ -20,7 +20,8 @@ const ROUTER_COOLDOWN_MS           = 60_000;
 const MINT_RUG_BLACKLIST_MS = 30 * 60 * 1000;
 const MINT_BLACKLIST_STAGES_MS =  [2 * 60 * 1000, 15 * 60 * 1000, MINT_RUG_BLACKLIST_MS];
 const URGENT_SELL_COOLDOWN_MS= 20_000; 
-const URGENT_SELL_MIN_AGE_MS = 12_000;
+const URGENT_SELL_MIN_AGE_MS = 7_000;
+const MAX_FIXED_COST_FRAC = 0.0075;
 const FAST_OBS_INTERVAL_MS   = 40;    
 const SPLIT_FRACTIONS = [0.99, 0.98, 0.97, 0.96, 0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.50, 0.33, 0.25, 0.20];
 const MINT_OP_LOCK_MS = 30_000;
@@ -181,6 +182,7 @@ const LS_KEY = "fdv_auto_bot_v1";
 let state = {
   enabled: false,
   stealthMode: false,
+  loadDefaultState: true,
   mint: "",
   tickMs: 1000,
   budgetUi: 0.5,  
@@ -195,7 +197,7 @@ let state = {
   lastTradeTs: 0,
   trailPct: 6,                 
   minProfitToTrailPct: 3,     
-  coolDownSecsAfterBuy: 15,    
+  coolDownSecsAfterBuy: 5,    
   minHoldSecs: 0,  
   maxHoldSecs: 50,           
   partialTpPct: 50,            
@@ -205,6 +207,9 @@ let state = {
   singlePositionMode: true,
   minNetEdgePct: -5, 
   edgeSafetyBufferPct: 0.2,
+  sustainTicksMin: 2,
+  sustainChgSlopeMin: 6,
+  sustainScSlopeMin: 3,
 
   // Auto wallet mode
   autoWalletPub: "",        
@@ -271,9 +276,7 @@ let state = {
   warmingEdgeMinExclPct: null,  
   warmingExtendOnRise: true,
   warmingExtendStepMs: 4000,  
-  
-
-  // Rebound gate
+ 
   reboundGateEnabled: true,         
   reboundLookbackSecs: 45,       
   reboundMaxDeferSecs: 20,         
@@ -282,8 +285,7 @@ let state = {
   reboundMinChgSlope: 12,           
   reboundMinScSlope: 8,             
   reboundMinPnLPct: -15,          
-  
-  // Fast eXit gate
+
   fastExitEnabled: true,
   fastExitSlipBps: 400,          
   fastExitConfirmMs: 9000,      
@@ -304,15 +306,15 @@ let state = {
   earlyExitChgDropFrac: 0.40,    
   earlyExitScSlopeNeg: -40,      
   earlyExitConsec: 3,            
-  lateEntryDomShare: 0.60,       
+  lateEntryDomShare: 0.65,       
   lateEntryMinPreMargin: 0.02,   
 
   // Dynamic hard stop (overrides warming)
-  dynamicHardStopEnabled: true,
+  dynamicHardStopEnabled: false,
   dynamicHardStopBasePct: 4.0,     // base 4%
   dynamicHardStopMinPct: 3.0,      // clamp to 3–5%
   dynamicHardStopMaxPct: 5.0,
-  dynamicHardStopBuyerRemorseSecs: 30,
+  dynamicHardStopBuyerRemorseSecs: 15,
 
   // money made tracker
   moneyMadeSol: 0,
@@ -355,6 +357,119 @@ let _connHdrKey = "";
 
 let _lastDepFetchTs = 0;
 
+const CONFIG_VERSION = 1;
+
+const CONFIG_SCHEMA = {
+  enabled:                  { type: "boolean", def: false },
+  stealthMode:              { type: "boolean", def: false },
+  mint:                     { type: "string",  def: "" },
+  tickMs:                   { type: "number",  def: 2000, min: 1200, max: 5000 },
+  budgetUi:                 { type: "number",  def: 0.5,  min: 0, max: 1 },
+  minSecsBetween:           { type: "number",  def: 90,   min: 0, max: 3600 },
+  buyPct:                   { type: "number",  def: 0.2,  min: 0.01, max: 0.5 },
+  minBuySol:                { type: "number",  def: 0.06, min: 0.01, max: 1 },
+  maxBuySol:                { type: "number",  def: 0.12, min: 0.06, max: 5 },
+  slippageBps:              { type: "number",  def: 200,  min: 50, max: 2000 },
+  coolDownSecsAfterBuy:     { type: "number",  def: 5,    min: 0, max: 120 },
+  pendingGraceMs:           { type: "number",  def: 120_000, min: 10_000, max: 600_000 },
+  allowMultiBuy:            { type: "boolean", def: false },
+  rideWarming:              { type: "boolean", def: true },
+  warmingMinProfitPct:      { type: "number",  def: 100,  min: -50, max: 500 },
+  warmingDecayPctPerMin:    { type: "number",  def: 0.25, min: 0, max: 5 },
+  warmingDecayDelaySecs:    { type: "number",  def: 45,   min: 0, max: 600 },
+  warmingMinProfitFloorPct: { type: "number",  def: -2.0, min: -50, max: 50 },
+  warmingAutoReleaseSecs:   { type: "number",  def: 90,   min: 0, max: 600 },
+  warmingUptickMinAccel:    { type: "number",  def: 1.001 },
+  warmingUptickMinPre:      { type: "number",  def: 0.35 },
+  warmingUptickMinDeltaChg5m:{ type: "number", def: 0.012 },
+  warmingUptickMinDeltaScore:{ type: "number", def: 0.006 },
+  warmingMinLiqUsd:         { type: "number",  def: 4000 },
+  warmingMinV1h:            { type: "number",  def: 800 },
+  warmingPrimedConsec:      { type: "number",  def: 1, min: 1, max: 3 },
+  warmingMaxLossPct:        { type: "number",  def: 2.5, min: 1, max: 50 },
+  warmingMaxLossWindowSecs: { type: "number",  def: 60, min: 5, max: 180 },
+  minNetEdgePct:            { type: "number",  def: -4, min: -10, max: 10 },
+  edgeSafetyBufferPct:      { type: "number",  def: 0.10, min: 0, max: 2 },
+  reboundGateEnabled:       { type: "boolean", def: true },
+  reboundLookbackSecs:      { type: "number",  def: 45,  min: 5, max: 180 },
+  reboundMaxDeferSecs:      { type: "number",  def: 20,  min: 4, max: 120 },
+  reboundHoldMs:            { type: "number",  def: 4000, min: 500, max: 15000 },
+  reboundMinScore:          { type: "number",  def: 0.34 },
+  reboundMinChgSlope:       { type: "number",  def: 12 },
+  reboundMinScSlope:        { type: "number",  def: 8 },
+  reboundMinPnLPct:         { type: "number",  def: -15, min: -90, max: 90 },
+  fastExitEnabled:          { type: "boolean", def: true },
+  fastExitSlipBps:          { type: "number",  def: 400 },
+  fastExitConfirmMs:        { type: "number",  def: 9000 },
+  fastHardStopPct:          { type: "number",  def: 2.5 },
+  fastTrailPct:             { type: "number",  def: 8 },
+  fastTrailArmPct:          { type: "number",  def: 4 },
+  fastNoHighTimeoutSec:     { type: "number",  def: 90 },
+  fastTp1Pct:               { type: "number",  def: 12 },
+  fastTp1SellPct:           { type: "number",  def: 30 },
+  fastTp2Pct:               { type: "number",  def: 20 },
+  fastTp2SellPct:           { type: "number",  def: 30 },
+  fastAlphaChgSlope:        { type: "number",  def: -3 },
+  fastAlphaScSlope:         { type: "number",  def: -10 },
+  fastAccelDropFrac:        { type: "number",  def: 0.5 },
+  fastAlphaZV1Floor:        { type: "number",  def: 0.3 },
+  dynamicHardStopEnabled:   { type: "boolean", def: true },
+  dynamicHardStopBasePct:   { type: "number",  def: 4.0 },
+  dynamicHardStopMinPct:    { type: "number",  def: 3.0 },
+  dynamicHardStopMaxPct:    { type: "number",  def: 5.0 },
+  dynamicHardStopBuyerRemorseSecs: { type: "number", def: 15 },
+  priorityMicroLamports:    { type: "number", def: 10_000 },
+  computeUnitLimit:         { type: "number", def: 1_400_000 },
+  strictBuyFilter:          { type: "boolean", def: true },
+  dustExitEnabled:          { type: "boolean", def: false },
+  dustMinSolOut:            { type: "number",  def: 0.004 },
+  sustainTicksMin:          { type: "number",  def: 2, min: 1, max: 4 },
+  sustainChgSlopeMin:       { type: "number",  def: 6 },
+  sustainScSlopeMin:        { type: "number",  def: 3 },
+};
+
+function coerceNumber(v, def, opts = {}) {
+  const n = Number(v);
+  const x = Number.isFinite(n) ? n : def;
+  if (Number.isFinite(opts.min) && x < opts.min) return opts.min;
+  if (Number.isFinite(opts.max) && x > opts.max) return opts.max;
+  return x;
+}
+function coerceBoolean(v, def = false) { return typeof v === "boolean" ? v : (!!v ?? def); }
+function coerceString(v, def = "") { return typeof v === "string" ? v : String(v ?? def); }
+function coerceByType(v, s) {
+  switch (s.type) {
+    case "number":  return coerceNumber(v, s.def, s);
+    case "boolean": return coerceBoolean(v, s.def);
+    case "string":  return coerceString(v, s.def);
+    default:        return v ?? s.def;
+  }
+}
+function normalizeState(raw = {}) {
+  const out = { ...raw, _cfgVersion: CONFIG_VERSION };
+  for (const [k, s] of Object.entries(CONFIG_SCHEMA)) {
+    out[k] = coerceByType(raw[k], s);
+  }
+
+
+
+  out.tickMs = Math.max(1200, Math.min(5000, coerceNumber(out.tickMs, 2000)));
+  out.slippageBps = Math.min(250, Math.max(150, coerceNumber(out.slippageBps, 200)));
+  out.minBuySol = Math.max(UI_LIMITS.MIN_BUY_SOL_MIN, coerceNumber(out.minBuySol, 0.06));
+  out.coolDownSecsAfterBuy = Math.max(0, Math.min(12, coerceNumber(out.coolDownSecsAfterBuy, 5)));
+  out.pendingGraceMs = Math.max(120_000, coerceNumber(out.pendingGraceMs, 120_000));
+
+  if (typeof out.warmingEdgeMinExclPct !== "number" || !Number.isFinite(out.warmingEdgeMinExclPct)) {
+    delete out.warmingEdgeMinExclPct;
+  }
+
+  out.oldWallets = Array.isArray(out.oldWallets) ? out.oldWallets.slice(0, 10) : [];
+  if (!out.positions || typeof out.positions !== "object") out.positions = {};
+  if (!out.rpcHeaders || typeof out.rpcHeaders !== "object") out.rpcHeaders = {};
+
+  return out;
+}
+
 function _pcKey(owner, mint) { return `${owner}:${mint}`; }
 
 function _getUrgentSellStore() {
@@ -379,9 +494,11 @@ function flagUrgentSell(mint, reason = "observer", sev = 1) {
     if (pos) {
       const ageMs = now() - Number(pos.lastBuyAt || pos.acquiredAt || 0);
       const postBuyCooldownMs = Math.max(20_000, Number(state.coolDownSecsAfterBuy || 0) * 1000);
-
-      if (pos.awaitingSizeSync === true || (state.rideWarming && pos.warmingHold === true)) return;
-      if (ageMs < Math.max(URGENT_SELL_MIN_AGE_MS, postBuyCooldownMs)) return;
+      const isRug = /rug/i.test(String(reason||""));
+      const highSev = Number(sev || 0) >= 0.85;
+      if (pos.awaitingSizeSync === true && !isRug && !highSev) return;
+      if ((state.rideWarming && pos.warmingHold === true) && !isRug && !highSev) return;
+      if (ageMs < Math.max(URGENT_SELL_MIN_AGE_MS, postBuyCooldownMs) && !isRug && !highSev) return;
     }
   } catch {}
 
@@ -1390,6 +1507,41 @@ async function getSolUsd() {
   return _solPxCache.usd || 0;
 }
 
+async function getComputeBudgetConfig() {
+  try {
+    const cuLimit = Number(state.computeUnitLimit || 1_400_000);
+    const cuPriceMicroLamports = Number(state.priorityMicroLamports || 10_000); // ~0.01 lamports/CU
+    return {
+      cuLimit: Number.isFinite(cuLimit) ? cuLimit : 1_400_000,
+      cuPriceMicroLamports: Number.isFinite(cuPriceMicroLamports) ? cuPriceMicroLamports : 10_000,
+    };
+  } catch {
+    return { cuLimit: 1_400_000, cuPriceMicroLamports: 10_000 };
+  }
+}
+
+async function buildComputeBudgetIxs() {
+  try {
+    const { ComputeBudgetProgram } = await loadWeb3();
+    const { cuLimit, cuPriceMicroLamports } = await getComputeBudgetConfig();
+    const ixs = [];
+    if (cuLimit > 0) ixs.push(ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }));
+    if (cuPriceMicroLamports > 0) ixs.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: cuPriceMicroLamports }));
+    return ixs;
+  } catch { return []; }
+}
+
+function hasComputeBudgetIx(ixs) {
+  try {
+    const pidStr = "ComputeBudget11111111111111111111111111";
+    return (ixs || []).some(ix => {
+      const p = ix?.programId;
+      const s = typeof p?.toBase58 === "function" ? p.toBase58() : (p?.toString?.() || String(p || ""));
+      return s === pidStr;
+    });
+  } catch { return false; }
+}
+
 async function computeSpendCeiling(ownerPubkeyStr, { solBalHint } = {}) {
   const solBal = Number.isFinite(solBalHint) ? solBalHint : await fetchSolBalance(ownerPubkeyStr);
   const solLamports = Math.floor(solBal * 1e9);
@@ -2366,6 +2518,12 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         asLegacyTransaction: !!asLegacy,
         ...(feeAccount && feeBps > 0 ? { feeAccount, platformFeeBps: feeBps } : {}),
       };
+      try {
+        const { cuPriceMicroLamports } = await getComputeBudgetConfig();
+        if (Number(cuPriceMicroLamports) > 0) {
+          body.computeUnitPriceMicroLamports = Math.floor(Number(cuPriceMicroLamports));
+        }
+      } catch {}
       logObj("Swap body", { hasFee: !!feeAccount, feeBps: feeAccount ? feeBps : 0, useSharedAccounts: !!useSharedAccounts, asLegacy: !!asLegacy });
  
       const sRes = await jupFetch(`/swap/v1/swap`, {
@@ -2446,6 +2604,12 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         //   feeBps: feeAccount ? feeBps : 0,
         //   useSharedAccounts: !!useSharedAccounts
         // });
+        try {
+          const { cuPriceMicroLamports } = await getComputeBudgetConfig();
+          if (Number(cuPriceMicroLamports) > 0) {
+            body.computeUnitPriceMicroLamports = Math.floor(Number(cuPriceMicroLamports));
+          }
+        } catch {}
         log(`Swap-instructions request (manual send) … hasFee=${!!feeAccount}, useSharedAccounts=${!!useSharedAccounts}`);
 
         const iRes = await jupFetch(`/swap/v1/swap-instructions`, {
@@ -2512,6 +2676,13 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
           toIx(swapInstruction),
           ...cleanupInstructions.map(toIx).filter(Boolean),
         ].filter(Boolean);
+
+        try {
+          if (!hasComputeBudgetIx(ixs)) {
+            const cb = await buildComputeBudgetIxs();
+            if (cb.length) ixs.unshift(...cb);
+          }
+        } catch {}
 
         const lookups = [];
         for (const addr of addressLookupTableAddresses || []) {
@@ -2973,14 +3144,14 @@ function scorePumpCandidate(it) {
 
   // Weighted score
   const w = {
-    c5: 0.50 * c5,
-    c1: 0.12 * c1,
-    lVol: 0.14 * lVol,
-    lLiq: 0.08 * lLiq,
-    accelRatio: 0.08 * Math.max(0, accelRatio - 0.8),
-    accel5to1: 0.08 * Math.max(0, accel5to1 - 1),
-    flags: (risingNow && trendUp ? 0.06 : 0),
-    pScore: 0.04 * pScore,
+    c5: 0.32 * c5,
+    c1: 0.16 * c1,
+    lVol: 0.18 * lVol,
+    lLiq: 0.10 * lLiq,
+    accelRatio: 0.10 * Math.max(0, accelRatio - 0.8),
+    accel5to1: 0.10 * Math.max(0, accel5to1 - 1),
+    flags: (risingNow && trendUp ? 0.02 : 0),
+    pScore: 0.02 * pScore,
   };
   const score =
     w.c5 + w.c1 + w.lVol + w.lLiq + w.accelRatio + w.accel5to1 + w.flags + w.pScore;
@@ -2999,6 +3170,18 @@ function scorePumpCandidate(it) {
 
   return score;
 }
+function countConsecUp(series = [], key) {
+  if (!Array.isArray(series) || series.length < 2) return 0;
+  let cnt = 0;
+  for (let i = series.length - 1; i >= 1; i--) {
+    const prev = Number(series[i - 1]?.[key] ?? 0);
+    const cur  = Number(series[i]?.[key] ?? 0);
+    if (cur > prev) cnt++;
+    else break;
+  }
+  return cnt;
+}
+
 function setMintBlacklist(mint, ms = MINT_RUG_BLACKLIST_MS) {
   if (!mint) return;
   if (!window._fdvMintBlacklist) window._fdvMintBlacklist = new Map();
@@ -3605,7 +3788,17 @@ function pickPumpCandidates(take = 1, poolN = 3) {
         try { _getWarmPrimeStore().delete(mint); } catch {}
       }
 
-      if (!(microUp && notBackside) && !primed) continue;
+      if (!(microUp && notBackside) && !primed) {
+        const series = getLeaderSeries(mint, 5);
+        const scSlopeMin = slope3pm(series || [], "pumpScore");
+        const chgSlopeMin = slope3pm(series || [], "chg5m");
+        const needTicks = Math.max(1, Number(state.sustainTicksMin || 2));
+        const needChg = Math.max(0, Number(state.sustainChgSlopeMin || 6));
+        const needSc  = Math.max(0, Number(state.sustainScSlopeMin  || 3));
+        const okTicks = countConsecUp(series, "pumpScore") >= needTicks && countConsecUp(series, "chg5m") >= needTicks;
+        const okSlopes = (scSlopeMin >= needSc) && (chgSlopeMin >= needChg);
+        if (!(okTicks && okSlopes)) continue;
+      }
 
       const baseScore = scorePumpCandidate({ mint, kp, pumpScore: it?.pumpScore, meta });
       const finalScore = primed ? baseScore * 0.92 : baseScore;
@@ -5088,12 +5281,24 @@ async function evalAndMaybeSellPositions() {
 
         const pxNowNet  = sz > 0 ? (curSolNet / sz) : 0;
         const pnlNetPct = (pxNowNet > 0 && pxCost > 0) ? ((pxNowNet - pxCost) / pxCost) * 100 : 0;
-        const dynStopPct = state.dynamicHardStopEnabled ? computeDynamicHardStopPct(mint, pos, nowTs) : null;
-        if (state.dynamicHardStopEnabled && Number.isFinite(pnlNetPct) && Number.isFinite(dynStopPct) && pnlNetPct <= -Math.abs(dynStopPct)) {
+        const ageSec = (nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0)) / 1000;
+        const remorseSecs = Math.max(15, Number(state.dynamicHardStopBuyerRemorseSecs || 30));
+        const creditsPending = pos.awaitingSizeSync === true || pos._pendingCostAug === true;
+        const canHardStop = ageSec >= remorseSecs && !creditsPending;
+
+        let dynStopPct = null;
+        if (state.dynamicHardStopEnabled && canHardStop) {
+          dynStopPct = computeDynamicHardStopPct(mint, pos, nowTs);
+        }
+        if (state.dynamicHardStopEnabled && canHardStop &&
+            Number.isFinite(pnlNetPct) && Number.isFinite(dynStopPct) &&
+            pnlNetPct <= -Math.abs(dynStopPct)) {
           decision = { action: "sell_all", reason: `HARD_STOP ${pnlNetPct.toFixed(2)}%<=-${Math.abs(dynStopPct).toFixed(2)}%` };
-          decision.hardStop = true;   // marker to bypass warming/rebound gates
-          isFastExit = true;          // skip deferrals
-          log(`Dynamic hard stop for ${mint.slice(0,4)}… netPnL=${pnlNetPct.toFixed(2)}% thr=-${Math.abs(dynStopPct).toFixed(2)}%`);
+          decision.hardStop = true;
+          isFastExit = true;
+          log(`Dynamic hard stop for ${mint.slice(0,4)}… netPnL=${pnlNetPct.toFixed(2)}% thr=-${Math.abs(dynStopPct).toFixed(2)}% (age ${ageSec.toFixed(1)}s)`);
+        } else if (state.dynamicHardStopEnabled && !canHardStop) {
+          log(`Hard stop suppressed (age ${ageSec.toFixed(1)}s${creditsPending ? ", pending credit" : ""}) for ${mint.slice(0,4)}… netPnL=${pnlNetPct.toFixed(2)}%`);
         }
 
 
@@ -5185,13 +5390,22 @@ async function evalAndMaybeSellPositions() {
         }
 
         if (warmingActive && pos.warmingHold === true && warmingHoldActive && pnlPct < warmReq.req && decision && decision.action !== "none" && !/rug/i.test(decision.reason || "")) {
-          log(`Warming hold: skipping sell (${decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
-          decision = { action: "none", reason: "warming-hold-until-profit" };
+          // Allow hard/fast exits to bypass warming guard
+          const rsn = String(decision.reason || "");
+          const isHardOrFast = !!decision.hardStop || /HARD_STOP|FAST_/i.test(rsn);
+          if (!isHardOrFast) {
+            log(`Warming hold: skipping sell (${decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
+            decision = { action: "none", reason: "warming-hold-until-profit" };
+          }
         }
 
-        if (warmingActive && pos.warmingHold === true && warmingHoldActive && pnlPct < warmReq.req && decision && decision.action !== "none" && !/rug|warming-max-loss/i.test(decision.reason || "")) {
-          log(`Warming hold: skipping sell (${decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
-          decision = { action: "none", reason: "warming-hold-until-profit" };
+        if (warmingActive && pos.warmingHold === true && warmingHoldActive && pnlPct < warmReq.req && decision && decision.action !== "none") {
+          const rsn = String(decision.reason || "");
+          const isHardOrFast = !!decision.hardStop || /rug|warming-max-loss|HARD_STOP|FAST_/i.test(rsn);
+          if (!isHardOrFast) {
+            log(`Warming hold: skipping sell (${decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
+            decision = { action: "none", reason: "warming-hold-until-profit" };
+          }
         }
 
         if (!forceRug && !forcePumpDrop && !forceObserverDrop && obsPasses === 3) {
@@ -5843,6 +6057,19 @@ async function tick() {
     } catch {}
     for (let i = 0; i < loopN; i++) {
       const mint = buyCandidates[i];
+      {
+        const existing = state.positions[mint];
+        if (existing && existing.awaitingSizeSync) {
+          log(`Skip buy: awaiting size sync for ${mint.slice(0,4)}…`);
+          continue;
+        }
+        const recentAgeMs = existing ? (now() - Number(existing.lastBuyAt || existing.acquiredAt || 0)) : Infinity;
+        const minRebuyMs = Math.max(8_000, Number(state.coolDownSecsAfterBuy || 8) * 1000);
+        if (recentAgeMs < minRebuyMs) {
+          log(`Skip buy: cooldown (${(recentAgeMs/1000).toFixed(1)}s < ${(minRebuyMs/1000)|0}s) for ${mint.slice(0,4)}…`);
+          continue;
+        }
+      }
       if (state.allowMultiBuy && mint !== picks[0]) {
         try {
           const wMs = Math.max(1800, Math.floor((state.tickMs || 2000) * 0.9));
@@ -5862,6 +6089,7 @@ async function tick() {
           continue;
         }
       }
+
       // const left = Math.max(1, loopN - i);
       const target = Math.min(plannedTotal, remaining);
 
@@ -5874,6 +6102,7 @@ async function tick() {
           const warm = detectWarmingUptick({ kp: { ...kpNow, mint }, meta: metaNow }, state);
           const series = getLeaderSeries(mint, 3);
           const scSlopeMin = slope3pm(series || [], "pumpScore");
+          const chgSlopeMin = slope3pm(series || [], "chg5m");
           // const chgSlopeMin = slope3pm(series || [], "change5m");
 
           // Reproduce score weights to measure c5 dominance
@@ -5892,28 +6121,28 @@ async function tick() {
           const lLiq = Math.log1p(liq / 5000);
           const lVol = Math.log1p(v1h / 1000);
           const w = {
-            c5: 0.50 * c5,
-            c1: 0.12 * c1,
-            lVol: 0.14 * lVol,
-            lLiq: 0.08 * lLiq,
-            accelRatio: 0.08 * Math.max(0, accelRatio - 0.8),
-            accel5to1: 0.08 * Math.max(0, accel5to1 - 1),
-            flags: (risingNow && trendUp ? 0.06 : 0),
-            pScore: 0.04 * safeNum(itNow.pumpScore, 0),
+            c5: 0.32 * c5,
+            c1: 0.16 * c1,
+            lVol: 0.18 * lVol,
+            lLiq: 0.10 * lLiq,
+            accelRatio: 0.10 * Math.max(0, accelRatio - 0.8),
+            accel5to1: 0.10 * Math.max(0, accel5to1 - 1),
+            flags: (risingNow && trendUp ? 0.02 : 0),
+            pScore: 0.02 * safeNum(itNow.pumpScore, 0),
           };
           const sumW = w.c5 + w.c1 + w.lVol + w.lLiq + w.accelRatio + w.accel5to1 + w.flags + w.pScore;
           const c5Share = sumW > 0 ? (w.c5 / sumW) : 0;
           const barelyPasses = Number(warm.pre || 0) < (Number(warm.preMin || 0) + Math.max(0.005, Number(state.lateEntryMinPreMargin || 0.02)));
 
-          if (c5Share >= Math.max(0.5, Number(state.lateEntryDomShare || 0.6)) && barelyPasses && !(scSlopeMin > 0)) {
-            log(`Exhaust spike filter: skip ${mint.slice(0,4)}… (c5 ${Math.round(c5Share*100)}% of score, pre ${warm.pre.toFixed(3)} ~ min ${warm.preMin.toFixed(3)}, scSlope=${scSlopeMin.toFixed(2)}/m ≤ 0)`);
-            continue;
-          }
+          // if (c5Share >= Math.max(0.5, Number(state.lateEntryDomShare || 0.6)) && barelyPasses && !(scSlopeMin > 0)) {
+          //   log(`Exhaust spike filter: skip ${mint.slice(0,4)}… (c5 ${Math.round(c5Share*100)}% of score, pre ${warm.pre.toFixed(3)} ~ min ${warm.preMin.toFixed(3)}, scSlope=${scSlopeMin.toFixed(2)}/m ≤ 0)`);
+          //   continue;
+          // }
 
-          if (!((scSlopeMin > 0 && chgSlopeMin > 0) || metaNow.risingNow === true)) {
-            log(`Entry slopes not healthy; skip ${mint.slice(0,4)}… (scSlope=${scSlopeMin.toFixed(2)}/m, chgSlope=${chgSlopeMin.toFixed(2)}/m, risingNow=${!!metaNow.risingNow})`);
-            continue;
-          }
+          // if (!((scSlopeMin > 0 && chgSlopeMin > 0) || metaNow.risingNow === true)) {
+          //   log(`Entry slopes not healthy; skip ${mint.slice(0,4)}… (scSlope=${scSlopeMin.toFixed(2)}/m, chgSlope=${chgSlopeMin.toFixed(2)}/m, risingNow=${!!metaNow.risingNow})`);
+          //   continue;
+          // }
 
           // TODO: price impact proxy?
           // try {
@@ -5928,6 +6157,22 @@ async function tick() {
           //     }
           //   }
           // } catch {}
+
+          const needTicks = Math.max(1, Number(state.sustainTicksMin || 2));
+          const needChg = Math.max(0, Number(state.sustainChgSlopeMin || 6));
+          const needSc  = Math.max(0, Number(state.sustainScSlopeMin  || 3));
+          const series5 = getLeaderSeries(mint, 5);
+          const okTicks = countConsecUp(series5, "pumpScore") >= needTicks && countConsecUp(series5, "chg5m") >= needTicks;
+          const okSlopes = (scSlopeMin >= needSc) && (chgSlopeMin >= needChg);
+          const c5DomThr = Math.max(0.6, Number(state.lateEntryDomShare || 0.65));
+          if (c5Share >= c5DomThr && barelyPasses && !(scSlopeMin > 0)) {
+            log(`Exhaust spike filter: skip ${mint.slice(0,4)}… (c5 ${Math.round(c5Share*100)}% of score, pre ${warm.pre.toFixed(3)} ~ min ${warm.preMin.toFixed(3)}, scSlope=${scSlopeMin.toFixed(2)}/m ≤ 0)`);
+            continue;
+          }
+          if ((!risingNow || !trendUp) && !(okTicks && okSlopes)) {
+            log(`Sustain gate: skip ${mint.slice(0,4)}… (ticks ok=${okTicks} slopes ok=${okSlopes} rNow=${risingNow} tUp=${trendUp})`);
+            continue;
+          }
         }
       } catch {}
 
@@ -5944,7 +6189,15 @@ async function tick() {
 
       // const rentMinBuyLamports = reqRent > 0 ? Math.ceil(reqRent / 0.01) : 0;
 
-      const minPerOrderLamports = Math.max(minInLamports, Math.floor(minThreshold * 1e9));
+      //const minPerOrderLamports = Math.max(minInLamports, Math.floor(minThreshold * 1e9));
+      let minPerOrderLamports = Math.max(minInLamports, Math.floor(minThreshold * 1e9));
+      try {
+        const recurringL = EDGE_TX_FEE_ESTIMATE_LAMPORTS;
+        const oneTimeL = Math.max(0, reqRent);
+        const needByFriction = Math.ceil((recurringL + oneTimeL) / MAX_FIXED_COST_FRAC);
+        minPerOrderLamports = Math.max(minPerOrderLamports, needByFriction);
+      } catch {}
+
 
       // if (rentMinBuyLamports > 0) minPerOrderLamports = Math.max(minPerOrderLamports, rentMinBuyLamports);
 
@@ -5959,9 +6212,11 @@ async function tick() {
         //   continue;
         // }
         if (reqRent > 0) {
-          log(`Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < ATA amortized min ${(minPerOrderLamports/1e9).toFixed(6)}).`);
+          //log(`Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < ATA amortized min ${(minPerOrderLamports/1e9).toFixed(6)}).`);
+          log(`Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < friction-aware min ${(minPerOrderLamports/1e9).toFixed(6)}).`);
         } else {
-          log(`Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < min ${(minPerOrderLamports/1e9).toFixed(6)}).`);
+          //log(`Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < min ${(minPerOrderLamports/1e9).toFixed(6)}).`);
+          log(`Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < friction-aware min ${(minPerOrderLamports/1e9).toFixed(6)}).`);
         }
         continue;
       }
@@ -5991,8 +6246,8 @@ async function tick() {
         const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
         if (!edge) { log(`Skip ${mint.slice(0,4)}… (no round-trip quote)`); continue; }
 
-        const hasOnetime = Number(edge.ataRentLamports || 0) > 0;
-        const incl = Number(edge.pct);          // includes one-time ATA rent
+        // const hasOnetime = Number(edge.ataRentLamports || 0) > 0;
+        // const incl = Number(edge.pct);          // includes one-time ATA rent
         const excl = Number(edge.pctNoOnetime); // excludes one-time ATA rent
         const pumping = (badgeNow === "pumping");
 
@@ -6118,6 +6373,7 @@ async function tick() {
       try {
         got = await waitForTokenCredit(kp.publicKey.toBase58(), mint, { timeoutMs: 8000, pollMs: 300 });
       } catch (e) { log(`Token credit wait failed: ${e.message || e}`); }
+
       if (!Number(got.sizeUi || 0) && res.sig) {
         try {
           const metaHit = await reconcileBuyFromTx(res.sig, kp.publicKey.toBase58(), mint);
@@ -6126,6 +6382,14 @@ async function tick() {
             log(`Buy registered via tx meta for ${mint.slice(0,4)}… (${got.sizeUi.toFixed(6)})`);
           }
         } catch {}
+      }
+
+      if (Number(got.sizeUi || 0) === 0) {
+        const prevPos = state.positions[mint];
+        if (prevPos) prevPos._pendingCostAug = true;
+      } else {
+        const prevPos = state.positions[mint];
+        if (prevPos && prevPos._pendingCostAug) delete prevPos._pendingCostAug;
       }
 
       if (Number(got.sizeUi || 0) > 0) {
@@ -6350,81 +6614,12 @@ function onToggle(on) {
    save();
 }
 
-// Load best case for users.
+// config schema version 1
 function load() {
-  try { state = { ...state, ...(JSON.parse(localStorage.getItem(LS_KEY))||{}) }; } catch {}
-  // if (!Number.isFinite(state.warmingEdgeMinExclPct)) state.warmingEdgeMinExclPct = 0;
-  // if (!Number.isFinite(state.warmingEdgeMinExclPct)) delete state.warmingEdgeMinExclPct;
-  if (typeof state.warmingEdgeMinExclPct !== "number" || !Number.isFinite(state.warmingEdgeMinExclPct)) {
-    delete state.warmingEdgeMinExclPct;
-  }
-
-  if (!Number.isFinite(state.reboundLookbackSecs)) state.reboundLookbackSecs = 45;
-  if (!Number.isFinite(state.reboundMaxDeferSecs)) state.reboundMaxDeferSecs = 20;
-  if (!Number.isFinite(state.reboundHoldMs)) state.reboundHoldMs = 4000;
-  if (!Number.isFinite(state.reboundMinScore)) state.reboundMinScore = 0.34;
-  if (!Number.isFinite(state.reboundMinChgSlope)) state.reboundMinChgSlope = 12;
-  if (!Number.isFinite(state.reboundMinScSlope)) state.reboundMinScSlope = 8;
-  if (!Number.isFinite(state.reboundMinPnLPct)) state.reboundMinPnLPct = -15;
-  if (!Number.isFinite(state.warmingMinProfitPct)) state.warmingMinProfitPct = 100;
-  if (!Number.isFinite(state.warmingDecayPctPerMin)) state.warmingDecayPctPerMin = 0.25;
-  if (!Number.isFinite(state.warmingDecayDelaySecs)) state.warmingDecayDelaySecs = 45;
-  if (!Number.isFinite(state.warmingMinProfitFloorPct)) state.warmingMinProfitFloorPct = -2.0;
-  if (!Number.isFinite(state.warmingAutoReleaseSecs)) state.warmingAutoReleaseSecs = 90;
-  if (!Number.isFinite(state.warmingUptickMinAccel)) state.warmingUptickMinAccel = 1.001;
-  if (!Number.isFinite(state.warmingUptickMinPre)) state.warmingUptickMinPre = 0.35;
-  if (!Number.isFinite(state.warmingUptickMinDeltaChg5m)) state.warmingUptickMinDeltaChg5m = 0.012;
-  if (!Number.isFinite(state.warmingUptickMinDeltaScore)) state.warmingUptickMinDeltaScore = 0.006;
-  if (!Number.isFinite(state.warmingMinLiqUsd)) state.warmingMinLiqUsd = 4000;
-  if (!Number.isFinite(state.warmingMinV1h)) state.warmingMinV1h = 800;
-  if (!Number.isFinite(state.warmingPrimedConsec)) state.warmingPrimedConsec = 1;
-  if (!Number.isFinite(state.warmingMaxLossPct)) state.warmingMaxLossPct = 6;  
-  if (!Number.isFinite(state.warmingMaxLossWindowSecs)) state.warmingMaxLossWindowSecs = 60;
-  if (!Number.isFinite(state.edgeSafetyBufferPct)) state.edgeSafetyBufferPct = 0.10;
-
-  if (!Number.isFinite(state.minNetEdgePct)) state.minNetEdgePct = -4;
-  if (!Number.isFinite(state.fastExitSlipBps)) state.fastExitSlipBps = 400;
-  if (!Number.isFinite(state.fastExitConfirmMs)) state.fastExitConfirmMs = 9000;
-  if (!Number.isFinite(state.fastHardStopPct)) state.fastHardStopPct = 2.5;
-  if (!Number.isFinite(state.fastTrailPct)) state.fastTrailPct = 8;
-  if (!Number.isFinite(state.fastTrailArmPct)) state.fastTrailArmPct = 4;
-  if (!Number.isFinite(state.fastNoHighTimeoutSec)) state.fastNoHighTimeoutSec = 90;
-  if (!Number.isFinite(state.fastTp1Pct)) state.fastTp1Pct = 12;
-  if (!Number.isFinite(state.fastTp1SellPct)) state.fastTp1SellPct = 30;
-  if (!Number.isFinite(state.fastTp2Pct)) state.fastTp2Pct = 20;
-  if (!Number.isFinite(state.fastTp2SellPct)) state.fastTp2SellPct = 30;
-  if (!Number.isFinite(state.fastAlphaChgSlope)) state.fastAlphaChgSlope = -3;
-  if (!Number.isFinite(state.fastAlphaScSlope)) state.fastAlphaScSlope = -10;
-  if (!Number.isFinite(state.fastAccelDropFrac)) state.fastAccelDropFrac = 0.5;
-  if (!Number.isFinite(state.fastAlphaZV1Floor)) state.fastAlphaZV1Floor = 0.3;
-
-  if (!Number.isFinite(state.earlyExitChgDropFrac)) state.earlyExitChgDropFrac = 0.40;
-  if (!Number.isFinite(state.earlyExitScSlopeNeg)) state.earlyExitScSlopeNeg = -10;
-  if (!Number.isFinite(state.earlyExitConsec)) state.earlyExitConsec = 2;
-  if (!Number.isFinite(state.lateEntryDomShare)) state.lateEntryDomShare = 0.60;
-  if (!Number.isFinite(state.lateEntryMinPreMargin)) state.lateEntryMinPreMargin = 0.02;
-
-  if (typeof state.reboundGateEnabled !== "boolean") state.reboundGateEnabled = true;
-  if (typeof state.strictBuyFilter !== "boolean") state.strictBuyFilter = true;
-
-  if (typeof state.fastExitEnabled !== "boolean") state.fastExitEnabled = true;
-
-
-  if (typeof state.dynamicHardStopEnabled !== "boolean") state.dynamicHardStopEnabled = true;
-  if (!Number.isFinite(state.dynamicHardStopBasePct)) state.dynamicHardStopBasePct = 4.0;
-  if (!Number.isFinite(state.dynamicHardStopMinPct)) state.dynamicHardStopMinPct = 3.0;
-  if (!Number.isFinite(state.dynamicHardStopMaxPct)) state.dynamicHardStopMaxPct = 5.0;
-  if (!Number.isFinite(state.dynamicHardStopBuyerRemorseSecs)) state.dynamicHardStopBuyerRemorseSecs = 30;
-
-  if (!Array.isArray(state.oldWallets)) state.oldWallets = [];
-  if (state.oldWallets.length > 10) state.oldWallets.length = 10;
-
-  state.tickMs = Math.max(1200, Math.min(5000, Number(state.tickMs || 2000))); 
-  state.slippageBps = Math.min(250, Math.max(150, Number(state.slippageBps ?? 200) | 0));
-  state.minBuySol = Math.max(0.06, UI_LIMITS.MIN_BUY_SOL_MIN, Number(state.minBuySol ?? 0.06)); 
-  state.coolDownSecsAfterBuy = Math.max(0, Math.min(12, Number(state.coolDownSecsAfterBuy || 8)));
-  state.pendingGraceMs = Math.max(120_000, Number(state.pendingGraceMs || 120_000));
-  state.allowMultiBuy = false;
+  if (!state.loadDefaultState) return;
+  let persisted = {};
+  try { persisted = JSON.parse(localStorage.getItem(LS_KEY) || "{}") || {}; } catch {}
+  state = normalizeState({ ...state, ...persisted });
   save();
 }
 
