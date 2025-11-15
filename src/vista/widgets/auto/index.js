@@ -7,7 +7,7 @@ const MIN_SELL_SOL_OUT = 0.004;
 const FEE_RESERVE_MIN = 0.0002;   // rent
 const FEE_RESERVE_PCT = 0.08;     // 8% reserve (was 15%)
 const MIN_SELL_CHUNK_SOL = 0.01;  // allow micro exits (was 0.02)
-const SMALL_SELL_FEE_FLOOR = 0.03;      // disable fee below this est out
+const SMALL_SELL_FEE_FLOOR = 0.01;      // disable fee below this est out
 const AVOID_NEW_ATA_SOL_FLOOR = 0.04;   // don't open new ATAs if SOL below this
 const TX_FEE_BUFFER_LAMPORTS  = 500_000;
 const SELL_TX_FEE_BUFFER_LAMPORTS = 500_000; 
@@ -157,10 +157,30 @@ function redactHeaders(hdrs) {
   return keys.length ? `{headers: ${keys.join(", ")}}` : "{}";
 }
 
+function _addOldWalletRecord(rec = {}) {
+  try {
+    if (!Array.isArray(state.oldWallets)) state.oldWallets = [];
+    const item = {
+      pub: String(rec.pub || ""),
+      secret: String(rec.secret || ""),
+      tag: String(rec.tag || ""),
+      movedLamports: Number(rec.movedLamports || 0) | 0,
+      txSig: String(rec.txSig || ""),
+      at: now(),
+    };
+    state.oldWallets.unshift(item);
+    const CAP = 10;
+    if (state.oldWallets.length > CAP) state.oldWallets.length = CAP;
+    save();
+    log(`Stealth archive: saved old wallet ${item.pub.slice(0,4)}… (tag="${item.tag || "rotate"}")`);
+  } catch {}
+}
+
 const LS_KEY = "fdv_auto_bot_v1";
 
 let state = {
   enabled: false,
+  stealthMode: false,
   mint: "",
   tickMs: 1000,
   budgetUi: 0.5,  
@@ -195,7 +215,8 @@ let state = {
   buyPct: 0.2,              
   minBuySol: 0.06,
   maxBuySol: 0.12,       
-  rpcUrl: "",             
+  rpcUrl: "",    
+  oldWallets: [],         
 
   // Per-mint positions:
   positions: {},
@@ -286,6 +307,12 @@ let state = {
   lateEntryDomShare: 0.60,       
   lateEntryMinPreMargin: 0.02,   
 
+  // Dynamic hard stop (overrides warming)
+  dynamicHardStopEnabled: true,
+  dynamicHardStopBasePct: 4.0,     // base 4%
+  dynamicHardStopMinPct: 3.0,      // clamp to 3–5%
+  dynamicHardStopMaxPct: 5.0,
+  dynamicHardStopBuyerRemorseSecs: 30,
 
   // money made tracker
   moneyMadeSol: 0,
@@ -300,6 +327,7 @@ let depAddrEl, depBalEl, lifeEl, recvEl, buyPctEl, minBuyEl, maxBuyEl, minEdgeEl
 let ledEl;
 let advBoxEl, warmMinPEl, warmFloorEl, warmDelayEl, warmReleaseEl, warmMaxLossEl, warmMaxWindowEl, warmConsecEl, warmEdgeEl;
 let reboundScoreEl, reboundLookbackEl;
+let tpEl, slEl, trailEl, slipEl;
 
 let _starting = false;
 
@@ -1468,6 +1496,46 @@ function checkFastExitTriggers(mint, pos, { pnlPct, pxNow, nowTs }) {
     return { action: "none" };
   } catch {
     return { action: "none" };
+  }
+}
+
+function computeDynamicHardStopPct(mint, pos, nowTs = now()) {
+  try {
+    const base = Number(state.dynamicHardStopBasePct || 4);
+    const lo = Math.max(1, Number(state.dynamicHardStopMinPct || 3));
+    const hi = Math.max(lo, Number(state.dynamicHardStopMaxPct || 5));
+
+    const series = getLeaderSeries(mint, 3) || [];
+    const last = series.length ? series[series.length - 1] : {};
+    const liq = Number(last.liqUsd || 0);
+    const v1h = Number(last.v1h || 0);
+    const chgSlope = _clamp(slope3pm(series, "chg5m"), -60, 60);
+    const scSlope  = _clamp(slope3pm(series, "pumpScore"), -20, 20);
+
+    let thr = base;
+
+    // Liquidity/volume tune
+    if (liq >= 30000) thr += 1.0;
+    else if (liq >= 15000) thr += 0.5;
+    else if (liq < 2500) thr -= 1.0;
+    else if (liq < 5000) thr -= 0.5;
+
+    if (v1h >= 3000) thr += 0.5;
+    else if (v1h < 600) thr -= 0.25;
+
+    // Momentum tune
+    const rising = chgSlope > 0 && scSlope > 0;
+    const backside = chgSlope < 0 && scSlope < 0;
+    if (rising) thr += 0.5;
+    if (backside) thr -= 0.5;
+
+    // Early buyer’s remorse window: tighten
+    const ageSec = (nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0)) / 1000;
+    if (ageSec <= Math.max(5, Number(state.dynamicHardStopBuyerRemorseSecs || 30))) thr -= 0.5;
+
+    return Math.min(hi, Math.max(lo, thr));
+  } catch {
+    return Math.max(3, Math.min(5, Number(state.dynamicHardStopBasePct || 4)));
   }
 }
 
@@ -4666,6 +4734,82 @@ async function verifyRealTokenBalance(ownerPub, mint, pos) {
   }
 }
 
+async function maybeStealthRotate(tag = "sell") {
+  try {
+    if (!state.stealthMode) return false;
+    const kp = await getAutoKeypair();
+    if (!kp) return false;
+
+    const openPosCount = Object.entries(state.positions || {})
+      .filter(([m, p]) => m !== SOL_MINT && Number(p?.sizeUi || 0) > 0).length;
+    if (openPosCount > 0) {
+      log(`Stealth: deferring wallet rotation (open positions=${openPosCount}).`);
+      return false;
+    }
+
+    const { Keypair, bs58, SystemProgram, Transaction } = await loadDeps();
+    const conn = await getConn();
+    const oldSigner = kp;
+    const oldPubStr = oldSigner.publicKey.toBase58();
+    const oldSecretStr = String(state.autoWalletSecret || bs58.default.encode(oldSigner.secretKey));
+
+    const newKp = Keypair.generate();
+    const newPubStr = newKp.publicKey.toBase58();
+    const newSecretStr = bs58.default.encode(newKp.secretKey);
+
+    try { await unwrapWsolIfAny(oldSigner); } catch {}
+
+    let balL = 0;
+    try { balL = await conn.getBalance(oldSigner.publicKey, "processed"); } catch {}
+    const bufL = Math.max(50_000, TX_FEE_BUFFER_LAMPORTS); // ~0.00005–0.0005 SOL buffer
+    const sendLamports = Math.max(0, balL - bufL);
+    let transferSig = "";
+
+    if (sendLamports <= 0) {
+      log(`Stealth: balance too low to transfer; rotating key only.`);
+    } else {
+      try {
+        const tx = new Transaction().add(
+          SystemProgram.transfer({
+            fromPubkey: oldSigner.publicKey,
+            toPubkey: newKp.publicKey,
+            lamports: sendLamports,
+          })
+        );
+        tx.feePayer = oldSigner.publicKey;
+        tx.recentBlockhash = (await conn.getLatestBlockhash("processed")).blockhash;
+        tx.sign(oldSigner);
+        const sig = await conn.sendRawTransaction(tx.serialize(), { preflightCommitment: "processed", maxRetries: 2 });
+        transferSig = sig;
+        log(`Stealth: SOL moved to new wallet (${newPubStr.slice(0,4)}…) tx=${sig}`);
+        try { await confirmSig(sig, { commitment: "confirmed", timeoutMs: 12000 }); } catch {}
+      } catch (e) {
+        // Archive even on failure so user can recover
+        addOldWalletRecord({ pub: oldPubStr, secret: oldSecretStr, tag: `transfer-failed:${tag}`, movedLamports: sendLamports, txSig: "" });
+        log(`Stealth: transfer failed: ${e.message || e}`);
+        log(`WARNING: Stealth archive (old wallet): pub=${oldPubStr} secret=${oldSecretStr}`);
+        console.log(`WARNING: Stealth new wallet: pub=${newPubStr} secret=${newSecretStr}`);
+        return false;
+      }
+    }
+
+    addOldWalletRecord({ pub: oldPubStr, secret: oldSecretStr, tag, movedLamports: sendLamports, txSig: transferSig });
+
+    log(`WARNING: Stealth archive (old wallet): pub=${oldPubStr} secret=${oldSecretStr}`);
+    log(`WARNING: Stealth new wallet: pub=${newPubStr} secret=${newSecretStr}`);
+    console.log(`WARNING: Stealth archive (old wallet): pub=${oldPubStr} secret=${oldSecretStr}`);
+
+    state.autoWalletPub = newPubStr;
+    state.autoWalletSecret = newSecretStr;
+    save();
+    log(`Stealth: rotated wallet (${tag}). New wallet: ${newPubStr.slice(0,4)}…`);
+    return true;
+  } catch (e) {
+    log(`Stealth: rotation error: ${e.message || e}`);
+    return false;
+  }
+}
+
 async function evalAndMaybeSellPositions() {
   if (_inFlight) return;
   if (_sellEvalRunning) return; 
@@ -4941,6 +5085,18 @@ async function evalAndMaybeSellPositions() {
           log(`Fast-exit trigger for ${mint.slice(0,4)}… -> ${decision.action} (${decision.reason}${decision.pct ? ` ${decision.pct}%` : ""})`);
         }
 
+
+        const pxNowNet  = sz > 0 ? (curSolNet / sz) : 0;
+        const pnlNetPct = (pxNowNet > 0 && pxCost > 0) ? ((pxNowNet - pxCost) / pxCost) * 100 : 0;
+        const dynStopPct = state.dynamicHardStopEnabled ? computeDynamicHardStopPct(mint, pos, nowTs) : null;
+        if (state.dynamicHardStopEnabled && Number.isFinite(pnlNetPct) && Number.isFinite(dynStopPct) && pnlNetPct <= -Math.abs(dynStopPct)) {
+          decision = { action: "sell_all", reason: `HARD_STOP ${pnlNetPct.toFixed(2)}%<=-${Math.abs(dynStopPct).toFixed(2)}%` };
+          decision.hardStop = true;   // marker to bypass warming/rebound gates
+          isFastExit = true;          // skip deferrals
+          log(`Dynamic hard stop for ${mint.slice(0,4)}… netPnL=${pnlNetPct.toFixed(2)}% thr=-${Math.abs(dynStopPct).toFixed(2)}%`);
+        }
+
+
         let warmingMaxLossTriggered = false;
         if (state.rideWarming && pos.warmingHold === true) {
           const warmAgeMs = nowTs - Number(pos.warmingHoldAt || pos.lastBuyAt || pos.acquiredAt || 0);
@@ -5107,6 +5263,7 @@ async function evalAndMaybeSellPositions() {
           }
         }
 
+
         if (decision && decision.action !== "none" && !forceRug) {
           if (!isFastExit) {
             const stillDeferred = Number(pos.reboundDeferUntil || 0) > nowTs;
@@ -5220,6 +5377,7 @@ async function evalAndMaybeSellPositions() {
                 save();
               }
               state.lastTradeTs = now();
+              try { await maybeStealthRotate("sell"); } catch {}
               _inFlight = false;
               unlockMint(mint);
               save();
@@ -5496,6 +5654,8 @@ async function switchToLeader(newMint) {
     save();
     if (rotated > 0) {
       state.lastTradeTs = now();
+
+      try { await maybeStealthRotate("rotate"); } catch {}
       save();
       return true;
     }
@@ -6250,6 +6410,14 @@ function load() {
   if (typeof state.fastExitEnabled !== "boolean") state.fastExitEnabled = true;
 
 
+  if (typeof state.dynamicHardStopEnabled !== "boolean") state.dynamicHardStopEnabled = true;
+  if (!Number.isFinite(state.dynamicHardStopBasePct)) state.dynamicHardStopBasePct = 4.0;
+  if (!Number.isFinite(state.dynamicHardStopMinPct)) state.dynamicHardStopMinPct = 3.0;
+  if (!Number.isFinite(state.dynamicHardStopMaxPct)) state.dynamicHardStopMaxPct = 5.0;
+  if (!Number.isFinite(state.dynamicHardStopBuyerRemorseSecs)) state.dynamicHardStopBuyerRemorseSecs = 30;
+
+  if (!Array.isArray(state.oldWallets)) state.oldWallets = [];
+  if (state.oldWallets.length > 10) state.oldWallets.length = 10;
 
   state.tickMs = Math.max(1200, Math.min(5000, Number(state.tickMs || 2000))); 
   state.slippageBps = Math.min(250, Math.max(150, Number(state.slippageBps ?? 200) | 0));
@@ -6356,11 +6524,16 @@ export function initAutoWidget(container = document.body) {
       <label>Max Buy (SOL) <input data-auto-maxbuy type="number" step="0.0001" min="${UI_LIMITS.MAX_BUY_SOL_MIN}" max="${UI_LIMITS.MAX_BUY_SOL_MAX}"/></label>
       <label>Min Edge (%) <input data-auto-minedge type="number" step="0.1" placeholder="-5 = allow -5%"/></label>
       <label>Warming decay (%/min) <input data-auto-warmdecay type="number" step="0.01" min="0" max="5" placeholder="0.25"/></label>
+      <label>TP (%) <input data-auto-tp type="number" step="0.1" min="1" max="500" placeholder="12"/></label>
+      <label>SL (%) <input data-auto-sl type="number" step="0.1" min="0.1" max="90" placeholder="4"/></label>
+      <label>Trail (%) <input data-auto-trail type="number" step="0.1" min="0" max="90" placeholder="6"/></label>
+      <label>Slippage (bps) <input data-auto-slip type="number" step="1" min="50" max="2000" placeholder="250"/></label>
  
+
       <label>Multi-buy
         <select data-auto-multi disabled>
-          <option value="no" selected>No</option>
-          <option value="yes">Yes</option>
+          <option value="no">No</option>
+          <option value="yes" selected>Yes</option>
         </select>
       </label>
      <label>Leader
@@ -6377,6 +6550,12 @@ export function initAutoWidget(container = document.body) {
       </label>
       <label>Warming
         <select data-auto-warming>
+          <option value="no">No</option>
+          <option value="yes">Yes</option>
+        </select>
+      </label>
+      <label>Stealth
+        <select data-auto-stealth>
           <option value="no">No</option>
           <option value="yes">Yes</option>
         </select>
@@ -6584,7 +6763,7 @@ export function initAutoWidget(container = document.body) {
     </div>
     </div>
     <div class="fdv-bot-footer" style="margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
-      <span>Version: 0.0.3.8</span>
+      <span>Version: 0.0.3.9</span>
     </div>
   `;
 
@@ -6637,9 +6816,14 @@ export function initAutoWidget(container = document.body) {
   logEl     = wrap.querySelector("[data-auto-log]");
   toggleEl  = wrap.querySelector("[data-auto-toggle]");
   ledEl     = wrap.querySelector("[data-auto-led]");
+  tpEl      = wrap.querySelector("[data-auto-tp]");
+  slEl      = wrap.querySelector("[data-auto-sl]");
+  trailEl   = wrap.querySelector("[data-auto-trail]");
+  slipEl    = wrap.querySelector("[data-auto-slip]");
   const holdEl  = wrap.querySelector("[data-auto-hold]");
   const dustEl  = wrap.querySelector("[data-auto-dust]");
   const warmingEl = wrap.querySelector("[data-auto-warming]");
+  const stealthEl = wrap.querySelector("[data-auto-stealth]");
   const helpBtn = wrap.querySelector("[data-auto-help]");
   const expandBtn = wrap.querySelector("[data-auto-log-expand]");
   const modalEl = wrap.querySelector("[data-auto-modal]");
@@ -6732,6 +6916,10 @@ export function initAutoWidget(container = document.body) {
   minEdgeEl.value = Number.isFinite(state.minNetEdgePct) ? String(state.minNetEdgePct) : "-5";
   multiEl.value   = state.allowMultiBuy ? "yes" : "no";
   warmDecayEl.value = String(Number.isFinite(state.warmingDecayPctPerMin) ? state.warmingDecayPctPerMin : 0.25);
+  tpEl.value    = String(state.takeProfitPct);
+  slEl.value    = String(state.stopLossPct);
+  trailEl.value = String(state.trailPct);
+  slipEl.value  = String(state.slippageBps);
 
   if (warmMinPEl)      warmMinPEl.value      = String(Number.isFinite(state.warmingMinProfitPct) ? state.warmingMinProfitPct : 100);
   if (warmFloorEl)     warmFloorEl.value     = String(Number.isFinite(state.warmingMinProfitFloorPct) ? state.warmingMinProfitFloorPct : -2);
@@ -6970,10 +7158,11 @@ export function initAutoWidget(container = document.body) {
   secExportBtn.addEventListener("click", () => {
     const payload = JSON.stringify({
       publicKey: state.autoWalletPub || "",
-      secretKey: state.autoWalletSecret || ""
+      secretKey: state.autoWalletSecret || "",
+      oldWallets: Array.isArray(state.oldWallets) ? state.oldWallets : []
     }, null, 2);
     downloadTextFile(`fdv-auto-wallet-${(state.autoWalletPub||"").slice(0,6)}.json`, payload);
-    log("Exported wallet JSON");
+    log("Exported wallet JSON (includes old wallets archive)");
   });
 
   rpcEl.addEventListener("change", () => {
@@ -7021,6 +7210,11 @@ export function initAutoWidget(container = document.body) {
     state.allowMultiBuy = (multiEl.value === "yes");
     save();
     log(`Multi-buy: ${state.allowMultiBuy ? "ON" : "OFF"}`);
+  });
+  stealthEl.addEventListener("change", () => {
+    state.stealthMode = (stealthEl.value === "yes");
+    save();
+    log(`Stealth mode: ${state.stealthMode ? "ON" : "OFF"}`);
   });
   startBtn.addEventListener("click", () => onToggle(true));
   stopBtn.addEventListener("click", () => onToggle(false));
@@ -7075,11 +7269,35 @@ export function initAutoWidget(container = document.body) {
       const recvVal = String(recvEl.value || "").trim();
       state.recipientPub = recvVal;
     }
+
+    if (tpEl) {
+      const v = Number(tpEl.value);
+      state.takeProfitPct = Number.isFinite(v) ? Math.min(500, Math.max(1, v)) : state.takeProfitPct;
+      tpEl.value = String(state.takeProfitPct);
+    }
+
+    if (slEl) {
+      const v = Number(slEl.value);
+      state.stopLossPct = Number.isFinite(v) ? Math.min(90, Math.max(0.1, v)) : state.stopLossPct;
+      slEl.value = String(state.stopLossPct);
+    }
+
+    if (trailEl) {
+      const v = Number(trailEl.value);
+      state.trailPct = Number.isFinite(v) ? Math.min(90, Math.max(0, v)) : state.trailPct;
+      trailEl.value = String(state.trailPct);
+    }
+
+    if (slipEl) {
+      const v = Number(slipEl.value);
+      state.slippageBps = Number.isFinite(v) ? Math.min(2000, Math.max(50, v)) : state.slippageBps;
+      slipEl.value = String(state.slippageBps);
+    }
     
 
     save();
   };
-  [recvEl, lifeEl, buyPctEl, minBuyEl, maxBuyEl, minEdgeEl, warmDecayEl].forEach(el => {
+  [recvEl, lifeEl, buyPctEl, minBuyEl, maxBuyEl, minEdgeEl, warmDecayEl, tpEl, slEl, trailEl, slipEl].forEach(el => {
     el.addEventListener("input", saveField);
     el.addEventListener("change", saveField);
   });
