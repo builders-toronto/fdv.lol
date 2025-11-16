@@ -1,4 +1,4 @@
-import { addKpiAddon } from './ingest.js';
+import { addKpiAddon } from '../ingest.js';
 
 export const DD_STORAGE_KEY    = 'meme_drawdown_resistance_v1';
 export const DD_WINDOW_DAYS    = 3;

@@ -1,4 +1,4 @@
-import { addKpiAddon } from './ingest.js';
+import { addKpiAddon } from '../ingest.js';
 
 export const STICK_STORAGE_KEY    = 'meme_stickiness_index_v1';
 export const STICK_WINDOW_DAYS    = 3;

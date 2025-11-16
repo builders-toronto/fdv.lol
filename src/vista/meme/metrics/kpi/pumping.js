@@ -1,4 +1,4 @@
-import { addKpiAddon, getLatestSnapshot } from './ingest.js';
+import { addKpiAddon, getLatestSnapshot } from '../ingest.js';
 
 export const PUMP_STORAGE_KEY     = 'pump_history_v1';
 export const PUMP_WINDOW_DAYS     = 1.5;       // short lookback favors immediacy
@@ -295,6 +295,9 @@ const currentLeaderMints = new Set();
 addKpiAddon(
   {
     id: 'pumping',
+    updateMode: 'realtime',
+    updateHz: 60,
+    ingestLimit: 64,
     order: 3,
     label: 'PUMP',
     title: 'Pumping Radar',

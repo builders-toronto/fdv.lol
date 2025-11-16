@@ -1,4 +1,4 @@
-import { addKpiAddon } from './ingest.js';
+import { addKpiAddon } from '../ingest.js';
 
 export const IMB_STORAGE_KEY = 'meme_flow_imbalance_v1';
 
