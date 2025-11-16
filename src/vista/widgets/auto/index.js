@@ -15,7 +15,7 @@ const EXTRA_TX_BUFFER_LAMPORTS     = 250_000;
 const EDGE_TX_FEE_ESTIMATE_LAMPORTS = 150_000;
 const MIN_QUOTE_RAW_AMOUNT = 1_000;
 const ELEVATED_MIN_BUY_SOL = 0.07;   
-const FRIC_SNAP_EPS_SOL    = 0.0008; 
+const FRIC_SNAP_EPS_SOL    = 0.0012; 
 const MAX_CONSEC_SWAP_400 = 3;
 const MIN_OPERATING_SOL            = 0.007;  
 const ROUTER_COOLDOWN_MS           = 60_000;
@@ -6222,8 +6222,9 @@ async function tick() {
         const fricMinSol = minPerOrderLamports / 1e9;
         const orderSol   = buyLamports / 1e9;
         const gap        = fricMinSol - orderSol;
-        const snapNear   = orderSol >= fricMinSol - FRIC_SNAP_EPS_SOL;
-        const snapBand   = gap <= Math.max(0.003, 0.05 * fricMinSol); // 3 mSOL or 5% of min
+        const eps        = 1e-6;
+        const snapNear   = orderSol >= (fricMinSol - (FRIC_SNAP_EPS_SOL + eps));
+        const snapBand   = gap <= (Math.max(0.003, 0.06 * fricMinSol) + eps);
         const canCover   = candidateBudgetLamports >= minPerOrderLamports;
 
         if ((snapNear || snapBand) && canCover) {

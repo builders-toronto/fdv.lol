@@ -4,12 +4,12 @@ const ADDONS = new Map();
 let booted = false;
 let latestSnapshot = [];
 
-const FLUSH_MIN_GAP_MS = 250;        // throttle interval when visible
-const HIDDEN_FLUSH_MS  = 1000;       // throttle interval when tab hidden
-const SNAP_SIG_HEAD_N  = 48;         // top-N mints used for snapshot signature
-const PAYLOAD_HEAD_N   = 24;         // top-N items used for payload signature
-const DEFAULT_REALTIME_HZ = 30;      // default rAF cadence for realtime addons
-const MAX_REALTIME_HZ = 60;          // never exceed screen refresh
+const FLUSH_MIN_GAP_MS = 250;        
+const HIDDEN_FLUSH_MS  = 1000;       
+const SNAP_SIG_HEAD_N  = 48;         
+const PAYLOAD_HEAD_N   = 24;        
+const DEFAULT_REALTIME_HZ = 30;     
+const MAX_REALTIME_HZ = 60;       
 
 let _flushTimer = 0;
 let _lastFlushTs = 0;
@@ -105,6 +105,9 @@ function scheduleRAF() {
   _rafId = requestAnimationFrame(onRAF);
 }
 
+
+
+
 function onRAF(ts) {
   _rafId = 0;
 
@@ -159,6 +162,12 @@ function onRAF(ts) {
     _rafId = requestAnimationFrame(onRAF);
   }
 }
+
+
+
+
+
+
 
 export function addKpiAddon(def, handlers) {
   if (!def || !def.id) return;
