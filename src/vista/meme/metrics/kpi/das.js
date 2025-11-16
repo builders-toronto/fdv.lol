@@ -1,4 +1,4 @@
-import { addKpiAddon } from './ingest.js';
+import { addKpiAddon } from '../ingest.js';
 
 export const DAS_STORAGE_KEY = 'meme_das_history_v1';
 export const DAS_WINDOW_DAYS = 3;           // lookback window

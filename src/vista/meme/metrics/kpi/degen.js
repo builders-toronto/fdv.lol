@@ -1,4 +1,4 @@
-import { addKpiAddon } from './ingest.js';
+import { addKpiAddon } from '../ingest.js';
 
 export const DBS_STORAGE_KEY = 'meme_dbs_history_v1';
 export const DBS_WINDOW_DAYS = 3;            // trailing lookback

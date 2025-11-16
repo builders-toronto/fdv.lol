@@ -1,4 +1,4 @@
-import { addKpiAddon } from './ingest.js';
+import { addKpiAddon } from '../ingest.js';
 
 export const MOM_STORAGE_KEY    = 'meme_mcap_momentum_v1';
 export const MOM_WINDOW_HOURS   = 24;   // 1-day window

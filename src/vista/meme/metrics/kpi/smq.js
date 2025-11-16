@@ -1,4 +1,4 @@
-import { addKpiAddon } from './ingest.js';
+import { addKpiAddon } from '../ingest.js';
 
 export const SMQ_STORAGE_KEY = 'meme_top3_history_v1';
 export const SMQ_WINDOW_DAYS = 3;

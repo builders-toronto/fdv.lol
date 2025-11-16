@@ -1,4 +1,4 @@
-import { addKpiAddon } from './ingest.js';
+import { addKpiAddon } from '../ingest.js';
 
 export const ENG_STORAGE_KEY = 'meme_engagement_history_v1';
 export const ENG_WINDOW_DAYS = 3;

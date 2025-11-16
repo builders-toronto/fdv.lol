@@ -1,4 +1,4 @@
-import { addKpiAddon } from './ingest.js';
+import { addKpiAddon } from '../ingest.js';
 
 export const TX24_STORAGE_KEY = 'meme_tx24_counts_v1';
 

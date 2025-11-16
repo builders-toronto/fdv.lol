@@ -1,4 +1,4 @@
-import { addKpiAddon } from './ingest.js';
+import { addKpiAddon } from '../ingest.js';
 
 export const TOP3_STORAGE_KEY = 'meme_top3_history_v1';
 export const TOP3_WINDOW_DAYS = 3;          // lookback window for "long-term"

@@ -1,4 +1,4 @@
-import { addKpiAddon } from './ingest.js';
+import { addKpiAddon } from '../ingest.js';
 
 export const HGV_STORAGE_KEY     = 'meme_holder_velocity_v1';
 export const HGV_WINDOW_DAYS     = 3;      // lookback window for velocity calc

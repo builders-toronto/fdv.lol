@@ -8,18 +8,18 @@ import { ensureAddonsUI } from './metrics/register.js';
 import { ingestSnapshot } from './metrics/ingest.js';
 
 // Addons (KPI)
-import './metrics/pumping.js';
-import './metrics/three.js';
-import './metrics/smq.js';
-import './metrics/degen.js';
-import './metrics/engagement.js';
-import './metrics/das.js';
-import './metrics/holders.js';
-import './metrics/24h.js';
-import './metrics/bsi.js';
-import './metrics/mom.js';
-import './metrics/draw.js';
-import './metrics/sticky.js';
+import './metrics/kpi/pumping.js';
+import './metrics/kpi/three.js';
+import './metrics/kpi/smq.js';
+import './metrics/kpi/degen.js';
+import './metrics/kpi/engagement.js';
+import './metrics/kpi/das.js';
+import './metrics/kpi/holders.js';
+import './metrics/kpi/24h.js';
+import './metrics/kpi/bsi.js';
+import './metrics/kpi/mom.js';
+import './metrics/kpi/draw.js';
+import './metrics/kpi/sticky.js';
 
 // Swap direct init() calls for the widget loader VM
 import { widgets, registerCoreWidgets, prewarmDefaults } from '../widgets/loader.js';
