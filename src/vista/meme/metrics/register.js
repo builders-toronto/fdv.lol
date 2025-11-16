@@ -108,7 +108,13 @@ function renderAddon(addon) {
   if (!ui.listEl) return;
 
   if (!items.length) {
-    ui.listEl.innerHTML = `<li class="addon-item" style="opacity:.8;">No data yet. Keep the stream running.</li>`;
+    ui.listEl.innerHTML = `
+      <li class="addon-item">
+        <div class="quick-spinner-wrap">
+          <div class="quick-spinner"></div>
+          <div class="quick-loading-msg">Loading… keep the stream running.</div>
+        </div>
+      </li>`;
     return;
   }
 

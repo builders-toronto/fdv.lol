@@ -7,13 +7,15 @@ const MIN_SELL_SOL_OUT = 0.004;
 const FEE_RESERVE_MIN = 0.0002;   // rent
 const FEE_RESERVE_PCT = 0.08;     // 8% reserve (was 15%)
 const MIN_SELL_CHUNK_SOL = 0.01;  // allow micro exits (was 0.02)
-const SMALL_SELL_FEE_FLOOR = 0.01;      // disable fee below this est out
+const SMALL_SELL_FEE_FLOOR = 0.0;      // disable fee below this est out
 const AVOID_NEW_ATA_SOL_FLOOR = 0.04;   // don't open new ATAs if SOL below this
 const TX_FEE_BUFFER_LAMPORTS  = 500_000;
 const SELL_TX_FEE_BUFFER_LAMPORTS = 500_000; 
 const EXTRA_TX_BUFFER_LAMPORTS     = 250_000;  
 const EDGE_TX_FEE_ESTIMATE_LAMPORTS = 150_000;
 const MIN_QUOTE_RAW_AMOUNT = 1_000;
+const ELEVATED_MIN_BUY_SOL = 0.07;   
+const FRIC_SNAP_EPS_SOL    = 0.0008; 
 const MAX_CONSEC_SWAP_400 = 3;
 const MIN_OPERATING_SOL            = 0.007;  
 const ROUTER_COOLDOWN_MS           = 60_000;
@@ -2298,11 +2300,10 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         haveQuote = true;
       }
       if (haveQuote) {
-        // For sells, decide whether to apply platform fee based on estimated out
         if (isSell) {
           const outRaw = Number(quote?.outAmount || 0);
           const outSol = outRaw / 1e9;
-          const eligible = feeBps > 0 && feeAccount && outSol >= SMALL_SELL_FEE_FLOOR;
+          const eligible = feeBps > 0 && feeAccount;
           if (eligible) {
             // Re-quote with fee included once to keep quote and swap aligned
             const qFee = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: restrictIntermediates, withFee: true });
@@ -3280,19 +3281,21 @@ function _getSeriesStore() {
    return window._fdvLeaderSeries;
 }
 
-function slope3(series, key) {
-  if (!Array.isArray(series) || series.length < 3) return 0;
-  const a = Number(series[0]?.[key] ?? 0);
-  const b = Number(series[1]?.[key] ?? a);
-  const c = Number(series[2]?.[key] ?? b);
-  return (c - a) / 2;
-}
+// function slope3(series, key) {  // Legacy
+//   if (!Array.isArray(series) || series.length < 3) return 0;
+//   const a = Number(series[0]?.[key] ?? 0);
+//   const b = Number(series[1]?.[key] ?? a);
+//   const c = Number(series[2]?.[key] ?? b);
+//   return (c - a) / 2;
+// }
+
 function delta3(series, key) {
   if (!Array.isArray(series) || series.length < 3) return 0;
   const a = Number(series[0]?.[key] ?? 0);
   const c = Number(series[2]?.[key] ?? a);
   return c - a;
 }
+
 function slope3pm(series, key) {
   if (!Array.isArray(series) || series.length < 3) return 0;
   const a = series[0]; const c = series[2];
@@ -3423,7 +3426,7 @@ function shouldAttachFeeForSell({ mint, amountRaw, inDecimals, quoteOutLamports 
     const estOutSol = Number(quoteOutLamports || 0) / 1e9;
     if (!(estOutSol > 0)) return false;
 
-    if (estOutSol < SMALL_SELL_FEE_FLOOR) return false;
+    //if (estOutSol < SMALL_SELL_FEE_FLOOR) return false;
 
     const estCostSold = estimateProportionalCostSolForSell(mint, amountUi);
     if (estCostSold === null) return false; // unknown cost -> don't charge
@@ -6206,34 +6209,37 @@ async function tick() {
         const needByRecurr = Math.ceil(recurringL / Math.max(1e-12, MAX_RECURRING_COST_FRAC));
         const needByOne    = Math.ceil(
           oneTimeL / Math.max(1e-12, MAX_ONETIME_COST_FRAC * Math.max(1, ONE_TIME_COST_AMORTIZE))
-        );        const needByFrictionSplit = Math.max(needByRecurr, needByOne);
+        );
+        const needByFrictionSplit = Math.max(needByRecurr, needByOne);
         minPerOrderLamports = Math.max(minPerOrderLamports, needByFrictionSplit);
       } catch {}
-
-
-      // if (rentMinBuyLamports > 0) minPerOrderLamports = Math.max(minPerOrderLamports, rentMinBuyLamports);
+      if (reqRent > 0) {
+        const elevatedL = Math.floor(ELEVATED_MIN_BUY_SOL * 1e9);
+        minPerOrderLamports = Math.max(minPerOrderLamports, elevatedL);
+      }
 
       if (buyLamports < minPerOrderLamports) {
-        // MEMES are volatile. we cannot limit ATA based off this.
-        // const need = (minPerOrderLamports - buyLamports) / 1e9;
-        // if (reqRent > 0) {
-        //   const carryPrev = Math.max(0, Number(state.carrySol || 0));
-        //   state.carrySol = Math.min(Number(state.maxBuySol || 0.05), carryPrev + (buyLamports / 1e9));
-        //   save();
-        //   log(`Accumulating (ATA rent amortize). Need ~${need.toFixed(6)} SOL more to open ATA; carry=${state.carrySol.toFixed(6)} SOL`);
-        //   continue;
-        // }
-        if (reqRent > 0) {
-          //log(`Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < ATA amortized min ${(minPerOrderLamports/1e9).toFixed(6)}).`);
-          log(
-            `Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < friction-aware min ${(minPerOrderLamports/1e9).toFixed(6)}; ` +
-            `split guard rec=${(EDGE_TX_FEE_ESTIMATE_LAMPORTS/1e9).toFixed(6)} oneTime≈${(reqRent/1e9).toFixed(6)} amortN=${ONE_TIME_COST_AMORTIZE}).`
-          );
+        const fricMinSol = minPerOrderLamports / 1e9;
+        const orderSol   = buyLamports / 1e9;
+        const gap        = fricMinSol - orderSol;
+        const snapNear   = orderSol >= fricMinSol - FRIC_SNAP_EPS_SOL;
+        const snapBand   = gap <= Math.max(0.003, 0.05 * fricMinSol); // 3 mSOL or 5% of min
+        const canCover   = candidateBudgetLamports >= minPerOrderLamports;
+
+        if ((snapNear || snapBand) && canCover) {
+          buyLamports = minPerOrderLamports;
+          log(`Snap-to-min: bump ${orderSol.toFixed(6)} -> ${fricMinSol.toFixed(6)} SOL to clear friction min.`);
         } else {
-          //log(`Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < friction-aware min ${(minPerOrderLamports/1e9).toFixed(6)}).`);
-          log(`Skip ${mint.slice(0,4)}… (order ${(buyLamports/1e9).toFixed(6)} SOL < friction-aware min ${(minPerOrderLamports/1e9).toFixed(6)}; recurring-only guard).`);
+          if (reqRent > 0) {
+            log(
+              `Skip ${mint.slice(0,4)}… (order ${orderSol.toFixed(6)} SOL < friction-aware min ${fricMinSol.toFixed(6)}; ` +
+              `split guard rec=${(EDGE_TX_FEE_ESTIMATE_LAMPORTS/1e9).toFixed(6)} oneTime≈${(reqRent/1e9).toFixed(6)} amortN=${ONE_TIME_COST_AMORTIZE}).`
+            );
+          } else {
+            log(`Skip ${mint.slice(0,4)}… (order ${orderSol.toFixed(6)} SOL < friction-aware min ${fricMinSol.toFixed(6)}; recurring-only guard).`);
+          }
+          continue;
         }
-        continue;
       }
 
       const buySol = buyLamports / 1e9;
@@ -6984,23 +6990,22 @@ export function initAutoWidget(container = document.body) {
   const openPumpKpi = () => {
     let opened = false;
     const pumpBtn = document.getElementById("pumpingToggle") || document.querySelector('button[title="PUMP"]');
-    if (pumpBtn) {
-      const isExpanded = String(pumpBtn.getAttribute("aria-expanded") || "false") === "true";
-      if (!isExpanded) {
-        try { pumpBtn.click(); opened = true; } catch {}
-      } else {
-        opened = true;
-      }
-      const panelId = pumpBtn.getAttribute("aria-controls") || "pumpingPanel";
-      const panel = document.getElementById(panelId) || document.querySelector("#pumpingPanel");
-      if (panel) {
-        panel.removeAttribute("hidden");
-        panel.style.display = "";
-        panel.classList.add("open");
-      }
+    if (!pumpBtn) return opened;
+
+    const isExpanded = String(pumpBtn.getAttribute("aria-expanded") || "false") === "true";
+    if (isExpanded) return true;
+
+    try { pumpBtn.click(); opened = true; } catch {}
+
+    const panelId = pumpBtn.getAttribute("aria-controls") || "pumpingPanel";
+    const panel = document.getElementById(panelId) || document.querySelector("#pumpingPanel");
+    if (panel) {
+      panel.removeAttribute("hidden");
+      panel.style.display = "";
+      panel.classList.add("open");
     }
     return opened;
-};
+  };
 
   try {
     const hasAutomate =
@@ -7147,6 +7152,7 @@ export function initAutoWidget(container = document.body) {
   if (reboundLookbackEl) reboundLookbackEl.value = String(Number.isFinite(state.reboundLookbackSecs) ? state.reboundLookbackSecs : 45);
 
   helpBtn.addEventListener("click", () => { modalEl.style.display = "flex"; });
+
   if (expandBtn && logEl) {
     const setExpanded = (on) => {
       logEl.classList.toggle("fdv-log-full", !!on);
@@ -7168,11 +7174,27 @@ export function initAutoWidget(container = document.body) {
       }
     });
   }
-  modalEl.addEventListener("click", (e) => { if (e.target === modalEl) modalEl.style.display = "none"; });
-  modalCloseEls.forEach(btn => btn.addEventListener("click", () => { modalEl.style.display = "none"; }));
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && modalEl.style.display !== "none") modalEl.style.display = "none";
-  });
+    
+  modalEl.addEventListener("click", (e) => {
+    if (e.target === modalEl) {
+      modalEl.style.display = "none";
+
+      try {
+        const pumpBtn = document.getElementById("pumpingToggle") || document.querySelector('button[title="PUMP"]');
+        const isExpanded = pumpBtn && String(pumpBtn.getAttribute("aria-expanded") || "false") === "true";
+        if (!isExpanded) { openPumpKpi(); }
+      } catch {}
+    }
+  });  
+  
+  modalCloseEls.forEach(btn => btn.addEventListener("click", () => {
+    modalEl.style.display = "none";
+    try {
+      const pumpBtn = document.getElementById("pumpingToggle") || document.querySelector('button[title="PUMP"]');
+      const isExpanded = pumpBtn && String(pumpBtn.getAttribute("aria-expanded") || "false") === "true";
+      if (!isExpanded) { openPumpKpi(); }
+    } catch {}
+  }));
 
   if (copyLogBtn) {
     copyLogBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); copyLog(); });

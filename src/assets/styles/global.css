@@ -179,6 +179,15 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
   box-shadow: 0 10px 30px rgba(0,0,0,.45), inset 0 0 0 1px rgba(122,222,255,.1);
 }
 
+.quick-spinner-wrap { display:flex; padding:14px; }
+.quick-spinner {
+  width:20px; height:20px; border:3px solid rgba(255,255,255,0.25);
+  border-top-color:#09f; border-radius:50%; animation:addonSpin .8s linear infinite;
+}
+@keyframes addonSpin { to { transform:rotate(360deg); } }
+.quick-loading-msg { font-size:11px; opacity:.7; margin-left:10px; white-space:nowrap; }
+  
+
 .spinner { width: 20px; height: 56px; display: block; }
 .spinner .ring {
   fill: none;
@@ -645,7 +654,7 @@ input[type="checkbox"]:disabled{
 .swapCoin{
     font-size: 1.1rem;
     background: rgba(123, 241, 255, .06);
-    border: 1px solid rgb(115 200 227 / 80%) !important;
+    border: 1px solid rgb(115 200 227 / 60%) !important;
     margin-right: 5px;
 }
 
@@ -1574,8 +1583,8 @@ button[data-auto-unwind]{ color:#fff; }
 .fdv-log-full {
   position: fixed !important;
   inset: 0;
-  width: 100vw !important;
-  height: 100vh !important;
+  /* width: 100vw !important; */
+  height: 100% !important;
   z-index: 999999;
   background:#000;
   padding: 48px 18px 18px 18px; /* keep top space in fullscreen */

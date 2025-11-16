@@ -14,6 +14,12 @@ import './metrics/smq.js';
 import './metrics/degen.js';
 import './metrics/engagement.js';
 import './metrics/das.js';
+import './metrics/holders.js';
+import './metrics/24h.js';
+import './metrics/bsi.js';
+import './metrics/mom.js';
+import './metrics/draw.js';
+import './metrics/sticky.js';
 
 // Swap direct init() calls for the widget loader VM
 import { widgets, registerCoreWidgets, prewarmDefaults } from '../widgets/loader.js';

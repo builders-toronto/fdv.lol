@@ -295,7 +295,7 @@ const currentLeaderMints = new Set();
 addKpiAddon(
   {
     id: 'pumping',
-    order: 22,
+    order: 3,
     label: 'PUMP',
     title: 'Pumping Radar',
     metricLabel: 'PUMP',
