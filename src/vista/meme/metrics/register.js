@@ -1,5 +1,6 @@
 const REGISTRY = [];
 const STATE = new Map(); 
+import { safeTokenLogo } from '../../../core/ipfs.js';
 
 function getHeaderToolsStrip() {
   return document.getElementById('hdrTools') || null;
@@ -119,14 +120,13 @@ function renderAddon(addon) {
   }
 
   ui.listEl.innerHTML = items.map((row, i) => {
-    const logo = row.imageUrl || '';
+    const logo = safeTokenLogo(row.imageUrl || row.logoURI || '', row.symbol || '');
     const sym = row.symbol || '';
     const name = row.name || '';
     const price = fmtPrice(row.priceUsd);
     const { txt: chTxt, cls: chCls } = pct(row.chg24);
     const liq = fmtMoney(row.liqUsd);
     const vol = typeof row.vol24 === 'string' ? row.vol24 : fmtMoney(row.vol24);
-    const pairUrl = row.pairUrl || '';
     const metricVal = Number.isFinite(Number(row.metric)) ? Number(row.metric) : (Number(row.score) || Number(row.smq) || null);
     const metricHtml = metricVal !== null ? `<span class="pill"><span class="k">${metricLabel}</span><b class="highlight">${metricVal}</b></span>` : '';
 
@@ -135,7 +135,7 @@ function renderAddon(addon) {
         <a href="https://fdv.lol/token/${row.mint}" target="_blank" rel="noopener">
           <div class="addon-avatar">
             <div class="addon-rank r${i+1}">${i+1}</div>
-            <img class="addon-logo" src="${logo}" alt="" onerror="this.style.visibility='hidden'">
+            <img class="addon-logo" src="${logo}" data-sym="${sym}" alt="" loading="lazy" decoding="async">
           </div>
           <div class="addon-main" style="min-width:0;">
             <div class="addon-line1" style="display:flex;align-items:center;gap:8px;min-width:0;">

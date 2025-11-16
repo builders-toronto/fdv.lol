@@ -1,3 +1,5 @@
+import { FALLBACK_LOGO } from "../config/env.js";
+
 const IPFS_GATEWAYS = [
   'https://ipfs.io/ipfs/',
   'https://cloudflare-ipfs.com/ipfs/',
@@ -8,6 +10,36 @@ const IPFS_GATEWAYS = [
 const _failCounts = new Map();
 const _blocked = new Set();
 const MAX_FAILS_PER_CID = 6;
+
+function abbreviateSym(sym = '') {
+  const s = String(sym || '').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,4);
+  return s || 'TKN';
+}
+function buildFallbackLogo(sym = '') {
+  const tag = abbreviateSym(sym);
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" role="img" aria-label="${tag}">
+      <defs>
+        <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
+          <stop offset="0" stop-color="#1e2533"/>
+          <stop offset="1" stop-color="#0d1117"/>
+        </linearGradient>
+      </defs>
+      <rect width="64" height="64" rx="12" fill="url(#g)"/>
+      <circle cx="32" cy="32" r="18" fill="#121820" stroke="#2a3848" stroke-width="2"/>
+      <text x="50%" y="50%" text-anchor="middle" dominant-baseline="central"
+            font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+            font-size="12" fill="#9CA3AF">${tag}</text>
+    </svg>`;
+  return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+}
+function fallbackLogo(sym = '') {
+  try {
+    if (typeof FALLBACK_LOGO === 'function') return FALLBACK_LOGO(sym);
+    if (typeof FALLBACK_LOGO === 'string' && FALLBACK_LOGO.length) return FALLBACK_LOGO;
+  } catch {}
+  return buildFallbackLogo(sym);
+}
 
 export function isLikelyCid(str = '') {
   return !!str && (
@@ -30,7 +62,6 @@ export function buildGatewayUrl(cid, gwIndex = 0) {
   const gw = IPFS_GATEWAYS[gwIndex] || IPFS_GATEWAYS[0];
   return gw + cid;
 }
-
 export function firstIpfsUrl(raw) {
   const cid = extractCid(raw);
   return cid ? buildGatewayUrl(cid, 0) : raw;
@@ -56,32 +87,35 @@ export function markGatewayFailure(src) {
 }
 export function isCidBlocked(raw) {
   const cid = extractCid(raw);
-  return cid && _blocked.has(cid);
+  return !!cid && _blocked.has(cid);
 }
 export function gatewayStats() {
-  return {
-    tracked: _failCounts.size,
-    blocked: _blocked.size
-  };
+  return { tracked: _failCounts.size, blocked: _blocked.size };
 }
 
-export const FALLBACK_IMG =
-  'data:image/svg+xml;utf8,' +
-  encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">
-    <rect width="64" height="64" rx="8" fill="#1e1e1e"/>
-    <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
-      font-size="10" fill="#888" font-family="monospace">NO IMG</text>
-  </svg>`);
+function isLogoBlocked(raw) {
+  if (!raw) return true;
+  const cid = extractCid(raw);
+  if (!cid) return false; // non-ipfs regular URL: allow
+  return _blocked.has(cid) || (_failCounts.get(cid) || 0) >= MAX_FAILS_PER_CID;
+}
 
-// Central normalization: no errors logged, silent gateway rotation.
-export function normalizeTokenLogo(raw) {
-  if (!raw) return FALLBACK_IMG;
+export function normalizeTokenLogo(raw, sym = '') {
+  if (!raw) return fallbackLogo(sym);
   try {
+    if (isLogoBlocked(raw)) return fallbackLogo(sym);
     const u = firstIpfsUrl(raw);
-    return u || FALLBACK_IMG;
+    if (!u) return fallbackLogo(sym);
+    const cid = extractCid(u);
+    if (cid && _blocked.has(cid)) return fallbackLogo(sym);
+    return u;
   } catch {
-    return FALLBACK_IMG;
+    return fallbackLogo(sym);
   }
+}
+
+export function safeTokenLogo(raw, sym = '') {
+  return normalizeTokenLogo(raw, sym);
 }
 
 (function installIpfsImageFallback() {
@@ -93,19 +127,20 @@ export function normalizeTokenLogo(raw) {
     const el = e?.target;
     if (!(el instanceof HTMLImageElement)) return;
     const src = el.getAttribute('src') || '';
+    const sym = el.getAttribute('data-sym') || '';
     const cid = extractCid(src);
     if (!cid) return;
 
     const attempts = +(el.dataset.ipfsAttempts || 0);
     if (attempts > 12) {
-      el.src = FALLBACK_IMG;
+      el.src = fallbackLogo(sym);
       return;
     }
 
     try {
       markGatewayFailure(src);
       if (isCidBlocked(src)) {
-        el.src = FALLBACK_IMG;
+        el.src = fallbackLogo(sym);
         return;
       }
       const next = nextGatewayUrl(src);
@@ -113,10 +148,10 @@ export function normalizeTokenLogo(raw) {
         el.dataset.ipfsAttempts = String(attempts + 1);
         setTimeout(() => { el.src = next; }, 120 + Math.random() * 240);
       } else {
-        el.src = FALLBACK_IMG;
+        el.src = fallbackLogo(sym);
       }
     } catch {
-      el.src = FALLBACK_IMG;
+      el.src = fallbackLogo(sym);
     }
   }, true);
 })();

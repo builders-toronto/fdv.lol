@@ -5,7 +5,6 @@ import {
   collectInstantSolana,          
 } from '../data/feeds.js';
 import { scoreAndRecommend } from '../core/calculate.js';
-import { normalizeTokenLogo } from '../core/ipfs.js';
 import { elMetaBase, elTimeDerived } from '../vista/meme/page.js'; 
 import { readCache } from '../core/tools.js';
 import { enrichMissingInfo } from '../data/dexscreener.js';
@@ -195,7 +194,7 @@ class TokenStore {
     if (h.symbol && h.symbol !== t.symbol) { t.symbol = h.symbol; changed = true; }
     if (h.name && h.name !== t.name) { t.name = h.name; changed = true; }
     if (h.imageUrl && h.imageUrl !== t.logoURI) {
-      t.logoURI = normalizeTokenLogo(h.imageUrl);
+      t.logoURI = h.imageUrl
       changed = true;
     }
 
@@ -248,7 +247,7 @@ class TokenStore {
     // identity
     if (info.symbol) t.symbol = info.symbol;
     if (info.name) t.name = info.name;
-    if (info.imageUrl) t.logoURI = normalizeTokenLogo(info.imageUrl);
+    if (info.imageUrl) t.logoURI = info.imageUrl;
 
     // price / liquidity / caps
     if (info.priceUsd    != null) t.priceUsd    = num(info.priceUsd, null);
