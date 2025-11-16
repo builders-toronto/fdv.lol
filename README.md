@@ -137,4 +137,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-ingest: dual-lane refactor (throttled + realtime) for KPI micro-update
+refactor(pipeline): resilient ingestion (watchdog, auto-restart, pruning, abort cleanup)

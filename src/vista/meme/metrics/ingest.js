@@ -167,8 +167,6 @@ function onRAF(ts) {
 
 
 
-
-
 export function addKpiAddon(def, handlers) {
   if (!def || !def.id) return;
   if (!handlers || typeof handlers.computePayload !== 'function') return;

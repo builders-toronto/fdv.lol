@@ -55,8 +55,10 @@ function prunePumpHistory(h) {
 
 function norm(n) { return Number.isFinite(n) ? Number(n) : 0; }
 
+
+let counter = 1
+
 export function ingestPumpingSnapshot(items) {
-  // console.log("ingesting pumping snapshot", items);
   const h = loadPumpHistory();
   const ts = Date.now();
   const arr = (Array.isArray(items) ? items : []).map(t => {

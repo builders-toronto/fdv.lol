@@ -5,12 +5,13 @@ import {
   collectInstantSolana,          
 } from '../data/feeds.js';
 import { scoreAndRecommend } from '../core/calculate.js';
+import { normalizeTokenLogo } from '../core/ipfs.js';
 import { elMetaBase, elTimeDerived } from '../vista/meme/page.js'; 
 import { readCache } from '../core/tools.js';
 import { enrichMissingInfo } from '../data/dexscreener.js';
 import { loadAds, pickAd } from '../ads/load.js';
 
-//TODO: refactor prototype 2
+//TODO: refactor prototype 3
 
 let _globalStreamThrottle = { active: false, reason: '', until: 0, created: 0 };
 let _globalThrottleTimer = null;
@@ -193,7 +194,10 @@ class TokenStore {
 
     if (h.symbol && h.symbol !== t.symbol) { t.symbol = h.symbol; changed = true; }
     if (h.name && h.name !== t.name) { t.name = h.name; changed = true; }
-    if (h.imageUrl && h.imageUrl !== t.logoURI) { t.logoURI = h.imageUrl; changed = true; }
+    if (h.imageUrl && h.imageUrl !== t.logoURI) {
+      t.logoURI = normalizeTokenLogo(h.imageUrl);
+      changed = true;
+    }
 
     if (Number.isFinite(+h.priceUsd) && +h.priceUsd !== t.priceUsd) { t.priceUsd = +h.priceUsd; changed = true; }
     if (Number.isFinite(+h.bestLiq) && +h.bestLiq !== t.liquidityUsd) { t.liquidityUsd = +h.bestLiq; changed = true; }
@@ -244,7 +248,7 @@ class TokenStore {
     // identity
     if (info.symbol) t.symbol = info.symbol;
     if (info.name) t.name = info.name;
-    if (info.imageUrl) t.logoURI = info.imageUrl;
+    if (info.imageUrl) t.logoURI = normalizeTokenLogo(info.imageUrl);
 
     // price / liquidity / caps
     if (info.priceUsd    != null) t.priceUsd    = num(info.priceUsd, null);
@@ -312,7 +316,7 @@ class TokenStore {
     return true;
   }
 
-  // stable array for scoring/rendering (no NaNs)
+
   toArray() {
     return [...this.byMint.values()].map(t => ({
       ...t,
@@ -325,7 +329,6 @@ class TokenStore {
         h6:  t.change.h6  == null ? null : num(t.change.h6,  null),
         h24: t.change.h24 == null ? null : num(t.change.h24, null),
       },
-      // CHANGED: keep nulls if unknown to avoid accidental measuring(creates massive first paint delay)
       volume: { h24: t.volume.h24 == null ? null : num(t.volume.h24, null) },
       txns:   {
         m5:  t.txns.m5  == null ? null : clamp0(t.txns.m5),
@@ -337,7 +340,47 @@ class TokenStore {
       _norm: t._norm || { nAct: 0, nLiq: 0, nMom: 0, nVol: 0 },
     }));
   }
+
+
+  prune({ max = 1800, keep = 1200, maxAgeMs = 6 * 60 * 60 * 1000 } = {}) {
+    try {
+      const nowTs = Date.now();
+      const size = this.byMint.size;
+      if (size <= max) return false;
+
+      const rows = [...this.byMint.values()].map(t => {
+        const arrived = Number(t._arrivedAt || nowTs);
+        const ageMs = nowTs - arrived;
+        return { t, mint: t.mint, ageMs, arrived };
+      });
+
+      rows.sort((a, b) => {
+        const fsDiff = fastScore(b.t) - fastScore(a.t);
+        if (fsDiff !== 0) return fsDiff;
+        return (b.arrived || 0) - (a.arrived || 0);
+      });
+
+      const keepSet = new Set(rows.slice(0, keep).map(r => r.mint));
+
+      let pruned = 0;
+      for (const r of rows.slice(keep)) {
+        const tooOld = r.ageMs > maxAgeMs;
+        if (!keepSet.has(r.mint) || tooOld) {
+          this.byMint.delete(r.mint);
+          this.sources.delete(r.mint);
+          pruned++;
+        }
+      }
+      if (pruned > 0) {
+        try { safeText(elMetaBase, `Pruned ${pruned} tokens • store=${this.byMint.size}`); } catch {}
+      }
+      return pruned > 0;
+    } catch {
+      return false;
+    }
+  }
 }
+
 
 function hasRequiredStats(t) {
   return t?._hydrated === true &&
@@ -383,7 +426,6 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
     stream = false;
   }
 
-  // Abort any previous run so its stream/timers stop immediately
   if (CURRENT_RUN?.abort) { try { CURRENT_RUN.abort(); } catch {} }
 
   const ac = new AbortController();
@@ -397,7 +439,22 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
     cleaners.clear();
   });
 
-  // ads 
+  // Activity watchdog
+  const WATCHDOG_MS = 45_000;
+  let lastActivityTs = Date.now();
+  const touch = () => { lastActivityTs = Date.now(); };
+
+  const watchdog = setInterval(() => {
+    const idle = Date.now() - lastActivityTs;
+    if (!ac.signal.aborted && idle > WATCHDOG_MS) {
+      console.warn(`[fdv] pipeline watchdog: idle ${Math.round(idle/1000)}s — restarting stream`);
+      try { restartStreamLoop(); } catch {}
+      touch();
+    }
+  }, Math.floor(WATCHDOG_MS / 2));
+  onAbort(() => clearInterval(watchdog));
+
+  // ads
   const adsPromise = loadAds().catch(() => null).then(ads => {
     if (CURRENT_AD === null) CURRENT_AD = ads ? pickAd(ads) : null;
     return ads;
@@ -407,12 +464,19 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
   const store = new TokenStore();
   const marquee = new MarqueeStore({ maxPerBucket: 64 });
 
-  let lastEmitted = null; // track last measured payload
+  // Periodic pruning
+  const pruneTimer = setInterval(() => {
+    try { store.prune({ max: 1800, keep: 1200, maxAgeMs: 6 * 60 * 60 * 1000 }); } catch {}
+  }, 60_000);
+  onAbort(() => clearInterval(pruneTimer));
+
+  let lastEmitted = null;
 
   const pushUpdate = (items) => {
     if (ac.signal.aborted) return;
     const measured = filterMeasured(items);
     if (!measured.length) return;
+    touch();
     try { onUpdate({ items: measured, ad: CURRENT_AD, marquee: marquee.payload() }); } catch {}
   };
 
@@ -422,7 +486,7 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
     if (eligible.length) marquee.addTrendingFromGrid(eligible.slice(0, trendingCount));
     if (feedNew) {
       const newest = eligible
-        .slice() // already filtered
+        .slice()
         .sort((a, b) => {
           const aa = a.ageMs ?? (Date.now() - (a._arrivedAt || 0));
           const bb = b.ageMs ?? (Date.now() - (b._arrivedAt || 0));
@@ -446,7 +510,7 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
     if (cached?.items?.length) {
       const measuredCached = filterMeasured(cached.items);
       if (measuredCached.length) {
-        lastEmitted = measuredCached; // remember cached GOOD payload
+        lastEmitted = measuredCached;
         if (CURRENT_AD === null) {
           try { const ads = await loadAds(); CURRENT_AD = ads ? pickAd(ads) : null; } catch {}
         }
@@ -459,6 +523,7 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
           new: [],
         };
         onUpdate({ items: measuredCached, ad: CURRENT_AD, marquee: marqueeFromCache });
+        touch();
         if (!firstResolved) {
           firstResolved = true;
           resolveFirst({ items: measuredCached, ad: CURRENT_AD, marquee: marqueeFromCache });
@@ -470,14 +535,12 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
   (async function primeInstant() {
     try {
       if (ac.signal.aborted) return;
-
       const hits = await collectInstantSolana({ signal: ac.signal, maxBoostedTokens: 40 });
       if (!hits?.length || ac.signal.aborted) return;
 
       let changed = false;
       for (const h of hits) changed = store.mergeSearchHit(h) || changed;
 
-      // Immediate measured set from DS stats (no extra hydration)
       let items = store.toArray().filter(hasRequiredStats);
       if (!items.length) return;
 
@@ -494,6 +557,7 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
       pushUpdate(measured);
       safeText(elMetaBase, `Generating`);
       safeText(elTimeDerived, `Sorting Card Data...`);
+      touch();
 
       if (!firstResolved) {
         firstResolved = true;
@@ -508,7 +572,6 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
     if (firstResolved) return;
     const items = sortedGrid({ useScore: false, store });
     feedMarqueeFromGrid({ useScore: false, feedNew: true });
-    // No early push; we only emit measured tokens after scoring(extremely important!)
     safeText(elMetaBase, `Scanning… ${store.size()} tokens • Marquee: ${marquee.trending.length + marquee.new.length}`);
   }
   const scheduleRender = () => rafFlush(renderNow);
@@ -529,17 +592,20 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
     let items = sortedGrid({ useScore: false, store });
     const pick = items.slice(0, Math.min(28, items.length));
 
+    const abortables = [];
     try {
-      await Promise.all(pick.map(t =>
+      const p = Promise.all(pick.map(t =>
         fetchTokenInfoMulti(t.mint, { signal: ac.signal })
           .then(info => store.mergeDeepInfo(info))
           .catch(() => {})
       ));
+      abortables.push(p);
+      await p;
     } catch {}
 
     items = store.toArray();
     items = await enrichMissingInfo(items);
-    items = items.filter(hasRequiredStats); // only score complete tokens
+    items = items.filter(hasRequiredStats);
     let scored = scoreAndRecommend(items);
 
     scored.sort((a,b) => (b.score || 0) - (a.score || 0) ||
@@ -559,9 +625,16 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
     }
   }
 
-  setTimeout(() => { if (!firstResolved) resolveFirstNow(); }, FIRST_TIMEOUT_MS);
+  const tFirst1 = setTimeout(() => { if (!firstResolved) resolveFirstNow(); }, FIRST_TIMEOUT_MS);
+  const tFirst2 = setTimeout(() => { if (!firstResolved) resolveFirstNow(); }, FIRST_TIMEOUT_MS * 2);
+  const tFirst3 = setTimeout(() => {
+    if (!firstResolved && Array.isArray(lastEmitted) && lastEmitted.length) {
+      firstResolved = true;
+      resolveFirst({ items: lastEmitted, ad: CURRENT_AD, marquee: marquee.payload() });
+    }
+  }, FIRST_TIMEOUT_MS * 3);
+  onAbort(() => { clearTimeout(tFirst1); clearTimeout(tFirst2); clearTimeout(tFirst3); });
 
-  // Safe keywords and offset handling
   const KW = Array.isArray(MEME_KEYWORDS) && MEME_KEYWORDS.length ? MEME_KEYWORDS : [];
   let windowOffset = 0;
   if (KW.length) {
@@ -569,64 +642,86 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
     pipeline._offset = windowOffset + 40;
   }
 
-  if (stream && KW.length) {
-    (async () => {
-      for await (const evt of streamFeeds({
-        signal: ac.signal,
-        keywords: KW,
-        windowSize: 40,
-        windowOffset,
-        requestBudget: 60,
-        maxConcurrent: 2,
-        spacingMs: 120,
-        limitPerQuery: 8,
-        deadlineMs: 850,
-        includeGeckoSeeds: false, 
-      })) {
-        const batch = evt?.newItems || [];
-        let changedGrid = false;
+  let _streamAC = null;
+  async function runStreamLoop() {
+    let backoff = 800;
+    while (!ac.signal.aborted && stream && KW.length) {
+      _streamAC = new AbortController();
+      onAbort(() => { try { _streamAC.abort(); } catch {} });
+      try {
+        for await (const evt of streamFeeds({
+          signal: _streamAC.signal,
+          keywords: KW,
+          windowSize: 40,
+          windowOffset,
+          requestBudget: 60,
+          maxConcurrent: 2,
+          spacingMs: 120,
+          limitPerQuery: 8,
+          deadlineMs: 850,
+          includeGeckoSeeds: false,
+        })) {
+          const batch = evt?.newItems || [];
+          let changedGrid = false;
 
-        for (const r of batch) changedGrid = store.mergeSearchHit(r) || changedGrid;
+          for (const r of batch) changedGrid = store.mergeSearchHit(r) || changedGrid;
 
-        if (!firstResolved) {
-          if (changedGrid) {
-            scheduleRender();
-            feedMarqueeFromGrid({ useScore: false, feedNew: true });
-            // No early push; we only push after scoring
+          if (!firstResolved) {
+            if (changedGrid) {
+              scheduleRender();
+              feedMarqueeFromGrid({ useScore: false, feedNew: true });
+            }
+            if (store.size() >= FIRST_TARGET) resolveFirstNow();
+          } else {
+            schedulePostFirstRecompute(async () => {
+              const newcomers = batch.slice(0, 6);
+              await Promise.all(newcomers.map(r =>
+                fetchTokenInfoMulti(r.mint, { signal: ac.signal })
+                  .then(info => store.mergeDeepInfo(info))
+                  .catch(() => {})
+              ));
+
+              let items = store.toArray();
+              items = await enrichMissingInfo(items);
+              items = items.filter(hasRequiredStats);
+              let scored = scoreAndRecommend(items);
+              scored.sort((a,b) => (b.score || 0) - (a.score || 0) ||
+                                   (b._arrivedAt || 0) - (a._arrivedAt || 0) ||
+                                   String(a.mint).localeCompare(String(b.mint)));
+
+              lastScored = scored;
+              feedMarqueeFromGrid({ useScore: true, feedNew: true });
+              pushUpdate(lastScored);
+              safeText(elMetaBase, `Updated: ${store.size()} tokens • Marquee: ${marquee.trending.length + marquee.new.length}`);
+            });
           }
-          if (store.size() >= FIRST_TARGET) resolveFirstNow();
-        } else {
-          schedulePostFirstRecompute(async () => {
-            const newcomers = batch.slice(0, 6);
-            await Promise.all(newcomers.map(r =>
-              fetchTokenInfoMulti(r.mint, { signal: ac.signal })
-                .then(info => store.mergeDeepInfo(info))
-                .catch(() => {})
-            ));
 
-            let items = store.toArray();
-            items = await enrichMissingInfo(items);
-            items = items.filter(hasRequiredStats); // only score complete tokens
-            let scored = scoreAndRecommend(items);
-            scored.sort((a,b) => (b.score || 0) - (a.score || 0) ||
-                                 (b._arrivedAt || 0) - (a._arrivedAt || 0) ||
-                                 String(a.mint).localeCompare(String(b.mint)));
+          safeText(
+            elTimeDerived,
+            `Searching… grid:${store.size()} • marquee:${marquee.trending.length + marquee.new.length} • ${evt.source}${evt.term ? ` • term: ${evt.term}` : ''}`
+          );
 
-            lastScored = scored;
-            feedMarqueeFromGrid({ useScore: true, feedNew: true });
-            pushUpdate(lastScored);
-            safeText(elMetaBase, `Updated: ${store.size()} tokens • Marquee: ${marquee.trending.length + marquee.new.length}`);
-          });
+          touch();
+          if (ac.signal.aborted) break;
         }
-
-        safeText(
-          elTimeDerived,
-          `Searching… grid:${store.size()} • marquee:${marquee.trending.length + marquee.new.length} • ${evt.source}${evt.term ? ` • term: ${evt.term}` : ''}`
-        );
-
-        if (ac.signal.aborted) break;
+        backoff = Math.min(10_000, Math.floor(backoff * 1.5));
+      } catch (e) {
+        console.warn('[fdv] stream loop error, will retry:', e?.message || e);
+        backoff = Math.min(15_000, Math.floor(backoff * 1.7));
       }
-    })();
+
+      if (ac.signal.aborted) break;
+      await sleep(backoff);
+    }
+  }
+
+  function restartStreamLoop() {
+    try { _streamAC?.abort(); } catch {}
+    setTimeout(() => { if (!ac.signal.aborted) runStreamLoop(); }, 250);
+  }
+
+  if (stream && KW.length) {
+    runStreamLoop();
   }
 
   let _busy = false;
@@ -650,7 +745,7 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
 
         items = store.toArray();
         items = await enrichMissingInfo(items);
-        items = items.filter(hasRequiredStats); // only score complete tokens(no blank first paint)
+        items = items.filter(hasRequiredStats);
         let scored = scoreAndRecommend(items);
         scored.sort((a,b) => (b.score || 0) - (a.score || 0) ||
                            (b._arrivedAt || 0) - (a._arrivedAt || 0) ||
@@ -662,24 +757,12 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
         if (measured.length) {
           pushUpdate(measured);
           safeText(elMetaBase, `Updated`);
+          touch();
         }
       } catch {}
       _busy = false;
     }, 8_000);
-  }
-
-  if (!firstResolved) {
-    setTimeout(() => {
-      if (!firstResolved) resolveFirstNow();
-    }, FIRST_TIMEOUT_MS * 2);
-
-    // Do NOT resolve with an empty payload; use lastEmitted if available, otherwise keep waiting(this breaks the app if bad coins are pre emitted)
-    setTimeout(() => {
-      if (!firstResolved && Array.isArray(lastEmitted) && lastEmitted.length) {
-        firstResolved = true;
-        resolveFirst({ items: lastEmitted, ad: CURRENT_AD, marquee: marquee.payload() });
-      }
-    }, FIRST_TIMEOUT_MS * 3);
+    onAbort(() => clearInterval(ticker));
   }
 
   return firstReturn;
