@@ -98,13 +98,13 @@ export async function getJSON(
 
 
 
-let pipelineApiPromise;
-async function getPipelineApi() {
-  if (!pipelineApiPromise) {
-    pipelineApiPromise = import('../engine/pipeline.js').catch(() => ({}));
-  }
-  return pipelineApiPromise;
-}
+// let pipelineApiPromise;
+// async function getPipelineApi() {
+//   if (!pipelineApiPromise) {
+//     pipelineApiPromise = import('../engine/pipeline.js').catch(() => ({}));
+//   }
+//   return pipelineApiPromise;
+// }
 
 
 
