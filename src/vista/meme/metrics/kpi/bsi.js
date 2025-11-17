@@ -104,6 +104,7 @@ export function mapImbalanceToRegistryRows(rows, limit = 3) {
 addKpiAddon(
   {
     id: 'flowImbalance',
+    updateMode: 'throttled',
     order: 6,
     label: 'Flow',
     title: 'Buy/Sell imbalance',

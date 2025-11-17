@@ -87,44 +87,51 @@ html,body{
 }
 
 /* Base track & thumb */
+
 ::-webkit-scrollbar {
   width: 12px;
   height: 12px;
-  background: transparent;
+  background: transparent; 
+  display: none;
 }
+
 ::-webkit-scrollbar-track {
   border-radius: 10px;
   box-shadow: inset 0 0 0 1px rgba(123,241,255,.08);
-}
+} 
+
 ::-webkit-scrollbar-thumb {
-  border-radius: 10px;
+   border-radius: 10px;
   border: 1px solid color-mix(in srgb, var(--accent2) 40%, #0b1118);
   box-shadow:
     0 0 0 1px rgba(0,0,0,.4),
     0 2px 4px rgba(0,0,0,.35),
-    inset 0 0 0 1px rgba(255,255,255,.04);
+    inset 0 0 0 1px rgba(255,255,255,.04); 
+  display: none;
+
 }
+
 ::-webkit-scrollbar-thumb:hover {
   border-color: color-mix(in srgb, var(--accent2) 55%, #0b1118);
 }
+
 ::-webkit-scrollbar-thumb:active {
   border-color: color-mix(in srgb, var(--accent2) 65%, #061119);
   box-shadow: 0 0 0 1px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.05);
 }
 
-/* Corner (when both axes visible) */
 ::-webkit-scrollbar-corner {
   background: #090c11;
   box-shadow: inset 0 0 0 1px rgba(123,241,255,.08);
   border-radius: 0 0 10px 0;
-}
+} 
 
-/* Directional buttons (some platforms still show them) */
 ::-webkit-scrollbar-button:hover {
   filter: brightness(1.15);
   border-color: rgba(123,241,255,.28);
   opacity: 1;
 }
+
 ::-webkit-scrollbar-button:active {
   filter: brightness(1.3);
   border-color: rgba(123,241,255,.45);
@@ -133,7 +140,8 @@ html,body{
 ::-webkit-scrollbar-button:disabled {
   opacity: .25;
   filter: grayscale(1);
-}
+} 
+
 
 .scrollbar-compact {
   scrollbar-width: thin;
@@ -144,7 +152,7 @@ html,body{
 }
 .scrollbar-compact::-webkit-scrollbar-thumb {
   border-radius: 8px;
-}
+} 
 
 a{color:var(--neon2);text-decoration:none}
 a:hover{text-decoration:none; filter:brightness(1.1)}
@@ -280,7 +288,7 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
   padding: 6px 0 8px;
   overflow-x: scroll;
 }
-.hdr-tools .tools-row { display:flex; align-items:center; gap:8px; padding:0 8px; margin-bottom:15px; overflow: scroll; }
+.hdr-tools .tools-row { display:flex; align-items:center; gap:8px; padding:10px 8px; margin-bottom:15px; overflow: scroll; }
 .hdr-tools .panel-row {     
   display: flex;
   padding: 6px 8px 0;

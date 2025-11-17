@@ -144,6 +144,7 @@ function mapToRegistryRows(tbl){
 addKpiAddon(
   {
     id: 'smq',
+    updateMode: 'throttled',
     order: 15,
     label: 'SMQ',
     title: `SMQ leaders (last ${SMQ_WINDOW_DAYS}d)`,

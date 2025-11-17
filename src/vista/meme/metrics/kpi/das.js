@@ -120,6 +120,7 @@ function mapAggToRegistryRows(agg) {
 addKpiAddon(
   {
     id: 'das',
+    updateMode: 'throttled',
     order: 25,
     label: 'DAS',
     title: `Decay-Adjusted Leaders`,

@@ -160,6 +160,7 @@ function mapAggToRegistryRows(agg) {
 addKpiAddon(
   {
     id: 'degen',
+    updateMode: 'throttled',
     order: 26,
     label: 'DEGEN',
     title: 'DEGEN Bottom Sniper',

@@ -157,6 +157,7 @@ export function mapDrawdownResistanceToRegistryRows(agg, limit = 3) {
 addKpiAddon(
   {
     id: 'drawdownResistance',
+    updateMode: 'throttled',
     order: 41,
     label: 'Draw',
     title: 'Drawdown resistance',

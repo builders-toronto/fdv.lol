@@ -179,6 +179,7 @@ export function mapStickinessIndexToRegistryRows(agg, limit = 3) {
 addKpiAddon(
   {
     id: 'stickinessIndex',
+    updateMode: 'throttled',
     order: 42,
     label: 'Sticky',
     title: 'Stickiness index',
