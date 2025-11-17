@@ -78,6 +78,7 @@ export function mapTx24ToRegistryRows(rows, limit = 3) {
 addKpiAddon(
   {
     id: 'tx24',
+    updateMode: 'throttled',
     order: 5,
     label: '24h',
     title: '24h transaction count',

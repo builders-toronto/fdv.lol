@@ -155,6 +155,7 @@ export function mapMcapMomentumToRegistryRows(agg, limit = 3) {
 addKpiAddon(
   {
     id: 'mcapMomentum',
+    updateMode: 'throttled',
     order: 40,
     label: 'MOM',
     title: 'MCap momentum',

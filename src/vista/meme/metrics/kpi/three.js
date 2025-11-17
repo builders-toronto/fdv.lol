@@ -144,6 +144,7 @@ export function mapAggToRegistryRows(agg) {
 addKpiAddon(
   {
     id: 'top3',
+    updateMode: 'throttled',
     order: 10,
     label: 'Top',
     title: `Top performers`,

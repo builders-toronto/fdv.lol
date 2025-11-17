@@ -168,6 +168,7 @@ export function mapHolderVelocityToRegistryRows(agg, limit = 10) {
 addKpiAddon(
   {
     id: 'holderVelocity',
+    updateMode: 'throttled',
     order: 20,  // after 'top3' (10) so it appears below
     label: 'Holders',
     title: 'Holder growth velocity',

@@ -172,6 +172,7 @@ function mapAggToRegistryRows(agg) {
 addKpiAddon(
   {
     id: 'engagement',
+    updateMode: 'throttled',
     order: 20,
     label: 'Engagement',
     title: `Most engaged tokens`,
