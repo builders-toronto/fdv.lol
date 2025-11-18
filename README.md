@@ -137,4 +137,11 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-refactor(pipeline): resilient ingestion (watchdog, auto-restart, pruning, abort cleanup)
+release: 0.0.4.0 -> help strategies, richer UI, knob tweaks, final-gate alignment, live sparkline, mobile polish
+
+Help module: expanded "Guide" with working strategies and presets
+UI: scaled wallet/metrics panels to reveal more data; log “Expand” UX
+Knob tweaks: safer defaults and clamps; friction snap UI fix
+Final gate: clamp alignment and control wiring verified
+KPI register: live sparkline enabled
+Mobile: responsive spacing and menu layout tweaks
