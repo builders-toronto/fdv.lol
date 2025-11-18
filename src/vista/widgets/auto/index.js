@@ -14,8 +14,8 @@ const SELL_TX_FEE_BUFFER_LAMPORTS = 500_000;
 const EXTRA_TX_BUFFER_LAMPORTS     = 250_000;  
 const EDGE_TX_FEE_ESTIMATE_LAMPORTS = 150_000;
 const MIN_QUOTE_RAW_AMOUNT = 1_000;
-const ELEVATED_MIN_BUY_SOL = 0.07;   
-const FRIC_SNAP_EPS_SOL    = 0.0012; 
+const ELEVATED_MIN_BUY_SOL = 0.06;   
+const FRIC_SNAP_EPS_SOL    = 0.0020; 
 const MAX_CONSEC_SWAP_400 = 3;
 const MIN_OPERATING_SOL            = 0.007;  
 const ROUTER_COOLDOWN_MS           = 60_000;
@@ -321,6 +321,12 @@ let state = {
   dynamicHardStopMaxPct: 5.0,
   dynamicHardStopBuyerRemorseSecs: 15,
 
+  // Final pump gate
+  finalPumpGateEnabled: true,
+  finalPumpGateMinStart: 2,
+  finalPumpGateDelta: 3,
+  finalPumpGateWindowMs: 10000,
+
   // money made tracker
   moneyMadeSol: 0,
   hideMoneyMade: false,           
@@ -431,6 +437,10 @@ const CONFIG_SCHEMA = {
   sustainTicksMin:          { type: "number",  def: 2, min: 1, max: 4 },
   sustainChgSlopeMin:       { type: "number",  def: 6 },
   sustainScSlopeMin:        { type: "number",  def: 3 },
+  finalPumpGateEnabled:     { type: "boolean", def: true },
+  finalPumpGateMinStart:    { type: "number",  def: 2 },  
+  finalPumpGateDelta:       { type: "number",  def: 3 },   
+  finalPumpGateWindowMs:    { type: "number",  def: 10000, min: 1000, max: 30_000 },
 };
 
 function coerceNumber(v, def, opts = {}) {
@@ -463,6 +473,12 @@ function normalizeState(raw = {}) {
   out.minBuySol = Math.max(UI_LIMITS.MIN_BUY_SOL_MIN, coerceNumber(out.minBuySol, 0.06));
   out.coolDownSecsAfterBuy = Math.max(0, Math.min(12, coerceNumber(out.coolDownSecsAfterBuy, 5)));
   out.pendingGraceMs = Math.max(120_000, coerceNumber(out.pendingGraceMs, 120_000));
+
+  out.finalPumpGateEnabled  = !!out.finalPumpGateEnabled;
+  out.finalPumpGateMinStart = coerceNumber(out.finalPumpGateMinStart, 2,  { min: 0, max: 50 });
+  out.finalPumpGateDelta    = coerceNumber(out.finalPumpGateDelta, 3,     { min: 0, max: 50 });
+  out.finalPumpGateWindowMs = coerceNumber(out.finalPumpGateWindowMs, 10000, { min: 1000, max: 60_000 });
+
 
   if (typeof out.warmingEdgeMinExclPct !== "number" || !Number.isFinite(out.warmingEdgeMinExclPct)) {
     delete out.warmingEdgeMinExclPct;
@@ -4082,6 +4098,104 @@ async function pickTopPumper() {
   return mint;
 }
 
+function _getFinalPumpGateStore() {
+  if (!window._fdvFinalPumpGate)
+    window._fdvFinalPumpGate = new Map(); // mint -> { startScore, at, ready }
+  return window._fdvFinalPumpGate;
+}
+
+function isFinalPumpGateReady(mint) {
+  const cfg = state;
+  if (!cfg.finalPumpGateEnabled) return true;
+  if (!mint) return true;
+  const store = _getFinalPumpGateStore();
+  const rec = store.get(mint);
+  return !!(rec && rec.ready === true);
+}
+
+function runFinalPumpGateBackground() {
+  const cfg = state;
+  if (!cfg.finalPumpGateEnabled) return;
+
+  const store = _getFinalPumpGateStore();
+  const nowTs = now();
+
+  let leaders;
+  try {
+    leaders = computePumpingLeaders(5) || [];
+  } catch {
+    leaders = [];
+  }
+
+  const byMint = new Map();
+  for (const it of leaders) {
+    if (!it?.mint) continue;
+    const sc = Number(it.pumpScore);
+    if (!Number.isFinite(sc)) continue;
+    byMint.set(it.mint, sc);
+  }
+
+  for (const [mint, scoreNow] of byMint.entries()) {
+    const rec = store.get(mint);
+    if (!rec) {
+      if (scoreNow < cfg.finalPumpGateMinStart) {
+        log(
+          `Final gate: ${mint.slice(0,4)}… rejected, pumpScore ${scoreNow.toFixed(3)} < minStart ${cfg.finalPumpGateMinStart}.`
+        );
+        continue;
+      }
+      store.set(mint, { startScore: scoreNow, at: nowTs, ready: false });
+      log(
+        `Final gate: tracking ${mint.slice(0,4)}… startScore=${scoreNow.toFixed(3)} for Δ≥${cfg.finalPumpGateDelta}.`
+      );
+      continue;
+    }
+
+    if (rec.ready) {
+      if (nowTs - rec.at > cfg.finalPumpGateWindowMs * 3) {
+        store.delete(mint);
+      }
+      continue;
+    }
+
+    const elapsed = nowTs - rec.at;
+    const delta = scoreNow - rec.startScore;
+
+    if (elapsed > cfg.finalPumpGateWindowMs) {
+      log(
+        `Final gate: ${mint.slice(0,4)}… FAILED, Δscore=${delta.toFixed(3)} within ${(elapsed/1000).toFixed(1)}s (need ≥${cfg.finalPumpGateDelta}).`
+      );
+      store.delete(mint);
+      continue;
+    }
+
+    if (delta >= cfg.finalPumpGateDelta) {
+      log(
+        `Final gate: ${mint.slice(0,4)}… PASSED, Δscore=${delta.toFixed(3)} in ${(elapsed/1000).toFixed(1)}s. Ready to buy.`
+      );
+      store.set(mint, { ...rec, ready: true, at: nowTs });
+      continue;
+    }
+
+    logFastObserverSample(mint, {
+      pumpGateStart: rec.startScore,
+      pumpGateScoreNow: scoreNow,
+      pumpGateDelta: delta,
+      pumpGateElapsedMs: elapsed,
+    });
+  }
+
+  for (const [mint, rec] of store.entries()) {
+    if (!byMint.has(mint) && nowTs - rec.at > cfg.finalPumpGateWindowMs) {
+      store.delete(mint);
+    }
+  }
+}
+
+// function finalPumpGatePasses(mint, { it = null } = {}, nowTs = now()) {
+//   return isFinalPumpGateReady(mint);
+// }
+
 async function observeMintOnce(mint, opts = {}) {
   if (!mint) return { ok: false, passes: 0 };
 
@@ -5909,6 +6023,7 @@ async function tick() {
       }
     }
   } catch {}
+  try { await runFinalPumpGateBackground(); } catch {}
   if (state.endAt && now() >= state.endAt) {
     log("Lifetime ended. Unwinding…");
     try { await sweepAllToSolAndReturn(); } catch(e){ log(`Unwind failed: ${e.message||e}`); }
@@ -6103,6 +6218,11 @@ async function tick() {
         const leadersNow = computePumpingLeaders(3) || [];
         const itNow = leadersNow.find(x => x?.mint === mint);
         if (itNow) {
+          const gateOk = isFinalPumpGateReady(mint);
+          if (!gateOk) {
+            log(`Final gate: not ready to buy ${mint.slice(0,4)}… waiting for pump score Δ.`);
+            continue;
+          }
           const kpNow = itNow.kp || {};
           const metaNow = itNow.meta || {};
           const warm = detectWarmingUptick({ kp: { ...kpNow, mint }, meta: metaNow }, state);
@@ -6185,6 +6305,8 @@ async function tick() {
             log(`Sustain gate (lenient): skip ${mint.slice(0,4)}… (need ticks OR slopes; rNow=${risingNow} tUp=${trendUp})`);
             continue;
           }
+
+
         }
       } catch {}
 
