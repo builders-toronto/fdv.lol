@@ -44,8 +44,8 @@
   --fdv-primary:#00c2a8; 
   --fdv-primary-fg:#0b0d12; 
   --fdv-phantom:#8a63d2;
-  --fdv-bg: var(--fdv-bg, #0f1621);
-  --fdv-text: var(--text, #e8f2ff);
+  --fdv-bg:#0f1621;
+  --fdv-text: #e8f2ff;
   --fdv-primary-700: #1e6fd4;
   --fdv-danger: #ff4d4f;
   --fdv-danger-700: #d9363e;
@@ -81,10 +81,10 @@ html,body{
   overflow: auto;
 }
 
-* {
-  scrollbar-width: thin; /* Firefox */
+/* * {
+  scrollbar-width: thin; /* Firefox 
   scrollbar-color: color-mix(in srgb, var(--accent2) 45%, #101215) transparent;
-}
+} */
 
 /* Base track & thumb */
 
@@ -95,18 +95,24 @@ html,body{
   display: none;
 }
 
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 ::-webkit-scrollbar-track {
   border-radius: 10px;
   box-shadow: inset 0 0 0 1px rgba(123,241,255,.08);
 } 
 
 ::-webkit-scrollbar-thumb {
-   border-radius: 10px;
+  /* border-radius: 10px;
   border: 1px solid color-mix(in srgb, var(--accent2) 40%, #0b1118);
   box-shadow:
     0 0 0 1px rgba(0,0,0,.4),
     0 2px 4px rgba(0,0,0,.35),
-    inset 0 0 0 1px rgba(255,255,255,.04); 
+    inset 0 0 0 1px rgba(255,255,255,.04);  */
   display: none;
 
 }
@@ -356,7 +362,7 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
   position: static;
   display:none;
   width:100%;
-  background: linear-gradient(180deg, rgba(15,22,37,.96), rgba(15,22,37,.88));
+  /* background: linear-gradient(180deg, rgba(15,22,37,.96), rgba(15,22,37,.88)); */
   color:inherit;
   border:1px solid rgba(122,222,255,.12);
   border-radius:12px;
@@ -367,6 +373,7 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
 }
+
 .addon-panel.show { display:block; }
 
 .addon-head {
@@ -426,6 +433,31 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
 .addon-line2 {
   display:flex; align-items:center; gap:8px; flex-wrap:wrap;
   font-size:12px; opacity:.96;
+}
+
+@media (max-width: 1024px) {
+  .addon-right { flex-basis: 96px; }
+  .micro .spark { height: 20px; }
+}
+@media (max-width: 768px) {
+  .addon-right { flex-basis: 80px; }
+  .micro .spark { height: 18px; }
+  .addon-item .addon-line2 { font-size: 11px; gap: 8px; }
+}
+
+@media (max-width: 480px) {
+  .addon-list .addon-item > a {
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .addon-right {
+    order: 3;               
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    margin-top: 6px;
+  }
+  .micro .spark { height: 16px; }
+  .addon-item .mint-data { font-size: 4px; } 
 }
 
 /* Pills */
@@ -661,8 +693,7 @@ input[type="checkbox"]:disabled{
 
 .swapCoin{
     font-size: 1.1rem;
-    background: rgba(123, 241, 255, .06);
-    border: 1px solid rgb(115 200 227 / 60%) !important;
+    border: 2px solid rgb(115 200 227 / 60%) !important;
     margin-right: 5px;
 }
 
@@ -1016,9 +1047,6 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
   -webkit-backdrop-filter: blur(6px);
 }
 
-
-
-
 .search-results .row{
   display: grid;
   grid-template-columns: auto 1fr auto;
@@ -1203,6 +1231,13 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
   overflow:hidden;
   animation:fdv-pop .16s ease-out;
 }
+
+.fdv-guide > div{
+  margin-bottom:8px;
+  padding:8px 12px;
+  font-size:.9rem;
+}
+
 @keyframes fdv-pop{ from{ transform:translateY(6px) scale(.985); opacity:.75 } to{ transform:none; opacity:1 } }
 
 .fdv-modal-header{
@@ -1479,6 +1514,7 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 /* Buttons */
 .fdv-actions{ display:flex; flex-wrap:wrap; justify-content:space-between; gap:10px; margin-top: 10px; margin-bottom:10px; }
 .fdv-actions button, .fdv-grid button{
+  background: transparent;
   border: 1px solid var(--fdv-border);
   color: var(--fdv-text);
   padding: 10px 14px;

@@ -119,39 +119,44 @@ export function safeTokenLogo(raw, sym = '') {
 }
 
 (function installIpfsImageFallback() {
-  if (typeof window === 'undefined') return;
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
   if (window.__fdvIpfsFallbackInstalled) return;
   window.__fdvIpfsFallbackInstalled = true;
 
-  window.addEventListener('error', (e) => {
-    const el = e?.target;
-    if (!(el instanceof HTMLImageElement)) return;
-    const src = el.getAttribute('src') || '';
-    const sym = el.getAttribute('data-sym') || '';
-    const cid = extractCid(src);
-    if (!cid) return;
+  const perSrcFailCounts = new Map();
+  const MAX_RETRIES_PER_SRC = 2; 
 
-    const attempts = +(el.dataset.ipfsAttempts || 0);
-    if (attempts > 12) {
-      el.src = fallbackLogo(sym);
+  document.addEventListener('error', (ev) => {
+    const img = ev?.target;
+    if (!img || img.tagName !== 'IMG') return;
+
+    const currentSrc = img.getAttribute('src') || '';
+    if (!currentSrc) return;
+    if (!isLikelyCid(extractCid(currentSrc) || '')) return;
+
+    const prev = perSrcFailCounts.get(currentSrc) || 0;
+    if (prev >= MAX_RETRIES_PER_SRC) {
+      const cid = extractCid(currentSrc);
+      if (cid) _blocked.add(cid);
+      const tag = img.getAttribute('data-sym') || '';
+      img.src = fallbackLogo(tag);
+      return;
+    }
+    perSrcFailCounts.set(currentSrc, prev + 1);
+
+    try {
+      markGatewayFailure(currentSrc);
+    } catch {}
+
+    const next = nextGatewayUrl(currentSrc);
+    if (!next) {
+      const tag = img.getAttribute('data-sym') || '';
+      img.src = fallbackLogo(tag);
       return;
     }
 
-    try {
-      markGatewayFailure(src);
-      if (isCidBlocked(src)) {
-        el.src = fallbackLogo(sym);
-        return;
-      }
-      const next = nextGatewayUrl(src);
-      if (next && next !== src) {
-        el.dataset.ipfsAttempts = String(attempts + 1);
-        setTimeout(() => { el.src = next; }, 120 + Math.random() * 240);
-      } else {
-        el.src = fallbackLogo(sym);
-      }
-    } catch {
-      el.src = fallbackLogo(sym);
-    }
+    setTimeout(() => {
+      img.src = next;
+    }, 50);
   }, true);
 })();
