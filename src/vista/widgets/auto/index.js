@@ -5417,14 +5417,14 @@ async function evalAndMaybeSellPositions() {
         if (state.dynamicHardStopEnabled && canHardStop &&
             Number.isFinite(pnlNetPct) && Number.isFinite(dynStopPct) &&
             pnlNetPct <= -Math.abs(dynStopPct)) {
-          decision = { action: "sell_all", reason: `HARD_STOP ${pnlNetPct.toFixed(2)}%<=-${Math.abs(dynStopPct).toFixed(2)}%` };
-          decision.hardStop = true;
+          decision = { action: "sell_all", reason: `HARD_STOP ${pnlNetPct.toFixed(2)}%<=-${Math.abs(dynStopPct).toFixed(2)}%`, hardStop: true };
           isFastExit = true;
           log(`Dynamic hard stop for ${mint.slice(0,4)}… netPnL=${pnlNetPct.toFixed(2)}% thr=-${Math.abs(dynStopPct).toFixed(2)}% (age ${ageSec.toFixed(1)}s)`);
         } else if (state.dynamicHardStopEnabled && !canHardStop) {
           log(`Hard stop suppressed (age ${ageSec.toFixed(1)}s${creditsPending ? ", pending credit" : ""}) for ${mint.slice(0,4)}… netPnL=${pnlNetPct.toFixed(2)}%`);
         }
 
+        const skipSoftGates = !!(decision?.hardStop) || /HARD_STOP|FAST_/i.test(String(decision?.reason||""));
 
         let warmingMaxLossTriggered = false;
         if (state.rideWarming && pos.warmingHold === true) {
@@ -5455,16 +5455,15 @@ async function evalAndMaybeSellPositions() {
         if (warmingActive) {
           const ext = isWarmingHoldActive(mint, pos, warmReq, nowTs);
           warmingHoldActive = !!ext.active;
-          if (!warmingMaxLossTriggered) {
-            if (warmReq.shouldAutoRelease && !warmingHoldActive && pos.warmingHold === true && pnlPct >= warmReq.req) {
-              pos.warmingHold = false;
-              pos.warmingClearedAt = now();
-              delete pos.warmingExtendUntil;
-              save();
-              log(`Warming hold released to observer for ${mint.slice(0,4)}…`);
-            } else if (warmReq.shouldAutoRelease && pnlPct < warmReq.req) {
-              log(`Warming hold retained for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < req ${warmReq.req.toFixed(2)}%).`);
-            }
+
+          if (warmReq.shouldAutoRelease && !warmingHoldActive && pos.warmingHold === true) {
+            pos.warmingHold = false;
+            pos.warmingClearedAt = now();
+            delete pos.warmingExtendUntil;
+            save();
+            log(`Warming auto-release: ${mint.slice(0,4)}… (elapsed ${warmReq.elapsedTotalSec}s)`);
+          } else if (warmReq.shouldAutoRelease && pnlPct < warmReq.req && warmingHoldActive) {
+            log(`Warming hold retained for ${mint.slice(0,4)}… (extend active; PnL ${pnlPct.toFixed(2)}% < req ${warmReq.req.toFixed(2)}%).`);
           }
         }
 
@@ -5503,20 +5502,23 @@ async function evalAndMaybeSellPositions() {
 
 
 
-
-
         if (!warmingMaxLossTriggered && warmingHoldActive && pnlPct < warmReq.req && !forceRug && !forceEarlyFade) {
-          if (forceObserverDrop || forcePumpDrop) {
-            log(`Warming hold: suppressing volatility sell for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
+          if (skipSoftGates) {
+            // hard/fast (incl. max-hold) exits bypass warming hold
+          } else {
+            if (forceObserverDrop || forcePumpDrop) {
+              log(`Warming hold: suppressing volatility sell for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
+            }
+            forceObserverDrop = false;
+            forcePumpDrop = false;
           }
-          forceObserverDrop = false;
-          forcePumpDrop = false;
         }
 
+
+
+
         if (warmingActive && pos.warmingHold === true && warmingHoldActive && pnlPct < warmReq.req && decision && decision.action !== "none" && !/rug/i.test(decision.reason || "")) {
-          // Allow hard/fast exits to bypass warming guard
-          const rsn = String(decision.reason || "");
-          const isHardOrFast = !!decision.hardStop || /HARD_STOP|FAST_/i.test(rsn);
+          const isHardOrFast = skipSoftGates;
           if (!isHardOrFast) {
             log(`Warming hold: skipping sell (${decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
             decision = { action: "none", reason: "warming-hold-until-profit" };
@@ -5579,7 +5581,7 @@ async function evalAndMaybeSellPositions() {
         } else if (forceObserverDrop) {
           decision = { action: "sell_all", reason: earlyReason || "observer detection system" };
         } else if (forceExpire && (!decision || decision.action === "none")) {
-          decision = { action: "sell_all", reason: `max-hold>${maxHold}s` };
+          decision = { action: "sell_all", reason: `max-hold>${maxHold}s`, hardStop: true };
           log(`Max-hold reached for ${mint.slice(0,4)}… forcing sell.`);
         }
 
@@ -5603,7 +5605,9 @@ async function evalAndMaybeSellPositions() {
 
 
         if (decision && decision.action !== "none" && !forceRug) {
-          if (!isFastExit) {
+          if (skipSoftGates) {
+            // hard/fast exits bypass rebound defers
+          } else {
             const stillDeferred = Number(pos.reboundDeferUntil || 0) > nowTs;
             if (stillDeferred) {
               log(`Rebound gate: deferral active for ${mint.slice(0,4)}… skipping sell this tick.`);
