@@ -125,6 +125,7 @@ export function safeTokenLogo(raw, sym = '') {
 
   const perSrcFailCounts = new Map();
   const MAX_RETRIES_PER_SRC = 2; 
+  const HEAD_TIMEOUT_MS = 2500; // short timeout for HEAD checks
 
   document.addEventListener('error', (ev) => {
     const img = ev?.target;
@@ -148,15 +149,48 @@ export function safeTokenLogo(raw, sym = '') {
       markGatewayFailure(currentSrc);
     } catch {}
 
-    const next = nextGatewayUrl(currentSrc);
-    if (!next) {
+    const firstNext = nextGatewayUrl(currentSrc);
+    if (!firstNext) {
       const tag = img.getAttribute('data-sym') || '';
       img.src = fallbackLogo(tag);
       return;
     }
 
-    setTimeout(() => {
-      img.src = next;
-    }, 50);
+    (async () => {
+      let candidate = firstNext;
+      let attempts = 0;
+
+      while (candidate && attempts < IPFS_GATEWAYS.length) {
+        try {
+          const ctrl = new AbortController();
+          const tid = setTimeout(() => ctrl.abort(), HEAD_TIMEOUT_MS);
+          const res = await fetch(candidate, {
+            method: 'HEAD',
+            mode: 'cors',
+            cache: 'no-store',
+            redirect: 'follow',
+            signal: ctrl.signal,
+          });
+          clearTimeout(tid);
+
+          if (!res.ok || res.status >= 400) {
+            try { markGatewayFailure(candidate); } catch {}
+            candidate = nextGatewayUrl(candidate);
+            attempts++;
+            continue;
+          }
+
+          setTimeout(() => { img.src = candidate; }, 50);
+          return;
+        } catch {
+          try { markGatewayFailure(candidate); } catch {}
+          candidate = nextGatewayUrl(candidate);
+          attempts++;
+        }
+      }
+
+      const tag = img.getAttribute('data-sym') || '';
+      img.src = fallbackLogo(tag);
+    })();
   }, true);
 })();
