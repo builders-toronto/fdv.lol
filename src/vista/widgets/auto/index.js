@@ -38,7 +38,7 @@ const RUG_FORCE_SELL_SEVERITY = 0.60;
 const EARLY_URGENT_WINDOW_MS = 15_000; // buyers remorse
 
 const MAX_DOM_LOG_LINES = 300;      
-const MAX_LOG_MEM_LINES = 50000;
+const MAX_LOG_MEM_LINES = 10000; // memory log buffer low speed optimization
 
 
 const POSCACHE_KEY_PREFIX = "fdv_poscache_v1:";
@@ -1019,12 +1019,12 @@ async function sanitizeDustCache(ownerPubkeyStr) {
 //   const estSol = await quoteOutSol(mint, Number(sizeUi || 0), decimals).catch(()=>0);
 //   return { isDust: estSol > 0 && estSol < minSellNotionalSol(), estSol };
 // }
-// function moveRemainderToDust(ownerPubkeyStr, mint, sizeUi, decimals) {
-//   try { addToDustCache(ownerPubkeyStr, mint, sizeUi, decimals); } catch {}
-//   try { removeFromPosCache(ownerPubkeyStr, mint); } catch {}
-//   if (state.positions && state.positions[mint]) { delete state.positions[mint]; save(); }
-//   log(`Remainder classified as dust for ${mint.slice(0,4)}… removed from positions.`);
-// }
+function moveRemainderToDust(ownerPubkeyStr, mint, sizeUi, decimals) {
+  try { addToDustCache(ownerPubkeyStr, mint, sizeUi, decimals); } catch {}
+  try { removeFromPosCache(ownerPubkeyStr, mint); } catch {}
+  if (state.positions && state.positions[mint]) { delete state.positions[mint]; save(); }
+  log(`Remainder classified as dust for ${mint.slice(0,4)}… removed from positions.`);
+}
 
 // function markRouteDustFail(mint) {
 //   const nowTs = now();
@@ -1043,9 +1043,9 @@ async function sanitizeDustCache(ownerPubkeyStr) {
 //   return rec.count >= ROUTER_DUST_FAIL_THRESHOLD;
 // }
 
-// function clearRouteDustFails(mint) {
-//   try { window._fdvRouteDustFails.delete(mint); } catch {}
-// }
+function clearRouteDustFails(mint) {
+  try { window._fdvRouteDustFails.delete(mint); } catch {}
+}
 
 async function safeGetDecimalsFast(mintStr) {
   try { return await getMintDecimals(mintStr); } catch { return 6; }
@@ -5808,7 +5808,7 @@ async function evalAndMaybeSellPositions() {
             continue;
           }
 
-          // clearRouteDustFails(mint);
+          clearRouteDustFails(mint);
 
           const prevSize = Number(pos.sizeUi || sellUi);
           const debit = await waitForTokenDebit(kp.publicKey.toBase58(), mint, prevSize, { timeoutMs: 25000, pollMs: 400 });
