@@ -1759,27 +1759,6 @@ function estimateProportionalCostSolForSell(mint, amountUi) {
   return null; // unknown cost => no fee
 }
 
-// function shouldAttachFeeForSell({ mint, amountRaw, inDecimals, quoteOutLamports }) {
-//   try {
-//     const dec = Number.isFinite(inDecimals) ? inDecimals : 6;
-//     const amountUi = Number(amountRaw || 0) / Math.pow(10, dec);
-//     if (!(amountUi > 0)) return false;
-
-//     const estOutSol = Number(quoteOutLamports || 0) / 1e9;
-//     if (!(estOutSol > 0)) return false;
-
-//     if (estOutSol < SMALL_SELL_FEE_FLOOR) return false;
-
-//     const estCostSold = estimateProportionalCostSolForSell(mint, amountUi);
-//     if (estCostSold === null) return false; // unknown cost -> don't charge
-
-//     const estPnl = estOutSol - estCostSold;
-//     return estPnl > 0; // we only fee when the user makes something
-//   } catch {
-//     return false;
-//   }
-// }
-
 async function jupFetch(path, opts) {
   const base = await getJupBase();
   const url = `${base}${path}`;
@@ -2323,20 +2302,20 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
         if (isSell) {
           const outRaw = Number(quote?.outAmount || 0);
           const outSol = outRaw / 1e9;
-          const eligible = feeBps > 0 && feeAccount;
-          if (eligible) {
-            // Re-quote with fee included once to keep quote and swap aligned
-            const qFee = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: restrictIntermediates, withFee: true });
-            const qFeeRes = await jupFetch(qFee.pathname + qFee.search);
-            if (qFeeRes.ok) {
-              quote = await qFeeRes.json();
-              quoteIncludesFee = true;
-              log(`Sell fee enabled @ ${feeBps} bps (est out ${outSol.toFixed(6)} SOL)`);
+          const eligible = feeBps > 0 && !!feeDestCandidate;
+            if (eligible) {
+              const qFee = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: restrictIntermediates, withFee: true });
+              const qFeeRes = await jupFetch(qFee.pathname + qFee.search);
+              if (qFeeRes.ok) {
+                quote = await qFeeRes.json();
+                feeAccount = feeDestCandidate; // ensure swap body includes fee account
+                quoteIncludesFee = true;
+                log(`Sell fee enabled @ ${feeBps} bps (est out ${outSol.toFixed(6)} SOL)`);
+              } else {
+                log("Fee quote failed; proceeding without fee for this sell.");
+                quoteIncludesFee = false;
+              }
             } else {
-              log("Fee quote failed; proceeding without fee for this sell.");
-              quoteIncludesFee = false;
-            }
-          } else {
             // Disable fee on small sells
             feeAccount = null;
             quoteIncludesFee = false;
@@ -3194,6 +3173,7 @@ function scorePumpCandidate(it) {
 
   return score;
 }
+  
 function countConsecUp(series = [], key) {
   if (!Array.isArray(series) || series.length < 2) return 0;
   let cnt = 0;
@@ -3446,13 +3426,13 @@ function shouldAttachFeeForSell({ mint, amountRaw, inDecimals, quoteOutLamports 
     const estOutSol = Number(quoteOutLamports || 0) / 1e9;
     if (!(estOutSol > 0)) return false;
 
-    //if (estOutSol < SMALL_SELL_FEE_FLOOR) return false;
-
     const estCostSold = estimateProportionalCostSolForSell(mint, amountUi);
-    if (estCostSold === null) return false; // unknown cost -> don't charge
+    if (estCostSold === null) {
+      return estOutSol >= MIN_SELL_CHUNK_SOL;
+    }
 
     const estPnl = estOutSol - estCostSold;
-    return estPnl > 0; // we only fee when the user makes something
+    return estPnl > 0; // attach fee only when profitable
   } catch {
     return false;
   }

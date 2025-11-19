@@ -1,3 +1,5 @@
+![fdv-lol-banner](banner.png)
+
 # 🐸 FDV Memecoin Radar - UltraLite
 
 A tiny, client-side Solana memecoin radar.  
@@ -11,6 +13,7 @@ Just open the page and get GOOD / WATCH / SHILL signals at a glance.
 - Ranks tokens by FDV, volume, and traction
 - Surfaces trending memecoins worth following
 - Provides explainable badges: GOOD · WATCH · SHILL
+- Uses a variety of custom made widgets to accelerate the users MEME expertise and growth.
 
 ---
 
@@ -27,7 +30,7 @@ Just open the page and get GOOD / WATCH / SHILL signals at a glance.
 
 ## 🧩 Widgets
 
-- Auto Pump (src/views/widgets/auto.js)
+- Auto Pump (src/vista/widgets/auto.js)
   - Auto wallet mode with local keypair, quick copy/export
   - Router/dust protections: min-notional buy/sell, cooldowns, pending credit reconciliation
   - Leader mode: rotate to top pumper; optional multi-buys with batching
@@ -37,30 +40,31 @@ Just open the page and get GOOD / WATCH / SHILL signals at a glance.
   - Reserve management: fee/rent/runway buffers, ATA rent estimation per swap
   - Integrated wallet menu: SOL total, sellable vs dust by Jupiter’s min-notional
 
-- Swap Modal (src/views/widgets/swap.js)
+- Swap Modal (src/vista/widgets/swap.js)
   - Phantom connect, programmatic sign, session verification (PoW) via Turnstile proxy
   - Quote preview: est output, min-received, route hops, slippage bps stepper
   - Fee routing via fee ATAs (ExactIn), sanity checks on-chain
   - Mobile deep-link to jup.ag; desktop Dex link fallback
   - Accessible modal, keyboard-safe on mobile, and throttles the live stream while open
 
-- Favorites Board (src/views/widgets/favboard.js)
+- Favorites Board (src/vista/widgets/favboard.js)
   - Fan-fav leaderboard with cached fetch + token metadata enrichment
   - Responsive card-style layout on mobile
   - Quick links to token pages and live stats
 
+![v0.0.4.0.png](v0.0.4.0.png)
 ---
 
 ## 📈 Custom KPIs (hand-written)
 
-- Pumping Radar (PUMP) (src/views/meme/addons/pumping.js)
+- Pumping Radar (PUMP) (src/vista/meme/addons/pumping.js)
   - Short lookback with fast decay for immediacy
   - Hard gates: min liquidity, 1h volume, price sanity
   - Acceleration signals: 5m→1h, 1h→6h, z-scored 1h volume surprise
   - Breakout vs recent lows, liquidity scaling, buy pressure boost
   - Badge system: 🔥 Pumping · Warming · Calm
 
-- DEGEN Bottom Sniper (DEGEN) (src/views/meme/addons/degen.js)
+- DEGEN Bottom Sniper (DEGEN) (src/vista/meme/addons/degen.js)
   - Trailing 3-day history with decay and per-mint caps
   - Gates: min liquidity/volume, price sanity
   - Recency-weighted stats (decayed mean/std), bounce from local lows, cheapness factor
