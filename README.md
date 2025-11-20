@@ -141,9 +141,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-fix: auto bot bugs; docs: README; assets: banner; license: MIT
-
-- fixed auto bot bugs
-- refactored README with new screenshots
-- created fdv.lol banner image
-- added MIT license (we are only here for the math v0.0.0.0.0.0.0.0.0.0.1)
+fix(ipfs): dev localhost silencing; intercept IMG; skip probes to stop DNS spam; efactor start; scrolling mount with fixed baseline

@@ -1,4 +1,4 @@
-import { FALLBACK_LOGO } from "../config/env.js";
+import { developer, FALLBACK_LOGO } from "../config/env.js";
 
 const IPFS_GATEWAYS = [
   'https://ipfs.io/ipfs/',
@@ -10,6 +10,53 @@ const IPFS_GATEWAYS = [
 const _failCounts = new Map();
 const _blocked = new Set();
 const MAX_FAILS_PER_CID = 6;
+
+const SILENCE_STORM_WINDOW_MS = 2000;
+const SILENCE_STORM_THRESHOLD = 6; 
+let __ipfsErrTimes = [];
+
+function _isDevHost() {
+  try {
+    const h = (location && location.hostname) || '';
+    return /^(localhost|127\.0\.0\.1|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(h);
+  } catch { return false; }
+}
+
+function shouldSilenceIpfs() {
+  if (!developer) return false;
+  try {
+    if (typeof window !== 'undefined' && window.__fdvSilenceIpfs) return true;
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('fdv_silence_ipfs') === '1') return true;
+  } catch {}
+  return false;
+}
+
+function setSilenceIpfs(on = true) {
+  if (!developer) return;
+  try {
+    if (typeof window !== 'undefined') window.__fdvSilenceIpfs = !!on;
+    if (typeof localStorage !== 'undefined') {
+      if (on) localStorage.setItem('fdv_silence_ipfs', '1');
+      else localStorage.removeItem('fdv_silence_ipfs');
+    }
+  } catch {}
+}
+
+function recordIpfsErrAndMaybeSilence() {
+  const now = Date.now();
+  __ipfsErrTimes.push(now);
+  __ipfsErrTimes = __ipfsErrTimes.filter(t => now - t <= SILENCE_STORM_WINDOW_MS);
+  if (__ipfsErrTimes.length >= SILENCE_STORM_THRESHOLD) setSilenceIpfs(true);
+}
+
+if (typeof window !== 'undefined') {
+  if (_isDevHost() && developer) {
+    try {
+      if (localStorage.getItem('fdv_silence_ipfs') !== '0') setSilenceIpfs(true);
+    } catch {}
+  }
+  if (developer) window.addEventListener('online', () => setSilenceIpfs(false));
+}
 
 function abbreviateSym(sym = '') {
   const s = String(sym || '').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,4);
@@ -64,9 +111,12 @@ export function buildGatewayUrl(cid, gwIndex = 0) {
 }
 export function firstIpfsUrl(raw) {
   const cid = extractCid(raw);
-  return cid ? buildGatewayUrl(cid, 0) : raw;
+  if (!cid) return raw;
+  if (shouldSilenceIpfs()) return ''; 
+  return buildGatewayUrl(cid, 0);
 }
 export function nextGatewayUrl(currentSrc) {
+  if (shouldSilenceIpfs()) return null;
   const cid = extractCid(currentSrc);
   if (!cid) return null;
   if (_blocked.has(cid)) return null;
@@ -101,7 +151,7 @@ function isLogoBlocked(raw) {
 }
 
 export function normalizeTokenLogo(raw, sym = '') {
-  if (!raw) return fallbackLogo(sym);
+  if (!raw || shouldSilenceIpfs()) return fallbackLogo(sym);
   try {
     if (isLogoBlocked(raw)) return fallbackLogo(sym);
     const u = firstIpfsUrl(raw);
@@ -114,18 +164,52 @@ export function normalizeTokenLogo(raw, sym = '') {
   }
 }
 
-export function safeTokenLogo(raw, sym = '') {
-  return normalizeTokenLogo(raw, sym);
-}
-
 (function installIpfsImageFallback() {
+  if (!developer) return;
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
   if (window.__fdvIpfsFallbackInstalled) return;
   window.__fdvIpfsFallbackInstalled = true;
+  try {
+    if (!window.__fdvIpfsSrcIntercept) {
+      window.__fdvIpfsSrcIntercept = true;
+      const desc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+      if (desc && desc.set) {
+        const origSet = desc.set, origGet = desc.get;
+        Object.defineProperty(HTMLImageElement.prototype, 'src', {
+          get: function() { return origGet.call(this); },
+          set: function(v) {
+            try {
+              const vs = String(v || '');
+              if (shouldSilenceIpfs() && isLikelyCid(extractCid(vs) || '')) {
+                const tag = this.getAttribute('data-sym') || '';
+                return origSet.call(this, fallbackLogo(tag));
+              }
+            } catch {}
+            return origSet.call(this, v);
+          },
+          configurable: true,
+          enumerable: desc.enumerable,
+        });
+      }
+      const origSetAttr = Element.prototype.setAttribute;
+      Element.prototype.setAttribute = function(name, value) {
+        try {
+          if (name === 'src' && this && this.tagName === 'IMG') {
+            const vs = String(value || '');
+            if (shouldSilenceIpfs() && isLikelyCid(extractCid(vs) || '')) {
+              const tag = this.getAttribute('data-sym') || '';
+              return origSetAttr.call(this, 'src', fallbackLogo(tag));
+            }
+          }
+        } catch {}
+        return origSetAttr.call(this, name, value);
+      };
+    }
+  } catch {}
 
   const perSrcFailCounts = new Map();
-  const MAX_RETRIES_PER_SRC = 2; 
-  const HEAD_TIMEOUT_MS = 2500; // short timeout for HEAD checks
+  const MAX_RETRIES_PER_SRC = 2;
+  const HEAD_TIMEOUT_MS = 2500;
 
   document.addEventListener('error', (ev) => {
     const img = ev?.target;
@@ -135,23 +219,32 @@ export function safeTokenLogo(raw, sym = '') {
     if (!currentSrc) return;
     if (!isLikelyCid(extractCid(currentSrc) || '')) return;
 
+    recordIpfsErrAndMaybeSilence();
+
+    if (shouldSilenceIpfs()) {
+      const tag = img.getAttribute('data-sym') || '';
+      img.onerror = null;
+      img.src = fallbackLogo(tag);
+      return;
+    }
+
     const prev = perSrcFailCounts.get(currentSrc) || 0;
     if (prev >= MAX_RETRIES_PER_SRC) {
       const cid = extractCid(currentSrc);
       if (cid) _blocked.add(cid);
       const tag = img.getAttribute('data-sym') || '';
+      img.onerror = null;
       img.src = fallbackLogo(tag);
       return;
     }
     perSrcFailCounts.set(currentSrc, prev + 1);
 
-    try {
-      markGatewayFailure(currentSrc);
-    } catch {}
+    try { markGatewayFailure(currentSrc); } catch {}
 
     const firstNext = nextGatewayUrl(currentSrc);
     if (!firstNext) {
       const tag = img.getAttribute('data-sym') || '';
+      img.onerror = null;
       img.src = fallbackLogo(tag);
       return;
     }
@@ -162,6 +255,8 @@ export function safeTokenLogo(raw, sym = '') {
 
       while (candidate && attempts < IPFS_GATEWAYS.length) {
         try {
+          if (shouldSilenceIpfs()) break;
+
           const ctrl = new AbortController();
           const tid = setTimeout(() => ctrl.abort(), HEAD_TIMEOUT_MS);
           const res = await fetch(candidate, {
@@ -170,17 +265,20 @@ export function safeTokenLogo(raw, sym = '') {
             cache: 'no-store',
             redirect: 'follow',
             signal: ctrl.signal,
-          });
+          }).catch(() => null);
           clearTimeout(tid);
 
-          if (!res.ok || res.status >= 400) {
+          if (!res || !res.ok || res.status >= 400) {
             try { markGatewayFailure(candidate); } catch {}
             candidate = nextGatewayUrl(candidate);
             attempts++;
             continue;
           }
 
-          setTimeout(() => { img.src = candidate; }, 50);
+          setTimeout(() => {
+            img.onerror = null; // console spam lags the application
+            img.src = candidate;
+          }, 50);
           return;
         } catch {
           try { markGatewayFailure(candidate); } catch {}
@@ -190,6 +288,7 @@ export function safeTokenLogo(raw, sym = '') {
       }
 
       const tag = img.getAttribute('data-sym') || '';
+      img.onerror = null;
       img.src = fallbackLogo(tag);
     })();
   }, true);
