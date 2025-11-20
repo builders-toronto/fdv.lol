@@ -4,7 +4,7 @@ import { pctChipsHTML } from '../render/chips.js';
 import { EXPLORER, FALLBACK_LOGO, JUP_SWAP, shortAddr } from '../../../config/env.js';
 import { buildSocialLinksHtml } from '../../../lib/socialBuilder.js';
 import { fmtUsd, normalizeWebsite } from '../../../core/tools.js';
-import { safeTokenLogo } from '../../../core/ipfs.js';
+import { normalizeTokenLogo } from '../../../core/ipfs.js';
 import { formatPriceParts, toDecimalString } from '../../../lib/formatPrice.js'; 
 
 function escAttr(v) {
@@ -53,7 +53,7 @@ export function priceHTML(value) {
 
 export function coinCard(it) {
   const rawlogo = it.logoURI || FALLBACK_LOGO(it.symbol);
-  const logo = safeTokenLogo(rawlogo);
+  const logo = normalizeTokenLogo(rawlogo);
   const website = normalizeWebsite(it.website) || EXPLORER(it.mint);
   const buyUrl = JUP_SWAP(it.mint);
 
@@ -260,7 +260,7 @@ export function updateCardDOM(el, it) {
 
   const logo = el.querySelector('[data-logo]');
   if (logo) {
-    const nextSrc = safeTokenLogo(it.logoURI || '', it.symbol || it.name || '');
+    const nextSrc = normalizeTokenLogo(it.logoURI || '', it.symbol || it.name || '');
     if (nextSrc && logo.getAttribute('src') !== nextSrc) {
       logo.setAttribute('src', nextSrc);
       if (!logo.getAttribute('data-sym')) {

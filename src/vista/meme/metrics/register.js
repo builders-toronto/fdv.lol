@@ -1,5 +1,5 @@
 
-import { safeTokenLogo } from '../../../core/ipfs.js';
+import { normalizeTokenLogo } from '../../../core/ipfs.js';
 import { sparklineSVG } from '../render/sparkline.js';
 
 const REGISTRY = [];
@@ -8,6 +8,7 @@ const ITEM_HISTORY = new Map();
 
 const SPARK_LENGTH = 24;
 const SPARK_MIN_INTERVAL_MS = 1500;
+const SPARK_MOUNTS = new Map();
 
 function updateItemHistory(mint, price) {
   if (!mint || !Number.isFinite(price) || price <= 0) return [];
@@ -164,7 +165,7 @@ function renderAddon(addon) {
   }
 
   ui.listEl.innerHTML = items.map((row, i) => {
-    const logo = safeTokenLogo(row.imageUrl || row.logoURI || '', row.symbol || '');
+    const logo = normalizeTokenLogo(row.imageUrl || row.logoURI || '', row.symbol || '');
     const sym = row.symbol || '';
     const name = row.name || '';
     const price = fmtPrice(row.priceUsd);
