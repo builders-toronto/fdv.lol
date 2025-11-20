@@ -203,7 +203,7 @@ let state = {
   trailPct: 6,                 
   minProfitToTrailPct: 3,     
   coolDownSecsAfterBuy: 5,    
-  minHoldSecs: 0,  
+  minHoldSecs: 5,  
   maxHoldSecs: 50,           
   partialTpPct: 50,            
   minQuoteIntervalMs: 10000, 
@@ -248,10 +248,10 @@ let state = {
   seedBuyCache: true,
   USDCfallbackEnabled: true,
   observerDropSellAt: 4,
-  observerGraceSecs: 45,
+  observerGraceSecs: 85,
   // Observer hysteresis settings
   observerDropMinAgeSecs: 5,   
-  observerDropConsec: 2,     
+  observerDropConsec: 3,     
   observerDropTrailPct: 2.5,    
 
   // Cache
@@ -285,11 +285,11 @@ let state = {
  
   reboundGateEnabled: true,         
   reboundLookbackSecs: 45,       
-  reboundMaxDeferSecs: 20,         
-  reboundHoldMs: 4000,             
+  reboundMaxDeferSecs: 40,         
+  reboundHoldMs: 8000,             
   reboundMinScore: 0.34,            
-  reboundMinChgSlope: 12,           
-  reboundMinScSlope: 8,             
+  reboundMinChgSlope: 8,           
+  reboundMinScSlope: 5,             
   reboundMinPnLPct: -15,          
 
   fastExitEnabled: true,
@@ -406,11 +406,11 @@ const CONFIG_SCHEMA = {
   edgeSafetyBufferPct:      { type: "number",  def: 0.10, min: 0, max: 2 },
   reboundGateEnabled:       { type: "boolean", def: true },
   reboundLookbackSecs:      { type: "number",  def: 45,  min: 5, max: 180 },
-  reboundMaxDeferSecs:      { type: "number",  def: 20,  min: 4, max: 120 },
-  reboundHoldMs:            { type: "number",  def: 4000, min: 500, max: 15000 },
+  reboundMaxDeferSecs:      { type: "number",  def: 40,  min: 4, max: 120 },
+  reboundHoldMs:            { type: "number",  def: 8000, min: 500, max: 15000 },
   reboundMinScore:          { type: "number",  def: 0.34 },
-  reboundMinChgSlope:       { type: "number",  def: 12 },
-  reboundMinScSlope:        { type: "number",  def: 8 },
+  reboundMinChgSlope:       { type: "number",  def: 8 },
+  reboundMinScSlope:        { type: "number",  def: 5 },
   reboundMinPnLPct:         { type: "number",  def: -15, min: -90, max: 90 },
   fastExitEnabled:          { type: "boolean", def: true },
   fastExitSlipBps:          { type: "number",  def: 400 },
@@ -3522,28 +3522,39 @@ function shouldDeferSellForRebound(mint, pos, pnlPct, nowTs, reason = "") {
 
     
 
-
-
-    const ageMs = nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0);
+    // Fast peak relax 2 times on observer drop
+    const anchorTs = Number(pos.fastPeakAt || pos.lastBuyAt || pos.acquiredAt || 0);
+    
+    const ageMs = nowTs - anchorTs;
+    
     const lookbackMs = Math.max(5_000, Number(state.reboundLookbackSecs || 45) * 1000);
-    if (ageMs > lookbackMs) return false;
 
-    // Avoid deep losers
+    const allowObserverRelax = /observer/i.test(reason || "");
+
+    const withinWindow = ageMs <= lookbackMs || (allowObserverRelax && ageMs <= lookbackMs * 2);
+    
+    if (!withinWindow) return false;
+
     const minPnl = Number(state.reboundMinPnLPct || -15);
+
     if (Number.isFinite(pnlPct) && pnlPct <= minPnl) return false;
 
-    // Cap total deferral time
     const startedAt = Number(pos.reboundDeferStartedAt || 0);
+
     const maxDefMs = Math.max(4_000, Number(state.reboundMaxDeferSecs || 20) * 1000);
+
     if (startedAt && (nowTs - startedAt) > maxDefMs) return false;
 
     const sig = computeReboundSignal(mint);
+
     if (!sig.ok) return false;
 
-    // Initialize deferral window
     if (!pos.reboundDeferStartedAt) pos.reboundDeferStartedAt = nowTs;
+    
     pos.reboundDeferUntil = nowTs + Math.max(1000, Number(state.reboundHoldMs || 4000));
+    
     pos.reboundDeferCount = Number(pos.reboundDeferCount || 0) + 1;
+    
     save();
 
     log(`Rebound gate: holding ${mint.slice(0,4)}… (${sig.why}; score=${sig.score.toFixed(3)} chgSlope=${sig.chgSlope.toFixed(2)}/m scSlope=${sig.scSlope.toFixed(2)}/m)`);
