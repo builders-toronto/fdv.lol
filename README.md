@@ -141,4 +141,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-fix(ipfs): dev localhost silencing; intercept IMG; skip probes to stop DNS spam; efactor start; scrolling mount with fixed baseline
+feat(pump): add focusMint API + bot integration for per‑mint metrics

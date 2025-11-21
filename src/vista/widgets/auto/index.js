@@ -1,4 +1,4 @@
-import { computePumpingLeaders, getRugSignalForMint } from "../../meme/metrics/kpi/pumping.js";
+import { computePumpingLeaders, getRugSignalForMint, focusMint } from "../../meme/metrics/kpi/pumping.js";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
@@ -189,7 +189,7 @@ let state = {
   stealthMode: false,
   loadDefaultState: true,
   mint: "",
-  tickMs: 1000,
+  tickMs: 100,
   budgetUi: 0.5,  
   maxTrades: 6,  // legacy
   minSecsBetween: 90,
@@ -320,7 +320,7 @@ let state = {
   dynamicHardStopBasePct: 4.0,     // base 4%
   dynamicHardStopMinPct: 3.0,      // clamp to 3-5%
   dynamicHardStopMaxPct: 5.0,
-  dynamicHardStopBuyerRemorseSecs: 15,
+  dynamicHardStopBuyerRemorseSecs: 8,
 
   // Final pump gate
   finalPumpGateEnabled: true,
@@ -376,7 +376,7 @@ const CONFIG_SCHEMA = {
   enabled:                  { type: "boolean", def: false },
   stealthMode:              { type: "boolean", def: false },
   mint:                     { type: "string",  def: "" },
-  tickMs:                   { type: "number",  def: 2000, min: 1200, max: 5000 },
+  tickMs:                   { type: "number",  def: 100, min: 50, max: 5000 },
   budgetUi:                 { type: "number",  def: 0.5,  min: 0, max: 1 },
   minSecsBetween:           { type: "number",  def: 90,   min: 0, max: 3600 },
   buyPct:                   { type: "number",  def: 0.2,  min: 0.01, max: 0.5 },
@@ -1567,6 +1567,40 @@ function hasComputeBudgetIx(ixs) {
   } catch { return false; }
 }
 
+function dedupeComputeBudgetIxs(ixs = []) {
+  try {
+    const pidStr = "ComputeBudget11111111111111111111111111";
+    const seen = new Set(); // 'cb:2' / 'cb:3'
+    const out = [];
+    // Walk from end to keep the last one
+    for (let i = ixs.length - 1; i >= 0; i--) {
+      const ix = ixs[i];
+      const p = ix?.programId;
+      const s = typeof p?.toBase58 === "function" ? p.toBase58() : (p?.toString?.() || String(p || ""));
+      if (s !== pidStr) { out.push(ix); continue; }
+      // ComputeBudget: first byte of data is the tag
+      const data = ix?.data instanceof Uint8Array ? ix.data : new Uint8Array();
+      const tag = data.length > 0 ? data[0] : -1;
+      if (tag === 2 || tag === 3) {
+        const key = `cb:${tag}`;
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        out.push(ix);
+      } else {
+        // keep other CB instructions (e.g., heap frame) as-is
+        out.push(ix);
+      }
+    }
+    // We traversed backwards; restore original order
+    out.reverse();
+    return out;
+  } catch {
+    return Array.isArray(ixs) ? ixs : [];
+  }
+}
+
 async function computeSpendCeiling(ownerPubkeyStr, { solBalHint } = {}) {
   const solBal = Number.isFinite(solBalHint) ? solBalHint : await fetchSolBalance(ownerPubkeyStr);
   const solLamports = Math.floor(solBal * 1e9);
@@ -2679,6 +2713,11 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
           toIx(swapInstruction),
           ...cleanupInstructions.map(toIx).filter(Boolean),
         ].filter(Boolean);
+
+
+        // dupe swap bug
+        ixs = dedupeComputeBudgetIxs(ixs);
+
 
         try {
           if (!hasComputeBudgetIx(ixs)) {
@@ -4187,9 +4226,60 @@ function runFinalPumpGateBackground() {
   }
 }
 
+function ensureFinalPumpGateTracking(mint, nowTs = now()) {
+  try {
+    const cfg = state;
+    if (!cfg.finalPumpGateEnabled || !mint) return false;
+    const store = _getFinalPumpGateStore();
+    if (store.has(mint)) return true;
+
+    let it = null;
+    try {
+      const leaders = computePumpingLeaders(10) || [];
+      it = leaders.find(x => x?.mint === mint) || null;
+    } catch {}
+
+    const sc = Number(it?.pumpScore);
+    if (Number.isFinite(sc) && sc >= cfg.finalPumpGateMinStart) {
+      store.set(mint, { startScore: sc, at: nowTs, ready: false });
+      log(`Final gate: tracking ${mint.slice(0,4)}… startScore=${sc.toFixed(3)} for Δ≥${cfg.finalPumpGateDelta}.`);
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
 // function finalPumpGatePasses(mint, { it = null } = {}, nowTs = now()) {
 //   return isFinalPumpGateReady(mint);
 // }
+
+async function focusMintAndRecord(mint, { refresh = true, ttlMs = 2000, signal } = {}) {
+  try {
+    if (!mint) return null;
+    if (!window._fdvFocusLast) window._fdvFocusLast = new Map();
+    const nowTs = now();
+    const last = Number(window._fdvFocusLast.get(mint) || 0);
+    // throttle per-mint focus calls
+    if (nowTs - last < Math.max(1200, Number(state.tickMs || 2000))) return null;
+
+    const res = await focusMint(mint, { refresh, ttlMs, signal });
+    window._fdvFocusLast.set(mint, nowTs);
+
+    if (res?.ok && res.row) {
+      const r = res.row;
+      recordLeaderSample(mint, {
+        pumpScore: Number(res.pumpScore ?? r.metric ?? 0),
+        liqUsd:    Number(r.liqUsd ?? 0),
+        v1h:       Number(r.v1hTotal ?? r.v1h ?? 0),
+        chg5m:     Number(r.chg5m ?? 0),
+        chg1h:     Number(r.chg1h ?? 0),
+      });
+    }
+    return res;
+  } catch {
+    return null;
+  }
+}
 
 async function observeMintOnce(mint, opts = {}) {
   if (!mint) return { ok: false, passes: 0 };
@@ -4203,8 +4293,25 @@ async function observeMintOnce(mint, opts = {}) {
     try { return (computePumpingLeaders(3) || []).find(x => x?.mint === mint) || null; } catch { return null; }
   };
 
-  const it0 = findLeader();
-  if (!it0) { noteObserverConsider(mint, 30_000); log(`Observer: ${mint.slice(0,4)}… not in leaders; skip (no blacklist).`); return { ok: false, passes: 0 }; }
+  let it0 = findLeader();
+  if (!it0) {
+    try {
+      const foc = await focusMint(mint, { refresh: true, ttlMs: 2000 });
+      if (foc?.ok && foc.row) {
+        it0 = {
+          pumpScore: Number(foc.pumpScore || 0),
+          kp: {
+            liqUsd: Number(foc.row.liqUsd || 0),
+            v1hTotal: Number(foc.row.v1hTotal || 0),
+            change5m: Number(foc.row.chg5m || 0),
+            change1h: Number(foc.row.chg1h || 0),
+          },
+        };
+      }
+    } catch {}
+  }
+  if (!it0) { noteObserverConsider(mint, 30_000); log(`Observer: ${mint.slice(0,4)}… not in leaders; using focus failed; skip.`); return { ok: false, passes: 0 }; }
+
   const kp0 = it0.kp || {};
   const s0 = {
     pumpScore: safeNum(it0.pumpScore, 0),
@@ -4219,9 +4326,24 @@ async function observeMintOnce(mint, opts = {}) {
   while (now() - start < windowMs) {
     await new Promise(r => setTimeout(r, sampleMs));
     const itN = findLeader();
-    //if (!itN) { setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS); log(`Observer: ${mint.slice(0,4)}… dropped; blacklisted 30m.`); return { ok: false, passes: 0 }; }
-    if (!itN) { log(`Observer: ${mint.slice(0,4)}… dropped during watch; skip (no blacklist).`); return { ok: false, passes: 0 }; }
-   
+    if (!itN) {
+      try {
+        const foc = await focusMint(mint, { refresh: true, ttlMs: 2000 });
+        if (foc?.ok && foc.row) {
+          itN = {
+            pumpScore: Number(foc.pumpScore || 0),
+            kp: {
+              liqUsd: Number(foc.row.liqUsd || 0),
+              v1hTotal: Number(foc.row.v1hTotal || 0),
+              change5m: Number(foc.row.chg5m || 0),
+              change1h: Number(foc.row.chg1h || 0),
+            },
+          };
+        }
+      } catch {}
+    }
+    if (!itN) { log(`Observer: ${mint.slice(0,4)}… dropped; focus unavailable; skip.`); return { ok: false, passes: 0 }; }
+
     const kpN = itN.kp || {};
     sN = {
       pumpScore: safeNum(itN.pumpScore, 0),
@@ -6023,6 +6145,12 @@ async function tick() {
     }
   } catch {}
   try { await runFinalPumpGateBackground(); } catch {}
+  try {
+    const held = Object.keys(state.positions || {}).filter(m => m && m !== SOL_MINT);
+    for (const m of held) {
+      await focusMintAndRecord(m, { refresh: true, ttlMs: 2000 }).catch(()=>{});
+    }
+  } catch {}
   if (state.endAt && now() >= state.endAt) {
     log("Lifetime ended. Unwinding…");
     try { await sweepAllToSolAndReturn(); } catch(e){ log(`Unwind failed: ${e.message||e}`); }
@@ -6190,6 +6318,13 @@ async function tick() {
           continue;
         }
       }
+      // Final uncoditional check?
+      try { ensureFinalPumpGateTracking(mint); } catch {}
+      if (!isFinalPumpGateReady(mint)) {
+        log(`Final gate: not ready to buy ${mint.slice(0,4)}… waiting for pump score Δ.`);
+        continue;
+      }
+
       if (state.allowMultiBuy && mint !== picks[0]) {
         try {
           const wMs = Math.max(1800, Math.floor((state.tickMs || 2000) * 0.9));
@@ -6217,11 +6352,6 @@ async function tick() {
         const leadersNow = computePumpingLeaders(3) || [];
         const itNow = leadersNow.find(x => x?.mint === mint);
         if (itNow) {
-          const gateOk = isFinalPumpGateReady(mint);
-          if (!gateOk) {
-            log(`Final gate: not ready to buy ${mint.slice(0,4)}… waiting for pump score Δ.`);
-            continue;
-          }
           const kpNow = itNow.kp || {};
           const metaNow = itNow.meta || {};
           const warm = detectWarmingUptick({ kp: { ...kpNow, mint }, meta: metaNow }, state);
@@ -6582,6 +6712,7 @@ async function tick() {
         try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
         log(`Bought ~${buySol.toFixed(4)} SOL -> ${mint.slice(0,4)}…`);
         clearObserverConsider(mint);
+        try { await focusMintAndRecord(mint, { refresh: true, ttlMs: 88 }); } catch {}
         await _logMoneyMade();
       } else {
         log(`Buy confirmed for ${mint.slice(0,4)}… but no token credit yet; will sync later.`);
@@ -6633,6 +6764,7 @@ async function tick() {
           sig: res.sig
         });
         try { await processPendingCredits(); } catch {}
+        try { await focusMintAndRecord(mint, { refresh: true, ttlMs: 88 }); } catch {}
         await _logMoneyMade();
       }
 
@@ -7431,7 +7563,7 @@ export function initAutoWidget(container = document.body) {
     </div>
     </div>
     <div class="fdv-bot-footer" style="margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
-      <span>Version: 0.0.4.0</span>
+      <span>Version: 0.0.4.1.gary</span>
     </div>
   `;
 
