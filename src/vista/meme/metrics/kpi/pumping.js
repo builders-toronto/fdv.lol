@@ -1,4 +1,5 @@
 import { addKpiAddon, getLatestSnapshot } from '../ingest.js';
+import { fetchTokenInfoLive } from '../../../../data/dexscreener.js';
 
 export const PUMP_STORAGE_KEY     = 'pump_history_v1';
 export const PUMP_WINDOW_DAYS     = 1.5;       // short lookback favors immediacy
@@ -252,6 +253,69 @@ export function getRugSignalForMint(mint, nowTs = Date.now()) {
     return { rugged, sev, rugFactor, score, badge };
   } catch {
     return { rugged: false, sev: 0, rugFactor: 1, score: 0, badge: 'Calm' };
+  }
+}
+
+export async function focusMint(mint, { refresh = true, ttlMs = 2000, signal } = {}) {
+  const id = String(mint || '').trim();
+  if (!id) return { ok: false, error: 'Missing mint' };
+
+  try {
+    if (refresh) {
+      try {
+        const live = await fetchTokenInfoLive(id, { ttlMs, signal });
+        if (live && !live.error) {
+          const item = {
+            mint: live.mint,
+            symbol: live.symbol,
+            name: live.name,
+            imageUrl: live.imageUrl,
+            pairUrl: live.headlineUrl,
+            priceUsd: live.priceUsd,
+            liquidityUsd: live.liquidityUsd,
+            liqUsd: live.liquidityUsd, // ensure mapper sees it
+            change5m: live.change5m,
+            change1h: live.change1h,
+            change6h: live.change6h,
+            change24h: live.change24h,
+            v5mTotal: live.v5mTotal,
+            v1hTotal: live.v1hTotal,
+            v6hTotal: live.v6hTotal,
+            vol24hUsd: live.v24hTotal,
+            buySell24h: live.buySell24h,
+          };
+          ingestPumpingSnapshot([item]);
+        }
+      } catch {
+      }
+    }
+
+    const h = prunePumpHistory(loadPumpHistory());
+    const recs = (h?.byMint && h.byMint[id]) ? h.byMint[id] : [];
+    const now = Date.now();
+    const { score, badge, meta } = computePumpingScoreForMint(recs, now);
+
+    const latest = recs.length ? (recs[recs.length - 1].kp || {}) : {};
+    const pumpScore = Number((score || 0).toFixed(2));
+    const aggLike = [{ mint: id, kp: latest, pumpScore, badge }];
+    const row = mapPumpingRows(aggLike)[0] || null;
+
+    return {
+      ok: true,
+      mint: id,
+      pumpScore,
+      badge: badge || 'Calm',
+      kp: latest,
+      meta: meta || {},
+      row, 
+      payload: {
+        title: 'Pumping Focus',
+        metricLabel: 'PUMP',
+        items: row ? [row] : [],
+      },
+    };
+  } catch (e) {
+    return { ok: false, error: e?.message || 'focusMint error' };
   }
 }
 
