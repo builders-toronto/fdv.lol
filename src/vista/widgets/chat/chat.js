@@ -1,4 +1,4 @@
-import { GISCUS } from "../../config/env.js";
+import { GISCUS } from "../../../config/env.js";
 
 const GISCUS_ORIGIN = "https://giscus.app";
 
@@ -7,6 +7,7 @@ function ensureContainer(id = "chatMount") {
   if (!el) console.warn(`#${id} not found for Giscus mount.`);
   return el;
 }
+
 
 function injectScript({ mint, containerId = "chatMount" }) {
   const mount = ensureContainer(containerId);
@@ -54,8 +55,6 @@ let booted = false;
 
 export function mountGiscus(opts) {
   const { mint, containerId = "chatMount", theme } = opts || {};
-
-  console.log("Giscus: mounting", { mint, containerId, theme });
 
   if (!mint) { console.warn("Giscus: missing mint"); return; }
   if (!GISCUS.repo || !GISCUS.repoId || !GISCUS.category || !GISCUS.categoryId) {
