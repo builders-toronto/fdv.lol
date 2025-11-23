@@ -141,4 +141,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-perf(log): smooth per-line rendering (rAF), ok/warn/err classes; add Alt+6 expand, Alt+7 focus, Alt+8 restore
+feat(auto): use per-minute slope acceleration; gate warming/picker on >0 accel
