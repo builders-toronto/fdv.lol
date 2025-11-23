@@ -105,26 +105,55 @@ function isPlanUpgradeError(e) {
   return /403/.test(s) || /-32602/.test(s) || /plan upgrade/i.test(s);
 }
 
-function log(msg) {
+let _logQueue = [];
+let _logRaf = 0;
+function _flushLogFrame() {
+  if (!logEl) { _logRaf = 0; return; }
+  const pinned = (logEl.scrollTop + logEl.clientHeight) >= (logEl.scrollHeight - 4);
+  if (_logQueue.length) {
+    const entry = _logQueue.shift();
+    const line = typeof entry === "string" ? entry : String(entry?.text ?? "");
+    const type = typeof entry === "object" ? String(entry.type || "ok") : "ok";
+    const d = document.createElement("div");
+    d.className = `log-row ${type}`;
+    d.textContent = line;
+    logEl.appendChild(d);
+    const expandBtn = logEl.querySelector("[data-auto-log-expand]");
+    const stickyCount = expandBtn ? 1 : 0;
+    const max = Math.max(100, Number(MAX_DOM_LOG_LINES || 600));
+    while ((logEl.children.length - stickyCount) > max) {
+      const target = expandBtn ? expandBtn.nextElementSibling : logEl.firstElementChild;
+      if (!target) break;
+      logEl.removeChild(target);
+    }
+    requestAnimationFrame(() => d.classList.add("in"));
+    if (pinned) logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  if (_logQueue.length) {
+    _logRaf = requestAnimationFrame(_flushLogFrame);
+  } else {
+    _logRaf = 0;
+  }
+}
+
+function log(msg, type) {
+  const t = String(type || "ok").toLowerCase();
+  const map = t.startsWith("err") ? "err" : t.startsWith("war") ? "warn" : t.startsWith("info") ? "info" : t.startsWith("help") ? "help" : "ok";
+
   if (!window._fdvLogBuffer) window._fdvLogBuffer = [];
   const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
   const buf = window._fdvLogBuffer;
   buf.push(line);
   if (buf.length > MAX_LOG_MEM_LINES) {
-    buf.splice(0, buf.length - Math.floor(MAX_LOG_MEM_LINES * 0.9)); // trim oldest
+    buf.splice(0, buf.length - Math.floor(MAX_LOG_MEM_LINES * 0.9));
   }
 
-  if (!logEl) return;
-  const d = document.createElement("div");
-  d.textContent = line;
-  logEl.appendChild(d);
-
-  const max = Math.max(100, Number(MAX_DOM_LOG_LINES || 600));
-  while (logEl.children.length > max) {
-    try { logEl.removeChild(logEl.firstChild); } catch {}
-  }
-  logEl.scrollTop = logEl.scrollHeight;
+  if (!logEl) return; // UI not mounted yet; buffer only
+  _logQueue.push({ text: line, type: map });
+  if (!_logRaf) _logRaf = requestAnimationFrame(_flushLogFrame);
 }
+
 function logObj(label, obj) {
   try { log(`${label}: ${JSON.stringify(obj)}`); } catch {}
 }
@@ -915,7 +944,7 @@ function savePosCache(ownerPubkeyStr, data) {
     localStorage.setItem(POSCACHE_KEY_PREFIX + ownerPubkeyStr, JSON.stringify(data || {}));
     log(`Saved position cache for ${ownerPubkeyStr.slice(0,4)}… with ${Object.keys(data||{}).length} entries.`);
   } catch {
-    log(`Failed to save position cache for ${ownerPubkeyStr.slice(0,4)}…`);
+    log(`Failed to save position cache for ${ownerPubkeyStr.slice(0,4)}…`, 'err');
   }
 }
 
@@ -969,7 +998,7 @@ function saveDustCache(ownerPubkeyStr, data) {
     localStorage.setItem(DUSTCACHE_KEY_PREFIX + ownerPubkeyStr, JSON.stringify(data || {}));
     log(`Saved dust cache for ${ownerPubkeyStr.slice(0,4)}… with ${Object.keys(data||{}).length} entries.`);
   } catch {
-    log(`Failed to save dust cache for ${ownerPubkeyStr.slice(0,4)}…`);
+    log(`Failed to save dust cache for ${ownerPubkeyStr.slice(0,4)}…`, 'err');
   }
 }
 
@@ -1038,7 +1067,7 @@ function moveRemainderToDust(ownerPubkeyStr, mint, sizeUi, decimals) {
   try { addToDustCache(ownerPubkeyStr, mint, sizeUi, decimals); } catch {}
   try { removeFromPosCache(ownerPubkeyStr, mint); } catch {}
   if (state.positions && state.positions[mint]) { delete state.positions[mint]; save(); }
-  log(`Remainder classified as dust for ${mint.slice(0,4)}… removed from positions.`);
+  log(`Remainder classified as dust for ${mint.slice(0,4)}… removed from positions.`, 'warn');
 }
 
 // function markRouteDustFail(mint) {
@@ -1472,7 +1501,7 @@ async function getConn() {
   const { Connection } = await loadWeb3();
   _conn = new Connection(url, { commitment: "confirmed", httpHeaders: headers });
   _connUrl = url; _connHdrKey = hdrKey;
-  log(`RPC connection ready -> ${url} ${redactHeaders(headers)}`);
+  log(`RPC connection ready -> ${url} ${redactHeaders(headers)}`, 'info');
   return _conn;
 }
 
@@ -1520,7 +1549,7 @@ async function fetchSolBalance(pubkeyStr) {
     log(`Balance fetch failed: ${e.message || e}`);
     lamports = 0;
   }
-  log(`Balance: ${(lamports/1e9).toFixed(6)} SOL`);
+  log(`Balance: ${(lamports/1e9).toFixed(6)} SOL`, 'info');
   return lamports / 1e9;
 }
 
@@ -2376,7 +2405,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
     } catch (e) {
       if (!isSell) throw e;
       haveQuote = false;
-      log(`Sell quote error; will try fallbacks: ${e.message || e}`);
+      log(`Sell quote error; will try fallbacks: ${e.message || e}`, 'err');
     }
   }
 
@@ -2557,7 +2586,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
             log("Re-quoted for legacy transaction.");
           }
         } catch (e) {
-          log(`Legacy re-quote error: ${e.message || e}`);
+          log(`Legacy re-quote error: ${e.message || e}`, 'err');
         }
       }
 
@@ -2682,7 +2711,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
               return { ok: false, code: "NO_ROUTE", msg: `swap-instr 400 ${errTxt.slice(0,120)}` };
             }
           const isNoRoute = /NO_ROUTE|COULD_NOT_FIND_ANY_ROUTE/i.test(errTxt);
-          log(`Swap-instructions error: ${errTxt || iRes.status}`);
+          log(`Swap-instructions error: ${errTxt || iRes.status}`, 'err');
           return { ok: false, code: isNoRoute ? "NO_ROUTE" : "JUP_DOWN", msg: `swap-instructions ${iRes.status}` };
         }
 
@@ -3026,7 +3055,7 @@ async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, sli
           }
         }
       } catch (e) {
-        log(`Split-sell fallback error: ${e.message || e}`);
+        log(`Split-sell fallback error: ${e.message || e}`, 'err');
       }
     }
     throw new Error(lastErrCode || "swap failed");
@@ -4295,13 +4324,15 @@ function runFinalPumpGateBackground() {
     if (!rec) {
       if (scoreNow < cfg.finalPumpGateMinStart) {
         log(
-          `Final gate: ${mint.slice(0,4)}… rejected, pumpScore ${scoreNow.toFixed(3)} < minStart ${cfg.finalPumpGateMinStart}.`
+          `Final gate: ${mint.slice(0,4)}… rejected, pumpScore ${scoreNow.toFixed(3)} < minStart ${cfg.finalPumpGateMinStart}.`,
+          'err'
         );
         continue;
       }
       store.set(mint, { startScore: scoreNow, at: nowTs, ready: false });
       log(
-        `Final gate: tracking ${mint.slice(0,4)}… startScore=${scoreNow.toFixed(3)} for Δ≥${cfg.finalPumpGateDelta}.`
+        `Final gate: tracking ${mint.slice(0,4)}… startScore=${scoreNow.toFixed(3)} for Δ≥${cfg.finalPumpGateDelta}.`,
+        'info'
       );
       continue;
     }
@@ -4318,7 +4349,8 @@ function runFinalPumpGateBackground() {
 
     if (elapsed > cfg.finalPumpGateWindowMs) {
       log(
-        `Final gate: ${mint.slice(0,4)}… FAILED, Δscore=${delta.toFixed(3)} within ${(elapsed/1000).toFixed(1)}s (need ≥${cfg.finalPumpGateDelta}).`
+        `Final gate: ${mint.slice(0,4)}… FAILED, Δscore=${delta.toFixed(3)} within ${(elapsed/1000).toFixed(1)}s (need ≥${cfg.finalPumpGateDelta}).`,
+        'warn'
       );
       store.delete(mint);
       continue;
@@ -4326,7 +4358,8 @@ function runFinalPumpGateBackground() {
 
     if (delta >= cfg.finalPumpGateDelta) {
       log(
-        `Final gate: ${mint.slice(0,4)}… PASSED, Δscore=${delta.toFixed(3)} in ${(elapsed/1000).toFixed(1)}s. Ready to buy.`
+        `Final gate: ${mint.slice(0,4)}… PASSED, Δscore=${delta.toFixed(3)} in ${(elapsed/1000).toFixed(1)}s. Ready to buy.`,
+        'info'
       );
       store.set(mint, { ...rec, ready: true, at: nowTs, passDelta: delta, elapsedMs: elapsed });
       try { retunePositionFromFinalGate(mint); } catch {}
@@ -4364,7 +4397,7 @@ function ensureFinalPumpGateTracking(mint, nowTs = now()) {
     const sc = Number(it?.pumpScore);
     if (Number.isFinite(sc) && sc >= cfg.finalPumpGateMinStart) {
       store.set(mint, { startScore: sc, at: nowTs, ready: false });
-      log(`Final gate: tracking ${mint.slice(0,4)}… startScore=${sc.toFixed(3)} for Δ≥${cfg.finalPumpGateDelta}.`);
+      log(`Final gate: tracking ${mint.slice(0,4)}… startScore=${sc.toFixed(3)} for Δ≥${cfg.finalPumpGateDelta}.`, 'warn');
       return true;
     }
   } catch {}
@@ -4858,7 +4891,7 @@ async function listOwnerSplPositions(ownerPubkeyStr) {
       return true;
     } catch (e) {
       if (isPlanUpgradeError(e)) { disableOwnerScans(e.message || e); return false; }
-      log(`Parsed owner scan error (${programId.toBase58?.() || "unknown"}): ${e.message || e}`);
+      log(`Parsed owner scan error (${programId.toBase58?.() || "unknown"}): ${e.message || e}`, 'err');
       return false;
     }
   }
@@ -5281,7 +5314,7 @@ async function verifyRealTokenBalance(ownerPub, mint, pos) {
 
     return { ok: true, sizeUi: chainUi };
   } catch (e) {
-    log(`verifyRealTokenBalance error ${mint.slice(0,4)}…: ${e.message||e}`);
+    log(`verifyRealTokenBalance error ${mint.slice(0,4)}…: ${e.message||e}`, 'err');
     return { ok: false, reason: "error" };
   }
 }
@@ -5357,7 +5390,7 @@ async function maybeStealthRotate(tag = "sell") {
     log(`Stealth: rotated wallet (${tag}). New wallet: ${newPubStr.slice(0,4)}…`);
     return true;
   } catch (e) {
-    log(`Stealth: rotation error: ${e.message || e}`);
+    log(`Stealth: rotation error: ${e.message || e}`, 'err');
     return false;
   }
 }
@@ -6311,7 +6344,7 @@ async function tick() {
 
   try { await evalAndMaybeSellPositions(); } catch {}
 
-  log("Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!");
+  log("Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!", "info");
 
   if (_buyInFlight || _inFlight || _switchingLeader) return;
 
@@ -6453,7 +6486,7 @@ async function tick() {
       // Final uncoditional check?
       try { ensureFinalPumpGateTracking(mint); } catch {}
       if (!isFinalPumpGateReady(mint)) {
-        log(`Final gate: not ready to buy ${mint.slice(0,4)}… waiting for pump score Δ.`);
+        log(`Final gate: not ready to buy ${mint.slice(0,4)}… waiting for pump score up Δ.`, 'warn');
         continue;
       }
 
@@ -7893,6 +7926,8 @@ export function initAutoWidget(container = document.body) {
   helpBtn.addEventListener("click", () => { modalEl.style.display = "flex"; });
 
   if (expandBtn && logEl) {
+    log("Log panel: click 'Expand' or press Alt+6 to enlarge. Press Esc to close.", "help");
+    log("Focus mode: press Alt+7 to hide other page elements, Alt+8 to restore.", "help");
     const setExpanded = (on) => {
       logEl.classList.toggle("fdv-log-full", !!on);
       expandBtn.textContent = on ? "Close" : "Expand";
@@ -7900,19 +7935,96 @@ export function initAutoWidget(container = document.body) {
       if (on) logEl.scrollTop = logEl.scrollHeight;
     };
 
+    function setAutoFocus(on) {
+      const body = document.body;
+      if (on) {
+        if (window._fdvFocusHidden) return; // already focused
+        let keep = (function findTop(el) {
+          let n = el;
+          while (n && n.parentElement && n.parentElement !== body) n = n.parentElement;
+          return n || el;
+        })(wrap);
+
+        const hidden = [];
+        Array.from(body.children).forEach(ch => {
+          if (ch === keep) return;
+          const tag = (ch.tagName || "").toUpperCase();
+          if (tag === "SCRIPT" || tag === "STYLE" || tag === "LINK") return;
+          ch.dataset.fdvPrevDisplay = ch.style.display || "";
+          ch.style.display = "none";
+          hidden.push(ch);
+        });
+
+        const hiddenWithin = [];
+        try {
+          const path = [];
+          let n = wrap;
+          while (n && n !== keep) { path.push(n); n = n.parentElement; }
+          path.push(keep);
+          for (let i = path.length - 1; i > 0; i--) {
+            const parent = path[i];
+            const childOnPath = path[i - 1];
+            Array.from(parent.children || []).forEach(ch => {
+              if (ch === childOnPath) return;
+              const tag = (ch.tagName || "").toUpperCase();
+              if (tag === "SCRIPT" || tag === "STYLE" || tag === "LINK") return;
+              ch.dataset.fdvPrevDisplay = ch.style.display || "";
+              ch.style.display = "none";
+              hiddenWithin.push(ch);
+            });
+          }
+        } catch {}
+
+        window._fdvFocusHidden = hidden;
+        window._fdvFocusHiddenWithin = hiddenWithin;
+
+        try { keep.scrollIntoView({ block: "start", behavior: "smooth" }); } catch {}
+        try { log("Focus mode: Auto-only (Alt+8 to restore).", "info"); } catch {}
+      } else {
+        const hidden = window._fdvFocusHidden || [];
+        hidden.forEach(ch => {
+          ch.style.display = ch.dataset.fdvPrevDisplay || "";
+          try { delete ch.dataset.fdvPrevDisplay; } catch {}
+        });
+        window._fdvFocusHidden = null;
+        const hiddenWithin = window._fdvFocusHiddenWithin || [];
+        hiddenWithin.forEach(ch => {
+          ch.style.display = ch.dataset.fdvPrevDisplay || "";
+          try { delete ch.dataset.fdvPrevDisplay; } catch {}
+        });
+        window._fdvFocusHiddenWithin = null;
+
+        try { log("Focus mode: restored.", "info"); } catch {}
+      }
+    }
+
     expandBtn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
       setExpanded(!logEl.classList.contains("fdv-log-full"));
     });
 
-    // Allow ESC to close when expanded
     document.addEventListener("keydown", (e) => {
+      const t = e.target;
+      const tag = (t && t.tagName) ? t.tagName.toLowerCase() : "";
+      const typing = tag === "input" || tag === "textarea" || tag === "select" || (t && t.isContentEditable);
+      if (typing) return;
+
       if (e.key === "Escape" && logEl.classList.contains("fdv-log-full")) {
         setExpanded(false);
+      } else if (e.altKey && (e.code === "Digit6" || e.key === "6")) {
+        setExpanded(true);
+        e.preventDefault();
+      } else if (e.altKey && (e.code === "Digit7" || e.key === "7")) {
+        setAutoFocus(true);
+        e.preventDefault();
+      } else if (e.altKey && (e.code === "Digit8" || e.key === "8")) {
+        setAutoFocus(false);
+        e.preventDefault();
       }
     });
   }
+    
     
   modalEl.addEventListener("click", (e) => {
     if (e.target === modalEl) {

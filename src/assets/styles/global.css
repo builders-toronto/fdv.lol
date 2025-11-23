@@ -38,7 +38,9 @@
   --fdv-fg:#e6e8eb; 
   --fdv-muted:#9aa6b2; 
   --fdv-accent:#5865f2;
-  --fdv-ok:#33e1c1; 
+  --fdv-ok:#ffffff; 
+  --fdv-info:#1affd5;
+  --fdv-help:#ffff00;
   --fdv-warn:#ffd166; 
   --fdv-err:#ff6b6b;
   --fdv-primary:#c2003a; 
@@ -1325,7 +1327,35 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 
 .fdv-status{ min-height:180px; background:#0b0f17; border: 1px solid #172033; border-radius: 12px; padding: 10px; overflow: hidden; }
 .fdv-log{ white-space:pre-wrap; font-size:.9rem; height:160px; overflow:auto }
-.fdv-log .ok{ color:var(--fdv-ok) } .fdv-log .err{ color:var(--fdv-err) } .fdv-log .warn{ color:var(--fdv-warn) }
+.fdv-log .ok{ color:var(--fdv-ok) }
+.fdv-log .info{ color:var(--fdv-info) }
+.fdv-log .help{ color:var(--fdv-help) }
+.fdv-log .err{ color:var(--fdv-err) }
+.fdv-log .warn{ color:var(--fdv-warn) }
+
+.fdv-log {
+  contain: content;
+  content-visibility: auto;
+  will-change: scroll-position;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  line-height: 1.3;
+}
+
+.fdv-log .log-row {
+  white-space: pre-wrap;
+  opacity: 0;
+  transform: translateY(1px);
+  transition: opacity .1s ease-out, transform .1s ease-out;
+}
+
+.fdv-log .log-row.in {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fdv-log .log-row { transition: none; transform: none; }
+}
 
 /* fdv-log: themed scrollbar */
 .fdv-log{
