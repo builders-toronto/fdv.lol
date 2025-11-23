@@ -216,7 +216,7 @@ let state = {
   avgEntryUsd: 0,
   lastTradeTs: 0,
   trailPct: 6,                 
-  minProfitToTrailPct: 3,     
+  minProfitToTrailPct: 2,     
   coolDownSecsAfterBuy: 5,    
   minHoldSecs: 5,  
   maxHoldSecs: 50,           
@@ -4223,6 +4223,7 @@ function computeDynamicTpSlForMint(mint) {
 }
 
 function pickTpSlForMint(mint) {
+  // Help user if TP/SL is wacked.
   const dyn = computeDynamicTpSlForMint(mint);
   const user = {
     tp: Math.max(1, Number(state.takeProfitPct || 0)),
