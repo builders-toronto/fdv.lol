@@ -142,19 +142,34 @@ async function _logMoneyMade() {
 }
 
 async function _addRealizedPnl(solProceeds, costSold, label = "PnL") {
-  const pnl = Number(solProceeds || 0) - Number(costSold || 0);
-  state.moneyMadeSol = Number(state.moneyMadeSol || 0) + pnl;
+  const proceeds = Number(solProceeds || 0);
+  const cost = Number(costSold || 0);
+  const costKnown = Number.isFinite(cost) && cost > 0;
+
+  const pnl = costKnown ? (proceeds - cost) : 0;
+  if (costKnown) {
+    state.moneyMadeSol = Number(state.moneyMadeSol || 0) + pnl;
+  }
   save();
   try {
     const px = await getSolUsd();
     const totalSol = Number(state.moneyMadeSol || 0);
     const totalUsd = px > 0 ? ` (${fmtUsd(totalSol * px)})` : "";
-    const sign = pnl >= 0 ? "+" : "";
-    log(`${label}: ${sign}${pnl.toFixed(6)} SOL | Money made: ${totalSol.toFixed(6)} SOL${totalUsd}`);
+    if (costKnown) {
+      const sign = pnl >= 0 ? "+" : "";
+      log(`${label}: ${sign}${pnl.toFixed(6)} SOL | Money made: ${totalSol.toFixed(6)} SOL${totalUsd}`);
+    } else {
+      // your cost is unknown?
+      log(`${label}: proceeds ${proceeds.toFixed(6)} SOL (cost unknown) | Money made: ${totalSol.toFixed(6)} SOL${totalUsd}`);
+    }
   } catch {
     const totalSol = Number(state.moneyMadeSol || 0);
-    const sign = (Number(solProceeds || 0) - Number(costSold || 0)) >= 0 ? "+" : "";
-    log(`${label}: ${sign}${(Number(solProceeds||0)-Number(costSold||0)).toFixed(6)} SOL | Money made: ${totalSol.toFixed(6)} SOL`);
+    if (costKnown) {
+      const sign = (Number(solProceeds || 0) - Number(costSold || 0)) >= 0 ? "+" : "";
+      log(`${label}: ${sign}${(Number(solProceeds||0)-Number(costSold||0)).toFixed(6)} SOL | Money made: ${totalSol.toFixed(6)} SOL`);
+    } else {
+      log(`${label}: proceeds ${Number(solProceeds||0).toFixed(6)} SOL (cost unknown) | Money made: ${totalSol.toFixed(6)} SOL`);
+    }
   }
 }
 
@@ -3467,7 +3482,7 @@ function shouldAttachFeeForSell({ mint, amountRaw, inDecimals, quoteOutLamports 
 
     const estCostSold = estimateProportionalCostSolForSell(mint, amountUi);
     if (estCostSold === null) {
-      return estOutSol >= MIN_SELL_CHUNK_SOL;
+      return false;
     }
 
     const estPnl = estOutSol - estCostSold;
@@ -4147,6 +4162,111 @@ function isFinalPumpGateReady(mint) {
   return !!(rec && rec.ready === true);
 }
 
+function computeFinalGateIntensity(mint) {
+  try {
+    const cfg = state;
+    const store = _getFinalPumpGateStore();
+    const rec = store.get(mint);
+    const series = getLeaderSeries(mint, 3) || [];
+    const chgSlope = _clamp(slope3pm(series, "chg5m"), -60, 60);
+    const scSlope  = _clamp(slope3pm(series, "pumpScore"), -20, 20);
+
+    let base = 1.0;
+    if (rec && rec.ready) {
+      const delta   = Math.max(0, Number(rec.passDelta || 0));
+      const need    = Math.max(0.001, Number(cfg.finalPumpGateDelta || 3));
+      const elapsed = Math.max(500, Number(rec.elapsedMs || (now() - Number(rec.at || 0)) || 1000));
+      const win     = Math.max(500, Number(cfg.finalPumpGateWindowMs || 10000));
+      const start   = Math.max(0, Number(rec.startScore || 0));
+      // Δscore speed and start strength
+      base = (delta / need) * (win / elapsed) * (1 + Math.min(0.5, start / 8));
+    } else {
+      // fallback to momentum if no pass record
+      base = 0.9 + Math.max(0, chgSlope / 30) + Math.max(0, scSlope / 12);
+    }
+    const intensity = Math.max(0.4, Math.min(2.5, base));
+    let tier = "moderate";
+    if (intensity >= 1.6) tier = "explosive";
+    else if (intensity < 0.9) tier = "weak";
+    return { intensity, tier, chgSlope, scSlope };
+  } catch {
+    return { intensity: 1.0, tier: "moderate", chgSlope: 0, scSlope: 0 };
+  }
+}
+
+function computeDynamicTpSlForMint(mint) {
+  const { intensity, tier, chgSlope, scSlope } = computeFinalGateIntensity(mint);
+  let tp = Math.max(5, Number(state.takeProfitPct || 12));
+  let sl = Math.max(0.5, Number(state.stopLossPct || 4));
+  let trailPct = Math.max(0, Number(state.trailPct || 6));
+  let arm = Math.max(0, Number(state.minProfitToTrailPct || 3));
+
+  if (tier === "explosive") {
+    tp = Math.min(25, Math.max(tp, 18));
+    sl = Math.max(2.5, Math.min(sl, 4));
+    trailPct = Math.max(6, Math.min(10, trailPct));
+    arm = Math.max(4, arm);
+  } else if (tier === "moderate") {
+    tp = Math.min(18, Math.max(tp, 12));
+    sl = Math.max(3.5, Math.min(6, sl));
+    trailPct = Math.max(6, Math.min(12, trailPct));
+    arm = Math.max(3, arm);
+  } else { // weak
+    tp = Math.min(14, Math.max(8, tp - 2));
+    sl = Math.max(5, Math.min(8, sl + 1));
+    trailPct = Math.max(8, Math.min(14, trailPct + 2));
+    arm = Math.max(2, arm);
+  }
+  if (chgSlope < 6 || scSlope < 3) sl = Math.max(sl, 5);
+
+  return { tp, sl, trailPct, arm, tier, intensity };
+}
+
+function pickTpSlForMint(mint) {
+  const dyn = computeDynamicTpSlForMint(mint);
+  const user = {
+    tp: Math.max(1, Number(state.takeProfitPct || 0)),
+    sl: Math.max(0.1, Number(state.stopLossPct || 0)),
+    trailPct: Math.max(0, Number(state.trailPct || 0)),
+    arm: Math.max(0, Number(state.minProfitToTrailPct || 0)),
+  };
+
+  const hardWacked =
+    user.tp < 3 || user.tp > 100 ||
+    user.sl < 0.25 || user.sl > 25 ||
+    user.trailPct > 50 || user.arm > 30 ||
+    (user.tp <= user.sl); // tp should generally be > sl
+
+  const tpDiff    = Math.abs(user.tp - dyn.tp) / Math.max(5, dyn.tp);
+  const slDiff    = Math.abs(user.sl - dyn.sl) / Math.max(1, dyn.sl);
+  const trlDiff   = Math.abs(user.trailPct - dyn.trailPct) / Math.max(2, dyn.trailPct || 1);
+  const armDiff   = Math.abs(user.arm - dyn.arm) / Math.max(1, dyn.arm || 1);
+  const totalDiff = tpDiff + slDiff + trlDiff + armDiff;
+
+  const goodFit = !hardWacked && totalDiff <= 0.60;
+
+  if (goodFit) {
+    log(`TP/SL check ${mint.slice(0,4)}… looks solid — keeping your config (TP=${user.tp}% SL=${user.sl}% Trail=${user.trailPct}% Arm=${user.arm}%).`);
+    return { ...user, used: "user" };
+  }
+
+  log(`TP/SL check ${mint.slice(0,4)}… your settings look off — applying dynamic: TP=${dyn.tp}% SL=${dyn.sl}% Trail=${dyn.trailPct}% Arm=${dyn.arm}% (${dyn.tier} I=${dyn.intensity.toFixed(2)})`);
+  return { ...dyn, used: "dynamic" };
+}
+
+function retunePositionFromFinalGate(mint) {
+  try {
+    if (!mint || !state.positions || !state.positions[mint]) return;
+    const pos = state.positions[mint];
+    const sel = pickTpSlForMint(mint);
+    pos.tpPct = sel.tp;
+    pos.slPct = sel.sl;
+    pos.trailPct = sel.trailPct;
+    pos.minProfitToTrailPct = sel.arm;
+    save();
+  } catch {}
+}
+
 function runFinalPumpGateBackground() {
   const cfg = state;
   if (!cfg.finalPumpGateEnabled) return;
@@ -4207,7 +4327,8 @@ function runFinalPumpGateBackground() {
       log(
         `Final gate: ${mint.slice(0,4)}… PASSED, Δscore=${delta.toFixed(3)} in ${(elapsed/1000).toFixed(1)}s. Ready to buy.`
       );
-      store.set(mint, { ...rec, ready: true, at: nowTs });
+      store.set(mint, { ...rec, ready: true, at: nowTs, passDelta: delta, elapsedMs: elapsed });
+      try { retunePositionFromFinalGate(mint); } catch {}
       continue;
     }
 
@@ -5025,10 +5146,10 @@ function shouldSell(pos, curSol, nowTs) {
   pos.hwmPx = Math.max(Number(pos.hwmPx || 0) || pxNow, pxNow);
 
   const pnlPct   = ((pxNow - pxCost) / Math.max(1e-12, pxCost)) * 100;
-  const tp       = Math.max(0, Number(state.takeProfitPct || 0));
-  const sl       = Math.max(0, Number(state.stopLossPct || 0));
-  const trail    = Math.max(0, Number(state.trailPct || 0));
-  const armTrail = Math.max(0, Number(state.minProfitToTrailPct || 0));
+  const tp       = Math.max(0, Number(pos.tpPct ?? state.takeProfitPct ?? 0));
+  const sl       = Math.max(0, Number(pos.slPct ?? state.stopLossPct ?? 0));
+  const trail    = Math.max(0, Number(pos.trailPct ?? state.trailPct ?? 0));
+  const armTrail = Math.max(0, Number(pos.minProfitToTrailPct ?? state.minProfitToTrailPct ?? 0));
   const partialPct = Math.min(100, Math.max(0, Number(state.partialTpPct || 0)));
 
   if (sl > 0 && pnlPct <= -sl) return { action: "sell_all", reason: `SL ${pnlPct.toFixed(2)}%` };
@@ -5663,8 +5784,9 @@ async function evalAndMaybeSellPositions() {
           }
         }
 
-        const baseMinNotional = Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN * 1.05);
-        const minNotional = baseMinNotional;
+        // const baseMinNotional = Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN * 1.05);
+        // const minNotional = baseMinNotional;
+        const minNotional = minSellNotionalSol();
 
         if (!isFastExit) {
           // original min-notional and shouldSell evaluation
@@ -5745,6 +5867,15 @@ async function evalAndMaybeSellPositions() {
 
         log(`Sell decision: ${decision && decision.action !== "none" ? decision.action : "NO"} (${decision?.reason || "criteria not met"})`);
         if (!decision || decision.action === "none") continue;
+
+        if (decision.action === "sell_all" && curSol < minNotional && !isFastExit) {
+          try { addToDustCache(ownerStr, mint, pos.sizeUi, pos.decimals ?? 6); } catch {}
+          try { removeFromPosCache(ownerStr, mint); } catch {}
+          delete state.positions[mint];
+          save();
+          log(`Below notional for ${mint.slice(0,4)}… moved to dust (skip sell).`);
+          continue;
+        }  
 
         // Jito/router cooldown checks remain (but we already bypassed gating)
         if (!forceExpire && window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
@@ -6698,14 +6829,20 @@ async function tick() {
           warmingHoldAt: warmingHold ? now() : undefined,
           warmingMinProfitPct: Number(state.warmingMinProfitPct || 100),
           sellGuardUntil: now() + guardMs,
-
-          // early-fade baselines
           entryChg5m,
           entryPre,
           entryPreMin,
           entryScSlope,
           earlyNegScCount: 0,
         };
+        try {
+          const dyn = pickTpSlForMint(mint);
+          pos.tpPct = dyn.tp;
+          pos.slPct = dyn.sl;
+          pos.trailPct = dyn.trailPct;
+          pos.minProfitToTrailPct = dyn.arm;
+          log(`Dynamic TP/SL ${mint.slice(0,4)}…: TP=${dyn.tp}% SL=${dyn.sl}% Trail=${dyn.trailPct}% Arm=${dyn.arm}% (${dyn.tier} I=${dyn.intensity.toFixed(2)})`);
+        } catch {}
         state.positions[mint] = pos;
         updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
         save();
@@ -6745,14 +6882,20 @@ async function tick() {
           warmingHoldAt: warmingHold ? now() : undefined,
           warmingMinProfitPct: Number(state.warmingMinProfitPct || 100),
           sellGuardUntil: now() + guardMs,
-
-          // early-fade baselines
           entryChg5m,
           entryPre,
           entryPreMin,
           entryScSlope,
           earlyNegScCount: 0,
         };
+        try {
+          const dyn = pickTpSlForMint(mint);
+          pos.tpPct = dyn.tp;
+          pos.slPct = dyn.sl;
+          pos.trailPct = dyn.trailPct;
+          pos.minProfitToTrailPct = dyn.arm;
+          log(`Dynamic TP/SL ${mint.slice(0,4)}…: TP=${dyn.tp}% SL=${dyn.sl}% Trail=${dyn.trailPct}% Arm=${dyn.arm}% (${dyn.tier} I=${dyn.intensity.toFixed(2)})`);
+        } catch {}
         state.positions[mint] = pos;
         save();
         enqueuePendingCredit({
@@ -7563,7 +7706,7 @@ export function initAutoWidget(container = document.body) {
     </div>
     </div>
     <div class="fdv-bot-footer" style="margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
-      <span>Version: 0.0.4.1.gary</span>
+      <span>Version: 0.0.4.2</span>
     </div>
   `;
 

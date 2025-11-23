@@ -469,7 +469,6 @@ function _mintFromPath() {
 }
 
 export function autoStartProfileMetrics() {
-  console.log("mintShillSession");
   const mint = _mintFromPath();
   if (!mint) return;
   try { startProfileMetrics({ mint }); } catch {}

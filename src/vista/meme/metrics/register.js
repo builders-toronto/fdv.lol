@@ -175,8 +175,12 @@ function renderAddon(addon) {
     const metricVal = Number.isFinite(Number(row.metric)) ? Number(row.metric) : (Number(row.score) || Number(row.smq) || null);
     const metricHtml = metricVal !== null ? `<span class="pill"><span class="k">${metricLabel}</span><b class="highlight">${metricVal}</b></span>` : '';
     const mintKey = row.mint || row.symbol || String(i);
+    const inlineChg = Array.isArray(row._chg) ? row._chg : [];
     const chgSeries = getItemChangeSeries(mintKey);
-    const seriesForDraw = chgSeries.length > 1 ? chgSeries : [0, 0]; // stable baseline
+    const seriesForDraw = (chgSeries.length > 1)
+      ? chgSeries
+      : (inlineChg.length > 1 ? inlineChg : [0, 0]); 
+
     const sparkHtml = `<div class="micro" data-micro data-key="${mintKey}">${sparklineSVG(seriesForDraw, { w: 72, h: 20 })}</div>`;
 
     return `

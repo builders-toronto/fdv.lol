@@ -386,6 +386,28 @@ export function registerCoreWidgets() {
     once: true,
   });
 
+  widgets.register('chat', {
+    importer: () => import('./chat/chat.js'),
+    mount: ({ mod, host, props }) => {
+      const containerId = props?.containerId || 'chatMount';
+      let mountHost = host || document.body;
+      let container = document.getElementById(containerId);
+      if (!container && mountHost) {
+        container = document.createElement('div');
+        container.id = containerId;
+        mountHost.appendChild(container);
+      }
+      mod.mountGiscus({
+        mint: props?.mint || 'lobby',
+        containerId,
+        theme: props?.theme,
+      });
+    },
+    once: true,
+    whenVisible: false,
+    // hostSelector: '#chatMount',
+  });
+
   widgets.register('auto', {
     importer: () => import('./auto/index.js'),
     mount: ({ mod, host }) => {
@@ -396,6 +418,8 @@ export function registerCoreWidgets() {
     whenVisible: false,
     once: true,
   });
+
+
 }
 
 export async function prewarmDefaults() {
