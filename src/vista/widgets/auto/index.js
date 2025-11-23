@@ -3228,32 +3228,42 @@ function scorePumpCandidate(it) {
   const lLiq = Math.log1p(liq / 5000);
   const lVol = Math.log1p(v1h / 1000);
 
-  // Weighted score
-  const w = {
-    c5: 0.32 * c5,
-    c1: 0.16 * c1,
-    lVol: 0.18 * lVol,
-    lLiq: 0.10 * lLiq,
-    accelRatio: 0.10 * Math.max(0, accelRatio - 0.8),
-    accel5to1: 0.10 * Math.max(0, accel5to1 - 1),
-    flags: (risingNow && trendUp ? 0.02 : 0),
-    pScore: 0.02 * pScore,
-  };
-  const score =
-    w.c5 + w.c1 + w.lVol + w.lLiq + w.accelRatio + w.accel5to1 + w.flags + w.pScore;
+  // // Weighted score
+  // const w = {
+  //   c5: 0.32 * c5,
+  //   c1: 0.16 * c1,
+  //   lVol: 0.18 * lVol,
+  //   lLiq: 0.10 * lLiq,
+  //   accelRatio: 0.10 * Math.max(0, accelRatio - 0.8),
+  //   accel5to1: 0.10 * Math.max(0, accel5to1 - 1),
+  //   flags: (risingNow && trendUp ? 0.02 : 0),
+  //   pScore: 0.02 * pScore,
+  // };
+  // const score =
+  //   w.c5 + w.c1 + w.lVol + w.lLiq + w.accelRatio + w.accel5to1 + w.flags + w.pScore;
 
   const mintStr = String(it?.mint || it?.kp?.mint || "");
   const tag = mintStr ? `${mintStr.slice(0,4)}…` : "(unknown)";
-  const nf = (x) => (Number.isFinite(x) ? x : 0);
+  const series = getLeaderSeries(mintStr, 3) || [];
+  const scSlopeMin = slope3pm(series, "pumpScore");
+  const chgSlopeMin = slope3pm(series, "chg5m");
+  const accSc = slopeAccel3pm(series, "pumpScore");
+  const accChg = slopeAccel3pm(series, "chg5m");
 
-  log(`Pump score calc for ${tag}… : c5=${nf(c5).toFixed(2)} c1=${nf(c1).toFixed(2)} lVol=${nf(lVol).toFixed(2)} lLiq=${nf(lLiq).toFixed(2)} accelRatio=${nf(accelRatio).toFixed(2)} accel5to1=${safeNum(accel5to1,0).toFixed(2)} risingNow=${risingNow} trendUp=${trendUp} pScore=${nf(pScore).toFixed(2)} => score=${nf(score).toFixed(2)}`);
+  const w = {
+    c5: 0.28 * Math.max(0, Math.max(0, safeNum(kp.change5m, 0))),
+    c1: 0.14 * Math.log1p(Math.max(0, safeNum(kp.change1h, 0))),
+    lVol: 0.16 * Math.log1p(safeNum(kp.v1hTotal, 0) / 1000),
+    lLiq: 0.09 * Math.log1p(safeNum(kp.liqUsd, 0) / 5000),
+    accelRatio: 0.08 * Math.max(0, safeNum(it?.meta?.accel5to1, 1) - 1),
+    accel2: 0.15 * Math.min(1, Math.max(0, ((accSc / 6) + (accChg / 18)) / 2)), // scale to ~[0..1]
+    slopeMix: 0.08 * Math.min(1, Math.max(0, ((scSlopeMin / 12) + (chgSlopeMin / 36)) / 2)),
+    flags: (it?.meta?.risingNow && it?.meta?.trendUp ? 0.01 : 0),
+    pScore: 0.01 * safeNum(it?.pumpScore, 0),
+  };
+  const score = w.c5 + w.c1 + w.lVol + w.lLiq + w.accelRatio + w.accel2 + w.slopeMix + w.flags + w.pScore;
 
-  log(
-    `Score breakdown ${tag}: ` +
-    `0.50*c5=${w.c5.toFixed(2)}, 0.12*c1=${w.c1.toFixed(2)}, 0.14*lVol=${w.lVol.toFixed(2)}, 0.08*lLiq=${w.lLiq.toFixed(2)}, ` +
-    `0.08*accelRatio=${w.accelRatio.toFixed(2)}, 0.08*accel5to1=${w.accel5to1.toFixed(2)}, flags=${w.flags.toFixed(2)}, 0.04*pScore=${w.pScore.toFixed(2)}`
-  );
-
+  log(`Pump score ${tag}: accSc=${accSc.toFixed(3)} accChg=${accChg.toFixed(3)} scSlope=${scSlopeMin.toFixed(2)} chgSlope=${chgSlopeMin.toFixed(2)} -> ${score.toFixed(2)}`);
   return score;
 }
   
@@ -3371,6 +3381,16 @@ function _getSeriesStore() {
 //   const c = Number(series[2]?.[key] ?? b);
 //   return (c - a) / 2;
 // }
+
+function slopeAccel3pm(series, key) {
+  if (!Array.isArray(series) || series.length < 3) return 0;
+  const a = series[0], b = series[1], c = series[2];
+  const tAB = Math.max(0.06, (Number(b?.ts || 0) - Number(a?.ts || 0)) / 60000);
+  const tBC = Math.max(0.06, (Number(c?.ts || 0) - Number(b?.ts || 0)) / 60000);
+  const sAB = (Number(b?.[key] ?? 0) - Number(a?.[key] ?? 0)) / tAB;
+  const sBC = (Number(c?.[key] ?? 0) - Number(b?.[key] ?? 0)) / tBC;
+  return sBC - sAB; 
+}
 
 function delta3(series, key) {
   if (!Array.isArray(series) || series.length < 3) return 0;
@@ -3655,6 +3675,8 @@ function detectWarmingUptick({ kp = {}, meta = {} }, cfg = state) {
   const chgSlopeMin = _clamp(slope3pm(series, "chg5m"),   -60, 60);
   const scSlopeMin  = _clamp(slope3pm(series, "pumpScore"), -20, 20);
   const scDelta     = delta3(series, "pumpScore");
+  const accChgMin   = slopeAccel3pm(series, "chg5m");
+  const accScMin    = slopeAccel3pm(series, "pumpScore");
 
   const chg5m = safeNum(kp.change5m, 0);
   const chg1h = safeNum(kp.change1h, 0);
@@ -3719,6 +3741,11 @@ function detectWarmingUptick({ kp = {}, meta = {} }, cfg = state) {
   const needDeltaChg = Number(cfg.warmingUptickMinDeltaChg5m ?? 0.012);
   const needDeltaSc  = Number(cfg.warmingUptickMinDeltaScore ?? 0.006);
 
+  const accel2Ok =
+    (accChgMin > 0 && accScMin > 0) ||
+    (accChgMin >= needDeltaChg * 1.2) ||
+    (accScMin  >= needDeltaSc  * 1.8);
+
   const slopeOk = (chgDelta >= needDeltaChg) || (chgSlopeMin >= needDeltaChg * 3.0);
   let accelOk   = a51 >= (hasFlow ? (Number(cfg.warmingUptickMinAccel ?? 1.001) - 0.005) : Number(cfg.warmingUptickMinAccel ?? 1.001));
   if (scSlopeMin >= needDeltaSc * 2.5 || chgSlopeMin >= needDeltaChg * 2.0) accelOk = true;
@@ -3743,6 +3770,7 @@ function detectWarmingUptick({ kp = {}, meta = {} }, cfg = state) {
     trendGate &&
     notBackside &&
     accelOk &&
+    accel2Ok &&
     scoreSlopeOk &&
     prePass &&
     flowGate;
@@ -3762,7 +3790,8 @@ function detectWarmingUptick({ kp = {}, meta = {} }, cfg = state) {
     0.35 * Math.min(1, (a51 - 1) / 0.06) +
     0.25 * Math.min(1, (chgDelta) / (needDeltaChg * 2.5)) +
     0.20 * Math.min(1, (scDelta)  / (needDeltaSc  * 3.0)) +
-    0.20 * Math.min(1, Math.max(0, pre - preMin + 0.05) / 0.30)
+    0.20 * Math.min(1, Math.max(0, pre - preMin + 0.05) / 0.30) +
+    0.15 * Math.min(1, Math.max(0, ((accChgMin / (needDeltaChg * 2)) + (accScMin / (needDeltaSc * 2))) / 2))
   ));
 
   if (!window._fdvWarmDbgLite || now() - window._fdvWarmDbgLite > 900) {
@@ -3857,16 +3886,8 @@ function pickPumpCandidates(take = 1, poolN = 3) {
       let chgSlope = 0;
       let scSlope  = 0;
 
-      const risingNow = !!meta.risingNow;
-
-      if (!risingNow) {
-        log(`Rising now false for ${mint.slice(0,4)}… using slope-based warm check`);
-      }
-
       if (!microUp && isWarming && allowWarming && notBackside) {
-        log(`Checking warming uptick for ${mint.slice(0,4)}… With Data: chg5m=${chg5m.toFixed(3)} chg1h=${chg1h.toFixed(3)} accel5to1=${safeNum(meta.accel5to1,1).toFixed(3)} IS MICROUP: ${microUp}`);
         const res = detectWarmingUptick({ kp, meta });
-        log(`Warming uptick detection result for ${mint.slice(0,4)}: ${JSON.stringify(res)}`);
         pre = res.pre;
         chgSlope = Number(res.chgSlope || 0);
         scSlope  = Number(res.scSlope  || 0);
@@ -3878,9 +3899,7 @@ function pickPumpCandidates(take = 1, poolN = 3) {
           const nextCount = within ? (prev.count + 1) : 1;
           store.set(mint, { count: nextCount, lastAt: now() });
           const need = Math.max(1, Number(state.warmingPrimedConsec || 2));
-          const okConsec = nextCount >= need;
-          primed = okConsec;
-          log(`Warming prime ${mint.slice(0,4)}… ${nextCount}/${need} (pre=${res.pre.toFixed(3)} a5/1=${res.a51.toFixed(2)} Δchg=${res.chgSlope.toFixed(3)} Δsc=${res.scSlope.toFixed(3)})`);
+          primed = (nextCount >= need);
         } else {
           try { _getWarmPrimeStore().delete(mint); } catch {}
         }
@@ -3900,6 +3919,10 @@ function pickPumpCandidates(take = 1, poolN = 3) {
         if (!(okTicks && okSlopes)) continue;
       }
 
+      const series3 = getLeaderSeries(mint, 3) || [];
+      const accChg = slopeAccel3pm(series3, "chg5m");
+      const accSc  = slopeAccel3pm(series3, "pumpScore");
+
       const baseScore = scorePumpCandidate({ mint, kp, pumpScore: it?.pumpScore, meta });
       const finalScore = primed ? baseScore * 0.92 : baseScore;
 
@@ -3917,6 +3940,8 @@ function pickPumpCandidates(take = 1, poolN = 3) {
         pre,
         chgSlope,
         scSlope,
+        accChg,
+        accSc,
         score: finalScore,
       });
     }
@@ -3925,7 +3950,6 @@ function pickPumpCandidates(take = 1, poolN = 3) {
         const leadersRaw = computePumpingLeaders(Math.max(poolN, 6)) || [];
         const firstPump = leadersRaw.find(x => normBadge(x.badge) === "pumping");
         if (firstPump?.mint) {
-        // we respect only strong warming uptick here
           const mint = firstPump.mint;
           const kp = { ...(firstPump.kp || {}), mint };
           const meta = firstPump.meta || {};
@@ -3953,6 +3977,8 @@ function pickPumpCandidates(take = 1, poolN = 3) {
       const minC5  = isPump ? 0.8 : 0.4;
       const minA   = isPump ? 1.00 : 0.98;
       const aEff   = Math.max(1, safeNum(x.meta?.accel5to1, 1));
+      const accel2Ok = (Number(x.accChg || 0) > 0) || (Number(x.accSc || 0) > 0);
+
       if (x.primed) {
         const flowOk = safeNum(x.meta?.zV1, 0) >= 0.50 || safeNum(x.meta?.buy, 0) >= 0.60;
         const slopeGate = (Number(x.chgSlope || 0) >= 15) || (Number(x.scSlope || 0) >= 8);
@@ -3961,7 +3987,8 @@ function pickPumpCandidates(take = 1, poolN = 3) {
           x.nb === true &&
           ((x.meta?.risingNow === true && x.meta?.trendUp === true) || slopeGate) &&
           (x.chg5m > 0 || aEff >= 0.98) &&
-          flowOk
+          flowOk &&
+          accel2Ok
         );
       }
       return (
@@ -3970,7 +3997,8 @@ function pickPumpCandidates(take = 1, poolN = 3) {
         aEff >= minA &&
         x.meta?.risingNow === true &&
         x.meta?.trendUp === true &&
-        x.nb === true
+        x.nb === true &&
+        accel2Ok
       );
     });
 
@@ -3982,7 +4010,6 @@ function pickPumpCandidates(take = 1, poolN = 3) {
     return [];
   }
 }
-
 function _getDropGuardStore() {
   if (!window._fdvDropGuard) window._fdvDropGuard = new Map(); // mint -> { consec3, lastPasses, lastAt }
   return window._fdvDropGuard;
@@ -4093,7 +4120,7 @@ async function pickTopPumper() {
 
   const s0 = await snapshot(mint);
   if (!s0) {
-    // setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+    setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
     log(`Observer: ${mint.slice(0,4)}… vanished from leaders;.`);
     return "";
   }
