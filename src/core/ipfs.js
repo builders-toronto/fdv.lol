@@ -23,7 +23,6 @@ function _isDevHost() {
 }
 
 function shouldSilenceIpfs() {
-  if (!developer) return false;
   try {
     if (typeof window !== 'undefined' && window.__fdvSilenceIpfs) return true;
     if (typeof localStorage !== 'undefined' && localStorage.getItem('fdv_silence_ipfs') === '1') return true;
@@ -32,7 +31,6 @@ function shouldSilenceIpfs() {
 }
 
 function setSilenceIpfs(on = true) {
-  if (!developer) return;
   try {
     if (typeof window !== 'undefined') window.__fdvSilenceIpfs = !!on;
     if (typeof localStorage !== 'undefined') {
@@ -55,7 +53,7 @@ if (typeof window !== 'undefined') {
       if (localStorage.getItem('fdv_silence_ipfs') !== '0') setSilenceIpfs(true);
     } catch {}
   }
-  if (developer) window.addEventListener('online', () => setSilenceIpfs(false));
+  // if (developer) window.addEventListener('online', () => setSilenceIpfs(false));
 }
 
 function abbreviateSym(sym = '') {
@@ -165,7 +163,7 @@ export function normalizeTokenLogo(raw, sym = '') {
 }
 
 (function installIpfsImageFallback() {
-  if (!developer) return;
+  // if (!developer) return;
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
   if (window.__fdvIpfsFallbackInstalled) return;
   window.__fdvIpfsFallbackInstalled = true;
