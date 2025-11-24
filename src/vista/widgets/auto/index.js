@@ -37,7 +37,7 @@ const LEADER_SAMPLE_MIN_MS = 900;
 const RUG_FORCE_SELL_SEVERITY = 0.60;
 const EARLY_URGENT_WINDOW_MS = 15_000; // buyers remorse
 
-const MAX_DOM_LOG_LINES = 300;      
+const MAX_DOM_LOG_LINES = 600;      
 const MAX_LOG_MEM_LINES = 10000; // memory log buffer low speed optimization
 
 
@@ -61,6 +61,13 @@ const UI_LIMITS = {
   LIFE_MINS_MIN: 0,
   LIFE_MINS_MAX: 10080,  // 7 days
 };
+
+const DYN_HS = Object.freeze({
+  base: 5.0,      
+  min: 4.5,      
+  max: 7.0,      
+  remorseSecs: 25, 
+});
 
 function _clamp(n, lo, hi) { const x = Number(n); return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : lo; }
 
@@ -111,23 +118,25 @@ function _flushLogFrame() {
   if (!logEl) { _logRaf = 0; return; }
   const pinned = (logEl.scrollTop + logEl.clientHeight) >= (logEl.scrollHeight - 4);
   if (_logQueue.length) {
-    const entry = _logQueue.shift();
-    const line = typeof entry === "string" ? entry : String(entry?.text ?? "");
-    const type = typeof entry === "object" ? String(entry.type || "ok") : "ok";
-    const d = document.createElement("div");
-    d.className = `log-row ${type}`;
-    d.textContent = line;
-    logEl.appendChild(d);
-    const expandBtn = logEl.querySelector("[data-auto-log-expand]");
-    const stickyCount = expandBtn ? 1 : 0;
-    const max = Math.max(100, Number(MAX_DOM_LOG_LINES || 600));
-    while ((logEl.children.length - stickyCount) > max) {
-      const target = expandBtn ? expandBtn.nextElementSibling : logEl.firstElementChild;
-      if (!target) break;
-      logEl.removeChild(target);
+    for (let i = 0; i < 3 && _logQueue.length; i++) {
+      const entry = _logQueue.shift();
+      const line = typeof entry === "string" ? entry : String(entry?.text ?? "");
+      const type = typeof entry === "object" ? String(entry.type || "ok") : "ok";
+      const d = document.createElement("div");
+      d.className = `log-row ${type}`;
+      d.textContent = line;
+      logEl.appendChild(d);
+      const expandBtn = logEl.querySelector("[data-auto-log-expand]");
+      const stickyCount = expandBtn ? 1 : 0;
+      const max = Math.max(100, Number(MAX_DOM_LOG_LINES || 600));
+      while ((logEl.children.length - stickyCount) > max) {
+        const target = expandBtn ? expandBtn.nextElementSibling : logEl.firstElementChild;
+        if (!target) break;
+        logEl.removeChild(target);
+      }
+      requestAnimationFrame(() => d.classList.add("in"));
+      if (pinned) logEl.scrollTop = logEl.scrollHeight;
     }
-    requestAnimationFrame(() => d.classList.add("in"));
-    if (pinned) logEl.scrollTop = logEl.scrollHeight;
   }
 
   if (_logQueue.length) {
@@ -207,7 +216,7 @@ function redactHeaders(hdrs) {
   return keys.length ? `{headers: ${keys.join(", ")}}` : "{}";
 }
 
-function _addOldWalletRecord(rec = {}) {
+function addOldWalletRecord(rec = {}) {
   try {
     if (!Array.isArray(state.oldWallets)) state.oldWallets = [];
     const item = {
@@ -257,8 +266,8 @@ let state = {
   minNetEdgePct: -5, 
   edgeSafetyBufferPct: 0.2,
   sustainTicksMin: 2,
-  sustainChgSlopeMin: 6,
-  sustainScSlopeMin: 3,
+  sustainChgSlopeMin: 12,
+  sustainScSlopeMin: 8,
   fricSnapEpsSol: 0.0020,
 
   // Auto wallet mode
@@ -310,7 +319,7 @@ let state = {
   // Badge status selection
   rideWarming: true,
   warmingMinProfitPct: 100,
-  warmingDecayPctPerMin: 0.35,      
+  warmingDecayPctPerMin: 0.45,      
   warmingDecayDelaySecs: 20,         
   warmingMinProfitFloorPct: -2.0,   
   warmingAutoReleaseSecs: 45,
@@ -353,18 +362,11 @@ let state = {
   fastAlphaZV1Floor: 0.3,        
 
   // Early fade & late-entry filters
-  earlyExitChgDropFrac: 0.40,    
+  earlyExitChgDropFrac: 0.55,    
   earlyExitScSlopeNeg: -40,      
-  earlyExitConsec: 3,            
+  earlyExitConsec: 4,            
   lateEntryDomShare: 0.65,       
   lateEntryMinPreMargin: 0.02,   
-
-  // Dynamic hard stop (overrides warming)
-  dynamicHardStopEnabled: false,
-  dynamicHardStopBasePct: 5.0,     // base 4%
-  dynamicHardStopMinPct: 4.5,      // clamp to 3-5%
-  dynamicHardStopMaxPct: 7.0,
-  dynamicHardStopBuyerRemorseSecs: 25,
 
   // Final pump gate
   finalPumpGateEnabled: true,
@@ -433,7 +435,7 @@ const CONFIG_SCHEMA = {
   allowMultiBuy:            { type: "boolean", def: false },
   rideWarming:              { type: "boolean", def: true },
   warmingMinProfitPct:      { type: "number",  def: 100,  min: -50, max: 500 },
-  warmingDecayPctPerMin:    { type: "number",  def: 0.25, min: 0, max: 5 },
+  warmingDecayPctPerMin:    { type: "number",  def: 0.45, min: 0, max: 5 },
   warmingDecayDelaySecs:    { type: "number",  def: 45,   min: 0, max: 600 },
   warmingMinProfitFloorPct: { type: "number",  def: -2.0, min: -50, max: 50 },
   warmingAutoReleaseSecs:   { type: "number",  def: 90,   min: 0, max: 600 },
@@ -471,19 +473,14 @@ const CONFIG_SCHEMA = {
   fastAlphaScSlope:         { type: "number",  def: -10 },
   fastAccelDropFrac:        { type: "number",  def: 0.5 },
   fastAlphaZV1Floor:        { type: "number",  def: 0.3 },
-  dynamicHardStopEnabled:   { type: "boolean", def: true },
-  dynamicHardStopBasePct:   { type: "number",  def: 5.0 },
-  dynamicHardStopMinPct:    { type: "number",  def: 4.5 },
-  dynamicHardStopMaxPct:    { type: "number",  def: 7.0 },
-  dynamicHardStopBuyerRemorseSecs: { type: "number", def: 25 },
   priorityMicroLamports:    { type: "number", def: 10_000 },
   computeUnitLimit:         { type: "number", def: 1_400_000 },
   strictBuyFilter:          { type: "boolean", def: true },
   dustExitEnabled:          { type: "boolean", def: false },
   dustMinSolOut:            { type: "number",  def: 0.004 },
   sustainTicksMin:          { type: "number",  def: 2, min: 1, max: 4 },
-  sustainChgSlopeMin:       { type: "number",  def: 6 },
-  sustainScSlopeMin:        { type: "number",  def: 3 },
+  sustainChgSlopeMin:       { type: "number",  def: 12 },
+  sustainScSlopeMin:        { type: "number",  def: 8 },
   finalPumpGateEnabled:     { type: "boolean", def: true },
   finalPumpGateMinStart:    { type: "number",  def: 2 },  
   finalPumpGateDelta:       { type: "number",  def: 3 },   
@@ -534,11 +531,6 @@ function normalizeState(raw = {}) {
   out.reboundMinChgSlope  = coerceNumber(out.reboundMinChgSlope, 10);
   out.reboundMinScSlope   = coerceNumber(out.reboundMinScSlope, 7);
   out.reboundMinPnLPct    = coerceNumber(out.reboundMinPnLPct, -2, { min: -90, max: 90 });
-  out.dynamicHardStopBasePct = coerceNumber(out.dynamicHardStopBasePct, 5.0);
-  out.dynamicHardStopMinPct  = coerceNumber(out.dynamicHardStopMinPct, 4.5);
-  out.dynamicHardStopMaxPct  = coerceNumber(out.dynamicHardStopMaxPct, 7.0);
-  out.dynamicHardStopBuyerRemorseSecs = coerceNumber(out.dynamicHardStopBuyerRemorseSecs, 25);
-
 
   if (typeof out.warmingEdgeMinExclPct !== "number" || !Number.isFinite(out.warmingEdgeMinExclPct)) {
     delete out.warmingEdgeMinExclPct;
@@ -1766,11 +1758,11 @@ function checkFastExitTriggers(mint, pos, { pnlPct, pxNow, nowTs }) {
   }
 }
 
-function computeDynamicHardStopPct(mint, pos, nowTs = now()) {
+function computeDynamicHardStopPct(mint, pos, nowTs = now(), ctx = {}) {
   try {
-    const base = Number(state.dynamicHardStopBasePct || 4);
-    const lo = Math.max(1, Number(state.dynamicHardStopMinPct || 3));
-    const hi = Math.max(lo, Number(state.dynamicHardStopMaxPct || 5));
+    const base = DYN_HS.base;
+    const lo = Math.max(1, DYN_HS.min);
+    const hi = Math.max(lo, DYN_HS.max);
 
     const series = getLeaderSeries(mint, 3) || [];
     const last = series.length ? series[series.length - 1] : {};
@@ -1780,8 +1772,6 @@ function computeDynamicHardStopPct(mint, pos, nowTs = now()) {
     const scSlope  = _clamp(slope3pm(series, "pumpScore"), -20, 20);
 
     let thr = base;
-
-    // Liquidity/volume tune
     if (liq >= 30000) thr += 1.0;
     else if (liq >= 15000) thr += 0.5;
     else if (liq < 2500) thr -= 1.0;
@@ -1790,19 +1780,49 @@ function computeDynamicHardStopPct(mint, pos, nowTs = now()) {
     if (v1h >= 3000) thr += 0.5;
     else if (v1h < 600) thr -= 0.25;
 
-    // Momentum tune
     const rising = chgSlope > 0 && scSlope > 0;
     const backside = chgSlope < 0 && scSlope < 0;
     if (rising) thr += 0.5;
     if (backside) thr -= 0.5;
 
-    // Early buyer's remorse window: tighten
     const ageSec = (nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0)) / 1000;
-    if (ageSec <= Math.max(5, Number(state.dynamicHardStopBuyerRemorseSecs || 30))) thr -= 0.5;
+    const remorseSecs = Math.max(5, DYN_HS.remorseSecs);
+    if (ageSec <= remorseSecs) thr -= 0.5;
 
-    return Math.min(hi, Math.max(lo, thr));
+    const pnlNetPct = Number(ctx.pnlNetPct);
+    const ddPct     = Math.max(0, Number(ctx.drawdownPct || 0));
+    const intensity = Number.isFinite(ctx.intensity) ? ctx.intensity : computeFinalGateIntensity(mint).intensity;
+
+    const ds = pos._dynStop || {};
+    if (Number.isFinite(pnlNetPct)) {
+      ds.peakPnl  = Number.isFinite(ds.peakPnl)  ? Math.max(ds.peakPnl,  pnlNetPct) : pnlNetPct;
+      ds.worstPnl = Number.isFinite(ds.worstPnl) ? Math.min(ds.worstPnl, pnlNetPct) : pnlNetPct;
+    }
+
+    let widen = 0;
+    if (Number.isFinite(ds.peakPnl) && ds.peakPnl > 0) {
+      widen += Math.min(1.5, 0.2 + Math.log1p(ds.peakPnl / 10) * 0.6);
+    }
+    if (intensity > 1.4) widen += 0.6;
+    else if (intensity < 0.9) widen -= 0.4;
+
+    let tighten = 0;
+    if (ddPct > 0) tighten += Math.min(2.0, ddPct * 0.35);
+    if (Number.isFinite(pnlNetPct) && pnlNetPct < 0) {
+      tighten += Math.min(1.0, (-pnlNetPct) * 0.08);
+    }
+
+    let dyn = thr + widen - tighten;
+    dyn = Math.min(hi, Math.max(lo, dyn));
+
+    const prev = Number(ds.current);
+    const alpha = 0.35;
+    const current = Number.isFinite(prev) ? (prev + alpha * (dyn - prev)) : dyn;
+
+    pos._dynStop = { current, lastAt: nowTs, peakPnl: ds.peakPnl, worstPnl: ds.worstPnl };
+    return current;
   } catch {
-    return Math.max(3, Math.min(5, Number(state.dynamicHardStopBasePct || 4)));
+    return Math.min(DYN_HS.max, Math.max(DYN_HS.min, DYN_HS.base));
   }
 }
 
@@ -5703,16 +5723,25 @@ async function evalAndMaybeSellPositions() {
         const canHardStop = ageSec >= remorseSecs && !creditsPending;
 
         let dynStopPct = null;
-        if (state.dynamicHardStopEnabled && canHardStop) {
-          dynStopPct = computeDynamicHardStopPct(mint, pos, nowTs);
+        if (canHardStop) {
+          const ddPct = (Number(pos.hwmPx || 0) > 0 && pxNow > 0)
+            ? ((pos.hwmPx - pxNow) / pos.hwmPx) * 100
+            : 0;
+          const gate = computeFinalGateIntensity(mint);
+          dynStopPct = computeDynamicHardStopPct(mint, pos, nowTs, {
+            pnlNetPct,
+            drawdownPct: ddPct,
+            intensity: Number(gate?.intensity || 1)
+          });
         }
-        if (state.dynamicHardStopEnabled && canHardStop &&
+
+        if (canHardStop &&
             Number.isFinite(pnlNetPct) && Number.isFinite(dynStopPct) &&
             pnlNetPct <= -Math.abs(dynStopPct)) {
           decision = { action: "sell_all", reason: `HARD_STOP ${pnlNetPct.toFixed(2)}%<=-${Math.abs(dynStopPct).toFixed(2)}%`, hardStop: true };
           isFastExit = true;
           log(`Dynamic hard stop for ${mint.slice(0,4)}… netPnL=${pnlNetPct.toFixed(2)}% thr=-${Math.abs(dynStopPct).toFixed(2)}% (age ${ageSec.toFixed(1)}s)`);
-        } else if (state.dynamicHardStopEnabled && !canHardStop) {
+        } else if (!canHardStop) {
           log(`Hard stop suppressed (age ${ageSec.toFixed(1)}s${creditsPending ? ", pending credit" : ""}) for ${mint.slice(0,4)}… netPnL=${pnlNetPct.toFixed(2)}%`);
         }
 
