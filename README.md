@@ -141,43 +141,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-feat(auto): update edge, rebound, hard-stop formulas and knobs
-
-Edge gate (excl-ATA)
-
-curEdge = edge.pctNoOnetime
-baseUser = state.minNetEdgePct
-warmUser = has(state.warmingEdgeMinExclPct) ? state.warmingEdgeMinExclPct : baseUser
-buffer = state.edgeSafetyBufferPct
-needExcl = (badge == "pumping") ? (baseUser - 2.0) : ((badge == "warming") ? warmUser : baseUser)
-needWithBuf = needExcl + buffer
-pass iff curEdge ≥ needWithBuf
-
-Rebound defer (shouldDeferSellForRebound)
-
-if !state.reboundGateEnabled -> false
-if /(max[-\s]*loss|warming[-\s]*max[-\s]*loss|rug|TP)/i.test(reason) -> false
-if pnlPct ≤ state.reboundMinPnLPct -> false
-anchorTs = pos.fastPeakAt || pos.lastBuyAt || pos.acquiredAt || 0
-withinWindow iff age ≤ reboundLookbackSecs·1000 (or 2× if reason includes "observer")
-if startedAt and (now - startedAt) > reboundMaxDeferSecs·1000 -> false
-sig = computeReboundSignal(mint); if !sig.ok -> false
-accept: pos.reboundDeferStartedAt ||= now; pos.reboundDeferUntil = now + reboundHoldMs; pos.reboundDeferCount++
-
-Dynamic hard stop (computeDynamicHardStopPct)
-
-base = state.dynamicHardStopBasePct
-lo = state.dynamicHardStopMinPct; hi = state.dynamicHardStopMaxPct
-thr = base
-• liqAdj: liq≥30000 -> +1.0; liq≥15000 -> +0.5; liq<2500 -> -1.0; liq<5000 -> -0.5
-• volAdj: v1h≥3000 -> +0.5; v1h<600 -> -0.25
-• momAdj: (chgSlope>0 ∧ scSlope>0) -> +0.5; (chgSlope<0 ∧ scSlope<0) -> -0.5
-• remorseAdj: if ageSec ≤ dynamicHardStopBuyerRemorseSecs -> -0.5
-result = clamp(thr, lo, hi)
-
-Warming requirement (computeWarmingRequirement)
-
-holdAt = pos.warmingHoldAt || pos.lastBuyAt || pos.acquiredAt
-elapsedMin = max(0, now - (holdAt + warmingDecayDelaySecs·1000)) / 60000
-req = max(warmingMinProfitFloorPct, warmingMinProfitPct - warmingDecayPctPerMin · elapsedMin)
-shouldAutoRelease iff (now - holdAt) ≥ warmingAutoReleaseSecs·1000
+feat(auto): dynamic compute hard stops; knob updates and tweaks; fix log timing bug
