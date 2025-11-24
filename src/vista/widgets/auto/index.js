@@ -33,7 +33,7 @@ const MINT_OP_LOCK_MS = 30_000;
 const BUY_SEED_TTL_MS = 60_000;
 const BUY_LOCK_MS = 5_000;
 const FAST_OBS_LOG_INTERVAL_MS = 200; 
-const LEADER_SAMPLE_MIN_MS = 1500;
+const LEADER_SAMPLE_MIN_MS = 900;
 const RUG_FORCE_SELL_SEVERITY = 0.60;
 const EARLY_URGENT_WINDOW_MS = 15_000; // buyers remorse
 
@@ -328,13 +328,13 @@ let state = {
   warmingExtendStepMs: 4000,  
  
   reboundGateEnabled: true,         
-  reboundLookbackSecs: 45,       
-  reboundMaxDeferSecs: 40,         
-  reboundHoldMs: 8000,             
-  reboundMinScore: 0.34,            
-  reboundMinChgSlope: 8,           
-  reboundMinScSlope: 5,             
-  reboundMinPnLPct: -15,          
+  reboundLookbackSecs: 35,       
+  reboundMaxDeferSecs: 12,         
+  reboundHoldMs: 6000,             
+  reboundMinScore: 0.45,            
+  reboundMinChgSlope: 10,           
+  reboundMinScSlope: 7,             
+  reboundMinPnLPct: -2,          
 
   fastExitEnabled: true,
   fastExitSlipBps: 400,          
@@ -361,10 +361,10 @@ let state = {
 
   // Dynamic hard stop (overrides warming)
   dynamicHardStopEnabled: false,
-  dynamicHardStopBasePct: 4.0,     // base 4%
-  dynamicHardStopMinPct: 3.0,      // clamp to 3-5%
-  dynamicHardStopMaxPct: 5.0,
-  dynamicHardStopBuyerRemorseSecs: 8,
+  dynamicHardStopBasePct: 5.0,     // base 4%
+  dynamicHardStopMinPct: 4.5,      // clamp to 3-5%
+  dynamicHardStopMaxPct: 7.0,
+  dynamicHardStopBuyerRemorseSecs: 25,
 
   // Final pump gate
   finalPumpGateEnabled: true,
@@ -449,13 +449,13 @@ const CONFIG_SCHEMA = {
   minNetEdgePct:            { type: "number",  def: -4, min: -10, max: 10 },
   edgeSafetyBufferPct:      { type: "number",  def: 0.10, min: 0, max: 2 },
   reboundGateEnabled:       { type: "boolean", def: true },
-  reboundLookbackSecs:      { type: "number",  def: 45,  min: 5, max: 180 },
-  reboundMaxDeferSecs:      { type: "number",  def: 40,  min: 4, max: 120 },
-  reboundHoldMs:            { type: "number",  def: 8000, min: 500, max: 15000 },
-  reboundMinScore:          { type: "number",  def: 0.34 },
-  reboundMinChgSlope:       { type: "number",  def: 8 },
-  reboundMinScSlope:        { type: "number",  def: 5 },
-  reboundMinPnLPct:         { type: "number",  def: -15, min: -90, max: 90 },
+  reboundLookbackSecs:      { type: "number",  def: 35,  min: 5, max: 180 },
+  reboundMaxDeferSecs:      { type: "number",  def: 12,  min: 4, max: 120 },
+  reboundHoldMs:            { type: "number",  def: 6000, min: 500, max: 15000 },
+  reboundMinScore:          { type: "number",  def: 0.45 },
+  reboundMinChgSlope:       { type: "number",  def: 10 },
+  reboundMinScSlope:        { type: "number",  def: 7 },
+  reboundMinPnLPct:         { type: "number",  def: -2, min: -90, max: 90 },
   fastExitEnabled:          { type: "boolean", def: true },
   fastExitSlipBps:          { type: "number",  def: 400 },
   fastExitConfirmMs:        { type: "number",  def: 9000 },
@@ -472,10 +472,10 @@ const CONFIG_SCHEMA = {
   fastAccelDropFrac:        { type: "number",  def: 0.5 },
   fastAlphaZV1Floor:        { type: "number",  def: 0.3 },
   dynamicHardStopEnabled:   { type: "boolean", def: true },
-  dynamicHardStopBasePct:   { type: "number",  def: 4.0 },
-  dynamicHardStopMinPct:    { type: "number",  def: 3.0 },
-  dynamicHardStopMaxPct:    { type: "number",  def: 5.0 },
-  dynamicHardStopBuyerRemorseSecs: { type: "number", def: 15 },
+  dynamicHardStopBasePct:   { type: "number",  def: 5.0 },
+  dynamicHardStopMinPct:    { type: "number",  def: 4.5 },
+  dynamicHardStopMaxPct:    { type: "number",  def: 7.0 },
+  dynamicHardStopBuyerRemorseSecs: { type: "number", def: 25 },
   priorityMicroLamports:    { type: "number", def: 10_000 },
   computeUnitLimit:         { type: "number", def: 1_400_000 },
   strictBuyFilter:          { type: "boolean", def: true },
@@ -526,6 +526,18 @@ function normalizeState(raw = {}) {
   out.finalPumpGateMinStart = coerceNumber(out.finalPumpGateMinStart, 2,  { min: 0, max: 50 });
   out.finalPumpGateDelta    = coerceNumber(out.finalPumpGateDelta, 3,     { min: 0, max: 50 });
   out.finalPumpGateWindowMs = coerceNumber(out.finalPumpGateWindowMs, 10000, { min: 1000, max: 30_000 });
+
+  out.reboundLookbackSecs = coerceNumber(out.reboundLookbackSecs, 35, { min: 5, max: 180 });
+  out.reboundMaxDeferSecs = coerceNumber(out.reboundMaxDeferSecs, 12, { min: 4, max: 120 });
+  out.reboundHoldMs       = coerceNumber(out.reboundHoldMs, 6000, { min: 500, max: 15000 });
+  out.reboundMinScore     = coerceNumber(out.reboundMinScore, 0.45);
+  out.reboundMinChgSlope  = coerceNumber(out.reboundMinChgSlope, 10);
+  out.reboundMinScSlope   = coerceNumber(out.reboundMinScSlope, 7);
+  out.reboundMinPnLPct    = coerceNumber(out.reboundMinPnLPct, -2, { min: -90, max: 90 });
+  out.dynamicHardStopBasePct = coerceNumber(out.dynamicHardStopBasePct, 5.0);
+  out.dynamicHardStopMinPct  = coerceNumber(out.dynamicHardStopMinPct, 4.5);
+  out.dynamicHardStopMaxPct  = coerceNumber(out.dynamicHardStopMaxPct, 7.0);
+  out.dynamicHardStopBuyerRemorseSecs = coerceNumber(out.dynamicHardStopBuyerRemorseSecs, 25);
 
 
   if (typeof out.warmingEdgeMinExclPct !== "number" || !Number.isFinite(out.warmingEdgeMinExclPct)) {
@@ -3619,45 +3631,30 @@ function shouldDeferSellForRebound(mint, pos, pnlPct, nowTs, reason = "") {
 
 
 
-
+    if (/max[-\s]*loss|warming[-\s]*max[-\s]*loss/i.test(String(reason || ""))) return false;
     if (/rug/i.test(reason || "")) return false;
     if (/TP|take\s*profit/i.test(reason || "")) return false;
-
-    
-
-    // Fast peak relax 2 times on observer drop
-    const anchorTs = Number(pos.fastPeakAt || pos.lastBuyAt || pos.acquiredAt || 0);
-    
-    const ageMs = nowTs - anchorTs;
-    
-    const lookbackMs = Math.max(5_000, Number(state.reboundLookbackSecs || 45) * 1000);
-
-    const allowObserverRelax = /observer/i.test(reason || "");
-
-    const withinWindow = ageMs <= lookbackMs || (allowObserverRelax && ageMs <= lookbackMs * 2);
-    
-    if (!withinWindow) return false;
 
     const minPnl = Number(state.reboundMinPnLPct || -15);
 
     if (Number.isFinite(pnlPct) && pnlPct <= minPnl) return false;
 
+    const anchorTs = Number(pos.fastPeakAt || pos.lastBuyAt || pos.acquiredAt || 0);
+    const ageMs = nowTs - anchorTs;
+    const lookbackMs = Math.max(5_000, Number(state.reboundLookbackSecs || 45) * 1000);
+    const allowObserverRelax = /observer/i.test(reason || "");
+    const withinWindow = ageMs <= lookbackMs || (allowObserverRelax && ageMs <= lookbackMs * 2);
+    if (!withinWindow) return false;
+
     const startedAt = Number(pos.reboundDeferStartedAt || 0);
-
     const maxDefMs = Math.max(4_000, Number(state.reboundMaxDeferSecs || 20) * 1000);
-
     if (startedAt && (nowTs - startedAt) > maxDefMs) return false;
 
     const sig = computeReboundSignal(mint);
-
     if (!sig.ok) return false;
-
     if (!pos.reboundDeferStartedAt) pos.reboundDeferStartedAt = nowTs;
-    
     pos.reboundDeferUntil = nowTs + Math.max(1000, Number(state.reboundHoldMs || 4000));
-    
     pos.reboundDeferCount = Number(pos.reboundDeferCount || 0) + 1;
-    
     save();
 
     log(`Rebound gate: holding ${mint.slice(0,4)}… (${sig.why}; score=${sig.score.toFixed(3)} chgSlope=${sig.chgSlope.toFixed(2)}/m scSlope=${sig.scSlope.toFixed(2)}/m)`);
@@ -7767,7 +7764,7 @@ export function initAutoWidget(container = document.body) {
     </div>
     </div>
     <div class="fdv-bot-footer" style="margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
-      <span>Version: 0.0.4.2</span>
+      <span>Version: 0.0.4.3</span>
     </div>
   `;
 
@@ -7955,10 +7952,27 @@ export function initAutoWidget(container = document.body) {
   if (expandBtn && logEl) {
     log("Log panel: click 'Expand' or press Alt+6 to enlarge. Press Esc to close.", "help");
     log("Focus mode: press Alt+7 to hide other page elements, Alt+8 to restore.", "help");
+    
+    function setHeaderFullHeight(enable) {
+      try {
+        const hdr = document.querySelector('header');
+        if (!hdr) return;
+        if (enable) {
+          if (!hdr.dataset.fdvPrevHeight) hdr.dataset.fdvPrevHeight = hdr.style.height || "";
+          hdr.style.height = "100vh";
+        } else {
+          const prev = hdr.dataset.fdvPrevHeight;
+          hdr.style.height = prev || "";
+          if (prev !== undefined) delete hdr.dataset.fdvPrevHeight;
+        }
+      } catch {}
+    }
+    
     const setExpanded = (on) => {
       logEl.classList.toggle("fdv-log-full", !!on);
       expandBtn.textContent = on ? "Close" : "Expand";
       expandBtn.setAttribute("aria-label", on ? "Close log" : "Expand log");
+      // setHeaderFullHeight(!!on);
       if (on) logEl.scrollTop = logEl.scrollHeight;
     };
 
