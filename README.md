@@ -141,4 +141,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-feat(auto): dynamic compute hard stops; knob updates and tweaks; fix log timing bug
+feat(ui,auto,kpi): ad revamp, rug/hard-stop, and new KPIs

@@ -2,6 +2,59 @@ import { ADS_CACHE_KEY, ADS_CACHE_MS, JUP_SWAP, EXPLORER, FALLBACK_LOGO, shortAd
 import { getJSON, normalizeWebsite } from "../core/tools.js";
 import { normalizeSocial, iconFor } from "../lib/socialBuilder.js";
 
+export function initAdBanners(root = document){
+  const cards = [...root.querySelectorAll('.adcard[data-interactive]')];
+  for (const card of cards) {
+    card.addEventListener('pointermove', (e) => {
+      const r = card.getBoundingClientRect();
+      const x = ((e.clientX - r.left) / Math.max(r.width, 1)) * 100;
+      const y = ((e.clientY - r.top) / Math.max(r.height,1)) * 100;
+      card.style.setProperty('--mx', x + '%');
+      card.style.setProperty('--my', y + '%');
+    });
+
+    card.addEventListener('click', (e) => {
+      const t = e.target.closest('[data-ad-toggle], .adtoggle');
+      if (!t) return;
+      e.preventDefault();
+      card.classList.toggle('is-open');
+      const tag = card.querySelector('.adtag');
+      if (tag) tag.dataset.open = card.classList.contains('is-open') ? '1' : '0';
+    });
+
+    const copyEl = card.querySelector('[data-copy]');
+    if (copyEl) {
+      copyEl.addEventListener('click', async (e) => {
+        e.preventDefault();
+        const val = copyEl.getAttribute('data-copy') || copyEl.textContent.trim();
+        try {
+          await navigator.clipboard.writeText(val);
+          copyEl.setAttribute('data-copied', '1');
+          copyEl.setAttribute('aria-live', 'polite');
+          copyEl.title = 'Copied';
+          setTimeout(() => {
+            copyEl.removeAttribute('data-copied');
+            copyEl.removeAttribute('aria-live');
+            copyEl.title = '';
+          }, 900);
+        } catch {}
+      });
+    }
+
+    card.addEventListener('click', (e) => {
+      const btn = e.target.closest('.adbtn');
+      if (!btn) return;
+      const rect = btn.getBoundingClientRect();
+      const ripple = document.createElement('i');
+      ripple.className = 'ripple';
+      ripple.style.left = ((e.clientX - rect.left) / rect.width * 100) + '%';
+      ripple.style.top  = ((e.clientY - rect.top) / rect.height* 100) + '%';
+      btn.appendChild(ripple);
+      ripple.addEventListener('animationend', () => ripple.remove());
+    });
+  }
+}
+
 function readInlineAds(){
   try{
     const el = document.getElementById('ads-data');

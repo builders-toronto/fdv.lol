@@ -199,6 +199,7 @@ function renderAddon(addon) {
             <div class="addon-line2" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;opacity:.95;">
               <span class="pill"><span class="k">Price</span><b>${price}</b></span>
               <span class="pill"><span class="k">24h</span><b class="${chCls}">${chTxt}</b></span>
+              <span class="pill"><span class="k">IN</span><b>${row.chg24}</b></span>
               <span class="pill"><span class="k">Liq</span><b>${liq}</b></span>
               <span class="pill"><span class="k">Vol</span><b>${vol}</b></span>
               ${metricHtml}

@@ -15,7 +15,6 @@ const EXTRA_TX_BUFFER_LAMPORTS     = 250_000;
 const EDGE_TX_FEE_ESTIMATE_LAMPORTS = 150_000;
 const MIN_QUOTE_RAW_AMOUNT = 1_000;
 const ELEVATED_MIN_BUY_SOL = 0.06;   
-//const FRIC_SNAP_EPS_SOL    = 0.0020; 
 const MAX_CONSEC_SWAP_400 = 3;
 const MIN_OPERATING_SOL            = 0.007;  
 const ROUTER_COOLDOWN_MS           = 60_000;
@@ -23,7 +22,6 @@ const MINT_RUG_BLACKLIST_MS = 30 * 60 * 1000;
 const MINT_BLACKLIST_STAGES_MS =  [2 * 60 * 1000, 15 * 60 * 1000, MINT_RUG_BLACKLIST_MS];
 const URGENT_SELL_COOLDOWN_MS= 20_000; 
 const URGENT_SELL_MIN_AGE_MS = 7_000;
-// const MAX_FIXED_COST_FRAC = 0.0075;
 const MAX_RECURRING_COST_FRAC = 0.0075; // tx + platform fees <= 0.75% of order
 const MAX_ONETIME_COST_FRAC   = 0.02; 
 const ONE_TIME_COST_AMORTIZE  = 5;
@@ -35,8 +33,9 @@ const BUY_LOCK_MS = 5_000;
 const FAST_OBS_LOG_INTERVAL_MS = 200; 
 const LEADER_SAMPLE_MIN_MS = 900;
 const RUG_FORCE_SELL_SEVERITY = 0.60;
+const RUG_QUOTE_SHOCK_FRAC = 0.35;         
+const RUG_QUOTE_SHOCK_WINDOW_MS = 6000;      
 const EARLY_URGENT_WINDOW_MS = 15_000; // buyers remorse
-
 const MAX_DOM_LOG_LINES = 600;      
 const MAX_LOG_MEM_LINES = 10000; // memory log buffer low speed optimization
 
@@ -66,7 +65,7 @@ const DYN_HS = Object.freeze({
   base: 5.0,      
   min: 4.5,      
   max: 7.0,      
-  remorseSecs: 25, 
+  remorseSecs: 8, 
 });
 
 function _clamp(n, lo, hi) { const x = Number(n); return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : lo; }
@@ -255,7 +254,7 @@ let state = {
   lastTradeTs: 0,
   trailPct: 6,                 
   minProfitToTrailPct: 2,     
-  coolDownSecsAfterBuy: 5,    
+  coolDownSecsAfterBuy: 3,    
   minHoldSecs: 5,  
   maxHoldSecs: 50,           
   partialTpPct: 50,            
@@ -301,7 +300,7 @@ let state = {
   seedBuyCache: true,
   USDCfallbackEnabled: true,
   observerDropSellAt: 4,
-  observerGraceSecs: 85,
+  observerGraceSecs: 25,
   // Observer hysteresis settings
   observerDropMinAgeSecs: 5,   
   observerDropConsec: 3,     
@@ -429,7 +428,7 @@ const CONFIG_SCHEMA = {
   minBuySol:                { type: "number",  def: 0.06, min: 0.01, max: 1 },
   maxBuySol:                { type: "number",  def: 0.12, min: 0.06, max: 5 },
   slippageBps:              { type: "number",  def: 200,  min: 50, max: 2000 },
-  coolDownSecsAfterBuy:     { type: "number",  def: 5,    min: 0, max: 120 },
+  coolDownSecsAfterBuy:     { type: "number",  def: 3,    min: 0, max: 120 },
   pendingGraceMs:           { type: "number",  def: 120_000, min: 10_000, max: 600_000 },
   fricSnapEpsSol:           { type: "number",  def: 0.0020, min: 0, max: 0.05 },
   allowMultiBuy:            { type: "boolean", def: false },
@@ -568,7 +567,9 @@ function flagUrgentSell(mint, reason = "observer", sev = 1) {
       const ageMs = now() - Number(pos.lastBuyAt || pos.acquiredAt || 0);
       const postBuyCooldownMs = Math.max(20_000, Number(state.coolDownSecsAfterBuy || 0) * 1000);
       const isRug = /rug/i.test(String(reason||""));
-      const highSev = Number(sev || 0) >= 0.85;
+
+      const highSev = Number(sev || 0) >= Math.max(0.60, Number(RUG_FORCE_SELL_SEVERITY || 0.60));
+
       if (pos.awaitingSizeSync === true && !isRug && !highSev) return;
       if ((state.rideWarming && pos.warmingHold === true) && !isRug && !highSev) return;
       if (ageMs < Math.max(URGENT_SELL_MIN_AGE_MS, postBuyCooldownMs) && !isRug && !highSev) return;
@@ -4155,7 +4156,7 @@ async function pickTopPumper() {
   }
 
   if (!sN) {
-    // setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+    setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
     log(`Observer: ${mint.slice(0,4)}… dropped during pre-buy watch; skipping (no blacklist).`); 
     return "";
   }
@@ -5645,9 +5646,16 @@ async function evalAndMaybeSellPositions() {
               const needLowConsec = pumpingish ? 2 : 1;
               const dg = _getDropGuardStore().get(mint) || {};
               const lowConsec = Number(dg.consecLow || 0);
+              const bypassAt = Math.max(0, Number(1));
+              const hardBypass = (p <= bypassAt);
 
               if (p <= 2) {
-                if (inSellGuard) {
+                if (hardBypass) {
+                  forceObserverDrop = true;
+                  setMintBlacklist(mint); // staged and progressive ban
+                  log(`Observer hard drop for ${mint.slice(0,4)}… (${p}/5 <= ${bypassAt}) forcing sell (staged blacklist).`);
+                }
+                else if (inSellGuard) {
                   log(`Sell guard active; suppressing observer drop (${p}/5) for ${mint.slice(0,4)}…`);
                 } else if (lowConsec < needLowConsec) {
                   // Debounce: treat as consider while pumping/warming
@@ -5686,6 +5694,21 @@ async function evalAndMaybeSellPositions() {
           pos.lastQuotedAt = nowTs;
         }
 
+        try {
+          const prevSol = Number(pos._lastShockSol || 0);
+          const prevAt  = Number(pos._lastShockAt  || 0);
+          if (prevSol > 0 && curSol > 0 && (nowTs - prevAt) <= RUG_QUOTE_SHOCK_WINDOW_MS) {
+            const dropFrac = (prevSol - curSol) / Math.max(prevSol, 1e-12);
+            if (dropFrac >= RUG_QUOTE_SHOCK_FRAC) {
+              log(`RUG quote-shock ${mint.slice(0,4)}… drop=${(dropFrac*100).toFixed(1)}% within ${(nowTs-prevAt)}ms`);
+              flagUrgentSell(mint, "rug_quote_shock", 1.0);
+            }
+          }
+
+          pos._lastShockSol = curSol;
+          pos._lastShockAt  = nowTs;
+        } catch {}    
+
         const outLamports = Math.floor(Math.max(0, curSol) * 1e9);
         const decIn = Number.isFinite(pos.decimals) ? pos.decimals : 6;
         const net = estimateNetExitSolFromQuote({
@@ -5718,7 +5741,7 @@ async function evalAndMaybeSellPositions() {
         const pxNowNet  = sz > 0 ? (curSolNet / sz) : 0;
         const pnlNetPct = (pxNowNet > 0 && pxCost > 0) ? ((pxNowNet - pxCost) / pxCost) * 100 : 0;
         const ageSec = (nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0)) / 1000;
-        const remorseSecs = Math.max(15, Number(state.dynamicHardStopBuyerRemorseSecs || 30));
+        const remorseSecs = Math.max(15, Number(3 || 30));
         const creditsPending = pos.awaitingSizeSync === true || pos._pendingCostAug === true;
         const canHardStop = ageSec >= remorseSecs && !creditsPending;
 
@@ -5975,6 +5998,11 @@ async function evalAndMaybeSellPositions() {
         lockMint(mint, "sell", Math.max(MINT_OP_LOCK_MS, Number(state.sellCooldownMs||20000)));
 
         const exitSlip = Math.max(Number(state.slippageBps || 250), Number(state.fastExitSlipBps || 400));
+
+        if (decision?.hardStop || forceRug || forceObserverDrop || forcePumpDrop) {
+          exitSlip = Math.max(exitSlip, 1500); // 15% slip for forced exits
+        }
+
         const exitConfirmMs = isFastExit ? Math.max(6000, Number(state.fastExitConfirmMs || 9000)) : 15000;
 
         if (decision.action === "sell_partial") {
@@ -7793,7 +7821,7 @@ export function initAutoWidget(container = document.body) {
     </div>
     </div>
     <div class="fdv-bot-footer" style="margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
-      <span>Version: 0.0.4.3</span>
+      <span>Version: 0.0.4.4</span>
     </div>
   `;
 
