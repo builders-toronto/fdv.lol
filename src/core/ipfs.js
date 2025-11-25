@@ -1,4 +1,4 @@
-import { developer, FALLBACK_LOGO } from "../config/env.js";
+import { FALLBACK_LOGO } from "../config/env.js";
 
 const IPFS_GATEWAYS = [
   'https://ipfs.io/ipfs/',
@@ -24,6 +24,8 @@ function _isDevHost() {
 
 function shouldSilenceIpfs() {
   try {
+    // Only allow "full blackout" on dev hosts
+    if (!_isDevHost()) return false;
     if (typeof window !== 'undefined' && window.__fdvSilenceIpfs) return true;
     if (typeof localStorage !== 'undefined' && localStorage.getItem('fdv_silence_ipfs') === '1') return true;
   } catch {}
@@ -32,6 +34,8 @@ function shouldSilenceIpfs() {
 
 function setSilenceIpfs(on = true) {
   try {
+    // Only enable silence on dev hosts; allow disabling anywhere
+    if (on && !_isDevHost()) return;
     if (typeof window !== 'undefined') window.__fdvSilenceIpfs = !!on;
     if (typeof localStorage !== 'undefined') {
       if (on) localStorage.setItem('fdv_silence_ipfs', '1');
@@ -44,11 +48,12 @@ function recordIpfsErrAndMaybeSilence() {
   const now = Date.now();
   __ipfsErrTimes.push(now);
   __ipfsErrTimes = __ipfsErrTimes.filter(t => now - t <= SILENCE_STORM_WINDOW_MS);
-  if (__ipfsErrTimes.length >= SILENCE_STORM_THRESHOLD) setSilenceIpfs(true);
+  // Only auto-silence on dev hosts
+  if (_isDevHost() && __ipfsErrTimes.length >= SILENCE_STORM_THRESHOLD) setSilenceIpfs(true);
 }
 
 if (typeof window !== 'undefined') {
-  if (_isDevHost() && developer) {
+  if (_isDevHost()) {
     try {
       if (localStorage.getItem('fdv_silence_ipfs') !== '0') setSilenceIpfs(true);
     } catch {}
@@ -163,12 +168,12 @@ export function normalizeTokenLogo(raw, sym = '') {
 }
 
 (function installIpfsImageFallback() {
-  // if (!developer) return;
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
   if (window.__fdvIpfsFallbackInstalled) return;
   window.__fdvIpfsFallbackInstalled = true;
   try {
-    if (!window.__fdvIpfsSrcIntercept) {
+    // Only install src/setAttribute interception on dev hosts (full blackout behavior)
+    if (_isDevHost() && !window.__fdvIpfsSrcIntercept) {
       window.__fdvIpfsSrcIntercept = true;
       const desc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
       if (desc && desc.set) {

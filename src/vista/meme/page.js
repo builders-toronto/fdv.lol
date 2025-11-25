@@ -1,6 +1,6 @@
 import { MAX_CARDS } from '../../config/env.js';
 
-// import { loadAds, pickAd, adCard } from "../../ads/load.js";
+import { loadAds, pickAd, adCard, initAdBanners } from "../../ads/load.js";
 
 import { showHome } from '../../router/main/home.js';
 
@@ -10,8 +10,11 @@ import { ingestSnapshot } from './metrics/ingest.js';
 // Addons (KPI)
 import './metrics/kpi/pumping.js';
 import './metrics/kpi/three.js';
+import './metrics/kpi/performers.js';
+import './metrics/kpi/liquid.js';
 import './metrics/kpi/smq.js';
 import './metrics/kpi/degen.js';
+import './metrics/kpi/comeback.js';
 import './metrics/kpi/engagement.js';
 import './metrics/kpi/das.js';
 import './metrics/kpi/holders.js';
@@ -92,72 +95,73 @@ elRefresh.addEventListener('click', () => showHome({ force: true }));
 elRelax.addEventListener('change', () => showHome({ force: true }));
 
 
-// function ensureAdSlots() {
-//   if (!_elCardAdSlot) {
-//     const host = elCards?.parentElement || document.body;
-//     _elCardAdSlot = document.createElement('div');
-//     _elCardAdSlot.id = 'cardAdSlot';
-//     _elCardAdSlot.className = 'ad-slot ad-slot-cards';
-//     host.insertBefore(_elCardAdSlot, elCards || host.firstChild);
-//   }
+function ensureAdSlots() {
+  if (!_elCardAdSlot) {
+    const host = elCards?.parentElement || document.body;
+    _elCardAdSlot = document.createElement('div');
+    _elCardAdSlot.id = 'cardAdSlot';
+    _elCardAdSlot.className = 'ad-slot ad-slot-cards';
+    host.insertBefore(_elCardAdSlot, elCards || host.firstChild);
+  }
 
-//   // if (!_elMarqueeAdSlot) {
-//   //   const host = elCards?.parentElement || document.body;
-//   //   const marqueeHost =
-//   //     document.querySelector('[data-marquee-slot]') ||
-//   //     document.getElementById('marqueeSlot') ||
-//   //     document.querySelector('.marquee, .marquee-slot') ||
-//   //     null;
+  // if (!_elMarqueeAdSlot) {
+  //   const host = elCards?.parentElement || document.body;
+  //   const marqueeHost =
+  //     document.querySelector('[data-marquee-slot]') ||
+  //     document.getElementById('marqueeSlot') ||
+  //     document.querySelector('.marquee, .marquee-slot') ||
+  //     null;
 
-//   //   _elMarqueeAdSlot = document.createElement('div');
-//   //   _elMarqueeAdSlot.id = 'marqueeAdSlot';
-//   //   _elMarqueeAdSlot.className = 'ad-slot ad-slot-marquee';
+  //   _elMarqueeAdSlot = document.createElement('div');
+  //   _elMarqueeAdSlot.id = 'marqueeAdSlot';
+  //   _elMarqueeAdSlot.className = 'ad-slot ad-slot-marquee';
 
-//   //   if (marqueeHost && marqueeHost.parentElement) {
-//   //     marqueeHost.parentElement.insertBefore(_elMarqueeAdSlot, marqueeHost.nextSibling);
-//   //   } else {
-//   //     (host).insertBefore(_elMarqueeAdSlot, elCards || host.firstChild);
-//   //   }
-//   // }
-// }
+  //   if (marqueeHost && marqueeHost.parentElement) {
+  //     marqueeHost.parentElement.insertBefore(_elMarqueeAdSlot, marqueeHost.nextSibling);
+  //   } else {
+  //     (host).insertBefore(_elMarqueeAdSlot, elCards || host.firstChild);
+  //   }
+  // }
+}
 
-// function renderAdInto(slot, ad) {
-//   if (!slot) return;
-//   if (!ad) { slot.innerHTML = ''; return; }
-//   try {
-//     const node = adCard(ad);
-//     if (typeof node === 'string') {
-//       slot.innerHTML = node;
-//     } else if (node instanceof Node) {
-//       slot.innerHTML = '';
-//       slot.appendChild(node);
-//     } else {
-//       slot.innerHTML = '';
-//     }
-//   } catch {
-//     slot.innerHTML = '';
-//   }
-// }
+function renderAdInto(slot, ad) {
+  if (!slot) return;
+  if (!ad) { slot.innerHTML = ''; return; }
+  try {
+    const node = adCard(ad);
+    if (typeof node === 'string') {
+      slot.innerHTML = node;
+    } else if (node instanceof Node) {
+      slot.innerHTML = '';
+      slot.appendChild(node);
+    } else {
+      slot.innerHTML = '';
+    }
+  } catch {
+    slot.innerHTML = '';
+  }
+}
 
-// function renderAdSlots() {
-//   if (!_latestAd) return;
-//   ensureAdSlots();
-//   renderAdInto(_elCardAdSlot, _latestAd);
-//   // renderAdInto(_elMarqueeAdSlot, _latestAd);
-// }
+function renderAdSlots() {
+  if (!_latestAd) return;
+  ensureAdSlots();
+  renderAdInto(_elCardAdSlot, _latestAd);
+  // renderAdInto(_elMarqueeAdSlot, _latestAd);
+}
 
-// async function loadAndRenderAd() {
-//   try {
-//     if (_elCardAdSlot && _elCardAdSlot.childElementCount > 0) return;
-//     if (_elMarqueeAdSlot && _elMarqueeAdSlot.childElementCount > 0) return;
-//     const ads = await loadAds();
-//     const pick = pickAd(ads);
-//     if (pick) {
-//       _latestAd = pick;
-//       renderAdSlots();
-//     }
-//   } catch {}
-// }
+async function loadAndRenderAd() {
+  try {
+    if (_elCardAdSlot && _elCardAdSlot.childElementCount > 0) return;
+    if (_elMarqueeAdSlot && _elMarqueeAdSlot.childElementCount > 0) return;
+    const ads = await loadAds();
+    const pick = pickAd(ads);
+    if (pick) {
+      _latestAd = pick;
+      renderAdSlots();
+    }
+    await initAdBanners(document);
+  } catch {}
+}
 
 export function setLoadingStatus(msg = '') {
   try {
@@ -397,7 +401,7 @@ function initInitialLoading() {
 
   initSearch(elQ, elQResults, elSearchWrap);
 
-  // // loadAndRenderAd().catch(() => {});
+  loadAndRenderAd().catch(() => {});
 
   // ensureMarqueeSlot(elCards);
 
