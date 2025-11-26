@@ -5852,6 +5852,8 @@ async function evalAndMaybeSellPositions() {
           if (res.decision?.hardStop && /WARMING_TARGET|warming[-\s]*max[-\s]*loss/i.test(String(res.decision.reason || ""))) {
             isFastExit = true;
           }
+
+          var warmingHoldActive = !!res.warmingHoldActive;
         }
 
         const skipSoftGates = !!(decision?.hardStop) || /HARD_STOP|FAST_/i.test(String(decision?.reason||""));
@@ -5877,22 +5879,30 @@ async function evalAndMaybeSellPositions() {
         const minNotional = minSellNotionalSol();
 
         if (!isFastExit) {
-          // original min-notional and shouldSell evaluation
-          let d = null;
-          if (curSol < minNotional && !forceExpire && !forceRug && !forcePumpDrop && !forceObserverDrop) {
-            d = shouldSell(pos, curSolNet, nowTs);
-            const dustMin = Math.max(MIN_SELL_SOL_OUT, Number(state.dustMinSolOut || 0));
-            if (!(state.dustExitEnabled && d.action === "sell_all" && curSol >= dustMin)) {
-              log(`Skip sell eval ${mint.slice(0,4)}… (notional ${curSol.toFixed(6)} SOL < ${minNotional})`);
-              continue;
-            } else {
-              log(`Dust exit enabled for ${mint.slice(0,4)}… (est ${curSol.toFixed(6)} SOL >= ${dustMin})`);
+          const canRunFallback =
+            !(warmingHoldActive && !forceRug && !forcePumpDrop && !forceObserverDrop && !forceExpire);
+
+          if (canRunFallback) {
+            let d = null;
+            if (curSol < minNotional && !forceExpire && !forceRug && !forcePumpDrop && !forceObserverDrop) {
+              d = shouldSell(pos, curSolNet, nowTs);
+              const dustMin = Math.max(MIN_SELL_SOL_OUT, Number(state.dustMinSolOut || 0));
+              if (!(state.dustExitEnabled && d.action === "sell_all" && curSol >= dustMin)) {
+                log(`Skip sell eval ${mint.slice(0,4)}… (notional ${curSol.toFixed(6)} SOL < ${minNotional})`);
+                continue;
+              } else {
+                log(`Dust exit enabled for ${mint.slice(0,4)}… (est ${curSol.toFixed(6)} SOL >= ${dustMin})`);
+              }
+            } else if (curSol < minNotional && !forceExpire && (forceRug || forcePumpDrop || forceObserverDrop)) {
+              const why = forceRug ? "Rug" : (forcePumpDrop ? "Pump->Calm" : "Observer");
+              log(`${why} exit for ${mint.slice(0,4)}… ignoring min-notional (${curSol.toFixed(6)} SOL < ${minNotional}).`);
             }
-          } else if (curSol < minNotional && !forceExpire && (forceRug || forcePumpDrop || forceObserverDrop)) {
-            const why = forceRug ? "Rug" : (forcePumpDrop ? "Pump->Calm" : "Observer");
-            log(`${why} exit for ${mint.slice(0,4)}… ignoring min-notional (${curSol.toFixed(6)} SOL < ${minNotional}).`);
+            if (!decision || decision.action === "none") {
+              decision = d || shouldSell(pos, curSol, nowTs);
+            }
+          } else {
+            log(`Warming hold active; skipping fallback sell checks for ${mint.slice(0,4)}…`);
           }
-          decision = decision || d || shouldSell(pos, curSol, nowTs);
         } else {
           decision = decision; // already set
         }
