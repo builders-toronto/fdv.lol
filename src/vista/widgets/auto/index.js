@@ -5908,24 +5908,6 @@ async function evalAndMaybeSellPositions() {
           log(`Max-hold reached for ${mint.slice(0,4)}… forcing sell.`);
         }
 
-        if (!isFastExit) {
-          if (warmingHoldActive && pnlPct < warmReq.req && !forceRug) {
-            if (forceObserverDrop || forcePumpDrop) {
-              log(`Warming hold: suppressing volatility sell for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
-            }
-            forceObserverDrop = false;
-            forcePumpDrop = false;
-          }
-          // None
-        }
-
-        if (!isFastExit) {
-          if (warmingActive && pos.warmingHold === true && warmingHoldActive && pnlPct < warmReq.req && decision && decision.action !== "none" && !/rug|warming-max-loss/i.test(decision.reason || "") && !forceEarlyFade) {
-            log(`Warming hold: skipping sell (${decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
-            decision = { action: "none", reason: "warming-hold-until-profit" };
-          }
-        }
-
         if (decision && decision.action !== "none" && !forceRug) {
           if (skipSoftGates) {
             // hard/fast exits bypass rebound defers
@@ -5974,7 +5956,7 @@ async function evalAndMaybeSellPositions() {
         _inFlight = true;
         lockMint(mint, "sell", Math.max(MINT_OP_LOCK_MS, Number(state.sellCooldownMs||20000)));
 
-        const exitSlip = Math.max(Number(state.slippageBps || 250), Number(state.fastExitSlipBps || 400));
+        let exitSlip = Math.max(Number(state.slippageBps || 250), Number(state.fastExitSlipBps || 400));
 
         if (decision?.hardStop || forceRug || forceObserverDrop || forcePumpDrop) {
           exitSlip = Math.max(exitSlip, 1500); // 15% slip for forced exits
@@ -7797,8 +7779,9 @@ export function initAutoWidget(container = document.body) {
       <button class="btn" data-auto-reset>Refresh</button>
     </div>
     </div>
-    <div class="fdv-bot-footer" style="margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
-      <span>Version: 0.0.4.4</span>
+    <div class="fdv-bot-footer" style="display:flex;justify-content:space-between;margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
+      <a href="https://t.me/fdvlolgroup" target="_blank" data-auto-help-tg>t.me/fdvlolgroup</a>
+      <span>Version: 0.0.4.5</span>
     </div>
   `;
 
