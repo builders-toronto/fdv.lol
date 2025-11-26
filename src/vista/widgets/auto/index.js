@@ -25,7 +25,7 @@ const URGENT_SELL_MIN_AGE_MS = 7_000;
 const MAX_RECURRING_COST_FRAC = 0.0075; // tx + platform fees <= 0.75% of order
 const MAX_ONETIME_COST_FRAC   = 0.02; 
 const ONE_TIME_COST_AMORTIZE  = 5;
-const FAST_OBS_INTERVAL_MS   = 40;    
+const FAST_OBS_INTERVAL_MS   = 5;    
 const SPLIT_FRACTIONS = [0.99, 0.98, 0.97, 0.96, 0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.50, 0.33, 0.25, 0.20];
 const MINT_OP_LOCK_MS = 30_000;
 const BUY_SEED_TTL_MS = 60_000;
@@ -36,7 +36,7 @@ const RUG_FORCE_SELL_SEVERITY = 0.60;
 const RUG_QUOTE_SHOCK_FRAC = 0.35;         
 const RUG_QUOTE_SHOCK_WINDOW_MS = 6000;      
 const EARLY_URGENT_WINDOW_MS = 15_000; // buyers remorse
-const MAX_DOM_LOG_LINES = 600;      
+const MAX_DOM_LOG_LINES = 100;      
 const MAX_LOG_MEM_LINES = 10000; // memory log buffer low speed optimization
 
 
@@ -5440,6 +5440,76 @@ async function maybeStealthRotate(tag = "sell") {
   }
 }
 
+function applyWarmingPolicy({ mint, pos, nowTs, pnlPct, curSol, decision, forceRug, forcePumpDrop, forceObserverDrop, forceEarlyFade }) {
+  const result = { decision, forceObserverDrop, forcePumpDrop, warmingActive: false, warmingHoldActive: false, warmingMaxLossTriggered: false };
+  try {
+    const warmingActive = !!(state.rideWarming && pos.warmingHold === true);
+    result.warmingActive = warmingActive;
+    if (!warmingActive) return result;
+
+    const warmAgeMs = nowTs - Number(pos.warmingHoldAt || pos.lastBuyAt || pos.acquiredAt || 0);
+    const maxLossPctCfg = Math.max(1, Number(state.warmingMaxLossPct || 6));
+    const maxLossWindowMs = Math.max(5_000, Number(state.warmingMaxLossWindowSecs || 60) * 1000);
+    if (warmAgeMs <= maxLossWindowMs) {
+      if (Number.isFinite(pnlPct) && pnlPct <= -maxLossPctCfg) {
+        const msg = `WARMING MAX LOSS ${pnlPct.toFixed(2)}% <= -${maxLossPctCfg}%`;
+        log(`Warming max-loss hit for ${mint.slice(0,4)}… (${msg}). Selling now.`);
+        pos.warmingHold = false;
+        pos.warmingClearedAt = now();
+        delete pos.warmingExtendUntil;
+        save();
+        result.decision = { action: "sell_all", reason: msg, hardStop: true };
+        result.warmingMaxLossTriggered = true;
+        return result;
+      }
+    }
+
+    const warmReq = computeWarmingRequirement(pos, nowTs);
+    const ext = isWarmingHoldActive(mint, pos, warmReq, nowTs);
+    result.warmingHoldActive = !!ext.active;
+
+    if (Number.isFinite(pnlPct) && pnlPct >= warmReq.req) {
+      pos.warmingHold = false;
+      pos.warmingClearedAt = now();
+      delete pos.warmingExtendUntil;
+      save();
+      const msg = `WARMING_TARGET ${pnlPct.toFixed(2)}% ≥ ${warmReq.req.toFixed(2)}%`;
+      result.decision = { action: "sell_all", reason: msg, hardStop: true };
+      log(`Warming target met for ${mint.slice(0,4)}… selling now (${msg}).`);
+      return result;
+    }
+
+    if (warmReq.shouldAutoRelease && !result.warmingHoldActive && pos.warmingHold === true) {
+      pos.warmingHold = false;
+      pos.warmingClearedAt = now();
+      delete pos.warmingExtendUntil;
+      save();
+      log(`Warming auto-release: ${mint.slice(0,4)}… (elapsed ${warmReq.elapsedTotalSec}s)`);
+      return result; 
+    }
+
+    if (!result.warmingMaxLossTriggered &&
+        result.warmingHoldActive &&
+        pnlPct < warmReq.req &&
+        !forceRug &&
+        !forceEarlyFade) {
+      if (result.forceObserverDrop || result.forcePumpDrop) {
+        log(`Warming hold: suppressing volatility sell for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
+      }
+      result.forceObserverDrop = false;
+      result.forcePumpDrop = false;
+
+      const rsn = String(result.decision?.reason || "");
+      const isHardOrFast = !!result.decision?.hardStop || /rug|warming-max-loss|HARD_STOP|FAST_/i.test(rsn);
+      if (result.decision && result.decision.action !== "none" && !isHardOrFast) {
+        log(`Warming hold: skipping sell (${result.decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
+        result.decision = { action: "none", reason: "warming-hold-until-profit" };
+      }
+    }
+  } catch {}
+  return result;
+}
+
 async function evalAndMaybeSellPositions() {
   if (_inFlight) return;
   if (_sellEvalRunning) return; 
@@ -5604,12 +5674,13 @@ async function evalAndMaybeSellPositions() {
             // Jiggler
             if (!forceEarlyFade &&
                 changes >= 2 &&
-                scSlopeMin > Math.min(-2, Number(state.earlyExitScSlopeNeg || -10))) {
+                scSlopeMin > -2) {
               // Suppress early fade due to short-term alternating moves
               pos.earlyNegScCount = 0;
               earlyReason = "";
               log(`Jiggle hold: ${mint.slice(0,4)}… direction changes=${changes} scSlope=${scSlopeMin.toFixed(2)}/m`);
             }
+
             if (extended.length === 5) {
               let allDown = true;
               for (let i = 1; i < extended.length; i++) {
@@ -5727,7 +5798,6 @@ async function evalAndMaybeSellPositions() {
         const pxCost = sz > 0 ? (Number(pos.costSol || 0) / sz) : 0;
         const pnlPct = (pxNow > 0 && pxCost > 0) ? ((pxNow - pxCost) / pxCost) * 100 : 0;
 
-        // FAST EXIT: evaluate before any warming/observer/rebound gating
         let decision = null;
         let isFastExit = false;
         const fast = checkFastExitTriggers(mint, pos, { pnlPct, pxNow, nowTs });
@@ -5768,115 +5838,23 @@ async function evalAndMaybeSellPositions() {
           log(`Hard stop suppressed (age ${ageSec.toFixed(1)}s${creditsPending ? ", pending credit" : ""}) for ${mint.slice(0,4)}… netPnL=${pnlNetPct.toFixed(2)}%`);
         }
 
+        {
+          const res = applyWarmingPolicy({
+            mint, pos, nowTs, pnlPct, curSol,
+            decision,
+            forceRug, forcePumpDrop, forceObserverDrop,
+            forceEarlyFade
+          });
+          decision = res.decision || decision;
+          forceObserverDrop = res.forceObserverDrop;
+          forcePumpDrop = res.forcePumpDrop;
+
+          if (res.decision?.hardStop && /WARMING_TARGET|warming[-\s]*max[-\s]*loss/i.test(String(res.decision.reason || ""))) {
+            isFastExit = true;
+          }
+        }
+
         const skipSoftGates = !!(decision?.hardStop) || /HARD_STOP|FAST_/i.test(String(decision?.reason||""));
-
-        let warmingMaxLossTriggered = false;
-        if (state.rideWarming && pos.warmingHold === true) {
-          const warmAgeMs = nowTs - Number(pos.warmingHoldAt || pos.lastBuyAt || pos.acquiredAt || 0);
-          const maxLossPctCfg = Math.max(1, Number(state.warmingMaxLossPct || 6));
-          const maxLossWindowMs = Math.max(5_000, Number(state.warmingMaxLossWindowSecs || 60) * 1000);
-          if (warmAgeMs <= maxLossWindowMs) {
-            const sizeUiTmp = Number(pos.sizeUi || 0);
-            const pxNowTmp  = sizeUiTmp > 0 ? (curSol / sizeUiTmp) : 0;
-            const pxCostTmp = sizeUiTmp > 0 ? (Number(pos.costSol || 0) / sizeUiTmp) : 0;
-            const pnlPctTmp = (pxNowTmp > 0 && pxCostTmp > 0) ? ((pxNowTmp - pxCostTmp) / pxCostTmp) * 100 : 0;
-            if (pnlPctTmp <= -maxLossPctCfg) {
-              log(`Warming max-loss hit for ${mint.slice(0,4)}… (${pnlPctTmp.toFixed(2)}% ≤ -${maxLossPctCfg}%). Forcing sell now.`);
-              pos.warmingHold = false;
-              pos.warmingClearedAt = now();
-              delete pos.warmingExtendUntil;
-              save();
-              forceObserverDrop = true;
-              warmingMaxLossTriggered = true;
-            }
-          }
-        }
-
-        const warmingActive = !!(state.rideWarming && pos.warmingHold === true);
-        const warmReq = warmingActive ? computeWarmingRequirement(pos, nowTs) : { req: Number(state.warmingMinProfitPct || 1), shouldAutoRelease: false };
-
-        let warmingHoldActive = false;
-        if (warmingActive) {
-          const ext = isWarmingHoldActive(mint, pos, warmReq, nowTs);
-          warmingHoldActive = !!ext.active;
-
-          if (warmReq.shouldAutoRelease && !warmingHoldActive && pos.warmingHold === true) {
-            pos.warmingHold = false;
-            pos.warmingClearedAt = now();
-            delete pos.warmingExtendUntil;
-            save();
-            log(`Warming auto-release: ${mint.slice(0,4)}… (elapsed ${warmReq.elapsedTotalSec}s)`);
-          } else if (warmReq.shouldAutoRelease && pnlPct < warmReq.req && warmingHoldActive) {
-            log(`Warming hold retained for ${mint.slice(0,4)}… (extend active; PnL ${pnlPct.toFixed(2)}% < req ${warmReq.req.toFixed(2)}%).`);
-          }
-        }
-
-        if (warmingActive && pos.warmingHold === true) {
-          const windowMs = Math.max(5_000, Number(state.warmingMaxLossWindowSecs || 30) * 1000);
-          const maxLoss = Math.max(1, Number(state.warmingMaxLossPct || 10));
-          const warmAgeMs = nowTs - Number(pos.warmingHoldAt || pos.lastBuyAt || pos.acquiredAt || 0);
-          if (warmAgeMs <= windowMs && pnlPct <= -maxLoss) {
-            log(`Warming max-loss hit for ${mint.slice(0,4)}… (${pnlPct.toFixed(2)}% ≤ -${maxLoss}%). Forcing sell.`);
-            pos.warmingHold = false;
-            pos.warmingClearedAt = now();
-            save();
-            forceObserverDrop = true; // reuse same bypass path
-          }
-        }
-
-
-
-
-
-        try {
-          const curSig = getRugSignalForMint(mint);
-          const curBadgeNorm = normBadge(curSig?.badge);
-          if (!forceRug && curBadgeNorm === "warming" && !forceEarlyFade) {
-            const warmReqNow = computeWarmingRequirement(pos, nowTs);
-            if (pnlPct < warmReqNow.req) {
-              if (forceObserverDrop || forcePumpDrop) {
-                log(`Warming badge: suppressing volatility sell for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReqNow.req.toFixed(2)}%).`);
-              }
-              forceObserverDrop = false;
-              forcePumpDrop = false;
-            }
-          }
-        } catch {}
-
-
-
-
-        if (!warmingMaxLossTriggered && warmingHoldActive && pnlPct < warmReq.req && !forceRug && !forceEarlyFade) {
-          if (skipSoftGates) {
-            // hard/fast (incl. max-hold) exits bypass warming hold
-          } else {
-            if (forceObserverDrop || forcePumpDrop) {
-              log(`Warming hold: suppressing volatility sell for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
-            }
-            forceObserverDrop = false;
-            forcePumpDrop = false;
-          }
-        }
-
-
-
-
-        if (warmingActive && pos.warmingHold === true && warmingHoldActive && pnlPct < warmReq.req && decision && decision.action !== "none" && !/rug/i.test(decision.reason || "")) {
-          const isHardOrFast = skipSoftGates;
-          if (!isHardOrFast) {
-            log(`Warming hold: skipping sell (${decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
-            decision = { action: "none", reason: "warming-hold-until-profit" };
-          }
-        }
-
-        if (warmingActive && pos.warmingHold === true && warmingHoldActive && pnlPct < warmReq.req && decision && decision.action !== "none") {
-          const rsn = String(decision.reason || "");
-          const isHardOrFast = !!decision.hardStop || /rug|warming-max-loss|HARD_STOP|FAST_/i.test(rsn);
-          if (!isHardOrFast) {
-            log(`Warming hold: skipping sell (${decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
-            decision = { action: "none", reason: "warming-hold-until-profit" };
-          }
-        }
 
         if (!forceRug && !forcePumpDrop && !forceObserverDrop && obsPasses === 3) {
           const should = shouldForceSellAtThree(mint, pos, curSol, nowTs);
@@ -5947,7 +5925,6 @@ async function evalAndMaybeSellPositions() {
             decision = { action: "none", reason: "warming-hold-until-profit" };
           }
         }
-
 
         if (decision && decision.action !== "none" && !forceRug) {
           if (skipSoftGates) {
