@@ -1,6 +1,51 @@
 import { addKpiAddon, getLatestSnapshot } from '../ingest.js';
 import { fetchTokenInfoLive } from '../../../../data/dexscreener.js';
 
+const CRYPTO_FACTS = [
+  'Bitcoins genesis block was mined in Jan 2009.',
+  'Bitcoin halves block rewards roughly every 4 years.',
+  'Ethereum introduced general-purpose smart contracts (2015).',
+  '"Not your keys, not your coins" -> self-custody matters.',
+  'Stablecoins aim to track the value of fiat or other assets.',
+  'Gas/fees rise with network congestion and demand.',
+  'Hardware wallets are a common form of cold storage.',
+  'Proof of Stake and Proof of Work secure networks differently.',
+  'Most chains use elliptic curve cryptography (e.g., ECDSA/EdDSA).',
+  'On-chain liquidity can impact price stability and slippage.'
+];
+
+let nextFactIdx = 0;
+
+function makeFactRow(text) {
+  return {
+    mint: `fact:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    symbol: 'FACT',
+    name: text,
+    imageUrl: '',
+    priceUsd: 0,
+    liqUsd: 0,
+    pairUrl: 'https://en.wikipedia.org/wiki/Cryptocurrency',
+    chg5m: 0,
+    chg1h: 0,
+    chg6h: 0,
+    v1hTotal: 0,
+    chg24: 0,
+    vol24: '💡 Random Crypto Fact',
+    metric: 1337,
+    placeholder: 'fact'
+  };
+}
+
+function makeFallbackRows(count) {
+  const rows = [];
+  if (count <= 0) return rows;
+  while (rows.length < count) {
+    const fact = CRYPTO_FACTS[nextFactIdx++ % CRYPTO_FACTS.length];
+    rows.push(makeFactRow(fact));
+  }
+  return rows.slice(0, count);
+}
+
 export const PUMP_STORAGE_KEY     = 'pump_history_v1';
 export const PUMP_WINDOW_DAYS     = 1.5;       // short lookback favors immediacy
 export const PUMP_SNAPSHOT_LIMIT  = 600;       // global cap
@@ -368,7 +413,7 @@ addKpiAddon(
     label: 'PUMP',
     title: 'Pumping Radar',
     metricLabel: 'PUMP',
-    limit: 5,
+    limit: 9,
   },
   {
     computePayload() {
@@ -382,10 +427,19 @@ addKpiAddon(
       const newEntries = mints.filter(m => !currentLeaderMints.has(m));
       currentLeaderMints.clear();
       mints.forEach(m => currentLeaderMints.add(m));
+
+      const leaderRows = mapPumpingRows(leaders);
+      
+      const need = Math.max(0, 3 - leaderRows.length);
+
+      const paddedRows = need > 0
+        ? leaderRows.concat(makeFallbackRows(need))
+        : leaderRows;
+
       return {
         title: 'Pumping Radar',
         metricLabel: 'PUMP',
-        items: mapPumpingRows(leaders),
+        items: paddedRows,
         notify: newEntries.length ? { type: 'pumping', mints: newEntries } : null,
         notifyToken: newEntries.length ? Date.now() : null,
       };
