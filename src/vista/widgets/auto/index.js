@@ -1,7 +1,6 @@
 import { computePumpingLeaders, getRugSignalForMint, focusMint } from "../../meme/metrics/kpi/pumping.js";
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
-
 const MIN_JUP_SOL_IN = 0.001;
 const MIN_SELL_SOL_OUT = 0.004;
 const FEE_RESERVE_MIN = 0.0002;   // rent
@@ -38,12 +37,8 @@ const RUG_QUOTE_SHOCK_WINDOW_MS = 6000;
 const EARLY_URGENT_WINDOW_MS = 15_000; // buyers remorse
 const MAX_DOM_LOG_LINES = 100;      
 const MAX_LOG_MEM_LINES = 10000; // memory log buffer low speed optimization
-
-
 const POSCACHE_KEY_PREFIX = "fdv_poscache_v1:";
-
 const DUSTCACHE_KEY_PREFIX = "fdv_dustcache_v1:";
-
 
 const FEE_ATAS = {
   [SOL_MINT]: "4FSwzXe544mW2BLYqAAjcyBmFFHYgMbnA1XUdtGUeST8",  
@@ -62,10 +57,10 @@ const UI_LIMITS = {
 };
 
 const DYN_HS = Object.freeze({
-  base: 5.0,      
-  min: 4.5,      
-  max: 7.0,      
-  remorseSecs: 8, 
+  base: 2.8,      
+  min: 2.2,      
+  max: 4.5,      
+  remorseSecs: 6, 
 });
 
 function _clamp(n, lo, hi) { const x = Number(n); return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : lo; }
@@ -565,7 +560,7 @@ function flagUrgentSell(mint, reason = "observer", sev = 1) {
     const pos = state.positions?.[mint];
     if (pos) {
       const ageMs = now() - Number(pos.lastBuyAt || pos.acquiredAt || 0);
-      const postBuyCooldownMs = Math.max(20_000, Number(state.coolDownSecsAfterBuy || 0) * 1000);
+      const postBuyCooldownMs = Math.max(8_000, Number(state.coolDownSecsAfterBuy || 0) * 1000);
       const isRug = /rug/i.test(String(reason||""));
 
       const highSev = Number(sev || 0) >= Math.max(0.60, Number(RUG_FORCE_SELL_SEVERITY || 0.60));
@@ -1702,6 +1697,28 @@ function updateFastExitState(pos, pxNow, alpha, nowTs) {
   } catch {}
 }
 
+function computeFastHardStopThreshold(mint, pos, { nowTs } = {}) {
+  try {
+
+    const { intensity, tier, chgSlope, scSlope } = computeFinalGateIntensity(mint);
+
+    let thr = 2.6;
+
+    if (tier === "explosive") thr = 2.2;
+
+    else if (tier === "weak") thr = 3.0;
+
+    if (chgSlope < 0 || scSlope < 0 || pos.fastBackside) thr -= 0.2;
+
+    if (intensity >= 1.8) thr += 0.1;
+
+    return Math.max(2.0, Math.min(3.2, thr));
+
+  } catch {
+    return 2.6; // Best default teste
+  }
+}
+
 function checkFastExitTriggers(mint, pos, { pnlPct, pxNow, nowTs }) {
   try {
     if (!state.fastExitEnabled) return { action: "none" };
@@ -1709,8 +1726,9 @@ function checkFastExitTriggers(mint, pos, { pnlPct, pxNow, nowTs }) {
     const alpha = computeFastAlphaMetrics(mint);
     updateFastExitState(pos, pxNow, alpha, nowTs);
 
-    if (Number.isFinite(pnlPct) && pnlPct <= -Math.abs(state.fastHardStopPct)) {
-      return { action: "sell_all", reason: `FAST_HARD_STOP ${pnlPct.toFixed(2)}%` };
+    const fhs = computeFastHardStopThreshold(mint, pos, { nowTs });
+    if (Number.isFinite(pnlPct) && pnlPct <= -Math.abs(fhs)) {
+      return { action: "sell_all", reason: `FAST_HARD_STOP ${pnlPct.toFixed(2)}%<=-${fhs.toFixed(2)}%`, hardStop: true };
     }
 
     const armed = Number.isFinite(pnlPct) && pnlPct >= Math.max(0, state.fastTrailArmPct);
@@ -4271,27 +4289,27 @@ function computeFinalGateIntensity(mint) {
 function computeDynamicTpSlForMint(mint) {
   const { intensity, tier, chgSlope, scSlope } = computeFinalGateIntensity(mint);
   let tp = Math.max(5, Number(state.takeProfitPct || 12));
-  let sl = Math.max(0.5, Number(state.stopLossPct || 4));
+  let sl = Math.max(5, Number(state.stopLossPct || 5.5));
   let trailPct = Math.max(0, Number(state.trailPct || 6));
   let arm = Math.max(0, Number(state.minProfitToTrailPct || 3));
 
   if (tier === "explosive") {
     tp = Math.min(25, Math.max(tp, 18));
-    sl = Math.max(2.5, Math.min(sl, 4));
+    sl = Math.max(5, Math.min(6, sl));
     trailPct = Math.max(6, Math.min(10, trailPct));
     arm = Math.max(4, arm);
   } else if (tier === "moderate") {
     tp = Math.min(18, Math.max(tp, 12));
-    sl = Math.max(3.5, Math.min(6, sl));
+    sl = Math.max(5, Math.min(6, sl));
     trailPct = Math.max(6, Math.min(12, trailPct));
     arm = Math.max(3, arm);
   } else { // weak
     tp = Math.min(14, Math.max(8, tp - 2));
-    sl = Math.max(5, Math.min(8, sl + 1));
+    sl = Math.max(6, Math.min(7, sl + 0));
     trailPct = Math.max(8, Math.min(14, trailPct + 2));
     arm = Math.max(2, arm);
   }
-  if (chgSlope < 6 || scSlope < 3) sl = Math.max(sl, 5);
+  if (chgSlope < 6 || scSlope < 3) sl = Math.max(sl, 6);
 
   return { tp, sl, trailPct, arm, tier, intensity };
 }
@@ -5297,7 +5315,7 @@ function startFastObserver() {
         logFastObserverSample(mint, pos);
 
         const ageMs = now() - Number(pos.lastBuyAt || pos.acquiredAt || 0);
-        const postBuyCooldownMs = Math.max(20_000, Number(state.coolDownSecsAfterBuy || 0) * 1000);
+        const postBuyCooldownMs = Math.max(8_000, Number(state.coolDownSecsAfterBuy || 0) * 1000);
         const inWarmingHold = !!(state.rideWarming && pos.warmingHold === true);
 
         const r = fastDropCheck(mint, pos);
@@ -5604,10 +5622,11 @@ async function evalAndMaybeSellPositions() {
 
           const badgeNorm = normBadge(sig.badge);
           const sev = Number(sig?.sev ?? 0);
-          const sevThreshold =
-            badgeNorm === "warming"
-              ? Math.max(0.9, RUG_FORCE_SELL_SEVERITY + 0.30) 
-              : RUG_FORCE_SELL_SEVERITY;
+          // const sevThreshold =
+          //   badgeNorm === "warming"
+          //     ? Math.max(0.9, RUG_FORCE_SELL_SEVERITY + 0.30) 
+          //     : RUG_FORCE_SELL_SEVERITY;
+          const sevThreshold = RUG_FORCE_SELL_SEVERITY;
 
           if (sig?.rugged && sev >= sevThreshold) {
             forceRug = true;
@@ -5747,7 +5766,7 @@ async function evalAndMaybeSellPositions() {
         }
 
         {
-          const postBuyCooldownMs = Math.max(20_000, Number(state.coolDownSecsAfterBuy || 0) * 1000);
+          const postBuyCooldownMs = Math.max(8_000, Number(state.coolDownSecsAfterBuy || 0) * 1000);
           const inWarmingHold = !!(state.rideWarming && pos.warmingHold === true);
           if (!leaderMode && (inSellGuard || ageMs < postBuyCooldownMs) && (forceObserverDrop || forcePumpDrop) && !inWarmingHold && !forceRug && !forceEarlyFade) {
             log(`Volatility sell guard active; suppressing observer/pump drop for ${mint.slice(0,4)}…`);
@@ -5811,7 +5830,7 @@ async function evalAndMaybeSellPositions() {
         const pxNowNet  = sz > 0 ? (curSolNet / sz) : 0;
         const pnlNetPct = (pxNowNet > 0 && pxCost > 0) ? ((pxNowNet - pxCost) / pxCost) * 100 : 0;
         const ageSec = (nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0)) / 1000;
-        const remorseSecs = Math.max(15, Number(3 || 30));
+        const remorseSecs = Math.max(5, Number(DYN_HS?.remorseSecs ?? 6));
         const creditsPending = pos.awaitingSizeSync === true || pos._pendingCostAug === true;
         const canHardStop = ageSec >= remorseSecs && !creditsPending;
 
