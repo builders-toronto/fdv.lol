@@ -11,9 +11,11 @@ function loadConsistencyHistory() {
     return raw ? JSON.parse(raw) : { byMint: {}, total: 0 };
   } catch { return { byMint: {}, total: 0 }; }
 }
+
 function saveConsistencyHistory(h) {
   try { localStorage.setItem(CONSIST_STORAGE_KEY, JSON.stringify(h)); } catch {}
 }
+
 function pruneConsistencyHistory(h) {
   const cutoff = Date.now() - CONSIST_WINDOW_DAYS*24*3600*1000;
   let total = 0;

@@ -141,5 +141,5 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-fdv: log: sticky hdr stats bar (session PnL, SOL, open, time left)
+Perfect pumping KPI: gate '🔥 Pumping' on positive DPS; tune thresholds/emojis; keep Cooling precedence
 

@@ -60,6 +60,7 @@ export const PUMP_BADGE_ACCEL5TO1    = 1.03;   // was 1.06
 export const RUG_5M_DROP_PCT  = 10;            // 5m% drop to consider for rug severity
 export const RUG_MAX_PENALTY  = 0.9;           // max score penalty from rugging
 export const RUG_WINDOW_MIN   = 20;            // lookback window for rug detection (minutes)
+export const PUMP_MIN_DPS     = 0.00333;        // points per second threshold (set >0 to tighten)
 const LN2 = Math.log(2);
 
 function loadPumpHistory() {
@@ -167,6 +168,7 @@ function decayWeights(records, nowTs, halflifeDays = PUMP_HALFLIFE_DAYS) {
     return { e, w };
   }).filter(x => x.w > 0);
 }
+
 function decayedMeanStd(vals, wts) {
   const w = wts.reduce((a,b)=>a+b,0);
   if (w <= 0) return { mean: 0, std: 0 };
@@ -178,12 +180,11 @@ function decayedMeanStd(vals, wts) {
 const clamp  = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 const safeZ  = (x, m, s) => s > 0 ? (x - m) / s : 0;
 
-export function computePumpingScoreForMint(records, nowTs) {
-  if (!Array.isArray(records) || !records.length) return { score: 0, badge: 'Calm' };
-
-  const cutoff = nowTs - PUMP_WINDOW_DAYS*24*3600*1000;
-  const recent = records.filter(e => +e.ts >= cutoff);
-  if (!recent.length) return { score: 0, badge: 'Calm' };
+// Compute the core pump score for a given context (recent records up to a point in time)
+function _computeCoreScore(recent, nowTs) {
+  if (!Array.isArray(recent) || recent.length === 0) {
+    return { score: 0, meta: { rug: { sev: 0, rugFactor: 1, worst5m: 0 } }, latest: {} };
+  }
 
   const latest = recent[recent.length - 1].kp || {};
   const {
@@ -192,30 +193,32 @@ export function computePumpingScoreForMint(records, nowTs) {
     buySell24h=0, liqUsd=0, priceUsd=0
   } = latest;
 
-  if (liqUsd < PUMP_MIN_LIQ_USD) return { score: 0, badge: 'Calm' };
-  if (v1hTotal < PUMP_MIN_VOL_1H_USD) return { score: 0, badge: 'Calm' };
-  if (!Number.isFinite(priceUsd) || priceUsd <= PUMP_MIN_PRICE_USD) return { score: 0, badge: 'Calm' };
+  // Hard gates
+  if (liqUsd < PUMP_MIN_LIQ_USD || v1hTotal < PUMP_MIN_VOL_1H_USD || !Number.isFinite(priceUsd) || priceUsd <= PUMP_MIN_PRICE_USD) {
+    return { score: 0, meta: { rug: { sev: 0, rugFactor: 1, worst5m: 0 } }, latest };
+  }
 
   const dw   = decayWeights(recent, nowTs);
   const pVal = dw.map(x => Number(x.e.kp?.priceUsd) || 0);
   const pWts = dw.map(x => x.w);
   const { mean: pMean } = decayedMeanStd(pVal, pWts);
+
   const v1Vals = dw.map(x => Number(x.e.kp?.v1hTotal) || 0);
   const v1Wts  = dw.map(x => x.w);
   const { mean: v1Mean, std: v1Std } = decayedMeanStd(v1Vals, v1Wts);
+
   const accel5to1 = (v1hTotal > 0) ? Math.min(3, (v5mTotal * 12) / v1hTotal) : (v5mTotal > 0 ? 1 : 0);
   const accel1to6 = (v6hTotal > 0) ? Math.min(3, (v1hTotal * 6) / v6hTotal) : (v1hTotal > 0 ? 1 : 0);
+
   const tail = Math.max(3, Math.floor(recent.length * 0.25));
   const lastPrices = recent.slice(-tail).map(e => e.kp?.priceUsd || 0).filter(Boolean);
   const minTail = lastPrices.length ? Math.min(...lastPrices) : priceUsd;
   const offBottom = minTail > 0 ? (priceUsd - minTail)/minTail : 0;
-  const breakout  = clamp(offBottom / 0.08, 0, 1.4); 
+  const breakout  = clamp(offBottom / 0.08, 0, 1.4);
 
-  const liqScale  = Math.log10(1 + liqUsd) / 5; 
-
-  const zV1     = Math.max(0, safeZ(v1hTotal, v1Mean, v1Std)); 
-
-  const buyBoost = Math.max(0, (buySell24h - 0.56) * 2.0); 
+  const liqScale  = Math.log10(1 + liqUsd) / 5;
+  const zV1       = Math.max(0, safeZ(v1hTotal, v1Mean, v1Std));
+  const buyBoost  = Math.max(0, (buySell24h - 0.56) * 2.0);
 
   const core =
       (change5m / 6.5)
@@ -229,6 +232,7 @@ export function computePumpingScoreForMint(records, nowTs) {
 
   let score = Math.max(0, core) * (0.65 + 0.35 * liqScale);
 
+  // Rug penalty window anchored to nowTs
   const windowCut = nowTs - (RUG_WINDOW_MIN * 60 * 1000);
   const windowRecs = recent.filter(e => (+e.ts) >= windowCut);
   const worst5m = windowRecs.length
@@ -238,10 +242,8 @@ export function computePumpingScoreForMint(records, nowTs) {
   const sevNow    = change5m < 0 ? clamp((-change5m) / Math.max(1, RUG_5M_DROP_PCT), 0, 4) : 0;
   const sevWindow = worst5m   < 0 ? clamp((-worst5m) / Math.max(1, RUG_5M_DROP_PCT), 0, 4) : 0;
   const sev = Math.max(sevNow, sevWindow);
-
   const rawFactor = 1 / (1 + 3 * sev);
   const rugFactor = 1 - Math.min(RUG_MAX_PENALTY, 1 - rawFactor);
-
   score *= rugFactor;
 
   const risingNow = (change1h > 0) && (change5m >= 0 || accel5to1 > 1);
@@ -262,27 +264,70 @@ export function computePumpingScoreForMint(records, nowTs) {
     return change1h > 0;
   })();
 
-  let badge = 'Calm';
-  const strongScore = score >= 1.6; // was 2.0 (looser)
+  return {
+    score,
+    meta: { accel5to1, accel1to6, buy: buySell24h, zV1, liqScale, pMean, rug: { worst5m, sev, rugFactor }, risingNow, trendUp },
+    latest
+  };
+}
 
-  if (sev >= 1) {
-    badge = 'Cooling';
-  } else if (
-    // Loosen: allow Pump on slightly lower score and if either risingNow OR trendUp
-    (strongScore && (risingNow || trendUp)) ||
-    (score >= PUMP_BADGE_SCORE &&
-     (change1h >= PUMP_BADGE_CHANGE1H_PCT || accel5to1 >= PUMP_BADGE_ACCEL5TO1) &&
-     (risingNow || trendUp))
-  ) {
-    badge = '🔥 Pumping';
-  } else if (
-    // Loosen Warming: lower score floor and allow mild/early rises
-    score >= 0.6 && (change1h > 0 || change6h > 0 || change5m >= 0)
-  ) {
-    badge = 'Warming';
+export function computePumpingScoreForMint(records, nowTs) {
+  if (!Array.isArray(records) || !records.length) return { score: 0, badge: '📉 Calm' };
+
+  const cutoff = nowTs - PUMP_WINDOW_DAYS*24*3600*1000;
+  const recent = records.filter(e => +e.ts >= cutoff);
+  if (!recent.length) return { score: 0, badge: '📉 Calm' };
+  // Compute current score context
+  const cur = _computeCoreScore(recent, nowTs);
+  let { score } = cur;
+
+  // Compute slope (points per second) using previous snapshot context
+  let dps = 0;
+  let prevScore = 0;
+  if (recent.length >= 2) {
+    const prevTs = +recent[recent.length - 2].ts;
+    const curTs  = +recent[recent.length - 1].ts;
+    const prev = _computeCoreScore(recent.slice(0, -1), prevTs);
+    prevScore = prev.score || 0;
+    const dtSec = Math.max(1, (curTs - prevTs) / 1000);
+    dps = (score - prevScore) / dtSec;
   }
 
-  return { score, badge, meta: { accel5to1, accel1to6, buy: buySell24h, zV1, liqScale, pMean, rug: { worst5m, sev, rugFactor }, risingNow, trendUp } };
+  const latest = recent[recent.length - 1].kp || {};
+  const {
+    change5m=0, change1h=0, change6h=0
+  } = latest;
+
+  let badge = '📉 Calm';
+  const strongScore = score >= 1.6; // was 2.0 (looser)
+
+  // Maintain Cooling precedence on rug severity
+  if ((cur.meta?.rug?.sev || 0) >= 1) {
+    badge = '🥶 Cooling';
+  } else {
+    const risingNow = !!cur.meta?.risingNow;
+    const trendUp   = !!cur.meta?.trendUp;
+    const pumpingCandidate =
+      (strongScore && (risingNow || trendUp)) ||
+      (score >= PUMP_BADGE_SCORE &&
+       (change1h >= PUMP_BADGE_CHANGE1H_PCT || (cur.meta?.accel5to1 || 0) >= PUMP_BADGE_ACCEL5TO1) &&
+       (risingNow || trendUp));
+
+    const warmingCandidate = score >= 0.6 && (change1h > 0 || change6h > 0 || change5m >= 0);
+
+    // Gate "Pumping" on a positive score slope (points per second)
+    if (pumpingCandidate && dps > PUMP_MIN_DPS) {
+      badge = '🔥 Pumping';
+    } else if (warmingCandidate) {
+      badge = '🌡 Warming';
+    }
+  }
+
+  return {
+    score,
+    badge,
+    meta: { ...(cur.meta || {}), slopeDps: dps, prevScore }
+  };
 }
 
 export function getRugSignalForMint(mint, nowTs = Date.now()) {
@@ -292,12 +337,12 @@ export function getRugSignalForMint(mint, nowTs = Date.now()) {
     const res = computePumpingScoreForMint(recs, nowTs) || {};
     const sev = Number(res?.meta?.rug?.sev || 0);
     const score = Number(res?.score || 0);
-    const badge = res?.badge || 'Calm';
+    const badge = res?.badge || '📉 Calm';
     const rugFactor = Number(res?.meta?.rug?.rugFactor || 1);
     const rugged = sev >= 1 || score <= 0;
     return { rugged, sev, rugFactor, score, badge };
   } catch {
-    return { rugged: false, sev: 0, rugFactor: 1, score: 0, badge: 'Calm' };
+    return { rugged: false, sev: 0, rugFactor: 1, score: 0, badge: '📉 Calm' };
   }
 }
 
@@ -349,7 +394,7 @@ export async function focusMint(mint, { refresh = true, ttlMs = 2000, signal } =
       ok: true,
       mint: id,
       pumpScore,
-      badge: badge || 'Calm',
+      badge: badge || '📉 Calm',
       kp: latest,
       meta: meta || {},
       row, 
