@@ -15,8 +15,8 @@ const EDGE_TX_FEE_ESTIMATE_LAMPORTS = 150_000;
 const MIN_QUOTE_RAW_AMOUNT = 1_000;
 const ELEVATED_MIN_BUY_SOL = 0.06;   
 const MAX_CONSEC_SWAP_400 = 3;
-const MIN_OPERATING_SOL            = 0.007;  
-const ROUTER_COOLDOWN_MS           = 60_000;
+const MIN_OPERATING_SOL = 0.007;  
+const ROUTER_COOLDOWN_MS = 60_000;
 const MINT_RUG_BLACKLIST_MS = 30 * 60 * 1000;
 const MINT_BLACKLIST_STAGES_MS =  [2 * 60 * 1000, 15 * 60 * 1000, MINT_RUG_BLACKLIST_MS];
 const URGENT_SELL_COOLDOWN_MS= 20_000; 
@@ -29,14 +29,15 @@ const SPLIT_FRACTIONS = [0.99, 0.98, 0.97, 0.96, 0.95, 0.90, 0.85, 0.80, 0.75, 0
 const MINT_OP_LOCK_MS = 30_000;
 const BUY_SEED_TTL_MS = 60_000;
 const BUY_LOCK_MS = 5_000;
-const FAST_OBS_LOG_INTERVAL_MS = 200; 
+const FAST_OBS_LOG_INTERVAL_MS = 150; 
 const LEADER_SAMPLE_MIN_MS = 900;
-const RUG_FORCE_SELL_SEVERITY = 0.60;
+const RUG_FORCE_SELL_SEVERITY = 0.70;
 const RUG_QUOTE_SHOCK_FRAC = 0.35;         
 const RUG_QUOTE_SHOCK_WINDOW_MS = 6000;      
 const EARLY_URGENT_WINDOW_MS = 15_000; // buyers remorse
 const MAX_DOM_LOG_LINES = 100;      
 const MAX_LOG_MEM_LINES = 10000; // memory log buffer low speed optimization
+const MOMENTUM_FORCED_EXIT_CONSEC = 28;
 const POSCACHE_KEY_PREFIX = "fdv_poscache_v1:";
 const DUSTCACHE_KEY_PREFIX = "fdv_dustcache_v1:";
 
@@ -57,10 +58,10 @@ const UI_LIMITS = {
 };
 
 const DYN_HS = Object.freeze({
-  base: 2.8,      
-  min: 2.2,      
-  max: 4.5,      
-  remorseSecs: 6, 
+  base: 3.8,        
+  min: 3.2,         
+  max: 6.0,         
+  remorseSecs: 22,  
 });
 
 function _clamp(n, lo, hi) { const x = Number(n); return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : lo; }
@@ -258,7 +259,7 @@ let state = {
   staleMinsToDeRisk: 4, 
   singlePositionMode: true,
   minNetEdgePct: -5, 
-  edgeSafetyBufferPct: 0.2,
+  edgeSafetyBufferPct: 0.1,
   sustainTicksMin: 2,
   sustainChgSlopeMin: 12,
   sustainScSlopeMin: 8,
@@ -297,7 +298,7 @@ let state = {
   observerDropSellAt: 4,
   observerGraceSecs: 25,
   // Observer hysteresis settings
-  observerDropMinAgeSecs: 5,   
+  observerDropMinAgeSecs: 12,   
   observerDropConsec: 3,     
   observerDropTrailPct: 2.5,    
 
@@ -329,6 +330,7 @@ let state = {
   warmingEdgeMinExclPct: null,  
   warmingExtendOnRise: true,
   warmingExtendStepMs: 4000,  
+  warmingNoHardStopSecs: 35,
  
   reboundGateEnabled: true,         
   reboundLookbackSecs: 35,       
@@ -442,8 +444,9 @@ const CONFIG_SCHEMA = {
   warmingPrimedConsec:      { type: "number",  def: 1, min: 1, max: 3 },
   warmingMaxLossPct:        { type: "number",  def: 2.5, min: 1, max: 50 },
   warmingMaxLossWindowSecs: { type: "number",  def: 60, min: 5, max: 180 },
+  warmingNoHardStopSecs:    { type: "number",  def: 35,  min: 5, max: 180 },
   minNetEdgePct:            { type: "number",  def: -4, min: -10, max: 10 },
-  edgeSafetyBufferPct:      { type: "number",  def: 0.10, min: 0, max: 2 },
+  edgeSafetyBufferPct:      { type: "number",  def: 0.1, min: 0, max: 2 },
   reboundGateEnabled:       { type: "boolean", def: true },
   reboundLookbackSecs:      { type: "number",  def: 35,  min: 5, max: 180 },
   reboundMaxDeferSecs:      { type: "number",  def: 12,  min: 4, max: 120 },
@@ -602,6 +605,31 @@ function _getFastObsLogStore() {
   if (!window._fdvFastObsLog) window._fdvFastObsLog = new Map(); // mint -> { lastAt, lastBadge, lastMsg }
   return window._fdvFastObsLog;
 }
+function _getMomentumDropStore() {
+  if (!window._fdvMomDrop) window._fdvMomDrop = new Map(); // mint -> { count, lastAt }
+  return window._fdvMomDrop;
+}
+function _getMomExitStore() {
+  if (!window._fdvMomExit) window._fdvMomExit = new Map(); // mint -> untilTs
+  return window._fdvMomExit;
+}
+function noteMomentumExit(mint, ttlMs = 30_000) {
+  if (!mint) return;
+  const until = now() + Math.max(5_000, ttlMs | 0);
+  _getMomExitStore().set(mint, until);
+}
+function shouldForceMomentumExit(mint) {
+  try {
+    const m = _getMomExitStore();
+    const until = Number(m.get(mint) || 0);
+    if (!until) return false;
+    const alive = now() < until;
+    if (!alive) m.delete(mint);
+    return alive;
+  } catch { return false; }
+}
+
+
 function _fmtDelta(a, b, digits = 2) {
   if (!Number.isFinite(a) || !Number.isFinite(b)) return "—";
   const d = b - a;
@@ -4090,9 +4118,16 @@ function shouldForceSellAtThree(mint, pos, curSol, nowTs) {
     const ddPct = (hwmPx > 0 && pxNow > 0) ? ((hwmPx - pxNow) / hwmPx) * 100 : 0;
     const trailThr = Math.max(0, Number(state.observerDropTrailPct || 0));
 
-    const consecOk = (rec.consec3 + 1) >= needConsec;
-    const drawdownOk = trailThr > 0 && ddPct >= trailThr;
-    return consecOk && drawdownOk;
+    // Require negative slope confirmation too
+    const series = getLeaderSeries(mint, 3);
+    const scSlopeMin = _clamp(slope3pm(series || [], "pumpScore"), -20, 20);
+    const chgSlopeMin= _clamp(slope3pm(series || [], "chg5m"), -60, 60);
+
+    const consecOk    = (rec.consec3 + 1) >= needConsec;
+    const drawdownOk  = ddPct >= (trailThr + 1.0); // need a bit more than trail
+    const slopeBad    = (scSlopeMin < 0 || chgSlopeMin < 0);
+
+    return consecOk && drawdownOk && slopeBad;
   } catch { return false; }
 }
 
@@ -5293,9 +5328,13 @@ function fastDropCheck(mint, pos) {
     const series = getLeaderSeries(mint, 3);
     if (series && series.length >= 3) {
       const a = series[0], c = series[series.length - 1];
-      const passChg = c.chg5m <= a.chg5m;
-      const passScore = c.pumpScore <= a.pumpScore * 0.97;
-      if (passChg && passScore) return { trigger: true, reason: "momentum drop (3/5)", sev: 0.6 };
+      const scSlopeMin = _clamp(slope3pm(series, "pumpScore"), -20, 20);
+      const chgSlopeMin= _clamp(slope3pm(series, "chg5m"),    -60, 60);
+      const passChg    = c.chg5m <= a.chg5m;
+      const passScore  = c.pumpScore <= a.pumpScore * 0.97;
+      if (passChg && passScore && (scSlopeMin < 0 || chgSlopeMin < 0)) {
+        return { trigger: true, reason: "momentum drop (3/5)", sev: 0.55 };
+      }
     }
   } catch {}
   return { trigger: false };
@@ -5319,6 +5358,28 @@ function startFastObserver() {
         const inWarmingHold = !!(state.rideWarming && pos.warmingHold === true);
 
         const r = fastDropCheck(mint, pos);
+
+        try {
+          const momStore = _getMomentumDropStore();
+          const rec = momStore.get(mint) || { count: 0, lastAt: 0 };
+          const isMom = r.trigger && /momentum\s*drop/i.test(String(r.reason || ""));
+          if (isMom) {
+            rec.count = (rec.count | 0) + 1;
+            rec.lastAt = now();
+
+            // Only arm if outside immediate post-buy guard
+            if (rec.count >= MOMENTUM_FORCED_EXIT_CONSEC && ageMs >= postBuyCooldownMs) {
+              noteMomentumExit(mint, 30_000);
+              flagUrgentSell(mint, "momentum_drop_x28", 0.90);
+              log(`Momentum drop x${MOMENTUM_FORCED_EXIT_CONSEC} for ${mint.slice(0,4)}… forced exit armed.`);
+              rec.count = 0; // reset after arming
+            }
+          } else {
+            rec.count = 0;
+            rec.lastAt = now();
+          }
+          momStore.set(mint, rec);
+        } catch {}
 
         if (r.trigger && ageMs < EARLY_URGENT_WINDOW_MS && Number(r.sev || 0) >= 0.6) {
           flagUrgentSell(mint, r.reason, r.sev);
@@ -5458,12 +5519,44 @@ async function maybeStealthRotate(tag = "sell") {
   }
 }
 
+function shouldApplyWarmingHold(mint, pos, nowTs) {
+  try {
+    const badge = normBadge(getRugSignalForMint(mint)?.badge);
+    if (badge === "calm") return false;
+    if (isPumpDropBanned(mint) || isMintBlacklisted(mint)) return false;
+
+    const series = getLeaderSeries(mint, 3) || [];
+    const scSlopeMin  = _clamp(slope3pm(series, "pumpScore"), -20, 20);
+    const chgSlopeMin = _clamp(slope3pm(series, "chg5m"),     -60, 60);
+
+    // if both micro-slopes turned down or we already stacked consecutive negative score-slope, warming no longer applies
+    if (scSlopeMin < 0 && chgSlopeMin < 0) return false;
+    if (Number(pos.earlyNegScCount || 0) >= 2) return false;
+
+    // age sanity: if we’re long past auto-release and still negative, don’t wait for warming target
+    const ageSec = (nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0)) / 1000;
+    const releaseSec = Math.max(0, Number(state.warmingAutoReleaseSecs || 0));
+    if (ageSec > releaseSec * 1.5) return false;
+
+    return (badge === "warming" || badge === "pumping");
+  } catch { return false; }
+}
+
 function applyWarmingPolicy({ mint, pos, nowTs, pnlPct, curSol, decision, forceRug, forcePumpDrop, forceObserverDrop, forceEarlyFade }) {
   const result = { decision, forceObserverDrop, forcePumpDrop, warmingActive: false, warmingHoldActive: false, warmingMaxLossTriggered: false };
   try {
     const warmingActive = !!(state.rideWarming && pos.warmingHold === true);
     result.warmingActive = warmingActive;
     if (!warmingActive) return result;
+
+    if (!shouldApplyWarmingHold(mint, pos, nowTs)) {
+      pos.warmingHold = false;
+      pos.warmingClearedAt = now();
+      delete pos.warmingExtendUntil;
+      save();
+      log(`Warming disabled for ${mint.slice(0,4)}… (regime not favorable).`);
+      return result;
+    }
 
     const warmAgeMs = nowTs - Number(pos.warmingHoldAt || pos.lastBuyAt || pos.acquiredAt || 0);
     const maxLossPctCfg = Math.max(1, Number(state.warmingMaxLossPct || 6));
@@ -5524,14 +5617,839 @@ function applyWarmingPolicy({ mint, pos, nowTs, pnlPct, curSol, decision, forceR
         result.decision = { action: "none", reason: "warming-hold-until-profit" };
       }
     }
+
+    if (warmReq.shouldAutoRelease && !result.warmingHoldActive && pos.warmingHold === true) {
+      pos.warmingHold = false;
+      pos.warmingClearedAt = now();
+      delete pos.warmingExtendUntil;
+      // start a grace window so TP/SL/trailing can take over before timers
+      const graceMs = Math.max(10_000, Number(state.warmingPostReleaseGraceSecs || 60) * 1000);
+      pos.postWarmGraceUntil = now() + graceMs;
+      result.postReleaseGraceUntil = pos.postWarmGraceUntil;
+      try { const sel = pickTpSlForMint(mint); pos.tpPct=sel.tp; pos.slPct=sel.sl; pos.trailPct=sel.trailPct; pos.minProfitToTrailPct=sel.arm; save(); } catch {}
+      log(`Warming auto-release: ${mint.slice(0,4)}… (+${Math.floor(graceMs/1000)}s TP/SL grace)`);
+      return result;
+    }
   } catch {}
   return result;
+}
+
+function warmingPolicyHook(ctx) {
+  const res = applyWarmingPolicy({
+    mint: ctx.mint,
+    pos: ctx.pos,
+    nowTs: ctx.nowTs,
+    pnlPct: ctx.pnlPct,
+    curSol: ctx.curSol,
+    decision: ctx.decision,
+    forceRug: ctx.forceRug,
+    forcePumpDrop: ctx.forcePumpDrop,
+    forceObserverDrop: ctx.forceObserverDrop,
+    forceEarlyFade: !!ctx.earlyReason
+  });
+  ctx.decision = res.decision || ctx.decision;
+  ctx.forceObserverDrop = res.forceObserverDrop;
+  ctx.forcePumpDrop = res.forcePumpDrop;
+  if (res.decision?.hardStop && /WARMING_TARGET|warming[-\s]*max[-\s]*loss/i.test(String(res.decision.reason || ""))) {
+    ctx.isFastExit = true;
+  }
+  ctx.warmingHoldActive = !!res.warmingHoldActive;
+}
+
+function _mkSellCtx({ kp, mint, pos, nowTs }) {
+  const ctx = {
+    kp, mint, pos, nowTs,
+    ownerStr: kp?.publicKey?.toBase58?.() || "",
+    leaderMode: !!state.holdUntilLeaderSwitch,
+    ageMs: 0,
+    maxHold: 0,
+    forceExpire: false,
+    inSellGuard: false,
+    forceMomentum: false,
+    verified: false,
+    hasPending: false,
+    creditGraceMs: 0,
+    sizeOk: false,
+    forceRug: false,
+    rugSev: 0,
+    forcePumpDrop: false,
+    forceObserverDrop: false,
+    earlyReason: "",
+    obsPasses: null,
+    curSol: 0,
+    curSolNet: 0,
+    outLamports: 0,
+    netEstimate: null,
+    pxNow: 0,
+    pxCost: 0,
+    pnlPct: 0,
+    pxNowNet: 0,
+    pnlNetPct: 0,
+    ageSec: 0,
+    remorseSecs: 0,
+    creditsPending: false,
+    canHardStop: false,
+    dynStopPct: null,
+    decision: null,
+    isFastExit: false,
+    warmingHoldActive: false,
+    fastResult: null,
+    obsThreeShouldForce: false,
+    minNotional: 0,
+    skipSoftGates: false,
+    postGrace: 0,
+    postWarmGraceActive: false,
+    inWarmingHold: false,
+  };
+  return ctx;
+}
+
+async function preflightSellPolicy(ctx) {
+  const { mint, pos, nowTs } = ctx;
+  ctx.ageMs = nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0);
+  ctx.maxHold = Math.max(0, Number(state.maxHoldSecs || 0));
+  ctx.forceExpire = ctx.maxHold > 0 && ctx.ageMs >= ctx.maxHold * 1000;
+
+  // Router cooldown gate (unless we're at forceExpire)
+  if (!ctx.forceExpire && window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
+    const until = window._fdvRouterHold.get(mint);
+    log(`Router cooldown for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`);
+    return { stop: true };
+  }
+
+  const sz = Number(pos.sizeUi || 0);
+  if (sz <= 0) {
+    log(`Skip sell eval for ${mint.slice(0,4)}… (no size)`);
+    return { stop: true };
+  }
+
+  ctx.forceMomentum = shouldForceMomentumExit(mint);
+
+  ctx.inSellGuard = Number(pos.sellGuardUntil || 0) > nowTs;
+
+  // Verify chain balance to avoid phantom exits
+  const vr = await verifyRealTokenBalance(ctx.ownerStr, mint, pos);
+  if (!vr.ok && vr.purged) return { stop: true };
+  if (!vr.ok) {
+    log(`Sell skip (unverified balance) ${mint.slice(0,4)}…`);
+    return { stop: true };
+  }
+  if (vr.sizeUi <= 1e-9) return { stop: true };
+
+  // Pending credits grace
+  const pendKey = _pcKey(ctx.ownerStr, mint);
+  ctx.hasPending = !!(_pendingCredits?.has?.(pendKey));
+  ctx.creditGraceMs = Math.max(8_000, Number(state.pendingGraceMs || 20_000));
+  if ((pos.awaitingSizeSync || ctx.hasPending) && ctx.ageMs < ctx.creditGraceMs) {
+    log(`Sell skip ${mint.slice(0,4)}… awaiting credit/size sync (${Math.round(ctx.ageMs/1000)}s).`);
+    return { stop: true };
+  }
+
+  ctx.sizeOk = true;
+  return { stop: false };
+}
+
+function leaderModePolicy(ctx) {
+  if (!ctx.leaderMode) return { stop: false };
+  const sig0 = getRugSignalForMint(ctx.mint);
+  if (!(sig0?.rugged) && !ctx.forceMomentum) {
+    log(`Leader-hold: holding ${ctx.mint.slice(0,4)}… (no rug).`);
+    return { stop: true };
+  }
+  if (!sig0?.rugged && ctx.forceMomentum) {
+    log(`Leader-hold override: momentum drop x18 for ${ctx.mint.slice(0,4)}… forcing sell.`);
+  } else if (sig0?.rugged) {
+    log(`Leader-hold: RUG detected for ${ctx.mint.slice(0,4)}… sev=${Number(sig0.sev||0).toFixed(2)}. Forcing sell.`);
+  }
+  return { stop: false };
+}
+
+function urgentSellPolicy(ctx) {
+  const urgent = takeUrgentSell(ctx.mint);
+  if (!urgent) return;
+  if (ctx.ageMs < URGENT_SELL_MIN_AGE_MS) {
+    log(`Urgent sell suppressed (warmup ${Math.round(ctx.ageMs/1000)}s) for ${ctx.mint.slice(0,4)}…`);
+    return;
+  }
+  const isRugUrg = /rug/i.test(String(urgent.reason||""));
+  const highSev = Number(urgent.sev || 0) >= 0.75;
+  if (ctx.inSellGuard && !isRugUrg && !highSev) {
+    log(`Sell guard active; deferring urgent sell for ${ctx.mint.slice(0,4)}…`);
+    return;
+  }
+  ctx.forceObserverDrop = true;
+  ctx.rugSev = Number(urgent.sev || 1);
+  log(`Urgent sell for ${ctx.mint.slice(0,4)}… (${urgent.reason}); bypassing notional/cooldowns.`);
+}
+
+function rugPumpDropPolicy(ctx) {
+  try {
+    const sig = getRugSignalForMint(ctx.mint);
+    recordBadgeTransition(ctx.mint, sig.badge);
+
+    const badgeNorm = normBadge(sig.badge);
+    const sev = Number(sig?.sev ?? 0);
+    const sevThreshold = RUG_FORCE_SELL_SEVERITY;
+
+    if (sig?.rugged && sev >= sevThreshold) {
+      ctx.forceRug = true;
+      ctx.rugSev = sev;
+      setMintBlacklist(ctx.mint, MINT_RUG_BLACKLIST_MS);
+      log(`Rug detected for ${ctx.mint.slice(0,4)}… sev=${ctx.rugSev.toFixed(2)} (thr=${sevThreshold.toFixed(2)}). Forcing sell and blacklisting 30m.`);
+    } else if (sig?.rugged) {
+      setMintBlacklist(ctx.mint);
+      log(`Rug soft-flag for ${ctx.mint.slice(0,4)}… sev=${sev.toFixed(2)} < ${sevThreshold.toFixed(2)} — staged blacklist, no forced sell.`);
+    } else if (!ctx.leaderMode) {
+      const curNorm = badgeNorm;
+      console.log(`Badge for ${ctx.mint.slice(0,4)}…: ${String(sig.badge||"").toLowerCase()} -> ${curNorm}`);
+      if (curNorm === "calm" && isPumpDropBanned(ctx.mint)) {
+        ctx.forcePumpDrop = true;
+        log(`Pump->Calm drop for ${ctx.mint.slice(0,4)}… forcing sell and banning re-buys for 30m.`);
+      }
+    }
+  } catch {}
+}
+
+function earlyFadePolicy(ctx) {
+  try {
+    const series = getLeaderSeries(ctx.mint, 3);
+    const last = series && series.length ? series[series.length - 1] : null;
+    const curChg5m = Number(last?.chg5m || 0);
+    const scSlopeMin = _clamp(slope3pm(series || [], "pumpScore"), -20, 20);
+
+    const scNeg = Number(scSlopeMin) <= Math.min(-1, Number(state.earlyExitScSlopeNeg || -10));
+    ctx.pos.earlyNegScCount = scNeg ? (Number(ctx.pos.earlyNegScCount || 0) + 1) : 0;
+
+    const entryChg = Number(ctx.pos.entryChg5m || NaN);
+    if (Number.isFinite(entryChg) && entryChg > 0) {
+      const dropFrac = (entryChg - curChg5m) / Math.max(1e-6, entryChg);
+      if (dropFrac >= Math.max(0.30, Number(state.earlyExitChgDropFrac || 0.4))) {
+        ctx.forceObserverDrop = true;
+        ctx.earlyReason = `FAST_FADE chg5m -${(dropFrac*100).toFixed(1)}%`;
+      }
+    }
+
+    if (!ctx.forceObserverDrop) {
+      const needConsec = Math.max(1, Number(state.earlyExitConsec || 2));
+      if (Number(ctx.pos.earlyNegScCount || 0) >= needConsec) {
+        ctx.forceObserverDrop = true;
+        ctx.earlyReason = `FAST_FADE scSlope ${scSlopeMin.toFixed(2)}/m x${ctx.pos.earlyNegScCount}`;
+      }
+    }
+
+    const extended = getLeaderSeries(ctx.mint, 5);
+    if (extended && extended.length >= 3) {
+      let changes = 0;
+      for (let i = 2; i < extended.length; i++) {
+        const a = Number(extended[i-2].chg5m || 0);
+        const b = Number(extended[i-1].chg5m || 0);
+        const c = Number(extended[i].chg5m   || 0);
+        const dir1 = Math.sign(b - a);
+        const dir2 = Math.sign(c - b);
+        if (dir1 && dir2 && dir1 !== dir2) changes++;
+      }
+
+      if (!ctx.forceObserverDrop && changes >= 2 && scSlopeMin > -2) {
+        ctx.pos.earlyNegScCount = 0;
+        ctx.earlyReason = "";
+        log(`Jiggle hold: ${ctx.mint.slice(0,4)}… direction changes=${changes} scSlope=${scSlopeMin.toFixed(2)}/m`);
+      }
+
+      if (extended.length === 5) {
+        let allDown = true;
+        for (let i = 1; i < extended.length; i++) {
+          if (!(Number(extended[i].chg5m || 0) < Number(extended[i-1].chg5m || 0))) {
+            allDown = false; break;
+          }
+        }
+        if (allDown && scSlopeMin < 0) {
+          ctx.forceObserverDrop = true;
+          ctx.earlyReason = `DOWN_SLOPE_5 scSlope ${scSlopeMin.toFixed(2)}/m`;
+        }
+      }
+    }
+
+    if (ctx.forceObserverDrop) {
+      log(`Early-exit: ${ctx.mint.slice(0,4)}… ${ctx.earlyReason} — overriding warming sell guard.`);
+    }
+  } catch {}
+}
+
+async function observerPolicy(ctx) {
+  if (ctx.leaderMode || ctx.forceRug || ctx.forcePumpDrop) return;
+  try {
+    const obs = await observeMintOnce(ctx.mint, { windowMs: 2000, sampleMs: 600, minPasses: 4, adjustHold: !!state.dynamicHoldEnabled });
+    if (!obs.ok) {
+      const p = Number(obs.passes || 0);
+      recordObserverPasses(ctx.mint, p);
+      const thr = Math.max(0, Number(state.observerDropSellAt ?? 4));
+
+      const badgeNow = normBadge(getRugSignalForMint(ctx.mint)?.badge);
+      const pumpingish = (badgeNow === "pumping" || badgeNow === "warming");
+
+      const needLowConsec = pumpingish ? 2 : 1;
+      const dg = _getDropGuardStore().get(ctx.mint) || {};
+      const lowConsec = Number(dg.consecLow || 0);
+      const bypassAt = Math.max(0, Number(1));
+      const hardBypass = (p <= bypassAt);
+
+      if (p <= 2) {
+        if (hardBypass) {
+          ctx.forceObserverDrop = true;
+          setMintBlacklist(ctx.mint);
+          log(`Observer hard drop for ${ctx.mint.slice(0,4)}… (${p}/5 <= ${bypassAt}) forcing sell (staged blacklist).`);
+        } else if (ctx.inSellGuard) {
+          log(`Sell guard active; suppressing observer drop (${p}/5) for ${ctx.mint.slice(0,4)}…`);
+        } else if (lowConsec < needLowConsec) {
+          log(`Observer low-pass ${p}/5 while ${badgeNow}; debounce ${lowConsec}/${needLowConsec}. Holding & watching.`);
+          noteObserverConsider(ctx.mint, 30_000);
+        } else {
+          ctx.forceObserverDrop = true;
+          setMintBlacklist(ctx.mint);
+          log(`Observer drop for ${ctx.mint.slice(0,4)}… (${p}/5 <= 2) forcing sell (staged blacklist).`);
+        }
+      } else if (p === 3 && thr >= 3) {
+        ctx.obsPasses = 3;
+      }
+    } else {
+      recordObserverPasses(ctx.mint, Number(obs.passes || 5));
+    }
+  } catch {}
+}
+
+function volatilityGuardPolicy(ctx) {
+  const postBuyCooldownMs = Math.max(8_000, Number(state.coolDownSecsAfterBuy || 0) * 1000);
+  ctx.inWarmingHold = !!(state.rideWarming && ctx.pos.warmingHold === true);
+  if (!ctx.leaderMode && (ctx.inSellGuard || ctx.ageMs < postBuyCooldownMs) &&
+      (ctx.forceObserverDrop || ctx.forcePumpDrop) && !ctx.inWarmingHold && !ctx.forceRug && !ctx.earlyReason) {
+    log(`Volatility sell guard active; suppressing observer/pump drop for ${ctx.mint.slice(0,4)}…`);
+    ctx.forceObserverDrop = false;
+    ctx.forcePumpDrop = false;
+  }
+}
+
+async function quoteAndEdgePolicy(ctx) {
+  const sz = Number(ctx.pos.sizeUi || 0);
+  let curSol = Number(ctx.pos.lastQuotedSol || 0);
+  const lastQ = Number(ctx.pos.lastQuotedAt || 0);
+  if (!lastQ || (ctx.nowTs - lastQ) > (state.minQuoteIntervalMs|0)) {
+    log(`Evaluating sell for ${ctx.mint.slice(0,4)}… size ${sz.toFixed(6)}`);
+    curSol = await quoteOutSol(ctx.mint, sz, ctx.pos.decimals).catch(() => 0);
+    ctx.pos.lastQuotedSol = curSol;
+    ctx.pos.lastQuotedAt = ctx.nowTs;
+  }
+  // shock detector
+  try {
+    const prevSol = Number(ctx.pos._lastShockSol || 0);
+    const prevAt  = Number(ctx.pos._lastShockAt  || 0);
+    if (prevSol > 0 && curSol > 0 && (ctx.nowTs - prevAt) <= RUG_QUOTE_SHOCK_WINDOW_MS) {
+      const dropFrac = (prevSol - curSol) / Math.max(prevSol, 1e-12);
+      if (dropFrac >= RUG_QUOTE_SHOCK_FRAC) {
+        log(`RUG quote-shock ${ctx.mint.slice(0,4)}… drop=${(dropFrac*100).toFixed(1)}% within ${(ctx.nowTs-prevAt)}ms`);
+        flagUrgentSell(ctx.mint, "rug_quote_shock", 1.0);
+      }
+    }
+    ctx.pos._lastShockSol = curSol;
+    ctx.pos._lastShockAt  = ctx.nowTs;
+  } catch {}
+
+  ctx.curSol = curSol;
+
+  ctx.outLamports = Math.floor(Math.max(0, ctx.curSol) * 1e9);
+  ctx.decIn = Number.isFinite(ctx.pos.decimals) ? ctx.pos.decimals : 6;
+  const net = estimateNetExitSolFromQuote({
+    mint: ctx.mint,
+    amountUi: sz,
+    inDecimals: ctx.decIn,
+    quoteOutLamports: ctx.outLamports
+  });
+  ctx.netEstimate = net;
+  ctx.curSolNet = net.netSol;
+
+  if (Number.isFinite(ctx.curSol) && Number.isFinite(ctx.curSolNet)) {
+    log(`Edge-aware valuation ${ctx.mint.slice(0,4)}… raw≈${ctx.curSol.toFixed(6)} SOL, net≈${ctx.curSolNet.toFixed(6)} SOL${net.feeApplied ? " (fee)" : ""}`);
+  }
+
+  ctx.pxNow  = sz > 0 ? (ctx.curSol / sz) : 0;
+  ctx.pxCost = sz > 0 ? (Number(ctx.pos.costSol || 0) / sz) : 0;
+  ctx.pnlPct = (ctx.pxNow > 0 && ctx.pxCost > 0) ? ((ctx.pxNow - ctx.pxCost) / ctx.pxCost) * 100 : 0;
+
+  ctx.pxNowNet  = sz > 0 ? (ctx.curSolNet / sz) : 0;
+  ctx.pnlNetPct = (ctx.pxNowNet > 0 && ctx.pxCost > 0) ? ((ctx.pxNowNet - ctx.pxCost) / ctx.pxCost) * 100 : 0;
+}
+
+function fastExitPolicy(ctx) {
+  const fast = checkFastExitTriggers(ctx.mint, ctx.pos, { pnlPct: ctx.pnlPct, pxNow: ctx.pxNow, nowTs: ctx.nowTs });
+  ctx.fastResult = fast;
+  if (fast && fast.action !== "none") {
+    ctx.decision = { ...fast };
+    ctx.isFastExit = true;
+    log(`Fast-exit trigger for ${ctx.mint.slice(0,4)}… -> ${ctx.decision.action} (${ctx.decision.reason}${ctx.decision.pct ? ` ${ctx.decision.pct}%` : ""})`);
+  }
+}
+
+function dynamicHardStopPolicy(ctx) {
+  ctx.ageSec = (ctx.nowTs - Number(ctx.pos.lastBuyAt || ctx.pos.acquiredAt || 0)) / 1000;
+  ctx.remorseSecs = Math.max(5, Number(DYN_HS?.remorseSecs ?? 6));
+  ctx.creditsPending = ctx.pos.awaitingSizeSync === true || ctx.pos._pendingCostAug === true;
+  ctx.canHardStop = ctx.ageSec >= ctx.remorseSecs && !ctx.creditsPending;
+
+  if (state.rideWarming && ctx.pos.warmingHold === true) {
+    const warmNoHs = Math.max(ctx.remorseSecs, Number(state.warmingNoHardStopSecs || 35));
+    if (ctx.ageSec < warmNoHs) {
+      ctx.canHardStop = false;
+      log(`Hard stop suppressed by warming window (${ctx.ageSec.toFixed(1)}s < ${warmNoHs}s) for ${ctx.mint.slice(0,4)}…`);
+    }
+  }
+
+  if (ctx.canHardStop) {
+    const ddPct = (Number(ctx.pos.hwmPx || 0) > 0 && ctx.pxNow > 0)
+      ? ((ctx.pos.hwmPx - ctx.pxNow) / ctx.pos.hwmPx) * 100
+      : 0;
+    const gate = computeFinalGateIntensity(ctx.mint);
+    ctx.dynStopPct = computeDynamicHardStopPct(ctx.mint, ctx.pos, ctx.nowTs, {
+      pnlNetPct: ctx.pnlNetPct,
+      drawdownPct: ddPct,
+      intensity: Number(gate?.intensity || 1)
+    });
+  }
+
+  if (ctx.canHardStop &&
+      Number.isFinite(ctx.pnlNetPct) && Number.isFinite(ctx.dynStopPct) &&
+      ctx.pnlNetPct <= -Math.abs(ctx.dynStopPct)) {
+    ctx.decision = { action: "sell_all", reason: `HARD_STOP ${ctx.pnlNetPct.toFixed(2)}%<=-${Math.abs(ctx.dynStopPct).toFixed(2)}%`, hardStop: true };
+    ctx.isFastExit = true;
+    log(`Dynamic hard stop for ${ctx.mint.slice(0,4)}… netPnL=${ctx.pnlNetPct.toFixed(2)}% thr=-${Math.abs(ctx.dynStopPct).toFixed(2)}% (age ${ctx.ageSec.toFixed(1)}s)`);
+  } else if (!ctx.canHardStop) {
+    log(`Hard stop suppressed (age ${ctx.ageSec.toFixed(1)}s${ctx.creditsPending ? ", pending credit" : ""}) for ${ctx.mint.slice(0,4)}… netPnL=${ctx.pnlNetPct.toFixed(2)}%`);
+  }
+}
+
+function profitLockPolicy(ctx) {
+  const armAt   = 10;   // % net
+  const retain  = 0.55; // keep 55% of peak
+  const bepCush = 0.6;  // % net floor above breakeven
+  const harvest = 30;   // % to sell on arm
+
+  if (Number.isFinite(ctx.pnlNetPct)) {
+    ctx.pos._peakNetPct = Number.isFinite(ctx.pos._peakNetPct)
+      ? Math.max(ctx.pos._peakNetPct, ctx.pnlNetPct)
+      : ctx.pnlNetPct;
+  }
+
+  if (!ctx.pos._lockArmed && Number.isFinite(ctx.pnlNetPct) && ctx.pnlNetPct >= armAt) {
+    ctx.pos._lockArmed = true;
+    ctx.pos._lockArmedAt = ctx.nowTs;
+    ctx.pos._lockFloorNetPct = Math.max(bepCush, (ctx.pos._peakNetPct || ctx.pnlNetPct) * retain);
+    save();
+    log(`Profit lock armed ${ctx.mint.slice(0,4)}… peak=${(ctx.pos._peakNetPct||ctx.pnlNetPct).toFixed(2)}% floor≈${ctx.pos._lockFloorNetPct.toFixed(2)}%`);
+
+    if ((!ctx.decision || ctx.decision.action === "none") && harvest > 0) {
+      ctx.decision = { action: "sell_partial", pct: harvest, reason: `TP PROFIT_LOCK_ARM ${ctx.pnlNetPct.toFixed(2)}%` };
+    }
+  }
+
+  if (ctx.pos._lockArmed && Number.isFinite(ctx.pnlNetPct)) {
+    const peak = Number(ctx.pos._peakNetPct || ctx.pnlNetPct);
+    const floor = Math.max(Number(ctx.pos._lockFloorNetPct || 0), bepCush);
+    if (peak > floor / Math.max(1e-9, retain)) {
+      ctx.pos._lockFloorNetPct = Math.max(floor, peak * retain);
+    }
+    if ((!ctx.decision || ctx.decision.action === "none") && ctx.pnlNetPct <= Number(ctx.pos._lockFloorNetPct || floor)) {
+      ctx.decision = { action: "sell_all", reason: `TP PROFIT_LOCK_STOP floor=${(ctx.pos._lockFloorNetPct||floor).toFixed(2)}%`, hardStop: false };
+      log(`Profit lock stop ${ctx.mint.slice(0,4)}… cur=${ctx.pnlNetPct.toFixed(2)}% <= floor=${(ctx.pos._lockFloorNetPct||floor).toFixed(2)}%`);
+    }
+  }
+}
+
+function observerThreePolicy(ctx) {
+  if (ctx.forceRug || ctx.forcePumpDrop || ctx.forceObserverDrop) return;
+  if (ctx.obsPasses !== 3) return;
+  const should = shouldForceSellAtThree(ctx.mint, ctx.pos, ctx.curSol, ctx.nowTs);
+  if (should) {
+    if (ctx.inSellGuard) {
+      log(`Sell guard active; deferring 3/5 observer sell for ${ctx.mint.slice(0,4)}…`);
+    } else {
+      ctx.forceObserverDrop = true;
+      setMintBlacklist(ctx.mint, MINT_RUG_BLACKLIST_MS);
+      log(`Observer 3/5 debounced -> forcing sell (${ctx.mint.slice(0,4)}…) and blacklisting 30m.`);
+    }
+  } else {
+    log(`Observer 3/5 for ${ctx.mint.slice(0,4)}… soft-watch; debounce active (no sell).`);
+    noteObserverConsider(ctx.mint, 30_000);
+  }
+}
+
+function fallbackSellPolicy(ctx) {
+  ctx.minNotional = minSellNotionalSol();
+
+  if (ctx.isFastExit) return; // skip fallback when fast exit already set
+
+  const canRunFallback =
+    !(ctx.warmingHoldActive && !ctx.forceRug && !ctx.forcePumpDrop && !ctx.forceObserverDrop && !ctx.forceExpire);
+
+  if (!canRunFallback) {
+    log(`Warming hold active; skipping fallback sell checks for ${ctx.mint.slice(0,4)}…`);
+    return;
+  }
+
+  let d = null;
+  if (ctx.curSol < ctx.minNotional && !ctx.forceExpire && !ctx.forceRug && !ctx.forcePumpDrop && !ctx.forceObserverDrop) {
+    d = shouldSell(ctx.pos, ctx.curSolNet, ctx.nowTs);
+    const dustMin = Math.max(MIN_SELL_SOL_OUT, Number(state.dustMinSolOut || 0));
+    if (!(state.dustExitEnabled && d.action === "sell_all" && ctx.curSol >= dustMin)) {
+      log(`Skip sell eval ${ctx.mint.slice(0,4)}… (notional ${ctx.curSol.toFixed(6)} SOL < ${ctx.minNotional})`);
+      return { d };
+    } else {
+      log(`Dust exit enabled for ${ctx.mint.slice(0,4)}… (est ${ctx.curSol.toFixed(6)} SOL >= ${dustMin})`);
+    }
+  } else if (ctx.curSol < ctx.minNotional && !ctx.forceExpire && (ctx.forceRug || ctx.forcePumpDrop || ctx.forceObserverDrop)) {
+    const why = ctx.forceRug ? "Rug" : (ctx.forcePumpDrop ? "Pump->Calm" : "Observer");
+    log(`${why} exit for ${ctx.mint.slice(0,4)}… ignoring min-notional (${ctx.curSol.toFixed(6)} SOL < ${ctx.minNotional}).`);
+  }
+  if (!ctx.decision || ctx.decision.action === "none") {
+    ctx.decision = d || shouldSell(ctx.pos, ctx.curSol, ctx.nowTs);
+  }
+}
+
+function forceFlagDecisionPolicy(ctx) {
+  if (ctx.forceRug) {
+    ctx.decision = { action: "sell_all", reason: `rug sev=${ctx.rugSev.toFixed(2)}` };
+  } else if (ctx.forcePumpDrop) {
+    ctx.decision = { action: "sell_all", reason: "pump->calm" };
+  } else if (ctx.forceObserverDrop) {
+    ctx.decision = { action: "sell_all", reason: ctx.earlyReason || "observer detection system" };
+  } else if (ctx.forceExpire && (!ctx.decision || ctx.decision.action === "none")) {
+    const inPostWarmGrace = Number(ctx.pos.postWarmGraceUntil || 0) > ctx.nowTs;
+    if (!inPostWarmGrace) {
+      ctx.decision = { action: "sell_all", reason: `max-hold>${ctx.maxHold}s`, hardStop: true };
+      log(`Max-hold reached for ${ctx.mint.slice(0,4)}… forcing sell.`);
+    } else {
+      log(`Max-hold paused by post-warming grace for ${ctx.mint.slice(0,4)}…).`);
+    }
+  }
+}
+
+function reboundGatePolicy(ctx) {
+  ctx.skipSoftGates = !!(ctx.decision?.hardStop) || /HARD_STOP|FAST_/i.test(String(ctx.decision?.reason||""));
+  if (!ctx.decision || ctx.decision.action === "none" || ctx.forceRug) return;
+
+  if (ctx.skipSoftGates) return;
+  const stillDeferred = Number(ctx.pos.reboundDeferUntil || 0) > ctx.nowTs;
+  if (stillDeferred) {
+    log(`Rebound gate: deferral active for ${ctx.mint.slice(0,4)}… skipping sell this tick.`);
+    ctx.decision = { action: "none", reason: "rebound-deferral" };
+    return;
+  }
+
+  const wantDefer = shouldDeferSellForRebound(ctx.mint, ctx.pos, ctx.pnlPct, ctx.nowTs, ctx.decision.reason || "");
+  if (wantDefer) {
+    ctx.decision = { action: "none", reason: "rebound-predict-hold" };
+    const waitMs = Math.max(800, Number(state.reboundHoldMs || 4000));
+    setTimeout(() => { try { wakeSellEval(); } catch {} }, waitMs);
+  } else if (ctx.pos.reboundDeferUntil || ctx.pos.reboundDeferStartedAt) {
+    delete ctx.pos.reboundDeferUntil;
+    delete ctx.pos.reboundDeferStartedAt;
+    delete ctx.pos.reboundDeferCount;
+    save();
+  }
+}
+
+function momentumForcePolicy(ctx) {
+  if (!ctx.forceMomentum) return;
+  ctx.decision = { action: "sell_all", reason: "MOMENTUM_DROP_X18", hardStop: true };
+  log(`Forced sell (momentum x18) for ${ctx.mint.slice(0,4)}…`);
+}
+
+async function executeSellDecisionPolicy(ctx) {
+  log(`Sell decision: ${ctx.decision && ctx.decision.action !== "none" ? ctx.decision.action : "NO"} (${ctx.decision?.reason || "criteria not met"})`);
+  if (!ctx.decision || ctx.decision.action === "none") return { done: false, returned: false };
+
+  const { kp, mint, pos } = ctx;
+  const ownerStr = ctx.ownerStr;
+  const isFastExit = !!ctx.isFastExit;
+
+  if (ctx.decision.action === "sell_all" && ctx.curSol < ctx.minNotional && !isFastExit) {
+    try { addToDustCache(ownerStr, mint, pos.sizeUi, pos.decimals ?? 6); } catch {}
+    try { removeFromPosCache(ownerStr, mint); } catch {}
+    delete state.positions[mint];
+    save();
+    log(`Below notional for ${mint.slice(0,4)}… moved to dust (skip sell).`);
+    return { done: true, returned: true };
+  }
+
+  if (!ctx.forceExpire && window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
+    const until = window._fdvRouterHold.get(mint);
+    log(`Router cooldown for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`);
+    return { done: true, returned: true };
+  }
+
+  const postGrace = Number(pos.postWarmGraceUntil || 0);
+  if (postGrace && ctx.nowTs < postGrace) {
+    ctx.forceExpire = false;
+  }
+
+  _inFlight = true;
+  lockMint(mint, "sell", Math.max(MINT_OP_LOCK_MS, Number(state.sellCooldownMs||20000)));
+
+  let exitSlip = Math.max(Number(state.slippageBps || 250), Number(state.fastExitSlipBps || 400));
+  if (ctx.decision?.hardStop || ctx.forceRug || ctx.forceObserverDrop || ctx.forcePumpDrop) {
+    exitSlip = Math.max(exitSlip, 1500); // 15% slip for forced exits
+  }
+  const exitConfirmMs = isFastExit ? Math.max(6000, Number(state.fastExitConfirmMs || 9000)) : 15000;
+
+  // PARTIAL
+  if (ctx.decision.action === "sell_partial") {
+    const pct = Math.min(100, Math.max(1, Number(ctx.decision.pct || 50)));
+    let sellUi = pos.sizeUi * (pct / 100);
+    try {
+      const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+      if (Number(b.sizeUi || 0) > 0) sellUi = Math.min(sellUi, Number(b.sizeUi));
+    } catch {}
+
+    const estSol = await quoteOutSol(mint, sellUi, pos.decimals).catch(() => 0);
+    if (estSol < ctx.minNotional && !isFastExit) {
+      if (ctx.curSol >= ctx.minNotional) {
+        log(`Partial ${pct}% ${mint.slice(0,4)}… below min (${estSol.toFixed(6)} SOL < ${ctx.minNotional}). Escalating to full sell …`);
+        // escalate to full sell (original code block)
+        let sellUi2 = pos.sizeUi;
+        try {
+          const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+          if (Number(b.sizeUi || 0) > 0) sellUi2 = Number(b.sizeUi);
+        } catch {}
+
+        const res2 = await executeSwapWithConfirm({
+          signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi2, slippageBps: state.slippageBps,
+        }, { retries: 1, confirmMs: 15000 });
+
+        if (!res2.ok) {
+          if (res2.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
+          log(`Sell not confirmed for ${mint.slice(0,4)}… Keeping position.`);
+          _inFlight = false;
+          unlockMint(mint);
+          return { done: true, returned: true };
+        }
+
+        const prevSize2 = Number(pos.sizeUi || sellUi2);
+        const debit = await waitForTokenDebit(kp.publicKey.toBase58(), mint, prevSize2, { timeoutMs: 25000, pollMs: 400 });
+        const remainUi2 = Number(debit.remainUi || 0); 
+
+        if (remainUi2 > 1e-9) {
+          let chkUi = remainUi2, chkDec = pos.decimals;
+          try {
+            const chk = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+            chkUi = Number(chk.sizeUi || 0);
+            if (Number.isFinite(chk.decimals)) chkDec = chk.decimals;
+          } catch {}
+          if (chkUi <= 1e-9) {
+            delete state.positions[mint];
+            removeFromPosCache(kp.publicKey.toBase58(), mint);
+            try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
+          } else {
+            const estRemainSol = await quoteOutSol(mint, chkUi, chkDec).catch(() => 0);
+            const minN = minSellNotionalSol();
+            if (estRemainSol >= minN) {
+              pos.sizeUi = chkUi;
+              if (Number.isFinite(chkDec)) pos.decimals = chkDec;
+              updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+            } else {
+              try { addToDustCache(kp.publicKey.toBase58(), mint, chkUi, chkDec ?? 6); } catch {}
+              try { removeFromPosCache(kp.publicKey.toBase58(), mint); } catch {}
+              delete state.positions[mint];
+              save();
+              log(`Leftover below notional for ${mint.slice(0,4)}… moved to dust cache.`);
+            }
+          }
+        } else {
+          const reason = (ctx.decision && ctx.decision.reason) ? ctx.decision.reason : "done";
+          const estFullSol = ctx.curSol > 0 ? ctx.curSol : await quoteOutSol(mint, sellUi2, pos.decimals).catch(()=>0);
+          log(`Sold ${sellUi2.toFixed(6)} ${mint.slice(0,4)}… -> ~${estFullSol.toFixed(6)} SOL (${reason})`);
+          const costSold = Number(pos.costSol || 0);
+          await _addRealizedPnl(estFullSol, costSold, "Full sell PnL");
+          try { await closeEmptyTokenAtas(kp, mint); } catch {}
+          delete state.positions[mint];
+          removeFromPosCache(kp.publicKey.toBase58(), mint);
+          try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
+          save();
+        }
+        state.lastTradeTs = now();
+        try { await maybeStealthRotate("sell"); } catch {}
+        _inFlight = false;
+        unlockMint(mint);
+        save();
+        return { done: true, returned: true };
+      } else {
+        log(`Skip partial ${pct}% ${mint.slice(0,4)}… (est ${estSol.toFixed(6)} SOL < ${ctx.minNotional})`);
+        _inFlight = false;
+        return { done: true, returned: true };
+      }
+    }
+
+    const res = await executeSwapWithConfirm({
+      signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: exitSlip,
+    }, { retries: isFastExit ? 0 : 1, confirmMs: exitConfirmMs });
+
+    if (!res.ok) {
+      if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
+      log(`Sell not confirmed for ${mint.slice(0,4)}… (partial). Keeping position.`);
+      _inFlight = false;
+      unlockMint(mint);
+      return { done: true, returned: true };
+    }
+
+    log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… (${ctx.decision.reason})`);
+
+    // Proportional cost basis for partial exits
+    const prevCostSol = Number(pos.costSol || 0);
+    const costSold = prevCostSol * (pct / 100);
+    const remainPct = 1 - (pct / 100);
+    pos.sizeUi = Math.max(0, pos.sizeUi - sellUi);
+    pos.costSol = Number(pos.costSol || 0) * remainPct;
+    pos.hwmSol = Number(pos.hwmSol || 0) * remainPct;
+    pos.hwmPx = Number(pos.hwmPx || 0);
+    pos.lastSellAt = now();
+    pos.allowRebuy = true;
+    pos.lastSplitSellAt = now();
+
+    try {
+      const debit = await waitForTokenDebit(kp.publicKey.toBase58(), mint, sellUi, { timeoutMs: 20000, pollMs: 350 });
+      const remainUi = Number(debit.remainUi || pos.sizeUi || 0);
+      if (remainUi > 1e-9) {
+        const estRemainSol = await quoteOutSol(mint, remainUi, pos.decimals).catch(() => 0);
+        const minN = minSellNotionalSol();
+        if (estRemainSol >= minN) {
+          pos.sizeUi = remainUi;
+          if (Number.isFinite(debit.decimals)) pos.decimals = debit.decimals;
+          updatePosCache(kp.publicKey.toBase64 ? kp.publicKey.toBase64() : kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+          updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+        } else {
+          try { addToDustCache(kp.publicKey.toBase58(), mint, remainUi, pos.decimals ?? 6); } catch {}
+          try { removeFromPosCache(kp.publicKey.toBase58(), mint); } catch {}
+          try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
+          delete state.positions[mint];
+          save();
+          log(`Leftover below notional for ${mint.slice(0,4)}… moved to dust cache.`);
+        }
+      } else {
+        // fully gone
+        delete state.positions[mint];
+        removeFromPosCache(kp.publicKey.toBase58(), mint);
+        try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
+      }
+    } catch {
+      updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+    }
+    save();
+
+    await _addRealizedPnl(estSol, costSold, "Partial sell PnL");
+  } else {
+    // FULL SELL (original block)
+    let sellUi = pos.sizeUi;
+    try {
+      const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+      if (Number(b.sizeUi || 0) > 0) sellUi = Number(b.sizeUi);
+    } catch {}
+
+    const res = await executeSwapWithConfirm({
+      signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: exitSlip,
+    }, { retries: isFastExit ? 0 : 1, confirmMs: exitConfirmMs });
+
+    if (!res.ok) {
+      if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
+      log(`Sell not confirmed for ${mint.slice(0,4)}… Keeping position.`);
+      _inFlight = false;
+      unlockMint(mint);
+      return { done: true, returned: true };
+    }
+
+    clearRouteDustFails(mint);
+
+    const prevSize = Number(pos.sizeUi || sellUi);
+    const debit = await waitForTokenDebit(kp.publicKey.toBase58(), mint, prevSize, { timeoutMs: 25000, pollMs: 400 });
+    const remainUi = Number(debit.remainUi || 0);
+    if (remainUi > 1e-9) {
+      const estRemainSol = await quoteOutSol(mint, remainUi, pos.decimals).catch(() => 0);
+      const minN = minSellNotionalSol();
+      if (estRemainSol >= minN) {
+        const frac = Math.min(1, Math.max(0, remainUi / Math.max(1e-9, prevSize)));
+        pos.sizeUi = remainUi;
+        pos.costSol = Number(pos.costSol || 0) * frac;
+        pos.hwmSol  = Number(pos.hwmSol  || 0) * frac;
+        pos.lastSellAt = now();
+        updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+        save();
+        setRouterHold(mint, ROUTER_COOLDOWN_MS);
+        log(`Post-sell balance remains ${remainUi.toFixed(6)} ${mint.slice(0,4)}… (keeping position; router cooldown applied)`);
+      } else {
+        try { addToDustCache(kp.publicKey.toBase58(), mint, remainUi, pos.decimals ?? 6); } catch {}
+        try { removeFromPosCache(kp.publicKey.toBase58(), mint); } catch {}
+        delete state.positions[mint];
+        save();
+        log(`Leftover below notional for ${mint.slice(0,4)}… moved to dust cache.`);
+      }
+    } else {
+      const reason = (ctx.decision && ctx.decision.reason) ? ctx.decision.reason : "done";
+      const estFullSol = ctx.curSol > 0 ? ctx.curSol : await quoteOutSol(mint, sellUi, pos.decimals).catch(()=>0);
+      log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ~${estFullSol.toFixed(6)} SOL (${reason})`);
+      const costSold = Number(pos.costSol || 0);
+      await _addRealizedPnl(estFullSol, costSold, "Full sell PnL");
+      try { await closeEmptyTokenAtas(kp, mint); } catch {}
+      delete state.positions[mint];
+      removeFromPosCache(kp.publicKey.toBase58(), mint);
+      save();
+    }
+  }
+
+  state.lastTradeTs = now();
+  _inFlight = false;
+  save();
+  return { done: true, returned: true };
+}
+
+async function runSellPipelineForPosition(ctx) {
+  const pf = await preflightSellPolicy(ctx);
+  if (pf.stop) return;
+
+  const lm = leaderModePolicy(ctx);
+  if (lm.stop) return;
+
+  urgentSellPolicy(ctx);
+
+  rugPumpDropPolicy(ctx);
+
+  earlyFadePolicy(ctx);
+
+  await observerPolicy(ctx);
+
+  volatilityGuardPolicy(ctx);
+
+  await quoteAndEdgePolicy(ctx);
+
+  fastExitPolicy(ctx);
+
+  dynamicHardStopPolicy(ctx);
+
+  warmingPolicyHook(ctx);
+
+  profitLockPolicy(ctx);
+
+  observerThreePolicy(ctx);
+
+  fallbackSellPolicy(ctx);
+
+  forceFlagDecisionPolicy(ctx);
+
+  reboundGatePolicy(ctx);
+
+  momentumForcePolicy(ctx);
+
+  const exec = await executeSellDecisionPolicy(ctx);
+  if (exec?.returned) return;
 }
 
 async function evalAndMaybeSellPositions() {
   if (_inFlight) return;
   if (_sellEvalRunning) return; 
-  const leaderMode = !!state.holdUntilLeaderSwitch;
   _sellEvalRunning = true;
   try {
     const kp = await getAutoKeypair();
@@ -5545,658 +6463,9 @@ async function evalAndMaybeSellPositions() {
     const nowTs = now();
     for (const [mint, pos] of entries) {
       try {
-        const ageMs = nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0);
-        const maxHold = Math.max(0, Number(state.maxHoldSecs || 0));
-        const forceExpire = maxHold > 0 && ageMs >= maxHold * 1000;
-
-        if (!forceExpire && window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
-          const until = window._fdvRouterHold.get(mint);
-          log(`Router cooldown for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`);
-          continue;
-        }
-
-        const sz = Number(pos.sizeUi || 0);
-        if (sz <= 0) {
-          log(`Skip sell eval for ${mint.slice(0,4)}… (no size)`);
-          continue;
-        }
-        const inSellGuard = Number(pos.sellGuardUntil || 0) > nowTs;
-        const ownerStr = kp.publicKey.toBase58();
-        const vr = await verifyRealTokenBalance(ownerStr, mint, pos);
-        if (!vr.ok && vr.purged) {
-          // Phantom removed; skip this mint
-          continue;
-        }
-        // If verification failed (RPC issue), skip to avoid false sells
-        if (!vr.ok) {
-          log(`Sell skip (unverified balance) ${mint.slice(0,4)}…`);
-          continue;
-        }
-        // Replace local size with verified chain size for accurate quoting
-        if (vr.sizeUi <= 1e-9) {
-          // Nothing to sell
-          continue;
-        }
-        const pendKey = _pcKey(ownerStr, mint);
-        const hasPending = !!(_pendingCredits?.has?.(pendKey));
-        const creditGraceMs = Math.max(8_000, Number(state.pendingGraceMs || 20_000));
-
-        if ((pos.awaitingSizeSync || hasPending) && ageMs < creditGraceMs) {
-          log(`Sell skip ${mint.slice(0,4)}… awaiting credit/size sync (${Math.round(ageMs/1000)}s).`);
-          continue;
-        }
-        
-        if (leaderMode) {
-          const sig0 = getRugSignalForMint(mint);
-          if (!(sig0?.rugged)) {
-            log(`Leader-hold: holding ${mint.slice(0,4)}… (no rug).`);
-            continue;
-          }
-          log(`Leader-hold: RUG detected for ${mint.slice(0,4)}… sev=${Number(sig0.sev||0).toFixed(2)}. Forcing sell.`);
-        }
-        
-        let forceRug = false;
-        let rugSev = 0;
-        let forcePumpDrop = false;
-        let forceObserverDrop = false;
-        let obsPasses = null; 
-        const urgent = takeUrgentSell(mint);
-        if (urgent) {
-          if (ageMs < URGENT_SELL_MIN_AGE_MS) {
-            log(`Urgent sell suppressed (warmup ${Math.round(ageMs/1000)}s) for ${mint.slice(0,4)}…`);
-          } else {
-            const isRugUrg = /rug/i.test(String(urgent.reason||""));
-            const highSev = Number(urgent.sev || 0) >= 0.75;
-            if (inSellGuard && !isRugUrg && !highSev) {
-              log(`Sell guard active; deferring urgent sell for ${mint.slice(0,4)}…`);
-            } else {
-              forceObserverDrop = true;
-              rugSev = Number(urgent.sev || 1);
-              log(`Urgent sell for ${mint.slice(0,4)}… (${urgent.reason}); bypassing notional/cooldowns.`);
-            }
-          }
-        }
-        try {
-          const sig = getRugSignalForMint(mint);
-          recordBadgeTransition(mint, sig.badge);
-
-          const badgeNorm = normBadge(sig.badge);
-          const sev = Number(sig?.sev ?? 0);
-          // const sevThreshold =
-          //   badgeNorm === "warming"
-          //     ? Math.max(0.9, RUG_FORCE_SELL_SEVERITY + 0.30) 
-          //     : RUG_FORCE_SELL_SEVERITY;
-          const sevThreshold = RUG_FORCE_SELL_SEVERITY;
-
-          if (sig?.rugged && sev >= sevThreshold) {
-            forceRug = true;
-            rugSev = sev;
-            setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
-            log(`Rug detected for ${mint.slice(0,4)}… sev=${rugSev.toFixed(2)} (thr=${sevThreshold.toFixed(2)}). Forcing sell and blacklisting 30m.`);
-          } else if (sig?.rugged) {
-            setMintBlacklist(mint);
-            log(`Rug soft-flag for ${mint.slice(0,4)}… sev=${sev.toFixed(2)} < ${sevThreshold.toFixed(2)} — staged blacklist, no forced sell.`);
-          } else if (!leaderMode) {
-            const curNorm = badgeNorm;
-            console.log(`Badge for ${mint.slice(0,4)}…: ${String(sig.badge||"").toLowerCase()} -> ${curNorm}`);
-            if (curNorm === "calm" && isPumpDropBanned(mint)) {
-              forcePumpDrop = true;
-              log(`Pump->Calm drop for ${mint.slice(0,4)}… forcing sell and banning re-buys for 30m.`);
-            }
-          }
-        } catch {}
-
-        let forceEarlyFade = false;
-        let earlyReason = "";
-
-        try {
-          const series = getLeaderSeries(mint, 3);
-          const last = series && series.length ? series[series.length - 1] : null;
-          const curChg5m = Number(last?.chg5m || 0);
-          // Clamp score slope to avoid triggering early-exit on noisy near-term spikes
-          const scSlopeMin = _clamp(slope3pm(series || [], "pumpScore"), -20, 20);
-
-          // maintain consecutive negative score slope counter on position
-          const scNeg = Number(scSlopeMin) <= Math.min(-1, Number(state.earlyExitScSlopeNeg || -10));
-          pos.earlyNegScCount = scNeg ? (Number(pos.earlyNegScCount || 0) + 1) : 0;
-
-          // chg5m relative drop from entry snapshot
-            const entryChg = Number(pos.entryChg5m || NaN);
-            if (Number.isFinite(entryChg) && entryChg > 0) {
-              const dropFrac = (entryChg - curChg5m) / Math.max(1e-6, entryChg);
-              if (dropFrac >= Math.max(0.30, Number(state.earlyExitChgDropFrac || 0.4))) {
-                forceEarlyFade = true;
-                earlyReason = `FAST_FADE chg5m -${(dropFrac*100).toFixed(1)}%`;
-              }
-            }
-
-          if (!forceEarlyFade) {
-            const needConsec = Math.max(1, Number(state.earlyExitConsec || 2));
-            if (Number(pos.earlyNegScCount || 0) >= needConsec) {
-              forceEarlyFade = true;
-              earlyReason = `FAST_FADE scSlope ${scSlopeMin.toFixed(2)}/m x${pos.earlyNegScCount}`;
-            }
-          }
-
-          const extended = getLeaderSeries(mint, 5);
-          if (extended && extended.length >= 3) {
-            let changes = 0;
-            for (let i = 2; i < extended.length; i++) {
-              const a = Number(extended[i-2].chg5m || 0);
-              const b = Number(extended[i-1].chg5m || 0);
-              const c = Number(extended[i].chg5m   || 0);
-              const dir1 = Math.sign(b - a);
-              const dir2 = Math.sign(c - b);
-              if (dir1 && dir2 && dir1 !== dir2) changes++;
-            }
-
-            // Jiggler
-            if (!forceEarlyFade &&
-                changes >= 2 &&
-                scSlopeMin > -2) {
-              // Suppress early fade due to short-term alternating moves
-              pos.earlyNegScCount = 0;
-              earlyReason = "";
-              log(`Jiggle hold: ${mint.slice(0,4)}… direction changes=${changes} scSlope=${scSlopeMin.toFixed(2)}/m`);
-            }
-
-            if (extended.length === 5) {
-              let allDown = true;
-              for (let i = 1; i < extended.length; i++) {
-                if (!(Number(extended[i].chg5m || 0) < Number(extended[i-1].chg5m || 0))) {
-                  allDown = false; break;
-                }
-              }
-              if (allDown && scSlopeMin < 0) {
-                forceEarlyFade = true;
-                earlyReason = `DOWN_SLOPE_5 scSlope ${scSlopeMin.toFixed(2)}/m`;
-              }
-            }
-          }
-
-          if (forceEarlyFade) {
-            forceObserverDrop = true; // reuse observer forced-sell path
-            log(`Early-exit: ${mint.slice(0,4)}… ${earlyReason} — overriding warming sell guard.`);
-          }
-        } catch {}
-
-        if (!leaderMode && !forceRug && !forcePumpDrop) {
-          try {
-            const obs = await observeMintOnce(mint, { windowMs: 2000, sampleMs: 600, minPasses: 4, adjustHold: !!state.dynamicHoldEnabled });
-            if (!obs.ok) {
-              const p = Number(obs.passes || 0);
-              recordObserverPasses(mint, p);
-              const thr = Math.max(0, Number(state.observerDropSellAt ?? 3));
-
-              // Badge-aware debounce for low observer passes
-              const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
-              const pumpingish = (badgeNow === "pumping" || badgeNow === "warming");
-
-              // How many consecutive low passes required before forcing a sell while pumping/warming
-              const needLowConsec = pumpingish ? 2 : 1;
-              const dg = _getDropGuardStore().get(mint) || {};
-              const lowConsec = Number(dg.consecLow || 0);
-              const bypassAt = Math.max(0, Number(1));
-              const hardBypass = (p <= bypassAt);
-
-              if (p <= 2) {
-                if (hardBypass) {
-                  forceObserverDrop = true;
-                  setMintBlacklist(mint); // staged and progressive ban
-                  log(`Observer hard drop for ${mint.slice(0,4)}… (${p}/5 <= ${bypassAt}) forcing sell (staged blacklist).`);
-                }
-                else if (inSellGuard) {
-                  log(`Sell guard active; suppressing observer drop (${p}/5) for ${mint.slice(0,4)}…`);
-                } else if (lowConsec < needLowConsec) {
-                  // Debounce: treat as consider while pumping/warming
-                  log(`Observer low-pass ${p}/5 while ${badgeNow}; debounce ${lowConsec}/${needLowConsec}. Holding & watching.`);
-                  noteObserverConsider(mint, 30_000);
-                } else {
-                  forceObserverDrop = true;
-                  setMintBlacklist(mint); // staged and progressive ban
-                  log(`Observer drop for ${mint.slice(0,4)}… (${p}/5 <= 2) forcing sell (staged blacklist).`);
-                }
-              } else if (p === 3 && thr >= 3) {
-                obsPasses = 3;
-              }
-            } else {
-              recordObserverPasses(mint, Number(obs.passes || 5));
-            }
-          } catch {}
-        }
-
-        {
-          const postBuyCooldownMs = Math.max(8_000, Number(state.coolDownSecsAfterBuy || 0) * 1000);
-          const inWarmingHold = !!(state.rideWarming && pos.warmingHold === true);
-          if (!leaderMode && (inSellGuard || ageMs < postBuyCooldownMs) && (forceObserverDrop || forcePumpDrop) && !inWarmingHold && !forceRug && !forceEarlyFade) {
-            log(`Volatility sell guard active; suppressing observer/pump drop for ${mint.slice(0,4)}…`);
-            forceObserverDrop = false;
-            forcePumpDrop = false;
-          }
-        }
-
-        let curSol = Number(pos.lastQuotedSol || 0);
-        const lastQ = Number(pos.lastQuotedAt || 0);
-        if (!lastQ || (nowTs - lastQ) > (state.minQuoteIntervalMs|0)) {
-          log(`Evaluating sell for ${mint.slice(0,4)}… size ${sz.toFixed(6)}`);
-          curSol = await quoteOutSol(mint, sz, pos.decimals).catch(() => 0);
-          pos.lastQuotedSol = curSol;
-          pos.lastQuotedAt = nowTs;
-        }
-
-        try {
-          const prevSol = Number(pos._lastShockSol || 0);
-          const prevAt  = Number(pos._lastShockAt  || 0);
-          if (prevSol > 0 && curSol > 0 && (nowTs - prevAt) <= RUG_QUOTE_SHOCK_WINDOW_MS) {
-            const dropFrac = (prevSol - curSol) / Math.max(prevSol, 1e-12);
-            if (dropFrac >= RUG_QUOTE_SHOCK_FRAC) {
-              log(`RUG quote-shock ${mint.slice(0,4)}… drop=${(dropFrac*100).toFixed(1)}% within ${(nowTs-prevAt)}ms`);
-              flagUrgentSell(mint, "rug_quote_shock", 1.0);
-            }
-          }
-
-          pos._lastShockSol = curSol;
-          pos._lastShockAt  = nowTs;
-        } catch {}    
-
-        const outLamports = Math.floor(Math.max(0, curSol) * 1e9);
-        const decIn = Number.isFinite(pos.decimals) ? pos.decimals : 6;
-        const net = estimateNetExitSolFromQuote({
-          mint,
-          amountUi: sz,
-          inDecimals: decIn,
-          quoteOutLamports: outLamports
-        });
-        const curSolNet = net.netSol;
-
-        if (Number.isFinite(curSol) && Number.isFinite(curSolNet)) {
-          log(`Edge-aware valuation ${mint.slice(0,4)}… raw≈${curSol.toFixed(6)} SOL, net≈${curSolNet.toFixed(6)} SOL${net.feeApplied ? " (fee)" : ""}`);
-        }
-
-        const pxNow  = sz > 0 ? (curSol / sz) : 0;
-        const pxCost = sz > 0 ? (Number(pos.costSol || 0) / sz) : 0;
-        const pnlPct = (pxNow > 0 && pxCost > 0) ? ((pxNow - pxCost) / pxCost) * 100 : 0;
-
-        let decision = null;
-        let isFastExit = false;
-        const fast = checkFastExitTriggers(mint, pos, { pnlPct, pxNow, nowTs });
-        if (fast && fast.action !== "none") {
-          decision = { ...fast };
-          isFastExit = true;
-          log(`Fast-exit trigger for ${mint.slice(0,4)}… -> ${decision.action} (${decision.reason}${decision.pct ? ` ${decision.pct}%` : ""})`);
-        }
-
-
-        const pxNowNet  = sz > 0 ? (curSolNet / sz) : 0;
-        const pnlNetPct = (pxNowNet > 0 && pxCost > 0) ? ((pxNowNet - pxCost) / pxCost) * 100 : 0;
-        const ageSec = (nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0)) / 1000;
-        const remorseSecs = Math.max(5, Number(DYN_HS?.remorseSecs ?? 6));
-        const creditsPending = pos.awaitingSizeSync === true || pos._pendingCostAug === true;
-        const canHardStop = ageSec >= remorseSecs && !creditsPending;
-
-        let dynStopPct = null;
-        if (canHardStop) {
-          const ddPct = (Number(pos.hwmPx || 0) > 0 && pxNow > 0)
-            ? ((pos.hwmPx - pxNow) / pos.hwmPx) * 100
-            : 0;
-          const gate = computeFinalGateIntensity(mint);
-          dynStopPct = computeDynamicHardStopPct(mint, pos, nowTs, {
-            pnlNetPct,
-            drawdownPct: ddPct,
-            intensity: Number(gate?.intensity || 1)
-          });
-        }
-
-        if (canHardStop &&
-            Number.isFinite(pnlNetPct) && Number.isFinite(dynStopPct) &&
-            pnlNetPct <= -Math.abs(dynStopPct)) {
-          decision = { action: "sell_all", reason: `HARD_STOP ${pnlNetPct.toFixed(2)}%<=-${Math.abs(dynStopPct).toFixed(2)}%`, hardStop: true };
-          isFastExit = true;
-          log(`Dynamic hard stop for ${mint.slice(0,4)}… netPnL=${pnlNetPct.toFixed(2)}% thr=-${Math.abs(dynStopPct).toFixed(2)}% (age ${ageSec.toFixed(1)}s)`);
-        } else if (!canHardStop) {
-          log(`Hard stop suppressed (age ${ageSec.toFixed(1)}s${creditsPending ? ", pending credit" : ""}) for ${mint.slice(0,4)}… netPnL=${pnlNetPct.toFixed(2)}%`);
-        }
-
-        {
-          const res = applyWarmingPolicy({
-            mint, pos, nowTs, pnlPct, curSol,
-            decision,
-            forceRug, forcePumpDrop, forceObserverDrop,
-            forceEarlyFade
-          });
-          decision = res.decision || decision;
-          forceObserverDrop = res.forceObserverDrop;
-          forcePumpDrop = res.forcePumpDrop;
-
-          if (res.decision?.hardStop && /WARMING_TARGET|warming[-\s]*max[-\s]*loss/i.test(String(res.decision.reason || ""))) {
-            isFastExit = true;
-          }
-
-          var warmingHoldActive = !!res.warmingHoldActive;
-        }
-
-        const skipSoftGates = !!(decision?.hardStop) || /HARD_STOP|FAST_/i.test(String(decision?.reason||""));
-
-        if (!forceRug && !forcePumpDrop && !forceObserverDrop && obsPasses === 3) {
-          const should = shouldForceSellAtThree(mint, pos, curSol, nowTs);
-          if (should) {
-            if (inSellGuard) {
-              log(`Sell guard active; deferring 3/5 observer sell for ${mint.slice(0,4)}…`);
-            } else {
-              forceObserverDrop = true;
-              setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
-              log(`Observer 3/5 debounced -> forcing sell (${mint.slice(0,4)}…) and blacklisting 30m.`);
-            }
-          } else {
-            log(`Observer 3/5 for ${mint.slice(0,4)}… soft-watch; debounce active (no sell).`);
-            noteObserverConsider(mint, 30_000);
-          }
-        }
-
-        // const baseMinNotional = Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN * 1.05);
-        // const minNotional = baseMinNotional;
-        const minNotional = minSellNotionalSol();
-
-        if (!isFastExit) {
-          const canRunFallback =
-            !(warmingHoldActive && !forceRug && !forcePumpDrop && !forceObserverDrop && !forceExpire);
-
-          if (canRunFallback) {
-            let d = null;
-            if (curSol < minNotional && !forceExpire && !forceRug && !forcePumpDrop && !forceObserverDrop) {
-              d = shouldSell(pos, curSolNet, nowTs);
-              const dustMin = Math.max(MIN_SELL_SOL_OUT, Number(state.dustMinSolOut || 0));
-              if (!(state.dustExitEnabled && d.action === "sell_all" && curSol >= dustMin)) {
-                log(`Skip sell eval ${mint.slice(0,4)}… (notional ${curSol.toFixed(6)} SOL < ${minNotional})`);
-                continue;
-              } else {
-                log(`Dust exit enabled for ${mint.slice(0,4)}… (est ${curSol.toFixed(6)} SOL >= ${dustMin})`);
-              }
-            } else if (curSol < minNotional && !forceExpire && (forceRug || forcePumpDrop || forceObserverDrop)) {
-              const why = forceRug ? "Rug" : (forcePumpDrop ? "Pump->Calm" : "Observer");
-              log(`${why} exit for ${mint.slice(0,4)}… ignoring min-notional (${curSol.toFixed(6)} SOL < ${minNotional}).`);
-            }
-            if (!decision || decision.action === "none") {
-              decision = d || shouldSell(pos, curSol, nowTs);
-            }
-          } else {
-            log(`Warming hold active; skipping fallback sell checks for ${mint.slice(0,4)}…`);
-          }
-        } else {
-          decision = decision; // already set
-        }
-
-        if (forceRug) {
-          decision = { action: "sell_all", reason: `rug sev=${rugSev.toFixed(2)}` };
-        } else if (forcePumpDrop) {
-          decision = { action: "sell_all", reason: "pump->calm" };
-        } else if (forceObserverDrop) {
-          decision = { action: "sell_all", reason: earlyReason || "observer detection system" };
-        } else if (forceExpire && (!decision || decision.action === "none")) {
-          decision = { action: "sell_all", reason: `max-hold>${maxHold}s`, hardStop: true };
-          log(`Max-hold reached for ${mint.slice(0,4)}… forcing sell.`);
-        }
-
-        if (decision && decision.action !== "none" && !forceRug) {
-          if (skipSoftGates) {
-            // hard/fast exits bypass rebound defers
-          } else {
-            const stillDeferred = Number(pos.reboundDeferUntil || 0) > nowTs;
-            if (stillDeferred) {
-              log(`Rebound gate: deferral active for ${mint.slice(0,4)}… skipping sell this tick.`);
-              decision = { action: "none", reason: "rebound-deferral" };
-            } else {
-              const wantDefer = shouldDeferSellForRebound(mint, pos, pnlPct, nowTs, decision.reason || "");
-              if (wantDefer) {
-                decision = { action: "none", reason: "rebound-predict-hold" };
-                const waitMs = Math.max(800, Number(state.reboundHoldMs || 4000));
-                setTimeout(() => { try { wakeSellEval(); } catch {} }, waitMs);
-              } else {
-                if (pos.reboundDeferUntil || pos.reboundDeferStartedAt) {
-                  delete pos.reboundDeferUntil;
-                  delete pos.reboundDeferStartedAt;
-                  delete pos.reboundDeferCount;
-                  save();
-                }
-              }
-            }
-          }
-        }
-
-        log(`Sell decision: ${decision && decision.action !== "none" ? decision.action : "NO"} (${decision?.reason || "criteria not met"})`);
-        if (!decision || decision.action === "none") continue;
-
-        if (decision.action === "sell_all" && curSol < minNotional && !isFastExit) {
-          try { addToDustCache(ownerStr, mint, pos.sizeUi, pos.decimals ?? 6); } catch {}
-          try { removeFromPosCache(ownerStr, mint); } catch {}
-          delete state.positions[mint];
-          save();
-          log(`Below notional for ${mint.slice(0,4)}… moved to dust (skip sell).`);
-          continue;
-        }  
-
-        // Jito/router cooldown checks remain (but we already bypassed gating)
-        if (!forceExpire && window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
-          const until = window._fdvRouterHold.get(mint);
-          log(`Router cooldown for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`);
-          continue;
-        }
-
-        _inFlight = true;
-        lockMint(mint, "sell", Math.max(MINT_OP_LOCK_MS, Number(state.sellCooldownMs||20000)));
-
-        let exitSlip = Math.max(Number(state.slippageBps || 250), Number(state.fastExitSlipBps || 400));
-
-        if (decision?.hardStop || forceRug || forceObserverDrop || forcePumpDrop) {
-          exitSlip = Math.max(exitSlip, 1500); // 15% slip for forced exits
-        }
-
-        const exitConfirmMs = isFastExit ? Math.max(6000, Number(state.fastExitConfirmMs || 9000)) : 15000;
-
-        if (decision.action === "sell_partial") {
-          const pct = Math.min(100, Math.max(1, Number(decision.pct || 50)));
-          let sellUi = pos.sizeUi * (pct / 100);
-          try {
-            const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
-            if (Number(b.sizeUi || 0) > 0) sellUi = Math.min(sellUi, Number(b.sizeUi));
-          } catch {}
-
-          const estSol = await quoteOutSol(mint, sellUi, pos.decimals).catch(() => 0);
-          if (estSol < minNotional && !isFastExit) {
-            if (curSol >= minNotional) {
-              log(`Partial ${pct}% ${mint.slice(0,4)}… below min (${estSol.toFixed(6)} SOL < ${minNotional}). Escalating to full sell …`);
-              let sellUi2 = pos.sizeUi;
-              try {
-                const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
-                if (Number(b.sizeUi || 0) > 0) sellUi2 = Number(b.sizeUi);
-              } catch {}
-
-              const res2 = await executeSwapWithConfirm({
-                signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi2, slippageBps: state.slippageBps,
-              }, { retries: 1, confirmMs: 15000 });
-
-              if (!res2.ok) {
-                if (res2.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
-                log(`Sell not confirmed for ${mint.slice(0,4)}… Keeping position.`);
-                _inFlight = false;
-                unlockMint(mint);
-                continue;
-              }
-
-              const prevSize2 = Number(pos.sizeUi || sellUi2);
-              const debit = await waitForTokenDebit(kp.publicKey.toBase58(), mint, prevSize2, { timeoutMs: 25000, pollMs: 400 });
-              const remainUi2 = Number(debit.remainUi || 0); 
-
-              if (remainUi2 > 1e-9) {
-                let chkUi = remainUi2, chkDec = pos.decimals;
-                try {
-                  const chk = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
-                  chkUi = Number(chk.sizeUi || 0);
-                  if (Number.isFinite(chk.decimals)) chkDec = chk.decimals;
-                } catch {}
-                if (chkUi <= 1e-9) {
-                  delete state.positions[mint];
-                  removeFromPosCache(kp.publicKey.toBase58(), mint);
-                  try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
-                } else {
-                  const estRemainSol = await quoteOutSol(mint, chkUi, chkDec).catch(() => 0);
-                  const minN = minSellNotionalSol();
-                  if (estRemainSol >= minN) {
-                    pos.sizeUi = chkUi;
-                    if (Number.isFinite(chkDec)) pos.decimals = chkDec;
-                    updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
-                  } else {
-                    try { addToDustCache(kp.publicKey.toBase58(), mint, chkUi, chkDec ?? 6); } catch {}
-                    try { removeFromPosCache(kp.publicKey.toBase58(), mint); } catch {}
-                    delete state.positions[mint];
-                    save();
-                    log(`Leftover below notional for ${mint.slice(0,4)}… moved to dust cache.`);
-                  }
-                }
-              } else {
-                const reason = (decision && decision.reason) ? decision.reason : "done";
-                const estFullSol = curSol > 0 ? curSol : await quoteOutSol(mint, sellUi2, pos.decimals).catch(()=>0);
-                log(`Sold ${sellUi2.toFixed(6)} ${mint.slice(0,4)}… -> ~${estFullSol.toFixed(6)} SOL (${reason})`);
-                const costSold = Number(pos.costSol || 0);
-                await _addRealizedPnl(estFullSol, costSold, "Full sell PnL");
-                try { await closeEmptyTokenAtas(kp, mint); } catch {}
-                delete state.positions[mint];
-                removeFromPosCache(kp.publicKey.toBase58(), mint);
-                try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
-                save();
-              }
-              state.lastTradeTs = now();
-              try { await maybeStealthRotate("sell"); } catch {}
-              _inFlight = false;
-              unlockMint(mint);
-              save();
-              return; // one sell per tick
-            } else {
-              log(`Skip partial ${pct}% ${mint.slice(0,4)}… (est ${estSol.toFixed(6)} SOL < ${minNotional})`);
-              _inFlight = false;
-              continue;
-            }
-          }
-
-          const res = await executeSwapWithConfirm({
-            signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: exitSlip,
-          }, { retries: isFastExit ? 0 : 1, confirmMs: exitConfirmMs });
-
-          if (!res.ok) {
-            if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
-            log(`Sell not confirmed for ${mint.slice(0,4)}… (partial). Keeping position.`);
-            _inFlight = false;
-            unlockMint(mint);
-            continue;
-          }
-
-          log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… (${decision.reason})`);
-   
-          // Proportional cost basis for partial exits
-          const prevCostSol = Number(pos.costSol || 0);
-          const costSold = prevCostSol * (pct / 100);
-          const remainPct = 1 - (pct / 100);
-          pos.sizeUi = Math.max(0, pos.sizeUi - sellUi);
-          pos.costSol = Number(pos.costSol || 0) * remainPct;
-          pos.hwmSol = Number(pos.hwmSol || 0) * remainPct;
-          pos.hwmPx = Number(pos.hwmPx || 0);
-          pos.lastSellAt = now();
-          pos.allowRebuy = true;
-          pos.lastSplitSellAt = now();
-
-          try {
-            const debit = await waitForTokenDebit(kp.publicKey.toBase58(), mint, sellUi, { timeoutMs: 20000, pollMs: 350 });
-            const remainUi = Number(debit.remainUi || pos.sizeUi || 0);
-            if (remainUi > 1e-9) {
-              const estRemainSol = await quoteOutSol(mint, remainUi, pos.decimals).catch(() => 0);
-              const minN = minSellNotionalSol();
-              if (estRemainSol >= minN) {
-                pos.sizeUi = remainUi;
-                if (Number.isFinite(debit.decimals)) pos.decimals = debit.decimals;
-                updatePosCache(kp.publicKey.toBase64 ? kp.publicKey.toBase64() : kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
-                updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
-              } else {
-                try { addToDustCache(kp.publicKey.toBase58(), mint, remainUi, pos.decimals ?? 6); } catch {}
-                try { removeFromPosCache(kp.publicKey.toBase58(), mint); } catch {}
-                try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
-                delete state.positions[mint];
-                save();
-                log(`Leftover below notional for ${mint.slice(0,4)}… moved to dust cache.`);
-              }
-            } else {
-              // fully gone
-              delete state.positions[mint];
-              removeFromPosCache(kp.publicKey.toBase58(), mint);
-              try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
-            }
-          } catch {
-            updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
-          }
-          save();
-
-          await _addRealizedPnl(estSol, costSold, "Partial sell PnL");
-        } else {
-          // Full sell
-          let sellUi = pos.sizeUi;
-          try {
-            const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
-            if (Number(b.sizeUi || 0) > 0) sellUi = Number(b.sizeUi);
-          } catch {}
-
-          const res = await executeSwapWithConfirm({
-            signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: exitSlip,
-          }, { retries: isFastExit ? 0 : 1, confirmMs: exitConfirmMs });
-
-          if (!res.ok) {
-            if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
-            log(`Sell not confirmed for ${mint.slice(0,4)}… Keeping position.`);
-            _inFlight = false;
-            unlockMint(mint);
-            continue;
-          }
-
-          clearRouteDustFails(mint);
-
-          const prevSize = Number(pos.sizeUi || sellUi);
-          const debit = await waitForTokenDebit(kp.publicKey.toBase58(), mint, prevSize, { timeoutMs: 25000, pollMs: 400 });
-          const remainUi = Number(debit.remainUi || 0);
-          if (remainUi > 1e-9) {
-            const estRemainSol = await quoteOutSol(mint, remainUi, pos.decimals).catch(() => 0);
-            const minN = minSellNotionalSol();
-            if (estRemainSol >= minN) {
-              const frac = Math.min(1, Math.max(0, remainUi / Math.max(1e-9, prevSize)));
-              pos.sizeUi = remainUi;
-              pos.costSol = Number(pos.costSol || 0) * frac;
-              pos.hwmSol  = Number(pos.hwmSol  || 0) * frac;
-              pos.lastSellAt = now();
-              updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
-              save();
-              setRouterHold(mint, ROUTER_COOLDOWN_MS);
-              log(`Post-sell balance remains ${remainUi.toFixed(6)} ${mint.slice(0,4)}… (keeping position; router cooldown applied)`);
-            } else {
-              try { addToDustCache(kp.publicKey.toBase58(), mint, remainUi, pos.decimals ?? 6); } catch {}
-              try { removeFromPosCache(kp.publicKey.toBase58(), mint); } catch {}
-              delete state.positions[mint];
-              save();
-              log(`Leftover below notional for ${mint.slice(0,4)}… moved to dust cache.`);
-            }
-          } else {
-            const reason = (decision && decision.reason) ? decision.reason : "done";
-            const estFullSol = curSol > 0 ? curSol : await quoteOutSol(mint, sellUi, pos.decimals).catch(()=>0);
-            log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ~${estFullSol.toFixed(6)} SOL (${reason})`);
-            const costSold = Number(pos.costSol || 0);
-            await _addRealizedPnl(estFullSol, costSold, "Full sell PnL");
-            try { await closeEmptyTokenAtas(kp, mint); } catch {}
-            delete state.positions[mint];
-            removeFromPosCache(kp.publicKey.toBase58(), mint);
-            save();
-          }
-        }
-
-        state.lastTradeTs = now();
-        _inFlight = false;
-        save();
-        return; // one sell per tick
+        const ctx = _mkSellCtx({ kp, mint, pos, nowTs });
+        await runSellPipelineForPosition(ctx);
+        return; // one sell per tick (preserve original behavior)
       } catch (e) {
         log(`Sell check failed for ${mint.slice(0,4)}…: ${e.message||e}`);
       } finally {
@@ -6207,6 +6476,760 @@ async function evalAndMaybeSellPositions() {
     _sellEvalRunning = false;
   }
 }
+
+// async function evalAndMaybeSellPositions() {
+//   if (_inFlight) return;
+//   if (_sellEvalRunning) return; 
+//   const leaderMode = !!state.holdUntilLeaderSwitch;
+//   _sellEvalRunning = true;
+//   try {
+//     const kp = await getAutoKeypair();
+//     if (!kp) return;
+
+//     await syncPositionsFromChain(kp.publicKey.toBase58());
+//     await pruneZeroBalancePositions(kp.publicKey.toBase58(), { limit: 8 });
+//     const entries = Object.entries(state.positions || {});
+//     if (!entries.length) return;
+
+//     const nowTs = now();
+//     for (const [mint, pos] of entries) {
+//       try {
+//         const ageMs = nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0);
+//         const maxHold = Math.max(0, Number(state.maxHoldSecs || 0));
+//         const forceExpire = maxHold > 0 && ageMs >= maxHold * 1000;
+
+//         if (!forceExpire && window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
+//           const until = window._fdvRouterHold.get(mint);
+//           log(`Router cooldown for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`);
+//           continue;
+//         }
+
+//         const sz = Number(pos.sizeUi || 0);
+//         if (sz <= 0) {
+//           log(`Skip sell eval for ${mint.slice(0,4)}… (no size)`);
+//           continue;
+//         }
+//         const forceMomentum = shouldForceMomentumExit(mint);
+
+//         const inSellGuard = Number(pos.sellGuardUntil || 0) > nowTs;
+//         const ownerStr = kp.publicKey.toBase58();
+//         const vr = await verifyRealTokenBalance(ownerStr, mint, pos);
+//         if (!vr.ok && vr.purged) {
+//           // Phantom removed; skip this mint
+//           continue;
+//         }
+//         // If verification failed (RPC issue), skip to avoid false sells
+//         if (!vr.ok) {
+//           log(`Sell skip (unverified balance) ${mint.slice(0,4)}…`);
+//           continue;
+//         }
+//         // Replace local size with verified chain size for accurate quoting
+//         if (vr.sizeUi <= 1e-9) {
+//           // Nothing to sell
+//           continue;
+//         }
+//         const pendKey = _pcKey(ownerStr, mint);
+//         const hasPending = !!(_pendingCredits?.has?.(pendKey));
+//         const creditGraceMs = Math.max(8_000, Number(state.pendingGraceMs || 20_000));
+
+//         if ((pos.awaitingSizeSync || hasPending) && ageMs < creditGraceMs) {
+//           log(`Sell skip ${mint.slice(0,4)}… awaiting credit/size sync (${Math.round(ageMs/1000)}s).`);
+//           continue;
+//         }
+        
+//         if (leaderMode) {
+//           const sig0 = getRugSignalForMint(mint);
+//           if (!(sig0?.rugged) && !forceMomentum) {
+//             log(`Leader-hold: holding ${mint.slice(0,4)}… (no rug).`);
+//             continue;
+//           }
+//           if (!sig0?.rugged && forceMomentum) {
+//             log(`Leader-hold override: momentum drop x18 for ${mint.slice(0,4)}… forcing sell.`);
+//           } else if (sig0?.rugged) {
+//             log(`Leader-hold: RUG detected for ${mint.slice(0,4)}… sev=${Number(sig0.sev||0).toFixed(2)}. Forcing sell.`);
+//           }
+//         }
+        
+//         let forceRug = false;
+//         let rugSev = 0;
+//         let forcePumpDrop = false;
+//         let forceObserverDrop = false;
+//         let obsPasses = null; 
+//         const urgent = takeUrgentSell(mint);
+//         if (urgent) {
+//           if (ageMs < URGENT_SELL_MIN_AGE_MS) {
+//             log(`Urgent sell suppressed (warmup ${Math.round(ageMs/1000)}s) for ${mint.slice(0,4)}…`);
+//           } else {
+//             const isRugUrg = /rug/i.test(String(urgent.reason||""));
+//             const highSev = Number(urgent.sev || 0) >= 0.75;
+//             if (inSellGuard && !isRugUrg && !highSev) {
+//               log(`Sell guard active; deferring urgent sell for ${mint.slice(0,4)}…`);
+//             } else {
+//               forceObserverDrop = true;
+//               rugSev = Number(urgent.sev || 1);
+//               log(`Urgent sell for ${mint.slice(0,4)}… (${urgent.reason}); bypassing notional/cooldowns.`);
+//             }
+//           }
+//         }
+//         try {
+//           const sig = getRugSignalForMint(mint);
+//           recordBadgeTransition(mint, sig.badge);
+
+//           const badgeNorm = normBadge(sig.badge);
+//           const sev = Number(sig?.sev ?? 0);
+//           // const sevThreshold =
+//           //   badgeNorm === "warming"
+//           //     ? Math.max(0.9, RUG_FORCE_SELL_SEVERITY + 0.30) 
+//           //     : RUG_FORCE_SELL_SEVERITY;
+//           const sevThreshold = RUG_FORCE_SELL_SEVERITY;
+
+//           if (sig?.rugged && sev >= sevThreshold) {
+//             forceRug = true;
+//             rugSev = sev;
+//             setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+//             log(`Rug detected for ${mint.slice(0,4)}… sev=${rugSev.toFixed(2)} (thr=${sevThreshold.toFixed(2)}). Forcing sell and blacklisting 30m.`);
+//           } else if (sig?.rugged) {
+//             setMintBlacklist(mint);
+//             log(`Rug soft-flag for ${mint.slice(0,4)}… sev=${sev.toFixed(2)} < ${sevThreshold.toFixed(2)} — staged blacklist, no forced sell.`);
+//           } else if (!leaderMode) {
+//             const curNorm = badgeNorm;
+//             console.log(`Badge for ${mint.slice(0,4)}…: ${String(sig.badge||"").toLowerCase()} -> ${curNorm}`);
+//             if (curNorm === "calm" && isPumpDropBanned(mint)) {
+//               forcePumpDrop = true;
+//               log(`Pump->Calm drop for ${mint.slice(0,4)}… forcing sell and banning re-buys for 30m.`);
+//             }
+//           }
+//         } catch {}
+
+//         let forceEarlyFade = false;
+//         let earlyReason = "";
+
+//         try {
+//           const series = getLeaderSeries(mint, 3);
+//           const last = series && series.length ? series[series.length - 1] : null;
+//           const curChg5m = Number(last?.chg5m || 0);
+//           // Clamp score slope to avoid triggering early-exit on noisy near-term spikes
+//           const scSlopeMin = _clamp(slope3pm(series || [], "pumpScore"), -20, 20);
+
+//           // maintain consecutive negative score slope counter on position
+//           const scNeg = Number(scSlopeMin) <= Math.min(-1, Number(state.earlyExitScSlopeNeg || -10));
+//           pos.earlyNegScCount = scNeg ? (Number(pos.earlyNegScCount || 0) + 1) : 0;
+
+//           // chg5m relative drop from entry snapshot
+//             const entryChg = Number(pos.entryChg5m || NaN);
+//             if (Number.isFinite(entryChg) && entryChg > 0) {
+//               const dropFrac = (entryChg - curChg5m) / Math.max(1e-6, entryChg);
+//               if (dropFrac >= Math.max(0.30, Number(state.earlyExitChgDropFrac || 0.4))) {
+//                 forceEarlyFade = true;
+//                 earlyReason = `FAST_FADE chg5m -${(dropFrac*100).toFixed(1)}%`;
+//               }
+//             }
+
+//           if (!forceEarlyFade) {
+//             const needConsec = Math.max(1, Number(state.earlyExitConsec || 2));
+//             if (Number(pos.earlyNegScCount || 0) >= needConsec) {
+//               forceEarlyFade = true;
+//               earlyReason = `FAST_FADE scSlope ${scSlopeMin.toFixed(2)}/m x${pos.earlyNegScCount}`;
+//             }
+//           }
+
+//           const extended = getLeaderSeries(mint, 5);
+//           if (extended && extended.length >= 3) {
+//             let changes = 0;
+//             for (let i = 2; i < extended.length; i++) {
+//               const a = Number(extended[i-2].chg5m || 0);
+//               const b = Number(extended[i-1].chg5m || 0);
+//               const c = Number(extended[i].chg5m   || 0);
+//               const dir1 = Math.sign(b - a);
+//               const dir2 = Math.sign(c - b);
+//               if (dir1 && dir2 && dir1 !== dir2) changes++;
+//             }
+
+//             // Jiggler
+//             if (!forceEarlyFade &&
+//                 changes >= 2 &&
+//                 scSlopeMin > -2) {
+//               // Suppress early fade due to short-term alternating moves
+//               pos.earlyNegScCount = 0;
+//               earlyReason = "";
+//               log(`Jiggle hold: ${mint.slice(0,4)}… direction changes=${changes} scSlope=${scSlopeMin.toFixed(2)}/m`);
+//             }
+
+//             if (extended.length === 5) {
+//               let allDown = true;
+//               for (let i = 1; i < extended.length; i++) {
+//                 if (!(Number(extended[i].chg5m || 0) < Number(extended[i-1].chg5m || 0))) {
+//                   allDown = false; break;
+//                 }
+//               }
+//               if (allDown && scSlopeMin < 0) {
+//                 forceEarlyFade = true;
+//                 earlyReason = `DOWN_SLOPE_5 scSlope ${scSlopeMin.toFixed(2)}/m`;
+//               }
+//             }
+//           }
+
+//           if (forceEarlyFade) {
+//             forceObserverDrop = true; // reuse observer forced-sell path
+//             log(`Early-exit: ${mint.slice(0,4)}… ${earlyReason} — overriding warming sell guard.`);
+//           }
+//         } catch {}
+
+//         if (!leaderMode && !forceRug && !forcePumpDrop) {
+//           try {
+//             const obs = await observeMintOnce(mint, { windowMs: 2000, sampleMs: 600, minPasses: 4, adjustHold: !!state.dynamicHoldEnabled });
+//             if (!obs.ok) {
+//               const p = Number(obs.passes || 0);
+//               recordObserverPasses(mint, p);
+//               const thr = Math.max(0, Number(state.observerDropSellAt ?? 4));
+
+//               // Badge-aware debounce for low observer passes
+//               const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
+//               const pumpingish = (badgeNow === "pumping" || badgeNow === "warming");
+
+//               // How many consecutive low passes required before forcing a sell while pumping/warming
+//               const needLowConsec = pumpingish ? 2 : 1;
+//               const dg = _getDropGuardStore().get(mint) || {};
+//               const lowConsec = Number(dg.consecLow || 0);
+//               const bypassAt = Math.max(0, Number(1));
+//               const hardBypass = (p <= bypassAt);
+
+//               if (p <= 2) {
+//                 if (hardBypass) {
+//                   forceObserverDrop = true;
+//                   setMintBlacklist(mint); // staged and progressive ban
+//                   log(`Observer hard drop for ${mint.slice(0,4)}… (${p}/5 <= ${bypassAt}) forcing sell (staged blacklist).`);
+//                 }
+//                 else if (inSellGuard) {
+//                   log(`Sell guard active; suppressing observer drop (${p}/5) for ${mint.slice(0,4)}…`);
+//                 } else if (lowConsec < needLowConsec) {
+//                   // Debounce: treat as consider while pumping/warming
+//                   log(`Observer low-pass ${p}/5 while ${badgeNow}; debounce ${lowConsec}/${needLowConsec}. Holding & watching.`);
+//                   noteObserverConsider(mint, 30_000);
+//                 } else {
+//                   forceObserverDrop = true;
+//                   setMintBlacklist(mint); // staged and progressive ban
+//                   log(`Observer drop for ${mint.slice(0,4)}… (${p}/5 <= 2) forcing sell (staged blacklist).`);
+//                 }
+//               } else if (p === 3 && thr >= 3) {
+//                 obsPasses = 3;
+//               }
+//             } else {
+//               recordObserverPasses(mint, Number(obs.passes || 5));
+//             }
+//           } catch {}
+//         }
+
+//         {
+//           const postBuyCooldownMs = Math.max(8_000, Number(state.coolDownSecsAfterBuy || 0) * 1000);
+//           const inWarmingHold = !!(state.rideWarming && pos.warmingHold === true);
+//           if (!leaderMode && (inSellGuard || ageMs < postBuyCooldownMs) && (forceObserverDrop || forcePumpDrop) && !inWarmingHold && !forceRug && !forceEarlyFade) {
+//             log(`Volatility sell guard active; suppressing observer/pump drop for ${mint.slice(0,4)}…`);
+//             forceObserverDrop = false;
+//             forcePumpDrop = false;
+//           }
+//         }
+
+//         let curSol = Number(pos.lastQuotedSol || 0);
+//         const lastQ = Number(pos.lastQuotedAt || 0);
+//         if (!lastQ || (nowTs - lastQ) > (state.minQuoteIntervalMs|0)) {
+//           log(`Evaluating sell for ${mint.slice(0,4)}… size ${sz.toFixed(6)}`);
+//           curSol = await quoteOutSol(mint, sz, pos.decimals).catch(() => 0);
+//           pos.lastQuotedSol = curSol;
+//           pos.lastQuotedAt = nowTs;
+//         }
+
+//         try {
+//           const prevSol = Number(pos._lastShockSol || 0);
+//           const prevAt  = Number(pos._lastShockAt  || 0);
+//           if (prevSol > 0 && curSol > 0 && (nowTs - prevAt) <= RUG_QUOTE_SHOCK_WINDOW_MS) {
+//             const dropFrac = (prevSol - curSol) / Math.max(prevSol, 1e-12);
+//             if (dropFrac >= RUG_QUOTE_SHOCK_FRAC) {
+//               log(`RUG quote-shock ${mint.slice(0,4)}… drop=${(dropFrac*100).toFixed(1)}% within ${(nowTs-prevAt)}ms`);
+//               flagUrgentSell(mint, "rug_quote_shock", 1.0);
+//             }
+//           }
+
+//           pos._lastShockSol = curSol;
+//           pos._lastShockAt  = nowTs;
+//         } catch {}    
+
+//         const outLamports = Math.floor(Math.max(0, curSol) * 1e9);
+//         const decIn = Number.isFinite(pos.decimals) ? pos.decimals : 6;
+//         const net = estimateNetExitSolFromQuote({
+//           mint,
+//           amountUi: sz,
+//           inDecimals: decIn,
+//           quoteOutLamports: outLamports
+//         });
+//         const curSolNet = net.netSol;
+
+//         if (Number.isFinite(curSol) && Number.isFinite(curSolNet)) {
+//           log(`Edge-aware valuation ${mint.slice(0,4)}… raw≈${curSol.toFixed(6)} SOL, net≈${curSolNet.toFixed(6)} SOL${net.feeApplied ? " (fee)" : ""}`);
+//         }
+
+//         const pxNow  = sz > 0 ? (curSol / sz) : 0;
+//         const pxCost = sz > 0 ? (Number(pos.costSol || 0) / sz) : 0;
+//         const pnlPct = (pxNow > 0 && pxCost > 0) ? ((pxNow - pxCost) / pxCost) * 100 : 0;
+
+//         let decision = null;
+//         let isFastExit = false;
+//         const fast = checkFastExitTriggers(mint, pos, { pnlPct, pxNow, nowTs });
+//         if (fast && fast.action !== "none") {
+//           decision = { ...fast };
+//           isFastExit = true;
+//           log(`Fast-exit trigger for ${mint.slice(0,4)}… -> ${decision.action} (${decision.reason}${decision.pct ? ` ${decision.pct}%` : ""})`);
+//         }
+
+
+//         const pxNowNet  = sz > 0 ? (curSolNet / sz) : 0;
+//         const pnlNetPct = (pxNowNet > 0 && pxCost > 0) ? ((pxNowNet - pxCost) / pxCost) * 100 : 0;
+//         const ageSec = (nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0)) / 1000;
+//         const remorseSecs = Math.max(5, Number(DYN_HS?.remorseSecs ?? 6));
+//         const creditsPending = pos.awaitingSizeSync === true || pos._pendingCostAug === true;
+//         let canHardStop = ageSec >= remorseSecs && !creditsPending;
+
+//         if (state.rideWarming && pos.warmingHold === true) {
+//           const warmNoHs = Math.max(remorseSecs, Number(state.warmingNoHardStopSecs || 35));
+//           if (ageSec < warmNoHs) {
+//             canHardStop = false;
+//             log(`Hard stop suppressed by warming window (${ageSec.toFixed(1)}s < ${warmNoHs}s) for ${mint.slice(0,4)}…`);
+//           }
+//         }
+
+//         let dynStopPct = null;
+//         if (canHardStop) {
+//           const ddPct = (Number(pos.hwmPx || 0) > 0 && pxNow > 0)
+//             ? ((pos.hwmPx - pxNow) / pos.hwmPx) * 100
+//             : 0;
+//           const gate = computeFinalGateIntensity(mint);
+//           dynStopPct = computeDynamicHardStopPct(mint, pos, nowTs, {
+//             pnlNetPct,
+//             drawdownPct: ddPct,
+//             intensity: Number(gate?.intensity || 1)
+//           });
+//         }
+
+//         if (canHardStop &&
+//             Number.isFinite(pnlNetPct) && Number.isFinite(dynStopPct) &&
+//             pnlNetPct <= -Math.abs(dynStopPct)) {
+//           decision = { action: "sell_all", reason: `HARD_STOP ${pnlNetPct.toFixed(2)}%<=-${Math.abs(dynStopPct).toFixed(2)}%`, hardStop: true };
+//           isFastExit = true;
+//           log(`Dynamic hard stop for ${mint.slice(0,4)}… netPnL=${pnlNetPct.toFixed(2)}% thr=-${Math.abs(dynStopPct).toFixed(2)}% (age ${ageSec.toFixed(1)}s)`);
+//         } else if (!canHardStop) {
+//           log(`Hard stop suppressed (age ${ageSec.toFixed(1)}s${creditsPending ? ", pending credit" : ""}) for ${mint.slice(0,4)}… netPnL=${pnlNetPct.toFixed(2)}%`);
+//         }
+
+//         {
+//           const res = applyWarmingPolicy({
+//             mint, pos, nowTs, pnlPct, curSol,
+//             decision,
+//             forceRug, forcePumpDrop, forceObserverDrop,
+//             forceEarlyFade
+//           });
+//           decision = res.decision || decision;
+//           forceObserverDrop = res.forceObserverDrop;
+//           forcePumpDrop = res.forcePumpDrop;
+
+//           if (res.decision?.hardStop && /WARMING_TARGET|warming[-\s]*max[-\s]*loss/i.test(String(res.decision.reason || ""))) {
+//             isFastExit = true;
+//           }
+
+//           var warmingHoldActive = !!res.warmingHoldActive;
+//         }
+
+//         {
+//           const armAt   = 10;     // % net
+//           const retain  = 0.55;   // keep 55% of peak
+//           const bepCush = 0.6;    // % net floor above breakeven
+//           const harvest = 30;     // % to sell on arm
+
+//           // update peak net PnL
+//           if (Number.isFinite(pnlNetPct)) {
+//             pos._peakNetPct = Number.isFinite(pos._peakNetPct)
+//               ? Math.max(pos._peakNetPct, pnlNetPct)
+//               : pnlNetPct;
+//           }
+
+//           // arm when threshold crossed
+//           if (!pos._lockArmed && Number.isFinite(pnlNetPct) && pnlNetPct >= armAt) {
+//             pos._lockArmed = true;
+//             pos._lockArmedAt = nowTs;
+//             pos._lockFloorNetPct = Math.max(bepCush, (pos._peakNetPct || pnlNetPct) * retain);
+//             save();
+//             log(`Profit lock armed ${mint.slice(0,4)}… peak=${(pos._peakNetPct||pnlNetPct).toFixed(2)}% floor≈${pos._lockFloorNetPct.toFixed(2)}%`);
+
+//             // bank a partial on arm if no harder decision chosen yet
+//             if ((!decision || decision.action === "none") && harvest > 0) {
+//               decision = { action: "sell_partial", pct: harvest, reason: `TP PROFIT_LOCK_ARM ${pnlNetPct.toFixed(2)}%` };
+//             }
+//           }
+
+//           // enforce floor (never give back more than configured)
+//           if (pos._lockArmed && Number.isFinite(pnlNetPct)) {
+//             const peak = Number(pos._peakNetPct || pnlNetPct);
+//             const floor = Math.max(Number(pos._lockFloorNetPct || 0), bepCush);
+//             // refresh floor as peak improves
+//             if (peak > floor / Math.max(1e-9, retain)) {
+//               pos._lockFloorNetPct = Math.max(floor, peak * retain);
+//             }
+//             if ((!decision || decision.action === "none") && pnlNetPct <= Number(pos._lockFloorNetPct || floor)) {
+//               decision = { action: "sell_all", reason: `TP PROFIT_LOCK_STOP floor=${(pos._lockFloorNetPct||floor).toFixed(2)}%`, hardStop: false };
+//               log(`Profit lock stop ${mint.slice(0,4)}… cur=${pnlNetPct.toFixed(2)}% <= floor=${(pos._lockFloorNetPct||floor).toFixed(2)}%`);
+//             }
+//           }
+//         }
+
+//         const skipSoftGates = !!(decision?.hardStop) || /HARD_STOP|FAST_/i.test(String(decision?.reason||""));
+
+//         if (!forceRug && !forcePumpDrop && !forceObserverDrop && obsPasses === 3) {
+//           const should = shouldForceSellAtThree(mint, pos, curSol, nowTs);
+//           if (should) {
+//             if (inSellGuard) {
+//               log(`Sell guard active; deferring 3/5 observer sell for ${mint.slice(0,4)}…`);
+//             } else {
+//               forceObserverDrop = true;
+//               setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+//               log(`Observer 3/5 debounced -> forcing sell (${mint.slice(0,4)}…) and blacklisting 30m.`);
+//             }
+//           } else {
+//             log(`Observer 3/5 for ${mint.slice(0,4)}… soft-watch; debounce active (no sell).`);
+//             noteObserverConsider(mint, 30_000);
+//           }
+//         }
+
+//         // const baseMinNotional = Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN * 1.05);
+//         // const minNotional = baseMinNotional;
+//         const minNotional = minSellNotionalSol();
+
+//         if (!isFastExit) {
+//           const canRunFallback =
+//             !(warmingHoldActive && !forceRug && !forcePumpDrop && !forceObserverDrop && !forceExpire);
+
+//           if (canRunFallback) {
+//             let d = null;
+//             if (curSol < minNotional && !forceExpire && !forceRug && !forcePumpDrop && !forceObserverDrop) {
+//               d = shouldSell(pos, curSolNet, nowTs);
+//               const dustMin = Math.max(MIN_SELL_SOL_OUT, Number(state.dustMinSolOut || 0));
+//               if (!(state.dustExitEnabled && d.action === "sell_all" && curSol >= dustMin)) {
+//                 log(`Skip sell eval ${mint.slice(0,4)}… (notional ${curSol.toFixed(6)} SOL < ${minNotional})`);
+//                 continue;
+//               } else {
+//                 log(`Dust exit enabled for ${mint.slice(0,4)}… (est ${curSol.toFixed(6)} SOL >= ${dustMin})`);
+//               }
+//             } else if (curSol < minNotional && !forceExpire && (forceRug || forcePumpDrop || forceObserverDrop)) {
+//               const why = forceRug ? "Rug" : (forcePumpDrop ? "Pump->Calm" : "Observer");
+//               log(`${why} exit for ${mint.slice(0,4)}… ignoring min-notional (${curSol.toFixed(6)} SOL < ${minNotional}).`);
+//             }
+//             if (!decision || decision.action === "none") {
+//               decision = d || shouldSell(pos, curSol, nowTs);
+//             }
+//           } else {
+//             log(`Warming hold active; skipping fallback sell checks for ${mint.slice(0,4)}…`);
+//           }
+//         } else {
+//           decision = decision; // already set
+//         }
+
+
+
+//         if (forceRug) {
+//           decision = { action: "sell_all", reason: `rug sev=${rugSev.toFixed(2)}` };
+//         } else if (forcePumpDrop) {
+//           decision = { action: "sell_all", reason: "pump->calm" };
+//         } else if (forceObserverDrop) {
+//           decision = { action: "sell_all", reason: earlyReason || "observer detection system" };
+//         } else if (forceExpire && (!decision || decision.action === "none")) {
+//           const inPostWarmGrace = Number(pos.postWarmGraceUntil || 0) > nowTs;
+//           if (!inPostWarmGrace) {
+//             decision = { action: "sell_all", reason: `max-hold>${maxHold}s`, hardStop: true };
+//             log(`Max-hold reached for ${mint.slice(0,4)}… forcing sell.`);
+//           } else {
+//             log(`Max-hold paused by post-warming grace for ${mint.slice(0,4)}…).`);
+//           }
+//         }
+
+//         if (decision && decision.action !== "none" && !forceRug) {
+//           if (skipSoftGates) {
+//             // hard/fast exits bypass rebound defers
+//           } else {
+//             const stillDeferred = Number(pos.reboundDeferUntil || 0) > nowTs;
+//             if (stillDeferred) {
+//               log(`Rebound gate: deferral active for ${mint.slice(0,4)}… skipping sell this tick.`);
+//               decision = { action: "none", reason: "rebound-deferral" };
+//             } else {
+//               const wantDefer = shouldDeferSellForRebound(mint, pos, pnlPct, nowTs, decision.reason || "");
+//               if (wantDefer) {
+//                 decision = { action: "none", reason: "rebound-predict-hold" };
+//                 const waitMs = Math.max(800, Number(state.reboundHoldMs || 4000));
+//                 setTimeout(() => { try { wakeSellEval(); } catch {} }, waitMs);
+//               } else {
+//                 if (pos.reboundDeferUntil || pos.reboundDeferStartedAt) {
+//                   delete pos.reboundDeferUntil;
+//                   delete pos.reboundDeferStartedAt;
+//                   delete pos.reboundDeferCount;
+//                   save();
+//                 }
+//               }
+//             }
+//           }
+//         }
+
+//         if (forceMomentum) {
+//           decision = { action: "sell_all", reason: "MOMENTUM_DROP_X18", hardStop: true };
+//           log(`Forced sell (momentum x18) for ${mint.slice(0,4)}…`);
+//         }
+
+
+//         log(`Sell decision: ${decision && decision.action !== "none" ? decision.action : "NO"} (${decision?.reason || "criteria not met"})`);
+//         if (!decision || decision.action === "none") continue;
+
+//         if (decision.action === "sell_all" && curSol < minNotional && !isFastExit) {
+//           try { addToDustCache(ownerStr, mint, pos.sizeUi, pos.decimals ?? 6); } catch {}
+//           try { removeFromPosCache(ownerStr, mint); } catch {}
+//           delete state.positions[mint];
+//           save();
+//           log(`Below notional for ${mint.slice(0,4)}… moved to dust (skip sell).`);
+//           continue;
+//         }  
+
+//         // Jito/router cooldown checks remain (but we already bypassed gating)
+//         if (!forceExpire && window._fdvRouterHold && window._fdvRouterHold.get(mint) > now()) {
+//           const until = window._fdvRouterHold.get(mint);
+//           log(`Router cooldown for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`);
+//           continue;
+//         }
+
+//         const postGrace = Number(pos.postWarmGraceUntil || 0);
+//         if (postGrace && nowTs < postGrace) {
+//           forceExpire = false;
+//         }
+
+//         _inFlight = true;
+//         lockMint(mint, "sell", Math.max(MINT_OP_LOCK_MS, Number(state.sellCooldownMs||20000)));
+
+//         let exitSlip = Math.max(Number(state.slippageBps || 250), Number(state.fastExitSlipBps || 400));
+
+//         if (decision?.hardStop || forceRug || forceObserverDrop || forcePumpDrop) {
+//           exitSlip = Math.max(exitSlip, 1500); // 15% slip for forced exits
+//         }
+
+//         const exitConfirmMs = isFastExit ? Math.max(6000, Number(state.fastExitConfirmMs || 9000)) : 15000;
+
+//         if (decision.action === "sell_partial") {
+//           const pct = Math.min(100, Math.max(1, Number(decision.pct || 50)));
+//           let sellUi = pos.sizeUi * (pct / 100);
+//           try {
+//             const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+//             if (Number(b.sizeUi || 0) > 0) sellUi = Math.min(sellUi, Number(b.sizeUi));
+//           } catch {}
+
+//           const estSol = await quoteOutSol(mint, sellUi, pos.decimals).catch(() => 0);
+//           if (estSol < minNotional && !isFastExit) {
+//             if (curSol >= minNotional) {
+//               log(`Partial ${pct}% ${mint.slice(0,4)}… below min (${estSol.toFixed(6)} SOL < ${minNotional}). Escalating to full sell …`);
+//               let sellUi2 = pos.sizeUi;
+//               try {
+//                 const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+//                 if (Number(b.sizeUi || 0) > 0) sellUi2 = Number(b.sizeUi);
+//               } catch {}
+
+//               const res2 = await executeSwapWithConfirm({
+//                 signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi2, slippageBps: state.slippageBps,
+//               }, { retries: 1, confirmMs: 15000 });
+
+//               if (!res2.ok) {
+//                 if (res2.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
+//                 log(`Sell not confirmed for ${mint.slice(0,4)}… Keeping position.`);
+//                 _inFlight = false;
+//                 unlockMint(mint);
+//                 continue;
+//               }
+
+//               const prevSize2 = Number(pos.sizeUi || sellUi2);
+//               const debit = await waitForTokenDebit(kp.publicKey.toBase58(), mint, prevSize2, { timeoutMs: 25000, pollMs: 400 });
+//               const remainUi2 = Number(debit.remainUi || 0); 
+
+//               if (remainUi2 > 1e-9) {
+//                 let chkUi = remainUi2, chkDec = pos.decimals;
+//                 try {
+//                   const chk = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+//                   chkUi = Number(chk.sizeUi || 0);
+//                   if (Number.isFinite(chk.decimals)) chkDec = chk.decimals;
+//                 } catch {}
+//                 if (chkUi <= 1e-9) {
+//                   delete state.positions[mint];
+//                   removeFromPosCache(kp.publicKey.toBase58(), mint);
+//                   try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
+//                 } else {
+//                   const estRemainSol = await quoteOutSol(mint, chkUi, chkDec).catch(() => 0);
+//                   const minN = minSellNotionalSol();
+//                   if (estRemainSol >= minN) {
+//                     pos.sizeUi = chkUi;
+//                     if (Number.isFinite(chkDec)) pos.decimals = chkDec;
+//                     updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+//                   } else {
+//                     try { addToDustCache(kp.publicKey.toBase58(), mint, chkUi, chkDec ?? 6); } catch {}
+//                     try { removeFromPosCache(kp.publicKey.toBase58(), mint); } catch {}
+//                     delete state.positions[mint];
+//                     save();
+//                     log(`Leftover below notional for ${mint.slice(0,4)}… moved to dust cache.`);
+//                   }
+//                 }
+//               } else {
+//                 const reason = (decision && decision.reason) ? decision.reason : "done";
+//                 const estFullSol = curSol > 0 ? curSol : await quoteOutSol(mint, sellUi2, pos.decimals).catch(()=>0);
+//                 log(`Sold ${sellUi2.toFixed(6)} ${mint.slice(0,4)}… -> ~${estFullSol.toFixed(6)} SOL (${reason})`);
+//                 const costSold = Number(pos.costSol || 0);
+//                 await _addRealizedPnl(estFullSol, costSold, "Full sell PnL");
+//                 try { await closeEmptyTokenAtas(kp, mint); } catch {}
+//                 delete state.positions[mint];
+//                 removeFromPosCache(kp.publicKey.toBase58(), mint);
+//                 try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
+//                 save();
+//               }
+//               state.lastTradeTs = now();
+//               try { await maybeStealthRotate("sell"); } catch {}
+//               _inFlight = false;
+//               unlockMint(mint);
+//               save();
+//               return; // one sell per tick
+//             } else {
+//               log(`Skip partial ${pct}% ${mint.slice(0,4)}… (est ${estSol.toFixed(6)} SOL < ${minNotional})`);
+//               _inFlight = false;
+//               continue;
+//             }
+//           }
+
+//           const res = await executeSwapWithConfirm({
+//             signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: exitSlip,
+//           }, { retries: isFastExit ? 0 : 1, confirmMs: exitConfirmMs });
+
+//           if (!res.ok) {
+//             if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
+//             log(`Sell not confirmed for ${mint.slice(0,4)}… (partial). Keeping position.`);
+//             _inFlight = false;
+//             unlockMint(mint);
+//             continue;
+//           }
+
+//           log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… (${decision.reason})`);
+   
+//           // Proportional cost basis for partial exits
+//           const prevCostSol = Number(pos.costSol || 0);
+//           const costSold = prevCostSol * (pct / 100);
+//           const remainPct = 1 - (pct / 100);
+//           pos.sizeUi = Math.max(0, pos.sizeUi - sellUi);
+//           pos.costSol = Number(pos.costSol || 0) * remainPct;
+//           pos.hwmSol = Number(pos.hwmSol || 0) * remainPct;
+//           pos.hwmPx = Number(pos.hwmPx || 0);
+//           pos.lastSellAt = now();
+//           pos.allowRebuy = true;
+//           pos.lastSplitSellAt = now();
+
+//           try {
+//             const debit = await waitForTokenDebit(kp.publicKey.toBase58(), mint, sellUi, { timeoutMs: 20000, pollMs: 350 });
+//             const remainUi = Number(debit.remainUi || pos.sizeUi || 0);
+//             if (remainUi > 1e-9) {
+//               const estRemainSol = await quoteOutSol(mint, remainUi, pos.decimals).catch(() => 0);
+//               const minN = minSellNotionalSol();
+//               if (estRemainSol >= minN) {
+//                 pos.sizeUi = remainUi;
+//                 if (Number.isFinite(debit.decimals)) pos.decimals = debit.decimals;
+//                 updatePosCache(kp.publicKey.toBase64 ? kp.publicKey.toBase64() : kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+//                 updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+//               } else {
+//                 try { addToDustCache(kp.publicKey.toBase58(), mint, remainUi, pos.decimals ?? 6); } catch {}
+//                 try { removeFromPosCache(kp.publicKey.toBase58(), mint); } catch {}
+//                 try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
+//                 delete state.positions[mint];
+//                 save();
+//                 log(`Leftover below notional for ${mint.slice(0,4)}… moved to dust cache.`);
+//               }
+//             } else {
+//               // fully gone
+//               delete state.positions[mint];
+//               removeFromPosCache(kp.publicKey.toBase58(), mint);
+//               try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
+//             }
+//           } catch {
+//             updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+//           }
+//           save();
+
+//           await _addRealizedPnl(estSol, costSold, "Partial sell PnL");
+//         } else {
+//           // Full sell
+//           let sellUi = pos.sizeUi;
+//           try {
+//             const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+//             if (Number(b.sizeUi || 0) > 0) sellUi = Number(b.sizeUi);
+//           } catch {}
+
+//           const res = await executeSwapWithConfirm({
+//             signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: exitSlip,
+//           }, { retries: isFastExit ? 0 : 1, confirmMs: exitConfirmMs });
+
+//           if (!res.ok) {
+//             if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
+//             log(`Sell not confirmed for ${mint.slice(0,4)}… Keeping position.`);
+//             _inFlight = false;
+//             unlockMint(mint);
+//             continue;
+//           }
+
+//           clearRouteDustFails(mint);
+
+//           const prevSize = Number(pos.sizeUi || sellUi);
+//           const debit = await waitForTokenDebit(kp.publicKey.toBase58(), mint, prevSize, { timeoutMs: 25000, pollMs: 400 });
+//           const remainUi = Number(debit.remainUi || 0);
+//           if (remainUi > 1e-9) {
+//             const estRemainSol = await quoteOutSol(mint, remainUi, pos.decimals).catch(() => 0);
+//             const minN = minSellNotionalSol();
+//             if (estRemainSol >= minN) {
+//               const frac = Math.min(1, Math.max(0, remainUi / Math.max(1e-9, prevSize)));
+//               pos.sizeUi = remainUi;
+//               pos.costSol = Number(pos.costSol || 0) * frac;
+//               pos.hwmSol  = Number(pos.hwmSol  || 0) * frac;
+//               pos.lastSellAt = now();
+//               updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+//               save();
+//               setRouterHold(mint, ROUTER_COOLDOWN_MS);
+//               log(`Post-sell balance remains ${remainUi.toFixed(6)} ${mint.slice(0,4)}… (keeping position; router cooldown applied)`);
+//             } else {
+//               try { addToDustCache(kp.publicKey.toBase58(), mint, remainUi, pos.decimals ?? 6); } catch {}
+//               try { removeFromPosCache(kp.publicKey.toBase58(), mint); } catch {}
+//               delete state.positions[mint];
+//               save();
+//               log(`Leftover below notional for ${mint.slice(0,4)}… moved to dust cache.`);
+//             }
+//           } else {
+//             const reason = (decision && decision.reason) ? decision.reason : "done";
+//             const estFullSol = curSol > 0 ? curSol : await quoteOutSol(mint, sellUi, pos.decimals).catch(()=>0);
+//             log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ~${estFullSol.toFixed(6)} SOL (${reason})`);
+//             const costSold = Number(pos.costSol || 0);
+//             await _addRealizedPnl(estFullSol, costSold, "Full sell PnL");
+//             try { await closeEmptyTokenAtas(kp, mint); } catch {}
+//             delete state.positions[mint];
+//             removeFromPosCache(kp.publicKey.toBase58(), mint);
+//             save();
+//           }
+//         }
+
+//         state.lastTradeTs = now();
+//         _inFlight = false;
+//         save();
+//         return; // one sell per tick
+//       } catch (e) {
+//         log(`Sell check failed for ${mint.slice(0,4)}…: ${e.message||e}`);
+//       } finally {
+//         _inFlight = false;
+//       }
+//     }
+//   } finally {
+//     _sellEvalRunning = false;
+//   }
+// }
 
 async function switchToLeader(newMint) {
   const prev = state.currentLeaderMint || "";
@@ -6762,7 +7785,7 @@ async function tick() {
         const warmOverride = state.warmingEdgeMinExclPct;
         const hasWarmOverride = typeof warmOverride === "number" && Number.isFinite(warmOverride);
         const warmUser = hasWarmOverride ? warmOverride : baseUser;
-        const buffer   = Math.max(0, Number(state.edgeSafetyBufferPct || 0.2));
+        const buffer   = Math.max(0, Number(state.edgeSafetyBufferPct || 0.1));
 
         const needExcl = pumping
           ? (baseUser - 2.0)
@@ -7810,7 +8833,7 @@ export function initAutoWidget(container = document.body) {
     </div>
     <div class="fdv-bot-footer" style="display:flex;justify-content:space-between;margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
       <a href="https://t.me/fdvlolgroup" target="_blank" data-auto-help-tg>t.me/fdvlolgroup</a>
-      <span>Version: 0.0.4.5</span>
+      <span>Version: 0.0.4.6</span>
     </div>
   `;
 
