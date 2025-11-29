@@ -141,4 +141,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-fix(sell): honor warming hold; skip fallback shouldSell to prevent instant post-buy exits
+feat(auto,pumping): fast hard stop threshold (2.6 default) + KPI fillers
