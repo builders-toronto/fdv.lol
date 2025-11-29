@@ -1337,7 +1337,6 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
   .fdv-log .log-row { transition: none; transform: none; }
 }
 
-/* fdv-log: themed scrollbar */
 .fdv-log{
   scrollbar-width: thin; /* Firefox */
   scrollbar-color: rgba(122,222,255,.35) #0b0f17;
@@ -1362,6 +1361,94 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 }
 .fdv-log::-webkit-scrollbar-corner{
   background: transparent;
+}
+
+.fdv-log {
+  background: var(--fdv-bg);
+  border: 1px solid var(--fdv-border);
+  border-radius: 10px;
+  padding: 0 10px 10px 10px;
+  height: clamp(140px, 32vh, 260px);
+  overflow: auto;
+  font-size: .84rem;
+  color: var(--fdv-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* Nicer scrollbars (WebKit) */
+.fdv-log::-webkit-scrollbar{ width:10px; height:10px; }
+.fdv-log::-webkit-scrollbar-thumb{ background: #263244; border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+.fdv-log::-webkit-scrollbar-track{ background: transparent; }
+/* Firefox scrollbar */
+.fdv-log{ scrollbar-width: thin; scrollbar-color: #2a3a50 transparent; }
+
+.fdv-log {
+  position: relative;
+}
+
+.fdv-log::before {
+  content:"";
+  position:absolute;
+  top:0; left:0; right:0;
+  height:38px;
+  pointer-events:none;
+  background:
+    linear-gradient(to bottom, rgba(0,0,0,.75), rgba(0,0,0,0));
+  z-index:4;
+}
+
+.fdv-log [data-auto-log-expand] {
+  position: absolute;
+  top: 8px;
+  left: 10px;
+  z-index: 10;
+  background: rgba(14,20,30,.92);
+  color: #fff;
+  border: 1px solid var(--fdv-border);
+  padding: 6px 12px;
+  font-size: 12px;
+  line-height: 1;
+  border-radius: 8px;
+  cursor: pointer;
+  opacity: .92;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  box-shadow: 0 4px 14px rgba(0,0,0,.55), 0 0 0 1px rgba(122,222,255,.20);
+}
+.fdv-log [data-auto-log-expand]:hover {
+  opacity: 1;
+  filter: brightness(1.08);
+  box-shadow: 0 4px 18px rgba(0,0,0,.65), 0 0 0 1px rgba(122,222,255,.35);
+}
+
+.fdv-log-full {
+  position: fixed !important;
+  inset: 0;
+  /* width: 100vw !important; */
+  height: 100% !important;
+  z-index: 999999;
+  background:#000;
+  padding: 0 18px 18px 18px; /* keep top space in fullscreen */
+  box-sizing: border-box;
+  overflow: auto;
+  box-shadow: 0 0 0 9999px rgba(0,0,0,.85);
+}
+
+.fdv-log-full::before {
+  height:44px;
+  background:
+    linear-gradient(to bottom, rgba(0,0,0,.9), rgba(0,0,0,0));
+}
+
+.fdv-log-full [data-auto-log-expand] {
+  position: fixed;
+  top: 12px;
+  left: 16px;
+  background: rgba(18,24,34,.92);
+  border-color: #444;
+  box-shadow: 0 0 0 1px #222, 0 6px 18px rgba(0,0,0,.6);
 }
 
 .fdv-modal-footer{ display:flex; gap:8px; align-items:center; justify-content:space-between;
@@ -1570,97 +1657,6 @@ button[data-auto-unwind]{ color:#fff; }
 }
 .fdv-switch input:checked + span::before{ background: var(--fdv-primary); border-color: var(--fdv-primary-700); }
 .fdv-switch input:checked + span::after{ transform: translate(20px, -50%); background: #fff; }
-
-/* Log area */
-.fdv-log{
-  background: var(--fdv-bg);
-  border: 1px solid var(--fdv-border);
-  border-radius: 10px;
-  padding: 10px;
-  height: clamp(140px, 32vh, 260px);
-  overflow: auto;
-  font-size: .84rem;
-  color: var(--fdv-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  line-height: 1.35;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-/* Nicer scrollbars (WebKit) */
-.fdv-log::-webkit-scrollbar{ width:10px; height:10px; }
-.fdv-log::-webkit-scrollbar-thumb{ background: #263244; border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
-.fdv-log::-webkit-scrollbar-track{ background: transparent; }
-/* Firefox scrollbar */
-.fdv-log{ scrollbar-width: thin; scrollbar-color: #2a3a50 transparent; }
-
-.fdv-log {
-  position: relative;
-  padding-top: 42px; /* reserve space for pinned expand/close toggle */
-}
-
-.fdv-log::before {
-  content:"";
-  position:absolute;
-  top:0; left:0; right:0;
-  height:38px;
-  pointer-events:none;
-  background:
-    linear-gradient(to bottom, rgba(0,0,0,.75), rgba(0,0,0,0));
-  z-index:4;
-}
-
-/* Pinned inner toggle */
-.fdv-log [data-auto-log-expand] {
-  position: absolute;
-  top: 8px;
-  left: 10px;
-  z-index: 10;
-  background: rgba(14,20,30,.92);
-  color: #fff;
-  border: 1px solid var(--fdv-border);
-  padding: 6px 12px;
-  font-size: 12px;
-  line-height: 1;
-  border-radius: 8px;
-  cursor: pointer;
-  opacity: .92;
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-  box-shadow: 0 4px 14px rgba(0,0,0,.55), 0 0 0 1px rgba(122,222,255,.20);
-}
-.fdv-log [data-auto-log-expand]:hover {
-  opacity: 1;
-  filter: brightness(1.08);
-  box-shadow: 0 4px 18px rgba(0,0,0,.65), 0 0 0 1px rgba(122,222,255,.35);
-}
-
-.fdv-log-full {
-  position: fixed !important;
-  inset: 0;
-  /* width: 100vw !important; */
-  height: 100% !important;
-  z-index: 999999;
-  background:#000;
-  padding: 48px 18px 18px 18px; /* keep top space in fullscreen */
-  box-sizing: border-box;
-  overflow: auto;
-  box-shadow: 0 0 0 9999px rgba(0,0,0,.85);
-}
-
-.fdv-log-full::before {
-  height:44px;
-  background:
-    linear-gradient(to bottom, rgba(0,0,0,.9), rgba(0,0,0,0));
-}
-
-.fdv-log-full [data-auto-log-expand] {
-  position: fixed;
-  top: 12px;
-  left: 16px;
-  background: rgba(18,24,34,.92);
-  border-color: #444;
-  box-shadow: 0 0 0 1px #222, 0 6px 18px rgba(0,0,0,.6);
-}
 
 /* Head/actions wrap on small screens */
 @media (max-width: 740px){

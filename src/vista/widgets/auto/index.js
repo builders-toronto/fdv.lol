@@ -121,14 +121,22 @@ function _flushLogFrame() {
       d.className = `log-row ${type}`;
       d.textContent = line;
       logEl.appendChild(d);
+
       const expandBtn = logEl.querySelector("[data-auto-log-expand]");
-      const stickyCount = expandBtn ? 1 : 0;
+      const statsHdr  = logEl.querySelector("[data-auto-stats-header]");
+      const stickyCount = (expandBtn ? 1 : 0) + (statsHdr ? 1 : 0);
       const max = Math.max(100, Number(MAX_DOM_LOG_LINES || 600));
+
+      const isSticky = (node) =>
+        !!node && (node.hasAttribute("data-auto-log-expand") || node.hasAttribute("data-auto-stats-header"));
+
       while ((logEl.children.length - stickyCount) > max) {
-        const target = expandBtn ? expandBtn.nextElementSibling : logEl.firstElementChild;
-        if (!target) break;
+        let target = logEl.firstElementChild;
+        while (target && isSticky(target)) target = target.nextElementSibling;
+        if (!target) break; // nothing non-sticky to remove
         logEl.removeChild(target);
       }
+
       requestAnimationFrame(() => d.classList.add("in"));
       if (pinned) logEl.scrollTop = logEl.scrollHeight;
     }
@@ -165,13 +173,23 @@ function logObj(label, obj) {
 async function _logMoneyMade() {
   try {
     const totalSol = Number(state.moneyMadeSol || 0);
+    const baseSol = Number(state.pnlBaselineSol || 0);
+    const sessSol = totalSol - baseSol;
     const px = await getSolUsd();
-    const usdStr = px > 0 ? ` (${fmtUsd(totalSol * px)})` : "";
-    log(`Money made: ${totalSol.toFixed(6)} SOL${usdStr}`);
+    const usdStr = px > 0 ? ` (${fmtUsd(sessSol * px)})` : "";
+    log(`Money made: ${sessSol.toFixed(6)} SOL${usdStr}`);
+    try { updateStatsHeader(); } catch {}
   } catch {
     const totalSol = Number(state.moneyMadeSol || 0);
-    log(`Money made: ${totalSol.toFixed(6)} SOL`);
+    const baseSol = Number(state.pnlBaselineSol || 0);
+    const sessSol = totalSol - baseSol;
+    log(`Money made: ${sessSol.toFixed(6)} SOL`);
+    try { updateStatsHeader(); } catch {}
   }
+}
+
+function getSessionPnlSol() {
+  return Number(state.moneyMadeSol || 0) - Number(state.pnlBaselineSol || 0);
 }
 
 async function _addRealizedPnl(solProceeds, costSold, label = "PnL") {
@@ -195,6 +213,7 @@ async function _addRealizedPnl(solProceeds, costSold, label = "PnL") {
       // your cost is unknown?
       log(`${label}: proceeds ${proceeds.toFixed(6)} SOL (cost unknown) | Money made: ${totalSol.toFixed(6)} SOL${totalUsd}`);
     }
+    try { updateStatsHeader(); } catch {}
   } catch {
     const totalSol = Number(state.moneyMadeSol || 0);
     if (costKnown) {
@@ -203,6 +222,7 @@ async function _addRealizedPnl(solProceeds, costSold, label = "PnL") {
     } else {
       log(`${label}: proceeds ${Number(solProceeds||0).toFixed(6)} SOL (cost unknown) | Money made: ${totalSol.toFixed(6)} SOL`);
     }
+    try { updateStatsHeader(); } catch {}
   }
 }
 
@@ -372,6 +392,7 @@ let state = {
 
   // money made tracker
   moneyMadeSol: 0,
+  pnlBaselineSol: 0,
   hideMoneyMade: false,           
   logNetBalance: true,          
   solSessionStartLamports: 0,
@@ -1577,8 +1598,10 @@ async function fetchSolBalance(pubkeyStr) {
     log(`Balance fetch failed: ${e.message || e}`);
     lamports = 0;
   }
-  log(`Balance: ${(lamports/1e9).toFixed(6)} SOL`, 'info');
-  return lamports / 1e9;
+  const sol = lamports / 1e9;
+  log(`Balance: ${sol.toFixed(6)} SOL`, 'info');
+  try { window._fdvLastSolBal = sol; updateStatsHeader(); } catch {}
+  return sol;
 }
 
 function setRouterHold(mint, ms = ROUTER_COOLDOWN_MS) {
@@ -7436,6 +7459,8 @@ async function tick() {
 
   try { await evalAndMaybeSellPositions(); } catch {}
 
+  try { updateStatsHeader(); } catch {}
+
   log("Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!", "info");
 
   if (_buyInFlight || _inFlight || _switchingLeader) return;
@@ -7976,7 +8001,7 @@ async function tick() {
         log(`Bought ~${buySol.toFixed(4)} SOL -> ${mint.slice(0,4)}…`);
         clearObserverConsider(mint);
         try { await focusMintAndRecord(mint, { refresh: true, ttlMs: 88 }); } catch {}
-        await _logMoneyMade();
+        try { updateStatsHeader(); } catch {}
       } else {
         log(`Buy confirmed for ${mint.slice(0,4)}… but no token credit yet; will sync later.`);
         const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
@@ -8034,7 +8059,7 @@ async function tick() {
         });
         try { await processPendingCredits(); } catch {}
         try { await focusMintAndRecord(mint, { refresh: true, ttlMs: 88 }); } catch {}
-        await _logMoneyMade();
+        try { updateStatsHeader(); } catch {}
       }
 
       spent += buySol;
@@ -8068,6 +8093,13 @@ async function startAutoAsync() {
   if (_starting) return;
   _starting = true;
   try {
+
+    if (!Number.isFinite(state.pnlBaselineSol)) {
+      state.pnlBaselineSol = Number(state.moneyMadeSol || 0);
+      save();
+    }
+
+    try { updateStatsHeader(); } catch {}
 
     if (!state.endAt && state.lifetimeMins > 0) {
       state.endAt = now() + state.lifetimeMins*60_000;
@@ -8131,8 +8163,9 @@ function onToggle(on) {
      if (toggleEl) toggleEl.value = "no";
      startBtn.disabled = false;
      stopBtn.disabled = true;
-     save();
      try { renderStatusLed(); } catch {}
+     save();
+     try { updateStatsHeader(); } catch {}
      return;
    }
    if (state.enabled && !timer) {
@@ -8200,6 +8233,82 @@ function copyLog() {
     log("Copy failed");
     return false;
   }
+}
+
+function _ensureStatsHeader() {
+  try {
+    if (!logEl) return null;
+    let hdr = logEl.querySelector("[data-auto-stats-header]");
+    if (!hdr) {
+      // Insert after the Expand button if present
+      const expandBtn = logEl.querySelector("[data-auto-log-expand]");
+      hdr = document.createElement("div");
+      hdr.setAttribute("data-auto-stats-header", "true");
+      hdr.style.position = "sticky";
+      hdr.style.top = "0";
+      hdr.style.zIndex = "5";
+      hdr.style.background = "rgba(0,0,0,0.80)";
+      hdr.style.backdropFilter = "blur(2px)";
+      hdr.style.WebkitBackdropFilter = "blur(2px)";
+      hdr.style.padding = "6px 8px";
+      hdr.style.borderBottom = "1px solid var(--fdv-border,#333)";
+      hdr.style.fontSize = "12px";
+      hdr.style.lineHeight = "1.35";
+      hdr.style.display = "grid";
+      hdr.style.gridTemplateColumns = "1fr 1fr";
+      hdr.style.gap = "6px 10px";
+      const target = expandBtn ? expandBtn.nextElementSibling : logEl.firstChild;
+      if (expandBtn && target) {
+        logEl.insertBefore(hdr, target);
+      } else if (expandBtn) {
+        logEl.appendChild(hdr);
+      } else {
+        logEl.insertBefore(hdr, logEl.firstChild);
+      }
+    }
+    return hdr;
+  } catch { return null; }
+}
+
+let _hdrRaf = 0;
+function updateStatsHeader() {
+  if (_hdrRaf) return; // throttle to next frame
+  _hdrRaf = requestAnimationFrame(() => {
+    _hdrRaf = 0;
+    try {
+      const hdr = _ensureStatsHeader();
+      if (!hdr) return;
+      const pnlSol = getSessionPnlSol();
+      const px = Number((_solPxCache && _solPxCache.usd) || 0);
+      const pnlUsd = px > 0 ? pnlSol * px : null;
+
+      const solBal = Number(window._fdvLastSolBal || 0);
+      const open = Object.entries(state.positions || {}).filter(([m, p]) => m !== SOL_MINT && Number(p?.sizeUi || 0) > 0).length;
+
+      const running = !!state.enabled;
+      const status = running ? "RUNNING" : "STOPPED";
+
+      let left = "—";
+      if (state.endAt && now() < state.endAt) {
+        const sec = Math.max(0, Math.floor((state.endAt - now()) / 1000));
+        const mm = Math.floor(sec / 60);
+        const ss = sec % 60;
+        left = `${mm}:${String(ss).padStart(2,"0")}`;
+      }
+
+      const lastTradeAgo = Number(state.lastTradeTs || 0) ? Math.max(0, Math.floor((now() - state.lastTradeTs) / 1000)) : null;
+      const lastTradeStr = lastTradeAgo === null ? "—" : `${lastTradeAgo}s`;
+
+      hdr.innerHTML = `
+        <div><strong>Money made</strong>: ${pnlSol.toFixed(6)} SOL${pnlUsd !== null ? ` (${fmtUsd(pnlUsd)})` : ""}</div>
+        <div><strong>Status</strong>: ${status}</div>
+        <div><strong>SOL</strong>: ${solBal ? solBal.toFixed(6) : "—"}</div>
+        <div><strong>Open</strong>: ${open}</div>
+        <div><strong>Time left</strong>: ${left}</div>
+        <div><strong>Last trade</strong>: ${lastTradeStr}</div>
+      `;
+    } catch {}
+  });
 }
 
 export function initAutoWidget(container = document.body) {
@@ -8335,7 +8444,7 @@ export function initAutoWidget(container = document.body) {
     </details>
     <div class="fdv-hold-time-slider"></div>
     <div class="fdv-log" data-auto-log>
-    <button class="btn" data-auto-log-expand title="Expand log">Expand</button>
+    <button class="btn" data-auto-log-expand title="Expand log" style="display: none;">Expand</button>
     </div>
     <div class="fdv-actions">
     <div class="fdv-actions-left">
@@ -8885,6 +8994,7 @@ export function initAutoWidget(container = document.body) {
   logEl     = wrap.querySelector("[data-auto-log]");
   toggleEl  = wrap.querySelector("[data-auto-toggle]");
   ledEl     = wrap.querySelector("[data-auto-led]");
+  try { _ensureStatsHeader(); updateStatsHeader(); } catch {}
   tpEl      = wrap.querySelector("[data-auto-tp]");
   slEl      = wrap.querySelector("[data-auto-sl]");
   trailEl   = wrap.querySelector("[data-auto-trail]");
@@ -9420,9 +9530,10 @@ export function initAutoWidget(container = document.body) {
     state.endAt = 0;
     state.moneyMadeSol = 0;
     state.solSessionStartLamports = 0;
-
+    state.pnlBaselineSol = 0; // reset session baseline
     fetchSolBalance(state.autoWalletPub).then(b => { depBalEl.value = `${b.toFixed(4)} SOL`; }).catch(()=>{});
     save();
+    try { updateStatsHeader(); } catch {}
     log("Session stats refreshed");
   });
 

@@ -93,6 +93,15 @@ export function coinCard(it) {
     return 'white';
   };
 
+  const badgeEmoji = () => {
+    if (it.dex === 'raydium') return '🟢';
+    if (it.dex === 'pumpswap') return '🔵';
+    if (it.dex === 'orca') return '🐳';
+    if (it.dex === 'jupiter') return '🌕';
+    if (it.dex === 'serum') return '🧪';
+    return '⚪';
+  };
+
   const uniqPush = (arr, link) => {
     if (!link?.href) return;
     if (!arr.some(x => x.href === link.href)) arr.push(link);
