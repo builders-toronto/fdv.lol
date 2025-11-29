@@ -257,7 +257,7 @@ let state = {
   stealthMode: false,
   loadDefaultState: true,
   mint: "",
-  tickMs: 100,
+  tickMs: 10,
   budgetUi: 0.5,  
   maxTrades: 6,  // legacy
   minSecsBetween: 90,
@@ -439,7 +439,7 @@ const CONFIG_SCHEMA = {
   enabled:                  { type: "boolean", def: false },
   stealthMode:              { type: "boolean", def: false },
   mint:                     { type: "string",  def: "" },
-  tickMs:                   { type: "number",  def: 100, min: 50, max: 5000 },
+  tickMs:                   { type: "number",  def: 10, min: 5, max: 5000 },
   budgetUi:                 { type: "number",  def: 0.5,  min: 0, max: 1 },
   minSecsBetween:           { type: "number",  def: 90,   min: 0, max: 3600 },
   buyPct:                   { type: "number",  def: 0.2,  min: 0.01, max: 0.5 },
