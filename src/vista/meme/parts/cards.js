@@ -381,7 +381,6 @@ function attachFavorite(root, token) {
   } catch {}
 }
 
-// ---- Animated Grid Patch ----
 export function patchKeyedGridAnimated(container, nextItems, keyFn, buildFn) {
   if (!container) return;
   const prevY = window.scrollY;

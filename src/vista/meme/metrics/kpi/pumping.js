@@ -46,6 +46,13 @@ function makeFallbackRows(count) {
   return rows.slice(0, count);
 }
 
+
+export const FOCUS_STORAGE_KEY   = 'pump_focus_top_v1';
+export const FOCUS_TOP_LIMIT     = 3;
+export const FOCUS_REFRESH_MS    = 6000;    // refresh the focused mints at most every 6s
+export const FOCUS_MIN_SCORE     = 0.6;     // ignore very weak candidates
+export const FOCUS_TICK_MS       = 1; 
+
 export const PUMP_STORAGE_KEY     = 'pump_history_v1';
 export const PUMP_WINDOW_DAYS     = 1.5;       // short lookback favors immediacy
 export const PUMP_SNAPSHOT_LIMIT  = 600;       // global cap
@@ -60,7 +67,11 @@ export const PUMP_BADGE_ACCEL5TO1    = 1.03;   // was 1.06
 export const RUG_5M_DROP_PCT  = 10;            // 5m% drop to consider for rug severity
 export const RUG_MAX_PENALTY  = 0.9;           // max score penalty from rugging
 export const RUG_WINDOW_MIN   = 20;            // lookback window for rug detection (minutes)
-export const PUMP_MIN_DPS     = 0.00333;        // points per second threshold (set >0 to tighten)
+export const PUMP_MIN_DPS     = 0.0017;        // was 0.00333; allow steadier climbs to qualify
+export const PUMP_TREND_WINDOW_MIN   = 60;     // look back 60 minutes for steady trend credit
+export const PUMP_TREND_DECAY        = 0.92;   // EMA decay per step in window
+export const PUMP_TREND_GAIN         = 0.8;    // scale of trend credit contribution
+export const PUMP_MAX_DRAWDOWN_STEP  = 0.25;   // limit per-tick score drop to 25% of prev
 const LN2 = Math.log(2);
 
 function loadPumpHistory() {
@@ -180,7 +191,7 @@ function decayedMeanStd(vals, wts) {
 const clamp  = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 const safeZ  = (x, m, s) => s > 0 ? (x - m) / s : 0;
 
-// Compute the core pump score for a given context (recent records up to a point in time)
+// Compute the core pump score for a given context
 function _computeCoreScore(recent, nowTs) {
   if (!Array.isArray(recent) || recent.length === 0) {
     return { score: 0, meta: { rug: { sev: 0, rugFactor: 1, worst5m: 0 } }, latest: {} };
@@ -230,7 +241,20 @@ function _computeCoreScore(recent, nowTs) {
     + breakout * 0.8
     + Math.min(2.0, 0.6 * zV1);
 
-  let score = Math.max(0, core) * (0.65 + 0.35 * liqScale);
+  const trendMs = PUMP_TREND_WINDOW_MIN * 60 * 1000;
+  let trendCredit = 0;
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const e = recent[i];
+    if (nowTs - (+e.ts) > trendMs) break;
+    const r5  = Number(e.kp?.change5m ?? 0);
+    const r1h = Number(e.kp?.change1h ?? 0);
+    const pos = Math.max(0, r5) / 8 + Math.max(0, r1h) / 24; // normalized contribution
+    const neg = Math.max(0, -r5) / 15;                       // mild penalty for red 5m
+    trendCredit = trendCredit * PUMP_TREND_DECAY + pos - neg;
+  }
+  trendCredit = clamp(trendCredit * PUMP_TREND_GAIN, 0, 1.6);
+
+  let score = Math.max(0, core + trendCredit) * (0.65 + 0.35 * liqScale);
 
   // Rug penalty window anchored to nowTs
   const windowCut = nowTs - (RUG_WINDOW_MIN * 60 * 1000);
@@ -277,18 +301,27 @@ export function computePumpingScoreForMint(records, nowTs) {
   const cutoff = nowTs - PUMP_WINDOW_DAYS*24*3600*1000;
   const recent = records.filter(e => +e.ts >= cutoff);
   if (!recent.length) return { score: 0, badge: '📉 Calm' };
+  // Compute previous snapshot context (for inertia and slope)
+  let prevScore = 0, prevTs = 0, curTs = 0;
+  if (recent.length >= 2) {
+    prevTs = +recent[recent.length - 2].ts;
+    curTs  = +recent[recent.length - 1].ts;
+    const prev = _computeCoreScore(recent.slice(0, -1), prevTs);
+    prevScore = prev.score || 0;
+  }
+
   // Compute current score context
   const cur = _computeCoreScore(recent, nowTs);
   let { score } = cur;
 
-  // Compute slope (points per second) using previous snapshot context
+  if (recent.length >= 2 && score < prevScore && prevScore > 0) {
+    const maxDrop = prevScore * PUMP_MAX_DRAWDOWN_STEP;
+    score = Math.max(score, prevScore - maxDrop);
+  }
+
+  // Compute slope (points per second) using adjusted score
   let dps = 0;
-  let prevScore = 0;
   if (recent.length >= 2) {
-    const prevTs = +recent[recent.length - 2].ts;
-    const curTs  = +recent[recent.length - 1].ts;
-    const prev = _computeCoreScore(recent.slice(0, -1), prevTs);
-    prevScore = prev.score || 0;
     const dtSec = Math.max(1, (curTs - prevTs) / 1000);
     dps = (score - prevScore) / dtSec;
   }
@@ -426,6 +459,58 @@ export function computePumpingLeaders(limit = 5) {
   return out.slice(0, limit);
 }
 
+// Inline sparkline config (match register.js SPARK_LENGTH=24)
+const SPARK_INLINE_LENGTH = 24;
+const SPARK_INLINE_LOOKBACK_MS = 60 * 60 * 1000;   // 1h
+const SPARK_INLINE_MIN_POINTS = 3;
+
+// Build a percent-change sparkline series from local pump history for a mint
+function buildInlineChgFromHistory(mint, now = Date.now()) {
+  try {
+    const h = prunePumpHistory(loadPumpHistory());
+    const recs = h?.byMint?.[mint] || [];
+    if (!recs || recs.length < 2) return [];
+
+    // limit to lookback and map valid price points
+    const cutoff = now - SPARK_INLINE_LOOKBACK_MS;
+    const pts = recs
+      .filter(r => (Number(r.ts) || 0) >= cutoff && Number(r?.kp?.priceUsd) > 0)
+      .map(r => ({ ts: Number(r.ts), p: Number(r.kp.priceUsd) }))
+      .sort((a, b) => a.ts - b.ts);
+
+    if (pts.length < SPARK_INLINE_MIN_POINTS) return [];
+
+    // percent change relative to first valid price in window
+    const base = pts[0].p;
+    if (!Number.isFinite(base) || base <= 0) return [];
+
+    const raw = pts.map(pt => ((pt.p / base) - 1) * 100);
+
+    // downsample to SPARK_INLINE_LENGTH uniformly
+    const n = raw.length;
+    if (n <= SPARK_INLINE_LENGTH) return raw;
+    const step = (n - 1) / (SPARK_INLINE_LENGTH - 1);
+    const out = [];
+    for (let i = 0; i < SPARK_INLINE_LENGTH; i++) {
+      out.push(raw[Math.round(i * step)]);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+// Wrap mapPumpingRows to attach _chg series per row
+function mapPumpingRowsWithChg(agg) {
+  const rows = mapPumpingRows(agg);
+  return rows.map(r => ({
+    ...r,
+    _chg: Array.isArray(r._chg) && r._chg.length > 1
+      ? r._chg
+      : buildInlineChgFromHistory(r.mint)
+  }));
+}
+
 function mapPumpingRows(agg) {
   return agg.map(it => ({
     mint     : it.mint,
@@ -446,7 +531,7 @@ function mapPumpingRows(agg) {
 }
 
 let lastSnapshotRef = null;
-const currentLeaderMints = new Set();
+// const currentLeaderMints = new Set();
 
 addKpiAddon(
   {
@@ -466,28 +551,276 @@ addKpiAddon(
       if (snapshot && snapshot.length && snapshot !== lastSnapshotRef) {
         ingestPumpingSnapshot(snapshot);
         lastSnapshotRef = snapshot;
+
+        // derive candidate mints from the just-ingested snapshot
+        const snapshotMints = snapshot.map(t => t?.mint || t?.id).filter(Boolean);
+        // kick async focus updater; do not await
+        tickFocus({ snapshotMints }).catch(()=>{});
+      } else {
+        // still advance the focus refresh loop periodically
+        tickFocus().catch(()=>{});
       }
-      const leaders = computePumpingLeaders(3);
-      const mints = leaders.map(l => l.mint);
-      const newEntries = mints.filter(m => !currentLeaderMints.has(m));
-      currentLeaderMints.clear();
-      mints.forEach(m => currentLeaderMints.add(m));
 
-      const leaderRows = mapPumpingRows(leaders);
-      
-      const need = Math.max(0, 3 - leaderRows.length);
+      // Use the current focus cache as the Top-3 displayed list
+      const top = rankFocusTop(focusStoreCache);
+      let rows = buildFocusRows(top);
 
-      const paddedRows = need > 0
-        ? leaderRows.concat(makeFallbackRows(need))
-        : leaderRows;
+      // pad if warming up
+      const need = Math.max(0, FOCUS_TOP_LIMIT - rows.length);
+      if (need > 0) {
+        rows = rows.concat(makeFallbackRows(need));
+      }
+
+      // notify entrants/drops for registration & downstream widgets
+      const visibleMints = new Set(top.map(r => r.mint));
+      const newEntrants = [...visibleMints].filter(m => !focusPrevVisibleSet.has(m));
+      const dropped = [...focusPrevVisibleSet].filter(m => !visibleMints.has(m));
+      focusPrevVisibleSet = visibleMints;
 
       return {
         title: 'Pumping Radar',
         metricLabel: 'PUMP',
-        items: paddedRows,
-        notify: newEntries.length ? { type: 'pumping', mints: newEntries } : null,
-        notifyToken: newEntries.length ? Date.now() : null,
+        items: rows,
+        notify: (newEntrants.length || dropped.length)
+          ? { type: 'pumping-focus', mints: [...visibleMints], newEntrants, dropped }
+          : null,
+        notifyToken: (newEntrants.length || dropped.length) ? Date.now() : null,
       };
     }
   }
 );
+
+function loadFocusStore() {
+  try {
+    const raw = localStorage.getItem(FOCUS_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : { byMint: {} };
+  } catch {
+    return { byMint: {} };
+  }
+}
+function saveFocusStore(s) {
+  try { localStorage.setItem(FOCUS_STORAGE_KEY, JSON.stringify(s)); } catch {}
+}
+function pruneFocusStore(s, now = Date.now()) {
+  // prune entries that have no score or have not been seen within pump window
+  const cutoff = now - PUMP_WINDOW_DAYS * 24 * 3600 * 1000;
+  for (const [mint, e] of Object.entries(s.byMint)) {
+    const lastSeen = Number(e.lastSeenTs || 0);
+    const lastScore = Number(e.lastScore || 0);
+    if (!lastScore || !lastSeen || lastSeen < cutoff) delete s.byMint[mint];
+  }
+  return s;
+}
+
+function computeScoreForMintId(mint, now = Date.now()) {
+  const h = prunePumpHistory(loadPumpHistory());
+  const recs = (h?.byMint && h.byMint[mint]) ? h.byMint[mint] : [];
+  const { score, badge } = computePumpingScoreForMint(recs, now);
+  const latest = recs.length ? (recs[recs.length - 1].kp || {}) : {};
+  const lastSeenTs = recs.length ? Number(recs[recs.length - 1].ts) : now;
+  const pumpScore = Number((score || 0).toFixed(2));
+  return { mint, pumpScore, badge: badge || '📉 Calm', kp: latest, lastSeenTs };
+}
+
+function rankFocusTop(store) {
+  const arr = Object.values(store.byMint || {});
+  arr.sort((a, b) => Number(b.lastScore || 0) - Number(a.lastScore || 0));
+  return arr.slice(0, FOCUS_TOP_LIMIT);
+}
+
+function updateFocusFromCandidates(store, candidateMints, now = Date.now()) {
+  const seen = new Set((candidateMints || []).filter(Boolean).map(String));
+  if (!seen.size) return store;
+
+  // current ranked focus list
+  let focus = rankFocusTop(store);
+
+  for (const mint of seen) {
+    const res = computeScoreForMintId(mint, now);
+    if (!res.mint) continue;
+    if (res.pumpScore <= 0 || res.pumpScore < FOCUS_MIN_SCORE) continue;
+
+    const prev = store.byMint[res.mint];
+    if (prev) {
+      // update existing focus entry
+      store.byMint[res.mint] = {
+        mint: res.mint,
+        lastScore: res.pumpScore,
+        lastBadge: res.badge,
+        lastSeenTs: res.lastSeenTs,
+        lastEvalTs: now,
+        kp: {
+          symbol: res.kp?.symbol || prev.kp?.symbol || '',
+          name: res.kp?.name || prev.kp?.name || '',
+          imageUrl: res.kp?.imageUrl || prev.kp?.imageUrl || '',
+          priceUsd: Number(res.kp?.priceUsd ?? prev.kp?.priceUsd ?? 0),
+          liqUsd: Number(res.kp?.liqUsd ?? prev.kp?.liqUsd ?? 0),
+          pairUrl: res.kp?.pairUrl || prev.kp?.pairUrl || '',
+          change5m: Number(res.kp?.change5m ?? prev.kp?.change5m ?? 0),
+          change1h: Number(res.kp?.change1h ?? prev.kp?.change1h ?? 0),
+          change6h: Number(res.kp?.change6h ?? prev.kp?.change6h ?? 0),
+          change24h: Number(res.kp?.change24h ?? prev.kp?.change24h ?? 0),
+          v1hTotal: Number(res.kp?.v1hTotal ?? prev.kp?.v1hTotal ?? 0),
+        }
+      };
+    } else {
+      // candidate not in focus; if focus not full, add, else compare to lowest
+      focus = rankFocusTop(store); // refresh local snapshot
+      if (focus.length < FOCUS_TOP_LIMIT) {
+        store.byMint[res.mint] = {
+          mint: res.mint,
+          lastScore: res.pumpScore,
+          lastBadge: res.badge,
+          lastSeenTs: res.lastSeenTs,
+          lastEvalTs: now,
+          kp: {
+            symbol: res.kp?.symbol || '',
+            name: res.kp?.name || '',
+            imageUrl: res.kp?.imageUrl || '',
+            priceUsd: Number(res.kp?.priceUsd ?? 0),
+            liqUsd: Number(res.kp?.liqUsd ?? 0),
+            pairUrl: res.kp?.pairUrl || '',
+            change5m: Number(res.kp?.change5m ?? 0),
+            change1h: Number(res.kp?.change1h ?? 0),
+            change6h: Number(res.kp?.change6h ?? 0),
+            change24h: Number(res.kp?.change24h ?? 0),
+            v1hTotal: Number(res.kp?.v1hTotal ?? 0),
+          }
+        };
+      } else {
+        const lowest = focus[focus.length - 1];
+        if (!lowest || res.pumpScore > Number(lowest.lastScore || 0)) {
+          delete store.byMint[lowest.mint];
+          store.byMint[res.mint] = {
+            mint: res.mint,
+            lastScore: res.pumpScore,
+            lastBadge: res.badge,
+            lastSeenTs: res.lastSeenTs,
+            lastEvalTs: now,
+            kp: {
+              symbol: res.kp?.symbol || '',
+              name: res.kp?.name || '',
+              imageUrl: res.kp?.imageUrl || '',
+              priceUsd: Number(res.kp?.priceUsd ?? 0),
+              liqUsd: Number(res.kp?.liqUsd ?? 0),
+              pairUrl: res.kp?.pairUrl || '',
+              change5m: Number(res.kp?.change5m ?? 0),
+              change1h: Number(res.kp?.change1h ?? 0),
+              change6h: Number(res.kp?.change6h ?? 0),
+              change24h: Number(res.kp?.change24h ?? 0),
+              v1hTotal: Number(res.kp?.v1hTotal ?? 0),
+            }
+          };
+        }
+      }
+    }
+  }
+  return store;
+}
+
+async function refreshFocusTracked(store, now = Date.now(), { ttlMs = 2000, signal } = {}) {
+  const focus = rankFocusTop(store);
+  const promises = [];
+  for (const e of focus) {
+    const lastEval = Number(e.lastEvalTs || 0);
+    if (now - lastEval < FOCUS_REFRESH_MS) continue;
+    promises.push(
+      focusMint(e.mint, { refresh: true, ttlMs, signal })
+        .catch(() => ({ ok: false }))
+        .then(() => {
+          // after refresh, recompute locally from history
+          const res = computeScoreForMintId(e.mint, Date.now());
+          store.byMint[e.mint] = {
+            mint: e.mint,
+            lastScore: res.pumpScore,
+            lastBadge: res.badge,
+            lastSeenTs: res.lastSeenTs,
+            lastEvalTs: Date.now(),
+            kp: {
+              symbol: res.kp?.symbol || e.kp?.symbol || '',
+              name: res.kp?.name || e.kp?.name || '',
+              imageUrl: res.kp?.imageUrl || e.kp?.imageUrl || '',
+              priceUsd: Number(res.kp?.priceUsd ?? e.kp?.priceUsd ?? 0),
+              liqUsd: Number(res.kp?.liqUsd ?? e.kp?.liqUsd ?? 0),
+              pairUrl: res.kp?.pairUrl || e.kp?.pairUrl || '',
+              change5m: Number(res.kp?.change5m ?? e.kp?.change5m ?? 0),
+              change1h: Number(res.kp?.change1h ?? e.kp?.change1h ?? 0),
+              change6h: Number(res.kp?.change6h ?? e.kp?.change6h ?? 0),
+              change24h: Number(res.kp?.change24h ?? e.kp?.change24h ?? 0),
+              v1hTotal: Number(res.kp?.v1hTotal ?? e.kp?.v1hTotal ?? 0),
+            }
+          };
+        })
+    );
+  }
+  if (promises.length) await Promise.all(promises);
+  return store;
+}
+
+function buildFocusRows(topList) {
+  const agg = topList.map(e => ({
+    mint: e.mint,
+    pumpScore: Number((e.lastScore || 0).toFixed(2)),
+    badge: e.lastBadge || '📉 Calm',
+    kp: e.kp || {}
+  }));
+  return mapPumpingRowsWithChg(agg);
+}
+
+let focusStoreCache = pruneFocusStore(loadFocusStore());
+let focusTickInflight = false;
+let focusPrevVisibleSet = new Set();
+let focusSeeded = false;
+
+async function tickFocus({ snapshotMints } = {}) {
+  if (focusTickInflight) return;
+  focusTickInflight = true;
+  try {
+    let now = Date.now();
+    focusStoreCache = pruneFocusStore(focusStoreCache, now);
+
+    // Seed once if empty and no candidates yet (one-off light scan)
+    if (!focusSeeded && Object.keys(focusStoreCache.byMint).length === 0 && (!snapshotMints || snapshotMints.length === 0)) {
+      try {
+        const seed = computePumpingLeaders(FOCUS_TOP_LIMIT * 2);
+        const seedMints = seed.map(s => s.mint);
+        focusStoreCache = updateFocusFromCandidates(focusStoreCache, seedMints, now);
+      } catch {}
+      focusSeeded = true;
+    }
+
+    // Compare incoming candidates vs current focus set
+    if (Array.isArray(snapshotMints) && snapshotMints.length) {
+      focusStoreCache = updateFocusFromCandidates(focusStoreCache, snapshotMints, now);
+    }
+
+    // Refresh the tracked mints asynchronously
+    now = Date.now();
+    await refreshFocusTracked(focusStoreCache, now);
+
+    // After refresh, re-check if any tracked mints fell below zero; keep only best 3
+    const ranked = rankFocusTop(focusStoreCache);
+    const keepSet = new Set(ranked.map(e => e.mint));
+    for (const mint of Object.keys(focusStoreCache.byMint)) {
+      if (!keepSet.has(mint)) delete focusStoreCache.byMint[mint];
+    }
+
+    saveFocusStore(focusStoreCache);
+  } finally {
+    focusTickInflight = false;
+  }
+}
+
+// Start a hot loop that scans every 1 ms
+let focusLoopStarted = false;
+function startFocusLoop() {
+  if (focusLoopStarted) return;
+  focusLoopStarted = true;
+
+  const run = () => tickFocus().catch(()=>{});
+  // Kick immediately
+  Promise.resolve().then(run);
+  // Then loop at 1 ms
+  setInterval(run, FOCUS_TICK_MS);
+}
+startFocusLoop();
