@@ -1,4 +1,3 @@
-
 import { normalizeTokenLogo } from '../../../core/ipfs.js';
 import { sparklineSVG } from '../render/sparkline.js';
 
@@ -8,7 +7,68 @@ const ITEM_HISTORY = new Map();
 
 const SPARK_LENGTH = 24;
 const SPARK_MIN_INTERVAL_MS = 1500;
-const SPARK_MOUNTS = new Map();
+
+// Default green zig-zag percent-change series for initial render
+function makeDefaultZig(n = SPARK_LENGTH) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const trend = i * 0.35;           // gentle upward trend (~8% over 24pts)
+    const zig = (i % 2 === 0) ? 0.6 : -0.2; // zig-zag oscillation
+    out.push(trend + zig);
+  }
+  const base = out[0] || 0;
+  return out.map(v => Number((v - base).toFixed(2))); // start at 0%
+}
+
+// Deterministic synthetic spark when _chg/history are missing
+function hashStr(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+function seededRng(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0; // LCG
+    return (s & 0xfffffff) / 0x10000000;
+  };
+}
+const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
+function easeInOutCubic(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+function makeSyntheticSpark(row, n = SPARK_LENGTH) {
+  const mintKey = String(row?.mint || row?.symbol || 'x');
+  const rnd = seededRng(hashStr(mintKey));
+
+  const chg24 = Number.isFinite(Number(row?.chg24)) ? Number(row.chg24) : 0;
+  const vol = Number(row?.vol24);
+  const liq = Number(row?.liqUsd);
+
+  // Target 24h change (cap extremes)
+  const target = clamp(chg24, -80, 200);
+
+  // Wiggle amplitude scaled by |target| and vol/liquidity “energy”
+  const volFactor = Number.isFinite(vol) ? Math.log10(Math.max(1, vol)) : 0;
+  const liqFactor = Number.isFinite(liq) ? Math.log10(Math.max(1, liq)) : 0;
+  const energy = clamp((volFactor - 0.6) - (liqFactor - 0.6), -0.5, 1.5); // higher vol vs liq => more wiggle
+  const wiggleAmp = 0.4 + Math.min(1.6, Math.sqrt(Math.abs(target)) / 7 + energy * 0.6);
+
+  const arr = [];
+  for (let i = 0; i < n; i++) {
+    const t = n > 1 ? i / (n - 1) : 1;
+    const drift = target * easeInOutCubic(t);     // smooth path toward target
+    const noise = (rnd() * 2 - 1) * wiggleAmp;    // small wiggle
+    const midBias = (t - 0.5) * target * 0.06;    // slight mid pivot
+    arr.push(drift + noise + midBias);
+  }
+
+  const base = arr[0] || 0;
+  return arr.map(v => Number((v - base).toFixed(2))); // start at 0%
+}
 
 function updateItemHistory(mint, price) {
   if (!mint || !Number.isFinite(price) || price <= 0) return [];
@@ -129,7 +189,6 @@ function renderAddon(addon) {
   const ui = ensureAddonUI(addon);
   if (!ui) return;
 
-
   const st = STATE.get(addon.id) || {};
   const items = Array.isArray(st.items) ? st.items.slice(0, addon.limit || DEFAULT_LIMIT) : [];
   const metricLabel = st.metricLabel || addon.metricLabel || 'Score';
@@ -170,16 +229,27 @@ function renderAddon(addon) {
     const name = row.name || '';
     const price = fmtPrice(row.priceUsd);
     const { txt: chTxt, cls: chCls } = pct(row.chg24);
-    const liq = fmtMoney(row.liqUsd);
+    const liq = fmtMoney(row.liqUsd);   
     const vol = typeof row.vol24 === 'string' ? row.vol24 : fmtMoney(row.vol24);
     const metricVal = Number.isFinite(Number(row.metric)) ? Number(row.metric) : (Number(row.score) || Number(row.smq) || null);
     const metricHtml = metricVal !== null ? `<span class="pill"><span class="k">${metricLabel}</span><b class="highlight">${metricVal}</b></span>` : '';
     const mintKey = row.mint || row.symbol || String(i);
+
+    // Prefer inline _chg for initial render, fallback to history; else synthesize from data.
     const inlineChg = Array.isArray(row._chg) ? row._chg : [];
     const chgSeries = getItemChangeSeries(mintKey);
-    const seriesForDraw = (chgSeries.length > 1)
-      ? chgSeries
-      : (inlineChg.length > 1 ? inlineChg : [0, 0]); 
+    const hasInline = inlineChg.length > 1;
+    const hasHist = chgSeries.length > 1;
+
+    let seriesForDraw;
+    if (hasInline && !hasHist) {
+      seriesForDraw = inlineChg;
+    } else if (hasHist) {
+      seriesForDraw = chgSeries;
+    } else {
+      // Better initial: deterministic synthetic spark from chg24/vol/liq
+      seriesForDraw = makeSyntheticSpark(row, SPARK_LENGTH);
+    }
 
     const sparkHtml = `<div class="micro" data-micro data-key="${mintKey}">${sparklineSVG(seriesForDraw, { w: 72, h: 20 })}</div>`;
 
@@ -199,7 +269,6 @@ function renderAddon(addon) {
             <div class="addon-line2" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;opacity:.95;">
               <span class="pill"><span class="k">Price</span><b>${price}</b></span>
               <span class="pill"><span class="k">24h</span><b class="${chCls}">${chTxt}</b></span>
-              <span class="pill"><span class="k">IN</span><b>${row.chg24}</b></span>
               <span class="pill"><span class="k">Liq</span><b>${liq}</b></span>
               <span class="pill"><span class="k">Vol</span><b>${vol}</b></span>
               ${metricHtml}

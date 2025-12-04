@@ -62,17 +62,15 @@ input, select, textarea, button{
   color: inherit;
   -webkit-text-fill-color: currentColor;
 }
+
 ::placeholder{
   color: rgba(157,176,198,.75);
 }
 
 *{box-sizing:border-box}
+
 html,body{
-  /* height: 100vh; */
   margin:0;
-  background: radial-gradient(1200px 600px at 20% -10%, rgba(26,255,213,.08), transparent),
-                    radial-gradient(900px 500px at 80% 110%, rgba(123,241,255,.07), transparent),
-                    var(--bg);
   color:var(--text);
   font-family: 'Exo', system-ui, -apple-system, Segoe UI, Roboto, sans-serif
 
@@ -82,13 +80,6 @@ html,body{
   height: 100dvh;
   overflow: auto;
 }
-
-/* * {
-  scrollbar-width: thin; /* Firefox 
-  scrollbar-color: color-mix(in srgb, var(--accent2) 45%, #101215) transparent;
-} */
-
-/* Base track & thumb */
 
 ::-webkit-scrollbar {
   width: 12px;
@@ -109,12 +100,6 @@ html,body{
 } 
 
 ::-webkit-scrollbar-thumb {
-  /* border-radius: 10px;
-  border: 1px solid color-mix(in srgb, var(--accent2) 40%, #0b1118);
-  box-shadow:
-    0 0 0 1px rgba(0,0,0,.4),
-    0 2px 4px rgba(0,0,0,.35),
-    inset 0 0 0 1px rgba(255,255,255,.04);  */
   display: none;
 
 }
@@ -149,7 +134,6 @@ html,body{
   opacity: .25;
   filter: grayscale(1);
 } 
-
 
 .scrollbar-compact {
   scrollbar-width: thin;
@@ -254,26 +238,34 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
 }
 
 .header{
-  /* position:sticky; top:0; */
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   background: linear-gradient(180deg, rgba(13, 19, 32, .9), rgb(0 0 0 / 60%) 70%, transparent);
-  border-bottom:1px solid rgba(122,222,255,.15);
   z-index:5;
 }
+
 .superFeat {
   display: flex; align-items:center; gap:8px; padding:6px 0; justify-content: space-between;
 }
+
 .container{max-width:1200px;margin:0 auto;padding:18px}
+
 h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
+
 .sub{color:var(--muted); font-size:.8rem}
+
 .controls{
-  display:flex; gap:10px; justify-content:space-between; margin:12px 0 6px 0; flex-wrap:wrap;
+  display:flex; 
+  gap:10px; 
+  justify-content:space-between; 
+  margin:12px 0 6px 0; flex-wrap:wrap;
   align-items: stretch;
 }
+
 .controls select{
   min-width:0; 
 }
+
 .innerControls{
   display:flex; flex-direction:row; gap:8px;
   flex:0 0 auto;
@@ -323,7 +315,6 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
   }
   .innerControls .btn{ width:100%; }
   .hdr-tools button {
-    /* flex: 1 1 auto; */
     padding: 8px 10px;
     font-size: clamp(.85rem, .8rem + .3vw, .95rem);
     min-height: 36px;
@@ -584,8 +575,14 @@ input[type="checkbox"]:disabled{
     linear-gradient(135deg, rgba(26,255,213,.08), rgba(123,241,255,.08));
   border:1px solid rgba(122,222,255,.15);
   /* border-radius:18px; padding:18px; margin-top:16px; it looks better squared on mobile */
-  padding: 0 20px 20px 20px;
+  padding: 0 45px 20px 45px;
   box-shadow: 0 10px 35px rgba(0,0,0,.35), inset 0 0 0 1px rgba(26,255,213,.05);
+}
+
+@media screen and (max-width: 720px){
+  .grid{
+    padding: 0 20px 16px 20px;
+  }
 }
 
 .cards{
@@ -1169,7 +1166,7 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 
 /* Responsive */
 @media (max-width: 900px){
-  .adrow{ grid-template-columns: 48px 1fr; grid-auto-rows: auto; gap:10px }
+  .adrow{ grid-template-columns: 48px 1fr; grid-auto-rows: auto; gap:18px }
   .adlogo{ width:48px; height:48px; border-radius:10px }
   .adtitle .sym{ font-size: 1rem }
   .adtitle .mint a{ font-size: .8rem }
@@ -1178,7 +1175,7 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 }
 
 @media (max-width: 640px){
-  .adrow{ grid-template-columns: 44px 1fr; gap: 8px }
+  .adrow{ grid-template-columns: 44px 1fr; gap: 18px }
   .adlogo{ width:44px; height:44px; border-radius:10px }
   .adtagline{ -webkit-line-clamp: 2; font-size: .9rem }
   .admeta{ gap: 6px }
@@ -1191,11 +1188,8 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
   .adbtn{ padding: 9px 10px }
 }
 
-/* Pointer spotlight (coordinates set by JS for a subtle parallax feel) */
 .adcard[data-interactive="1"]:hover{ transform: translateY(-1px) }
 .adcard[data-interactive="1"]:hover::before{ opacity:.6 }
-
-/* Swap modal  v0.0.1*/
 
 .fdv-modal-backdrop{ position:fixed; inset:0; background:rgba(0,0,0,.55);
   display:none; align-items:center; justify-content:center; z-index:9999 }
