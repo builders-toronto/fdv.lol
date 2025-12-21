@@ -231,6 +231,10 @@ export function normalizeTokenLogo(raw, sym = '') {
       return;
     }
 
+    // Prevent multiple retries on the same image
+    if (img.__fdvIpfsRetrying) return;
+    img.__fdvIpfsRetrying = true;
+
     const prev = perSrcFailCounts.get(currentSrc) || 0;
     if (prev >= MAX_RETRIES_PER_SRC) {
       const cid = extractCid(currentSrc);
@@ -244,55 +248,19 @@ export function normalizeTokenLogo(raw, sym = '') {
 
     try { markGatewayFailure(currentSrc); } catch {}
 
-    const firstNext = nextGatewayUrl(currentSrc);
-    if (!firstNext) {
+    const nextSrc = nextGatewayUrl(currentSrc);
+    if (!nextSrc) {
       const tag = img.getAttribute('data-sym') || '';
       img.onerror = null;
       img.src = fallbackLogo(tag);
       return;
     }
 
-    (async () => {
-      let candidate = firstNext;
-      let attempts = 0;
-
-      while (candidate && attempts < IPFS_GATEWAYS.length) {
-        try {
-          if (shouldSilenceIpfs()) break;
-
-          const ctrl = new AbortController();
-          const tid = setTimeout(() => ctrl.abort(), HEAD_TIMEOUT_MS);
-          const res = await fetch(candidate, {
-            method: 'HEAD',
-            mode: 'cors',
-            cache: 'no-store',
-            redirect: 'follow',
-            signal: ctrl.signal,
-          }).catch(() => null);
-          clearTimeout(tid);
-
-          if (!res || !res.ok || res.status >= 400) {
-            try { markGatewayFailure(candidate); } catch {}
-            candidate = nextGatewayUrl(candidate);
-            attempts++;
-            continue;
-          }
-
-          setTimeout(() => {
-            img.onerror = null; // console spam lags the application
-            img.src = candidate;
-          }, 50);
-          return;
-        } catch {
-          try { markGatewayFailure(candidate); } catch {}
-          candidate = nextGatewayUrl(candidate);
-          attempts++;
-        }
-      }
-
-      const tag = img.getAttribute('data-sym') || '';
+    // Directly try the next gateway without fetch check
+    setTimeout(() => {
       img.onerror = null;
-      img.src = fallbackLogo(tag);
-    })();
+      img.src = nextSrc;
+      img.__fdvIpfsRetrying = false; // Allow retry if this also fails
+    }, 50);
   }, true);
 })();
