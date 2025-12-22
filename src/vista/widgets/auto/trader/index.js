@@ -3749,65 +3749,6 @@ export async function closeAllEmptyAtas(signer) {
   return _getDex().closeAllEmptyAtas(signer);
 }
 
-async function listOwnerSplPositions(ownerPubkeyStr) {
-  if (state.ownerScanDisabled) {
-    return cacheToList(ownerPubkeyStr);
-  }
-  const { PublicKey } = await loadWeb3();
-  const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = await loadSplToken();
-  const conn = await getConn();
-
-  const out = [];
-  const seen = new Set();
-  async function scan(programId) {
-    try {
-      const resp = await conn.getParsedTokenAccountsByOwner(new PublicKey(ownerPubkeyStr), { programId }, "confirmed");
-      for (const it of resp?.value || []) {
-        const info = it?.account?.data?.parsed?.info;
-        const mint = String(info?.mint || "");
-        if (!mint || mint === SOL_MINT) continue;
-        if (isMintInDustCache(ownerPubkeyStr, mint)) continue;
-        const ta = info?.tokenAmount; const ui = Number(ta?.uiAmount || 0); const dec = Number(ta?.decimals);
-        if (ui > 0 && !seen.has(mint)) {
-          out.push({ mint, sizeUi: ui, decimals: Number.isFinite(dec) ? dec : 6 });
-          seen.add(mint);
-        }
-      }
-      return true;
-    } catch (e) {
-      if (isPlanUpgradeError(e)) { disableOwnerScans(e.message || e); return false; }
-      log(`Parsed owner scan error (${programId.toBase58?.() || "unknown"}): ${e.message || e}`, 'err');
-      return false;
-    }
-  }
-
-  let any = false;
-  if (TOKEN_PROGRAM_ID) any = (await scan(TOKEN_PROGRAM_ID)) || any;
-  if (TOKEN_2022_PROGRAM_ID) any = (await scan(TOKEN_2022_PROGRAM_ID)) || any;
-
-  if (!out.length) {
-    const cached = cacheToList(ownerPubkeyStr);
-    const verified = [];
-    for (const it of cached) {
-      try {
-        const b = await getAtaBalanceUi(ownerPubkeyStr, it.mint, it.decimals);
-        const ui = Number(b.sizeUi || 0);
-        const dec = Number.isFinite(b.decimals) ? b.decimals : it.decimals;
-        if (ui > 0) {
-          updatePosCache(ownerPubkeyStr, it.mint, ui, dec);
-          verified.push({ mint: it.mint, sizeUi: ui, decimals: dec });
-        } else {
-          removeFromPosCache(ownerPubkeyStr, it.mint);
-        }
-      } catch {}
-    }
-    if (!verified.length) log("Owner scan empty; cache fallback had no live balances.");
-    return verified;
-  }
-  for (const r of out) updatePosCache(ownerPubkeyStr, r.mint, r.sizeUi, r.decimals);
-  return out;
-}
-
 async function syncPositionsFromChain(ownerPubkeyStr) {
   try {
     log("Syncing positions from cache …");

@@ -668,22 +668,26 @@ let state = {
   maxBuyAmountSol: 0.02,
   sellAmountPct: 100,
   holdTokens: 0,
-  intervalMs: 3000,
+  // Timing
+  holdDelayMs: 2500,
+  cycleDelayMs: 3000,
+
+  // Safety
+  targetVolumeSol: 0,
+  maxSlippageBps: 2000,
+
   slippageBps: 250,
   rpcUrl: "",
   rpcHeaders: {},
   volumeCreated: 0,
-  currentWallet: null,
   fundSol: 0.2,
 
-  // Cycle state
-  cycleStage: 'idle',
-  cycleId: 0,
-  cycleBuyAmountSol: 0,
-  cycleFundSol: 0,
-  cycleVolumeCounted: false,
-  cycleBuySig: null,
-  cycleSellSig: null,
+  // Soft-stop once target is reached (lets in-flight cycles finish)
+  softStopRequested: false,
+
+  // Multi-bot
+  multiBotCount: 1,
+  bots: [],
 
   // Ephemeral: captured only for this page session
   generatedWallets: [], // [{ ts, pubkey, secretKeyB58 }]
@@ -698,17 +702,27 @@ function clearGeneratedWallets() {
   state.generatedWallets = [];
 }
 
-let timer = null;
-let logEl, startBtn, stopBtn, mintEl, minBuyEl, maxBuyEl, sellAmountEl, holdEl, intervalEl;
+let logEl, startBtn, stopBtn, mintEl, minBuyEl, maxBuyEl, sellAmountEl, holdEl, intervalEl, botsEl;
 let statusEl, rpcEl;
-let _volInFlight = false;
+let targetVolEl, maxSlipEl, holdDelayEl;
+
+function clampInt(n, min, max, fallback = min) {
+  const v = Math.floor(Number(n));
+  if (!Number.isFinite(v)) return fallback;
+  return Math.max(min, Math.min(max, v));
+}
 
 function haltVolumeBot(msg) {
   try {
     state.enabled = false;
-    if (timer) {
-      clearTimeout(timer);
-      timer = null;
+    for (const b of state.bots || []) {
+      try {
+        b.enabled = false;
+        if (b.timer) {
+          clearTimeout(b.timer);
+          b.timer = null;
+        }
+      } catch {}
     }
     if (msg) log(msg, 'error');
   } catch {}
@@ -726,8 +740,8 @@ function log(msg, type = 'info') {
     logEl.scrollTop = logEl.scrollHeight;
     if (logEl.children.length > MAX_LOG_ENTRIES) logEl.removeChild(logEl.firstChild);
   }
-  const consoleMethod = type === 'error' ? console.error : type === 'warn' ? console.warn : console.log;
-  consoleMethod(`[VolumeBot] ${msg}`);
+  // const consoleMethod = type === 'error' ? console.error : type === 'warn' ? console.warn : console.log;
+  // consoleMethod(`[VolumeBot] ${msg}`);
 }
 
 function logObj(label, obj) {
@@ -837,6 +851,52 @@ function isStopRequested() {
   return !state?.enabled;
 }
 
+function allBotsIdle() {
+  try {
+    const bots = state.bots || [];
+    if (!bots.length) return true;
+    return bots.every((b) => !b?.inFlight && !b?.currentWallet);
+  } catch {
+    return false;
+  }
+}
+
+function requestSoftStop(reason) {
+  if (state.softStopRequested) return;
+  state.softStopRequested = true;
+  try {
+    for (const b of state.bots || []) {
+      b.enabled = false;
+      if (b.timer) {
+        clearTimeout(b.timer);
+        b.timer = null;
+      }
+    }
+  } catch {}
+  if (reason) log(reason, 'ok');
+  try { updateUI(); } catch {}
+}
+
+function maybeFinalizeSoftStop() {
+  try {
+    if (!state.softStopRequested) return;
+    if (!allBotsIdle()) return;
+    state.enabled = false;
+    state.bots = [];
+    log('Target reached: all bots idle; stopped.', 'ok');
+    updateUI();
+  } catch {}
+}
+
+function maybeSoftStopAtTargetVolume() {
+  const target = Number(state.targetVolumeSol || 0);
+  if (!(target > 0)) return;
+  if (state.volumeCreated + 1e-12 < target) return;
+  requestSoftStop(
+    `Stop At Volume reached (${state.volumeCreated.toFixed(4)} / ${target.toFixed(4)} SOL). Stopping after in-flight cycles finish.`,
+  );
+}
+
 function backoffMs(attempt, base = 500, max = 15_000) {
   const a = Math.max(0, Number(attempt) || 0);
   const exp = Math.min(max, Math.floor(base * Math.pow(1.7, a)));
@@ -877,6 +937,24 @@ const CYCLE_STAGE = Object.freeze({
   RETURNED: 'returned',
 });
 
+function makeBot(id) {
+  return {
+    id,
+    enabled: false,
+    timer: null,
+    inFlight: false,
+
+    currentWallet: null,
+    cycleStage: CYCLE_STAGE.IDLE,
+    cycleId: 0,
+    cycleBuyAmountSol: 0,
+    cycleFundSol: 0,
+    cycleVolumeCounted: false,
+    cycleBuySig: null,
+    cycleSellSig: null,
+  };
+}
+
 // Determine auto wallet spendable SOL after keeping a small reserve
 async function getAutoSpendable() {
   const autoKp = await getAutoKeypair();
@@ -890,24 +968,32 @@ async function getAutoSpendable() {
 }
 
 // Decide initial seed amount for the active wallet
-function decideFundPerWallet(spendable) {
+function decideFundPerWallet(spendable, botCount = 1) {
+  const n = clampInt(botCount, 1, 10, 1);
   const minFund = Math.max(0.01, (state.minBuyAmountSol || 0.004) + 0.004);
-  const target = Math.max(minFund, spendable * 0.25);
-  return Number(Math.min(target, spendable).toFixed(4));
+  const perBotShare = spendable / n;
+  // Keep headroom for fees/top-ups; do not exhaust the share.
+  const target = Math.max(minFund, perBotShare * 0.85);
+  const decided = Math.min(target, perBotShare);
+  return Number(Math.max(minFund, decided).toFixed(4));
 }
 // Find a working slippage and get quote
 async function getQuoteAndSlippage(inputMint, outputMint, amountUi) {
   const inDec = await getDex().getMintDecimals(inputMint);
   const amountRaw = Math.max(1, Math.floor(amountUi * Math.pow(10, inDec)));
-  
-  for (const bps of SLIPPAGE_TIERS_BPS) {
+
+  const maxSlip = clampInt(state.maxSlippageBps, 10, 20_000, 2000);
+  const tiers = SLIPPAGE_TIERS_BPS.filter((bps) => bps <= maxSlip);
+  if (!tiers.length) throw new Error('SLIPPAGE_LIMIT_TOO_LOW');
+
+  for (const bps of tiers) {
     const q = await getDex().quoteGeneric(inputMint, outputMint, amountRaw, bps);
     if (q && q.outAmount) {
       return { bps, outAmount: Number(q.outAmount) };
     }
     await delay(100);
   }
-  throw new Error('Quote failed');
+  throw new Error('NO_QUOTE_UNDER_MAX_SLIPPAGE');
 }
 
 async function _kpSecretB58(kp) {
@@ -938,7 +1024,6 @@ async function downloadGeneratedWallets() {
 async function createAndFundCycleWallet(autoKp, fundSol) {
   const { Keypair } = await loadWeb3();
   const kp = Keypair.generate();
-  state.currentWallet = kp;
 
   try {
     const secretKeyB58 = await _kpSecretB58(kp);
@@ -966,30 +1051,37 @@ function pickBuyAmountSol() {
 async function ensureCycleWalletAndFunded(autoKp) {
   if (isStopRequested()) throw new Error('STOP_REQUESTED');
 
-  if (!state.currentWallet) {
-    state.cycleId = Date.now();
-    state.cycleStage = CYCLE_STAGE.IDLE;
-    state.cycleBuyAmountSol = pickBuyAmountSol();
-    state.cycleFundSol = Math.max(Number(state.fundSol || 0), state.cycleBuyAmountSol + 0.01);
-    state.cycleVolumeCounted = false;
-    state.cycleBuySig = null;
-    state.cycleSellSig = null;
+  throw new Error('BOT_REQUIRED');
+}
+
+async function ensureCycleWalletAndFundedForBot(bot, autoKp) {
+  if (isStopRequested()) throw new Error('STOP_REQUESTED');
+  if (!bot) throw new Error('BOT_REQUIRED');
+
+  if (!bot.currentWallet) {
+    bot.cycleId = Date.now();
+    bot.cycleStage = CYCLE_STAGE.IDLE;
+    bot.cycleBuyAmountSol = pickBuyAmountSol();
+    bot.cycleFundSol = Math.max(Number(state.fundSol || 0), bot.cycleBuyAmountSol + 0.01);
+    bot.cycleVolumeCounted = false;
+    bot.cycleBuySig = null;
+    bot.cycleSellSig = null;
     updateUI();
 
-    state.currentWallet = await createAndFundCycleWallet(autoKp, state.cycleFundSol);
+    bot.currentWallet = await createAndFundCycleWallet(autoKp, bot.cycleFundSol);
   }
 
-  const wallet = state.currentWallet;
+  const wallet = bot.currentWallet;
 
   await retryUntil('Ensure cycle wallet funded', async () => {
     const bal = await fetchSolBalance(wallet.publicKey);
-    const need = Math.max(0.01, (state.cycleBuyAmountSol || 0.004) + 0.004);
+    const need = Math.max(0.01, (bot.cycleBuyAmountSol || 0.004) + 0.004);
     if (bal >= need) {
-      state.cycleStage = CYCLE_STAGE.FUNDED;
+      bot.cycleStage = CYCLE_STAGE.FUNDED;
       updateUI();
       return true;
     }
-    const topUp = Math.max(0.005, Math.min(state.cycleFundSol || 0.02, (need - bal) + 0.006));
+    const topUp = Math.max(0.005, Math.min(bot.cycleFundSol || 0.02, (need - bal) + 0.006));
     log(`Cycle wallet underfunded (${bal.toFixed(4)} SOL). Topping up ${topUp.toFixed(4)} SOL`, 'warn');
     await sendSol(autoKp, wallet.publicKey, topUp);
     await delay(350);
@@ -999,31 +1091,33 @@ async function ensureCycleWalletAndFunded(autoKp) {
   return wallet;
 }
 
-async function ensureBought(wallet) {
+async function ensureBought(bot, wallet) {
   await retryUntil('Buy stage', async () => {
     const already = await getTokenBalanceUiByMint(wallet.publicKey, state.mint);
     if (already > 0) {
-      state.cycleStage = CYCLE_STAGE.BOUGHT;
-      if (!state.cycleVolumeCounted) {
-        state.volumeCreated += Number(state.cycleBuyAmountSol || 0);
-        state.cycleVolumeCounted = true;
+      bot.cycleStage = CYCLE_STAGE.BOUGHT;
+      if (!bot.cycleVolumeCounted) {
+        state.volumeCreated += Number(bot.cycleBuyAmountSol || 0);
+        bot.cycleVolumeCounted = true;
+        maybeSoftStopAtTargetVolume();
       }
       updateUI();
       return true;
     }
 
     // If we already sent a buy tx, wait for it to settle instead of re-buying.
-    if (state.cycleBuySig) {
-      await confirmSig(state.cycleBuySig, { timeoutMs: 40_000 });
+    if (bot.cycleBuySig) {
+      await confirmSig(bot.cycleBuySig, { timeoutMs: 40_000 });
       const start = Date.now();
       while (Date.now() - start < 45_000) {
         // eslint-disable-next-line no-await-in-loop
         const b = await getTokenBalanceUiByMint(wallet.publicKey, state.mint);
         if (b > 0) {
-          state.cycleStage = CYCLE_STAGE.BOUGHT;
-          if (!state.cycleVolumeCounted) {
-            state.volumeCreated += Number(state.cycleBuyAmountSol || 0);
-            state.cycleVolumeCounted = true;
+          bot.cycleStage = CYCLE_STAGE.BOUGHT;
+          if (!bot.cycleVolumeCounted) {
+            state.volumeCreated += Number(bot.cycleBuyAmountSol || 0);
+            bot.cycleVolumeCounted = true;
+            maybeSoftStopAtTargetVolume();
           }
           updateUI();
           return true;
@@ -1034,23 +1128,23 @@ async function ensureBought(wallet) {
       throw new Error('BUY_BALANCE_DELAY');
     }
 
-    const { bps } = await getQuoteAndSlippage(SOL_MINT, state.mint, state.cycleBuyAmountSol);
+    const { bps } = await getQuoteAndSlippage(SOL_MINT, state.mint, bot.cycleBuyAmountSol);
     state.slippageBps = bps;
-    log(`Buying ${Number(state.cycleBuyAmountSol || 0).toFixed(4)} SOL of ${state.mint} (slip ${bps}bps) with ${wallet.publicKey.toBase58().slice(0, 8)}`);
+    log(`[B${bot.id}] Buying ${Number(bot.cycleBuyAmountSol || 0).toFixed(4)} SOL of ${state.mint} (slip ${bps}bps) with ${wallet.publicKey.toBase58().slice(0, 8)}`);
     const res = await getDex().jupSwapWithKeypair({
       signer: wallet,
       inputMint: SOL_MINT,
       outputMint: state.mint,
-      amountUi: state.cycleBuyAmountSol,
+      amountUi: bot.cycleBuyAmountSol,
       slippageBps: bps,
     });
 
     // Capture sig if dex returns it, to prevent duplicate sends.
-    if (typeof res === 'string') state.cycleBuySig = res;
-    else if (res && typeof res === 'object') state.cycleBuySig = res.sig || res.signature || null;
+    if (typeof res === 'string') bot.cycleBuySig = res;
+    else if (res && typeof res === 'object') bot.cycleBuySig = res.sig || res.signature || null;
 
-    if (state.cycleBuySig) {
-      await confirmSig(state.cycleBuySig, { timeoutMs: 40_000 });
+    if (bot.cycleBuySig) {
+      await confirmSig(bot.cycleBuySig, { timeoutMs: 40_000 });
     }
 
     const start = Date.now();
@@ -1058,13 +1152,14 @@ async function ensureBought(wallet) {
       // eslint-disable-next-line no-await-in-loop
       const after = await getTokenBalanceUiByMint(wallet.publicKey, state.mint);
       if (after > 0) {
-      state.cycleStage = CYCLE_STAGE.BOUGHT;
-      if (!state.cycleVolumeCounted) {
-        state.volumeCreated += Number(state.cycleBuyAmountSol || 0);
-        state.cycleVolumeCounted = true;
-      }
-      updateUI();
-      return true;
+        bot.cycleStage = CYCLE_STAGE.BOUGHT;
+        if (!bot.cycleVolumeCounted) {
+          state.volumeCreated += Number(bot.cycleBuyAmountSol || 0);
+          bot.cycleVolumeCounted = true;
+          maybeSoftStopAtTargetVolume();
+        }
+        updateUI();
+        return true;
       }
       // eslint-disable-next-line no-await-in-loop
       await delay(900);
@@ -1074,21 +1169,21 @@ async function ensureBought(wallet) {
   });
 }
 
-async function ensureWaited() {
-  if (state.cycleStage === CYCLE_STAGE.WAITED || state.cycleStage === CYCLE_STAGE.SOLD || state.cycleStage === CYCLE_STAGE.RETURNED) return;
-  await delay(Math.max(0, Number(state.intervalMs || 0)));
-  state.cycleStage = CYCLE_STAGE.WAITED;
+async function ensureWaited(bot) {
+  if (bot.cycleStage === CYCLE_STAGE.WAITED || bot.cycleStage === CYCLE_STAGE.SOLD || bot.cycleStage === CYCLE_STAGE.RETURNED) return;
+  await delay(Math.max(0, Number(state.holdDelayMs || 0)));
+  bot.cycleStage = CYCLE_STAGE.WAITED;
   updateUI();
 }
 
-async function ensureSold(wallet) {
+async function ensureSold(bot, wallet) {
   await retryUntil('Sell stage', async () => {
     const balanceUi = await getTokenBalanceUiByMint(wallet.publicKey, state.mint);
     const holdUi = Math.max(0, Number(state.holdTokens || 0));
     const holdTol = Math.max(1e-9, holdUi * 0.001);
 
     if (!balanceUi || balanceUi <= (holdUi + holdTol)) {
-      state.cycleStage = CYCLE_STAGE.SOLD;
+      bot.cycleStage = CYCLE_STAGE.SOLD;
       updateUI();
       return true;
     }
@@ -1098,7 +1193,7 @@ async function ensureSold(wallet) {
     const maxSellToKeepHoldUi = Math.max(0, balanceUi - holdUi);
     const sellUi = Math.min(byPctUi, maxSellToKeepHoldUi);
     if (!sellUi || sellUi <= 0) {
-      state.cycleStage = CYCLE_STAGE.SOLD;
+      bot.cycleStage = CYCLE_STAGE.SOLD;
       updateUI();
       return true;
     }
@@ -1111,8 +1206,8 @@ async function ensureSold(wallet) {
       sellBps = 500;
     }
     state.slippageBps = sellBps;
-    if (holdUi > 0) log(`Selling ${sellUi.toFixed(6)} ${state.mint} (slip ${sellBps}bps; hold ${holdUi.toFixed(6)})`);
-    else log(`Selling ${sellUi.toFixed(6)} ${state.mint} (slip ${sellBps}bps)`);
+    if (holdUi > 0) log(`[B${bot.id}] Selling ${sellUi.toFixed(6)} ${state.mint} (slip ${sellBps}bps; hold ${holdUi.toFixed(6)})`);
+    else log(`[B${bot.id}] Selling ${sellUi.toFixed(6)} ${state.mint} (slip ${sellBps}bps)`);
     let res;
     try {
       res = await getDex().jupSwapWithKeypair({ signer: wallet, inputMint: state.mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: sellBps });
@@ -1121,17 +1216,17 @@ async function ensureSold(wallet) {
       const m = String(e?.message || e || '');
       if (/NO_ROUTES|NO_ROUTE|ROUTER_DUST/i.test(m)) {
         log('Sell reported NO_ROUTES/ROUTER_DUST; proceeding to return SOL (token dust may remain).', 'warn');
-        state.cycleStage = CYCLE_STAGE.SOLD;
+        bot.cycleStage = CYCLE_STAGE.SOLD;
         updateUI();
         return true;
       }
       throw e;
     }
 
-    if (typeof res === 'string') state.cycleSellSig = res;
-    else if (res && typeof res === 'object') state.cycleSellSig = res.sig || res.signature || null;
-    if (state.cycleSellSig) {
-      await confirmSig(state.cycleSellSig, { timeoutMs: 50_000 });
+    if (typeof res === 'string') bot.cycleSellSig = res;
+    else if (res && typeof res === 'object') bot.cycleSellSig = res.sig || res.signature || null;
+    if (bot.cycleSellSig) {
+      await confirmSig(bot.cycleSellSig, { timeoutMs: 50_000 });
     }
 
     const start = Date.now();
@@ -1143,14 +1238,14 @@ async function ensureSold(wallet) {
     }
 
     if (afterUi <= (holdUi + holdTol)) {
-      state.cycleStage = CYCLE_STAGE.SOLD;
+      bot.cycleStage = CYCLE_STAGE.SOLD;
       updateUI();
       return true;
     }
 
     if (sellPct >= 99.9 && holdUi <= 0) {
       if (afterUi <= 0 || afterUi <= Math.max(0, balanceUi * 0.001)) {
-        state.cycleStage = CYCLE_STAGE.SOLD;
+        bot.cycleStage = CYCLE_STAGE.SOLD;
         updateUI();
         return true;
       }
@@ -1164,13 +1259,13 @@ async function ensureSold(wallet) {
       } catch {}
       const finalUi = await getTokenBalanceUiByMint(wallet.publicKey, state.mint);
       if (finalUi <= 0 || finalUi <= Math.max(0, balanceUi * 0.001)) {
-        state.cycleStage = CYCLE_STAGE.SOLD;
+        bot.cycleStage = CYCLE_STAGE.SOLD;
         updateUI();
         return true;
       }
 
       log('Sell-all left token dust that could not be cleared; proceeding.', 'warn');
-      state.cycleStage = CYCLE_STAGE.SOLD;
+      bot.cycleStage = CYCLE_STAGE.SOLD;
       updateUI();
       return true;
     }
@@ -1189,14 +1284,14 @@ async function ensureSold(wallet) {
 
       const finalUi = await getTokenBalanceUiByMint(wallet.publicKey, state.mint);
       if (finalUi <= (holdUi + holdTol)) {
-        state.cycleStage = CYCLE_STAGE.SOLD;
+        bot.cycleStage = CYCLE_STAGE.SOLD;
         updateUI();
         return true;
       }
     }
 
     if (afterUi < balanceUi) {
-      state.cycleStage = CYCLE_STAGE.SOLD;
+      bot.cycleStage = CYCLE_STAGE.SOLD;
       updateUI();
       return true;
     }
@@ -1204,7 +1299,7 @@ async function ensureSold(wallet) {
   });
 }
 
-async function ensureReturned(wallet, autoKp) {
+async function ensureReturned(bot, wallet, autoKp) {
   await retryUntil('Return SOL stage', async () => {
     try {
       await closeAllEmptyTokenAccountsForOwner(wallet);
@@ -1213,7 +1308,7 @@ async function ensureReturned(wallet, autoKp) {
     const conn = await getConn();
     const balLam = await conn.getBalance(wallet.publicKey);
     if (!balLam || balLam <= 0) {
-      state.cycleStage = CYCLE_STAGE.RETURNED;
+      bot.cycleStage = CYCLE_STAGE.RETURNED;
       updateUI();
       return true;
     }
@@ -1227,7 +1322,7 @@ async function ensureReturned(wallet, autoKp) {
 
     const afterLam = await conn.getBalance(wallet.publicKey);
     if (afterLam <= allowedLeftoverLamports + 20_000) {
-      state.cycleStage = CYCLE_STAGE.RETURNED;
+      bot.cycleStage = CYCLE_STAGE.RETURNED;
       updateUI();
       return true;
     }
@@ -1237,7 +1332,7 @@ async function ensureReturned(wallet, autoKp) {
     await delay(250);
     const after2 = await conn.getBalance(wallet.publicKey);
     if (after2 <= allowedLeftoverLamports + 20_000) {
-      state.cycleStage = CYCLE_STAGE.RETURNED;
+      bot.cycleStage = CYCLE_STAGE.RETURNED;
       updateUI();
       return true;
     }
@@ -1246,10 +1341,11 @@ async function ensureReturned(wallet, autoKp) {
   });
 }
 
-async function performVolumeTrade() {
+async function performVolumeTrade(bot) {
   if (!state.enabled || !state.mint) return;
-  if (_volInFlight) return;
-  _volInFlight = true;
+  if (!bot) return;
+  if (bot.inFlight) return;
+  bot.inFlight = true;
 
   try {
     const autoKp = await getAutoKeypair();
@@ -1266,62 +1362,82 @@ async function performVolumeTrade() {
     }
 
     // Resumable staged cycle: do not start a new wallet until return is confirmed.
-    const wallet = await ensureCycleWalletAndFunded(autoKp);
-    await ensureBought(wallet);
-    await ensureWaited();
-    await ensureSold(wallet);
-    await ensureReturned(wallet, autoKp);
+    const wallet = await ensureCycleWalletAndFundedForBot(bot, autoKp);
+    await ensureBought(bot, wallet);
+    await ensureWaited(bot);
+    await ensureSold(bot, wallet);
+    await ensureReturned(bot, wallet, autoKp);
 
     // Cycle complete
-    state.currentWallet = null;
-    state.cycleStage = CYCLE_STAGE.IDLE;
-    state.cycleId = 0;
-    state.cycleBuyAmountSol = 0;
-    state.cycleFundSol = 0;
-    state.cycleVolumeCounted = false;
-    state.cycleBuySig = null;
-    state.cycleSellSig = null;
+    bot.currentWallet = null;
+    bot.cycleStage = CYCLE_STAGE.IDLE;
+    bot.cycleId = 0;
+    bot.cycleBuyAmountSol = 0;
+    bot.cycleFundSol = 0;
+    bot.cycleVolumeCounted = false;
+    bot.cycleBuySig = null;
+    bot.cycleSellSig = null;
     updateUI();
 
   } catch (e) {
     const msg = String(e?.message || e || '');
     if (msg === 'STOP_REQUESTED') {
-      log('Stop requested; halting cycle retries.', 'warn');
+      log(`[B${bot?.id ?? '?'}] Stop requested; halting cycle retries.`, 'warn');
     } else {
-      log(`Trade error: ${msg}`, 'error');
+      log(`[B${bot?.id ?? '?'}] Trade error: ${msg}`, 'error');
     }
     if (/Auto swap API not available/i.test(msg)) {
       try { await stopVolumeBot(); } catch {}
     }
   } finally {
-    _volInFlight = false;
+    bot.inFlight = false;
+    maybeFinalizeSoftStop();
   }
 }
 
-async function scheduleNextTrade() {
-  if (!state.enabled) return;
-  timer = setTimeout(async () => {
-    await performVolumeTrade();
-    scheduleNextTrade();
-  }, state.intervalMs);
+async function scheduleNextTrade(bot) {
+  if (!state.enabled || !bot?.enabled) return;
+  if (state.softStopRequested) return;
+  const baseDelay = Math.max(0, Number(state.cycleDelayMs || 0));
+  const jitter = Math.floor(baseDelay * (0.1 + Math.random() * 0.3));
+  const wait = Math.max(250, baseDelay + jitter);
+  bot.timer = setTimeout(async () => {
+    await performVolumeTrade(bot);
+    scheduleNextTrade(bot);
+  }, wait);
 }
 
 async function startVolumeBot() {
   if (state.enabled) return;
+  state.softStopRequested = false;
   state.enabled = true;
-  log('Starting volume bot');
-  // Run first trade immediately, then schedule subsequent ones
-  await performVolumeTrade();
-  scheduleNextTrade();
+  const botCount = clampInt(state.multiBotCount, 1, 10, 1);
+  state.bots = Array.from({ length: botCount }, (_, i) => makeBot(i + 1));
+  for (const b of state.bots) b.enabled = true;
+  log(`Starting volume bots: ${botCount}`);
+  // Run first trade immediately, then schedule subsequent ones (staggered)
+  for (const b of state.bots) {
+    // eslint-disable-next-line no-await-in-loop
+    await delay(60 + Math.floor(Math.random() * 120));
+    // eslint-disable-next-line no-await-in-loop
+    await performVolumeTrade(b);
+    scheduleNextTrade(b);
+  }
 }
 
 async function stopVolumeBot() {
+  state.softStopRequested = false;
   state.enabled = false;
-  if (timer) {
-    clearTimeout(timer);
-    timer = null;
+  for (const b of state.bots || []) {
+    try {
+      b.enabled = false;
+      if (b.timer) {
+        clearTimeout(b.timer);
+        b.timer = null;
+      }
+    } catch {}
   }
-  log('Stopped volume bot');
+  log('Stopped volume bot(s)');
 
   // Send back SOL
   const autoKp = await getAutoKeypair();
@@ -1330,29 +1446,32 @@ async function stopVolumeBot() {
     return;
   }
 
-  if (state.currentWallet) {
+  // Attempt to return funds from any active bot wallet(s).
+  for (const b of state.bots || []) {
+    if (!b?.currentWallet) continue;
     try {
-      await closeAllEmptyTokenAccountsForOwner(state.currentWallet);
-      // On Stop: aggressivly return all spendable SOL.
-      const beforeLam = await (await getConn()).getBalance(state.currentWallet.publicKey);
+      await closeAllEmptyTokenAccountsForOwner(b.currentWallet);
+      const beforeLam = await (await getConn()).getBalance(b.currentWallet.publicKey);
       try {
-        await drainAllSpendableSolBack(state.currentWallet, autoKp.publicKey, { minLeftoverLamports: 5_000, maxAttempts: 18 });
+        await drainAllSpendableSolBack(b.currentWallet, autoKp.publicKey, { minLeftoverLamports: 5_000, maxAttempts: 18 });
       } catch {}
-      await closeAllEmptyTokenAccountsForOwner(state.currentWallet);
+      await closeAllEmptyTokenAccountsForOwner(b.currentWallet);
       try {
-        await drainAllSpendableSolBack(state.currentWallet, autoKp.publicKey, { minLeftoverLamports: 5_000, maxAttempts: 10 });
+        await drainAllSpendableSolBack(b.currentWallet, autoKp.publicKey, { minLeftoverLamports: 5_000, maxAttempts: 10 });
       } catch {}
-      const afterLam = await (await getConn()).getBalance(state.currentWallet.publicKey);
+      const afterLam = await (await getConn()).getBalance(b.currentWallet.publicKey);
       const returnedLam = Math.max(0, beforeLam - afterLam);
       if (returnedLam > 0) {
-        log(`Sent back ${(returnedLam / 1e9).toFixed(6)} SOL from ${state.currentWallet.publicKey.toBase58().slice(0, 8)}`, 'ok');
+        log(`[B${b.id}] Sent back ${(returnedLam / 1e9).toFixed(6)} SOL from ${b.currentWallet.publicKey.toBase58().slice(0, 8)}`, 'ok');
       }
     } catch (e) {
-      log(`Failed to send back from wallet: ${e?.message || e}`, 'error');
+      log(`[B${b.id}] Failed to send back from wallet: ${e?.message || e}`, 'error');
+    } finally {
+      b.currentWallet = null;
     }
   }
 
-  state.currentWallet = null;
+  state.bots = [];
   updateUI();
 }
 
@@ -1362,8 +1481,12 @@ function updateUI() {
   if (maxBuyEl) maxBuyEl.value = state.maxBuyAmountSol;
   if (sellAmountEl) sellAmountEl.value = state.sellAmountPct;
   if (holdEl) holdEl.value = state.holdTokens;
-  if (intervalEl) intervalEl.value = state.intervalMs;
-  if (statusEl) statusEl.textContent = state.enabled ? 'Running' : 'Stopped';
+  if (holdDelayEl) holdDelayEl.value = state.holdDelayMs;
+  if (intervalEl) intervalEl.value = state.cycleDelayMs;
+  if (botsEl) botsEl.value = state.multiBotCount;
+  if (targetVolEl) targetVolEl.value = state.targetVolumeSol;
+  if (maxSlipEl) maxSlipEl.value = state.maxSlippageBps;
+  if (statusEl) statusEl.textContent = state.softStopRequested ? 'Stopping' : state.enabled ? 'Running' : 'Stopped';
   if (rpcEl) {
       if (currentRpcUrl()) {
           const shortUrl = currentRpcUrl().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0];
@@ -1386,11 +1509,15 @@ export function initVolumeWidget(container = document.body) {
     <div class="fdv-tab-content active" data-tab-content="volume">
       <div class="fdv-grid">
         <label>Mint <input id="volume-mint" type="text" placeholder="Token Mint"></label>
+        <label>Bots (1-10) <input id="volume-bots" type="number" min="1" max="10" step="1" value="1"></label>
+        <label>Stop At Volume (SOL) <input id="volume-target" type="number" min="0" step="0.1" placeholder="0"></label>
+        <label>Max Slippage (bps) <input id="volume-max-slip" type="number" min="10" max="20000" step="10" value="2000"></label>
         <label>Min Buy Amount (SOL) <input id="volume-min-buy" type="number" step="0.001"></label>
         <label>Max Buy Amount (SOL) <input id="volume-max-buy" type="number" step="0.001"></label>
         <label>Sell % <input id="volume-sell" type="number" min="1" max="100"></label>
-        <label>Hold (tokens) <input id="volume-hold" type="number" min="0" step="0.000001" placeholder="0"></label>
-        <label>Interval (ms) <input id="volume-interval" type="number"></label>
+        <label>Hold Amount <input id="volume-hold" type="number" min="0" step="0.000001" placeholder="0"></label>
+        <label>Hold Delay (ms) <input id="volume-hold-delay" type="number" min="0" step="50"></label>
+        <label>Cycle Delay (ms) <input id="volume-interval" type="number" min="0" step="50"></label>
       </div>
       <div class="fdv-log" id="volume-log"></div>
       <div class="fdv-actions">
@@ -1430,10 +1557,14 @@ export function initVolumeWidget(container = document.body) {
   });
 
   mintEl = document.getElementById('volume-mint');
+  botsEl = document.getElementById('volume-bots');
+  targetVolEl = document.getElementById('volume-target');
+  maxSlipEl = document.getElementById('volume-max-slip');
   minBuyEl = document.getElementById('volume-min-buy');
   maxBuyEl = document.getElementById('volume-max-buy');
   sellAmountEl = document.getElementById('volume-sell');
   holdEl = document.getElementById('volume-hold');
+  holdDelayEl = document.getElementById('volume-hold-delay');
   intervalEl = document.getElementById('volume-interval');
   startBtn = document.getElementById('fdv-volume-start');
   stopBtn = document.getElementById('fdv-volume-stop');
@@ -1450,13 +1581,18 @@ export function initVolumeWidget(container = document.body) {
       return;
     }
     state.mint = mintEl.value.trim();
+    state.multiBotCount = clampInt(botsEl?.value, 1, 10, 1);
+    state.targetVolumeSol = Math.max(0, Number(targetVolEl?.value || 0) || 0);
+    state.maxSlippageBps = clampInt(maxSlipEl?.value, 10, 20_000, 2000);
     state.minBuyAmountSol = parseFloat(minBuyEl.value);
     state.maxBuyAmountSol = parseFloat(maxBuyEl.value);
     state.sellAmountPct = parseFloat(sellAmountEl.value) || 100;
     state.holdTokens = Math.max(0, parseFloat(holdEl?.value || '0') || 0);
-    state.intervalMs = parseInt(intervalEl.value) || 0;
+    state.holdDelayMs = clampInt(holdDelayEl?.value, 0, 3_600_000, 2500);
+    state.cycleDelayMs = clampInt(intervalEl.value, 0, 3_600_000, 3000);
     state.slippageBps = 80; // initial placeholder; computed per swap
     state.volumeCreated = 0;
+    state.softStopRequested = false;
 
     if (!state.mint) {
       log('Mint is required', 'error');
@@ -1497,24 +1633,31 @@ export function initVolumeWidget(container = document.body) {
     if (!Number.isFinite(state.maxBuyAmountSol) || state.maxBuyAmountSol <= 0 || state.maxBuyAmountSol < state.minBuyAmountSol) {
       state.maxBuyAmountSol = Math.max(state.minBuyAmountSol + 0.001, state.minBuyAmountSol * 1.5);
     }
-    if (!Number.isFinite(state.intervalMs) || state.intervalMs <= 0) state.intervalMs = 3000;
+    if (!Number.isFinite(state.holdDelayMs) || state.holdDelayMs < 0) state.holdDelayMs = 2500;
+    if (!Number.isFinite(state.cycleDelayMs) || state.cycleDelayMs < 0) state.cycleDelayMs = 3000;
+
+    // Sanity for bot count
+    state.multiBotCount = clampInt(state.multiBotCount, 1, 10, 1);
+    state.maxSlippageBps = clampInt(state.maxSlippageBps, 10, 20_000, 2000);
 
     // Dynamically size initial funding from auto wallet
     try {
       const { spendable, total } = await getAutoSpendable();
-      if (spendable < Math.max(0.012, state.minBuyAmountSol + 0.004)) {
-        log(`Insufficient auto funds. Total: ${total.toFixed(4)} SOL`, 'error');
+      const botCount = clampInt(state.multiBotCount, 1, 10, 1);
+      const minFund = Math.max(0.01, (state.minBuyAmountSol || 0.004) + 0.004);
+      if (spendable < botCount * minFund) {
+        log(`Insufficient auto funds for ${botCount} bot(s). Need ~${(botCount * minFund).toFixed(4)} SOL spendable; have ${spendable.toFixed(4)} SOL (total ${total.toFixed(4)} SOL)`, 'error');
         return;
       }
-      const decided = decideFundPerWallet(spendable);
+      const decided = decideFundPerWallet(spendable, botCount);
       state.fundSol = decided;
-      log(`Seeding active wallet with ${decided.toFixed(4)} SOL (auto spendable ${spendable.toFixed(4)} SOL)`);
+      log(`Seeding each bot wallet with ${decided.toFixed(4)} SOL (bots=${botCount}, auto spendable ${spendable.toFixed(4)} SOL)`);
     } catch (e) {
       log(`Auto fund sizing failed: ${e?.message || e}`, 'error');
       return;
     }
 
-    state.currentWallet = null; 
+    state.bots = [];
     updateUI();
     startVolumeBot();
   });

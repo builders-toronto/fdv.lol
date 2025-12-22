@@ -141,11 +141,9 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-feat/kpi-pump-focus-inertia-direct-tracking
+refactor/auto-widget
 
-feat(kpi): pump focus groups, inertia, and direct token tracking
+refactor(widgets): tidy auto tools + volume scaling
 
-- Introduce focus-group cohorts and inertia weighting to smooth pump signals
-- Direct per-mint tracking with rolling window and snapshot caps
-- ingest.js: click visibility + IntersectionObserver activate throttled KPIs (warm-up first payload)
-- New design: lighter KPI cards, clearer metric labels, unified layout
+Small refactor across auto tools widget internals (init/state wiring + UI glue)
+Improves volume widget scaling/behavior and keeps related helpers centralized
