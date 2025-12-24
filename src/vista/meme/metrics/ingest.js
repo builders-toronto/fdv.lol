@@ -120,6 +120,9 @@ export function setKpiViewed(id, viewed = true) {
 }
 
 (function boot() {
+  // This module is used in the browser. In Node/CLI (e.g. trader simulation),
+  // `document` does not exist; skip boot to avoid import-time crashes.
+  if (typeof document === 'undefined' || typeof window === 'undefined') return;
   function init() {
     booted = true;
     try { ensureAddonsUI?.(); } catch {}

@@ -15,9 +15,9 @@ import {
   AUTO_CFG,
 } from '../lib/constants.js';
 import { rpcWait, rpcBackoffLeft, markRpcStress } from '../lib/rpcThrottle.js';
+import { loadSplToken } from '../../../../core/solana/splToken.js';
 
 let _web3Promise;
-let _splTokenPromise;
 let _bs58Promise;
 let _connPromise;
 
@@ -40,15 +40,6 @@ export async function loadWeb3() {
     'https://esm.sh/@solana/web3.js@1.95.4?bundle',
   ]))();
   return _web3Promise;
-}
-
-async function loadSplToken() {
-  if (_splTokenPromise) return _splTokenPromise;
-  _splTokenPromise = (async () => importWithFallback([
-    'https://cdn.jsdelivr.net/npm/@solana/spl-token@0.4.9/+esm',
-    'https://esm.sh/@solana/spl-token@0.4.9?bundle',
-  ]))();
-  return _splTokenPromise;
 }
 
 async function loadBs58() {
@@ -1035,7 +1026,7 @@ async function createAndFundCycleWallet(autoKp, fundSol) {
   } catch {}
 
   log(`Cycle wallet created: ${kp.publicKey.toBase58()}`);
-  log(`Wallet captured (session). Use "Export Wallets" or window.fdvVolume.getGeneratedWallets()`, 'help');
+  log(`Wallet captured (session). Use "Export" or window.fdvVolume.getGeneratedWallets()`, 'help');
 
   await sendSol(autoKp, kp.publicKey, fundSol);
   await delay(400);
@@ -1525,7 +1516,7 @@ export function initVolumeWidget(container = document.body) {
           <div class="fdv-rpc-text" id="volume-rpc"></div>
         </div>
         <div class="fdv-actions-right">
-          <button id="fdv-volume-export">Export Wallets</button>
+          <button id="fdv-volume-export">Export</button>
           <button id="fdv-volume-start">Start</button>
           <button id="fdv-volume-stop">Stop</button>
         </div>

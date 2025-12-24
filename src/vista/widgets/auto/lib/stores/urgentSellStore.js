@@ -65,6 +65,13 @@ export function createUrgentSellStore({
   }
 
   function takeUrgentSell(mint) {
+    const rec = peekUrgentSell(mint);
+    if (!rec) return null;
+    clearUrgentSell(mint);
+    return rec;
+  }
+
+  function peekUrgentSell(mint) {
     const store = getStore();
     const rec = store.get(mint);
     if (!rec) return null;
@@ -72,9 +79,20 @@ export function createUrgentSellStore({
       store.delete(mint);
       return null;
     }
-    store.delete(mint);
+    // If already consumed, keep it as a cooldown sentinel but don't surface it.
+    if (rec.consumed) return null;
     return rec;
   }
 
-  return { flagUrgentSell, takeUrgentSell };
+  function clearUrgentSell(mint) {
+    const store = getStore();
+    const rec = store.get(mint);
+    if (!rec) return;
+    // Preserve the record until expiry so `flagUrgentSell()` cooldown remains effective.
+    // This prevents high-frequency triggers (e.g. fast observer loops) from re-flagging
+    // the same mint immediately after the policy consumes the signal.
+    store.set(mint, { ...rec, consumed: true, consumedAt: now() });
+  }
+
+  return { flagUrgentSell, peekUrgentSell, clearUrgentSell, takeUrgentSell };
 }

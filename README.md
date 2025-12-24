@@ -113,6 +113,33 @@ Just open the page and get GOOD / WATCH / SHILL signals at a glance.
 
 ---
 
+## 🧰 Dev CLI (auto trader)
+
+- Validate urgent/hard-exit router cooldown bypass:
+  - `node tools/trader.mjs --validate-sell-bypass`
+
+- Dry-run sell evaluation from a snapshot (no RPC, no swaps):
+  - `node tools/trader.mjs --dry-run-sell --snapshot tools/snapshots/sample-sell.json`
+  - Snapshot notes:
+    - Required: `mint`, `pos.sizeUi`, `pos.costSol`
+    - Provide either `curSol` or `pxNow` (valuation input)
+    - Optional: `state.takeProfitPct` / `state.stopLossPct` / `state.trailPct` for TP/SL/trailing
+    - Optional: `urgent` + `routerHoldUntil` to test urgent sells under router hold
+
+- Deterministic sim against the real auto-bot module (RPC/wallet/quotes stubbed):
+  - `node tools/trader.mjs --sim-index`
+  - Optional: `--steps 40 --dt-ms 1000 --throw-prune --debug-sell`
+
+- Run the real auto-bot headlessly using a named profile:
+  - `node tools/trader.mjs --run-profile --profile <name> [--profiles <pathOrUrl>] [--log-to-console]`
+  - Profiles file can be a local JSON path or an `https://` URL (defaults to `./fdv.profiles.json` or `FDV_PROFILES`).
+  - Example: `node tools/trader.mjs --run-profile --profiles tools/profiles/fdv.profiles.example.json --profile dev --log-to-console`
+
+- Help:
+  - `node tools/trader.mjs --help`
+
+---
+
 ## 📚 Learn More in the Wiki
 Our Wiki is the best place to start:  
 - Home - About the project, FAQ, and how it works  
@@ -141,9 +168,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-refactor/auto-widget
-
-refactor(widgets): tidy auto tools + volume scaling
-
-Small refactor across auto tools widget internals (init/state wiring + UI glue)
-Improves volume widget scaling/behavior and keeps related helpers centralized
+fixed auto bot bugs (part 1); add follow bot; wire auto-trader CLI
