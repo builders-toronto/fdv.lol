@@ -1,3 +1,9 @@
+import { importFromUrl } from "../../../../utils/netImport.js";
+
+function _isNodeLike() {
+  return typeof process !== "undefined" && !!process.versions?.node;
+}
+
 import { computePumpingLeaders, getRugSignalForMint, focusMint } from "../../../meme/metrics/kpi/pumping.js";
 
 import {
@@ -69,8 +75,22 @@ import { createFallbackSellPolicy } from "../lib/sell/policies/fallbackSell.js";
 import { createForceFlagDecisionPolicy } from "../lib/sell/policies/forceFlagDecision.js";
 import { createReboundGatePolicy } from "../lib/sell/policies/reboundGate.js";
 import { createExecuteSellDecisionPolicy } from "../lib/sell/policies/executeSellDecision.js";
+import { createStealthTools } from "../lib/stealth.js";
+import { loadSplToken } from "../../../../core/solana/splToken.js";
+
+import { createDustCacheStore } from "../lib/stores/dustCacheStore.js";
+import { createPosCacheStore } from "../lib/stores/posCacheStore.js";
+import { createBuySeedStore } from "../lib/stores/buySeedStore.js";
 
 function now() {
+  try {
+    const o = globalThis && globalThis.__fdvAutoBotOverrides;
+    const fn = o && typeof o === "object" ? o.now : null;
+    if (typeof fn === "function") return fn();
+  } catch {}
+  try {
+    if (performance && performance.now) return performance.now();
+  } catch {}
   return Date.now();
 }
 
@@ -84,13 +104,77 @@ let log = (msg, type) => {
     if (Number.isFinite(MAX_LOG_MEM_LINES) && buf.length > MAX_LOG_MEM_LINES) {
       buf.splice(0, buf.length - Math.floor(MAX_LOG_MEM_LINES * 0.9));
     }
-    // if (typeof console !== "undefined" && console.log) console.log(line);
+    
+    try {
+      const mirror = !!g._fdvLogToConsole || !!g._fdvDebugSellEval;
+      if (mirror && typeof console !== "undefined") {
+        if (type === "err" && console.error) console.error(line);
+        else if ((type === "warn" || type === "warning") && console.warn) console.warn(line);
+        else if (console.log) console.log(line);
+      }
+    } catch {}
   } catch {}
 };
 
 let logObj = (label, obj) => {
   try { log(`${label}: ${JSON.stringify(obj)}`); } catch {}
 };
+
+function _dbgSellEnabled() {
+  try {
+    const g = (typeof window !== "undefined") ? window : globalThis;
+    if (!!g._fdvDebugSellEval) return true;
+    // If the widget runs inside an iframe, the toggle may be set on parent/top.
+    try { if (g.parent && g.parent !== g && !!g.parent._fdvDebugSellEval) return true; } catch {}
+    try { if (g.top && g.top !== g && !!g.top._fdvDebugSellEval) return true; } catch {}
+    return false;
+  } catch { return false; }
+}
+
+function _safeDbgJson(v, maxLen = 2000) {
+  try {
+    const s = JSON.stringify(v, (k, val) => {
+      const key = String(k || "");
+      if (/secret|private|seed|keypair|secretKey|autoWalletSecret|rpcHeaders/i.test(key)) return "[redacted]";
+      if (key === "kp") return "[redacted:kp]";
+      if (typeof val === "bigint") return String(val);
+      if (typeof val === "function") return `[fn ${val.name || "anonymous"}]`;
+      return val;
+    });
+    if (typeof s === "string" && s.length > maxLen) return s.slice(0, maxLen) + "…";
+    return s;
+  } catch {
+    try { return String(v); } catch { return "<unprintable>"; }
+  }
+}
+
+function _dbgSell(msg, data) {
+  if (!_dbgSellEnabled()) return;
+  try {
+    const suffix = (typeof data === "undefined") ? "" : ` :: ${_safeDbgJson(data)}`;
+    log(`SELLDBG ${String(msg || "")} ${suffix}`.trim(), "info");
+  } catch {}
+}
+
+function _dbgSellNextId() {
+  try {
+    const g = (typeof window !== "undefined") ? window : globalThis;
+    if (!Number.isFinite(g._fdvSellEvalSeq)) g._fdvSellEvalSeq = 0;
+    g._fdvSellEvalSeq++;
+    return g._fdvSellEvalSeq;
+  } catch { return 0; }
+}
+
+function _getAutoBotOverride(name) {
+  try {
+    const o = globalThis && globalThis.__fdvAutoBotOverrides;
+    if (!o || typeof o !== "object") return null;
+    const v = o[name];
+    return v ?? null;
+  } catch {
+    return null;
+  }
+}
 
 // Lightweight RPC pacing and backoff helpers used across the widget and passed to dex
 const _rpcKindLast = new Map();
@@ -221,12 +305,6 @@ export const dex = new Proxy(
   },
 );
 
-
-
-// Dust cache store wiring (persist small remainders and unsellable amounts)
-import { createDustCacheStore } from "../lib/stores/dustCacheStore.js";
-import { createPosCacheStore } from "../lib/stores/posCacheStore.js";
-import { createBuySeedStore } from "../lib/stores/buySeedStore.js";
 const {
   addToDustCache,
   removeFromDustCache,
@@ -258,20 +336,30 @@ const preflightSellPolicy = createPreflightSellPolicy({
   log,
   getState: () => state,
   shouldForceMomentumExit,
-  verifyRealTokenBalance,
-  hasPendingCredit,
+  verifyRealTokenBalance: async (...args) => {
+    const fn = _getAutoBotOverride("verifyRealTokenBalance");
+    if (typeof fn === "function") return await fn(...args);
+    return await verifyRealTokenBalance(...args);
+  },
+  hasPendingCredit: (...args) => {
+    const fn = _getAutoBotOverride("hasPendingCredit");
+    if (typeof fn === "function") return !!fn(...args);
+    return hasPendingCredit(...args);
+  },
+  peekUrgentSell: (mint) => {
+    try { return peekUrgentSell?.(mint) || null; } catch { return null; }
+  },
 });
 
 const leaderModePolicy = createLeaderModePolicy({ log, getRugSignalForMint });
 
-// Per-mint operation lock (prevents overlapping ops per mint)
 const { lockMint, unlockMint, isMintLocked } = createMintLockStore({
   now,
   defaultMs: MINT_OP_LOCK_MS,
 });
 
-// Urgent-sell shared store (provides flagUrgentSell and takeUrgentSell)
-const { flagUrgentSell, takeUrgentSell } = createUrgentSellStore({
+// Urgent-sell shared store
+const { flagUrgentSell, peekUrgentSell, clearUrgentSell } = createUrgentSellStore({
   now,
   getState: () => state,
   log,
@@ -286,7 +374,8 @@ const { flagUrgentSell, takeUrgentSell } = createUrgentSellStore({
 
 const urgentSellPolicy = createUrgentSellPolicy({
   log,
-  takeUrgentSell,
+  peekUrgentSell,
+  clearUrgentSell,
   urgentSellMinAgeMs: URGENT_SELL_MIN_AGE_MS,
 });
 
@@ -341,7 +430,11 @@ const volatilityGuardPolicy = createVolatilityGuardPolicy({
 const quoteAndEdgePolicy = createQuoteAndEdgePolicy({
   log,
   getState: () => state,
-  quoteOutSol,
+  quoteOutSol: async (...args) => {
+    const fn = _getAutoBotOverride("quoteOutSol");
+    if (typeof fn === "function") return await fn(...args);
+    return await quoteOutSol(...args);
+  },
   flagUrgentSell,
   RUG_QUOTE_SHOCK_WINDOW_MS,
   RUG_QUOTE_SHOCK_FRAC,
@@ -387,6 +480,20 @@ const reboundGatePolicy = createReboundGatePolicy({
   save,
 });
 
+const { maybeStealthRotate } = createStealthTools({
+  now,
+  log,
+  save,
+  getState: () => state,
+  getAutoKeypair,
+  loadDeps,
+  getConn,
+  unwrapWsolIfAny,
+  confirmSig,
+  SOL_MINT,
+  TX_FEE_BUFFER_LAMPORTS,
+});
+
 const executeSellDecisionPolicy = createExecuteSellDecisionPolicy({
   log,
   now,
@@ -415,23 +522,23 @@ const executeSellDecisionPolicy = createExecuteSellDecisionPolicy({
   clearRouteDustFails,
 });
 
-async function _logMoneyMade() {
-  try {
-    const totalSol = Number(state.moneyMadeSol || 0);
-    const baseSol = Number(state.pnlBaselineSol || 0);
-    const sessSol = totalSol - baseSol;
-    const px = await getSolUsd();
-    const usdStr = px > 0 ? ` (${fmtUsd(sessSol * px)})` : "";
-    log(`Money made: ${sessSol.toFixed(6)} SOL${usdStr}`);
-    try { updateStatsHeader(); } catch {}
-  } catch {
-    const totalSol = Number(state.moneyMadeSol || 0);
-    const baseSol = Number(state.pnlBaselineSol || 0);
-    const sessSol = totalSol - baseSol;
-    log(`Money made: ${sessSol.toFixed(6)} SOL`);
-    try { updateStatsHeader(); } catch {}
-  }
-}
+// async function _logMoneyMade() {
+//   try {
+//     const totalSol = Number(state.moneyMadeSol || 0);
+//     const baseSol = Number(state.pnlBaselineSol || 0);
+//     const sessSol = totalSol - baseSol;
+//     const px = await getSolUsd();
+//     const usdStr = px > 0 ? ` (${fmtUsd(sessSol * px)})` : "";
+//     log(`Money made: ${sessSol.toFixed(6)} SOL${usdStr}`);
+//     try { updateStatsHeader(); } catch {}
+//   } catch {
+//     const totalSol = Number(state.moneyMadeSol || 0);
+//     const baseSol = Number(state.pnlBaselineSol || 0);
+//     const sessSol = totalSol - baseSol;
+//     log(`Money made: ${sessSol.toFixed(6)} SOL`);
+//     try { updateStatsHeader(); } catch {}
+//   }
+// }
 
 function getSessionPnlSol() {
   return Number(state.moneyMadeSol || 0) - Number(state.pnlBaselineSol || 0);
@@ -474,25 +581,6 @@ async function _addRealizedPnl(solProceeds, costSold, label = "PnL") {
 function redactHeaders(hdrs) {
   const keys = Object.keys(hdrs || {});
   return keys.length ? `{headers: ${keys.join(", ")}}` : "{}";
-}
-
-function addOldWalletRecord(rec = {}) {
-  try {
-    if (!Array.isArray(state.oldWallets)) state.oldWallets = [];
-    const item = {
-      pub: String(rec.pub || ""),
-      secret: String(rec.secret || ""),
-      tag: String(rec.tag || ""),
-      movedLamports: Number(rec.movedLamports || 0) | 0,
-      txSig: String(rec.txSig || ""),
-      at: now(),
-    };
-    state.oldWallets.unshift(item);
-    const CAP = 10;
-    if (state.oldWallets.length > CAP) state.oldWallets.length = CAP;
-    save();
-    log(`Stealth archive: saved old wallet ${item.pub.slice(0,4)}… (tag="${item.tag || "rotate"}")`);
-  } catch {}
 }
 
 const LS_KEY = "fdv_auto_bot_v1";
@@ -716,6 +804,17 @@ log = function log(msg, type) {
     buf.splice(0, buf.length - Math.floor(MAX_LOG_MEM_LINES * 0.9));
   }
 
+  // Optional console mirroring (off by default).
+  // Enable at runtime: window._fdvLogToConsole = true (or window._fdvDebugSellEval = true)
+  try {
+    const mirror = !!g._fdvLogToConsole || !!g._fdvDebugSellEval;
+    if (mirror && typeof console !== "undefined") {
+      if (map === "err" && console.error) console.error(line);
+      else if (map === "warn" && console.warn) console.warn(line);
+      else if (console.log) console.log(line);
+    }
+  } catch {}
+
   if (!logEl) return;
   _logQueue.push({ text: line, type: map });
   if (!_logRaf) _logRaf = requestAnimationFrame(_flushLogFrame);
@@ -724,6 +823,21 @@ log = function log(msg, type) {
 logObj = function logObj(label, obj) {
   try { log(`${label}: ${JSON.stringify(obj)}`); } catch {}
 };
+
+function traceOnce(key, msg, everyMs = 8000, type = "info") {
+  try {
+    const g = (typeof window !== "undefined") ? window : globalThis;
+    if (!g._fdvTraceOnce) g._fdvTraceOnce = new Map();
+    const ts = now();
+    const last = Number(g._fdvTraceOnce.get(key) || 0);
+    if (last && (ts - last) < everyMs) return false;
+    g._fdvTraceOnce.set(key, ts);
+    log(`TRACE ${String(msg || "")}`.trim(), type);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 let _starting = false;
 
@@ -734,6 +848,9 @@ let _inFlight = false;
 let _buyInFlight = false;
 
 let _sellEvalRunning = false;
+let _sellEvalWakePending = false;
+let _sellEvalWakeTimer = 0;
+let _sellEvalWakeBlockedAt = 0;
 
 let _buyBatchUntil = 0;
 
@@ -940,7 +1057,6 @@ async function reconcileBuyFromTx(sig, owner, mint) {
     if (Number.isFinite(delta) && delta > 0) {
       return { mint: String(mint), sizeUi: delta, decimals: Number.isFinite(dec) ? dec : undefined };
     }
-    // Fallback: if post exists and > 0, return that as credited size
     if (uiPost > 0) {
       return { mint: String(mint), sizeUi: uiPost, decimals: Number.isFinite(dec) ? dec : undefined };
     }
@@ -1048,7 +1164,33 @@ function startPendingCreditWatchdog() {
 
 function wakeSellEval() {
   try {
-    if (!_sellEvalRunning) setTimeout(() => { evalAndMaybeSellPositions().catch(()=>{}); }, 0);
+    traceOnce(
+      "sellEval:wake",
+      `wakeSellEval queued (running=${_sellEvalRunning ? 1 : 0} inFlight=${_inFlight ? 1 : 0})`,
+      8000
+    );
+    _sellEvalWakePending = true;
+
+    if (_sellEvalWakeTimer) return;
+    _sellEvalWakeTimer = setTimeout(() => {
+      _sellEvalWakeTimer = 0;
+      if (!_sellEvalWakePending) return;
+
+      if (_sellEvalRunning || _inFlight) {
+        const nowTs = now();
+        if (!_sellEvalWakeBlockedAt) _sellEvalWakeBlockedAt = nowTs;
+        const blockedMs = nowTs - _sellEvalWakeBlockedAt;
+        if (blockedMs >= 3000) {
+          log(`Sell-eval wake blocked (${Math.floor(blockedMs / 1000)}s) ${_sellEvalRunning ? "_sellEvalRunning" : "_inFlight"}; will retry …`);
+        }
+        wakeSellEval();
+        return;
+      }
+
+      _sellEvalWakePending = false;
+      _sellEvalWakeBlockedAt = 0;
+      evalAndMaybeSellPositions().catch(()=>{});
+    }, 0);
   } catch {}
 }
 
@@ -1291,41 +1433,6 @@ async function requiredAtaLamportsForSwap(ownerPubkeyStr, inputMint, outputMint)
     if (!hasOut) need += rent;
   }
   return need;
-}
-
-async function loadSplToken() {
-  if (window.splToken) return window.splToken;
-  const set = (m) => { window.splToken = m; return m; };
-  try {
-    const m = await import("https://cdn.jsdelivr.net/npm/@solana/spl-token@0.4.14/+esm");
-    return set(m);
-  } catch {}
-  try {
-    const m = await import("https://esm.sh/@solana/spl-token@0.4.14?bundle");
-    return set(m);
-  } catch {
-  }
-  try {
-    const { PublicKey } = await loadWeb3();
-    const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-    const TOKEN_2022_PROGRAM_ID = new PublicKey("TokenzQdBNb1KzYrNU3G1bqbp1VZr1z7jWmzuXyaS6uJ");
-    const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
-    async function getAssociatedTokenAddress(mint, owner, allowOwnerOffCurve = true, programId = TOKEN_PROGRAM_ID, associatedTokenProgramId = ASSOCIATED_TOKEN_PROGRAM_ID) {
-      const seeds = [ owner.toBuffer(), programId.toBuffer(), mint.toBuffer() ];
-      const [addr] = await (await loadWeb3()).PublicKey.findProgramAddress(seeds, associatedTokenProgramId);
-      return addr;
-    }
-    const m = { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddress };
-    return set(m);
-  } catch {
-    const m = {
-      TOKEN_PROGRAM_ID: null,
-      TOKEN_2022_PROGRAM_ID: null,
-      ASSOCIATED_TOKEN_PROGRAM_ID: null,
-      getAssociatedTokenAddress: async () => null
-    };
-    return set(m);
-  }
 }
 
 async function unwrapWsolIfAny(signerOrOwner) {
@@ -1581,18 +1688,31 @@ function setRpcHeaders(jsonStr) {
   return false;
 }
 
-export async function loadWeb3() { // TODO: import locally
+
+
+export async function loadWeb3() {
   if (window.solanaWeb3) return window.solanaWeb3;
+
+  if (_isNodeLike()) {
+    const { loadSolanaWeb3FromWeb } = await import("./cli/helpers/web3.node.js");
+    return await loadSolanaWeb3FromWeb();
+  }
+
   try {
-    return await import('https://esm.sh/@solana/web3.js@1.95.1?bundle');
+    return await importFromUrl("https://esm.sh/@solana/web3.js@1.95.1?bundle");
   } catch (_) {
-    return await import('https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.1/lib/index.browser.esm.js');
+    return await importFromUrl("https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.1/lib/index.browser.esm.js");
   }
 }
 
 export async function loadBs58() {
   if (window.bs58) return window.bs58;
-  return (await import('https://esm.sh/bs58@5.0.0')).default;
+  if (_isNodeLike()) {
+    const mod = await import("./cli/helpers/bs58.node.js");
+    window.bs58 = mod?.default || mod?.bs58 || mod;
+    return window.bs58;
+  }
+  return (await importFromUrl('https://esm.sh/bs58@5.0.0?bundle')).default;
 }
 
 async function loadDeps() {
@@ -2072,7 +2192,7 @@ async function requiredOutAtaRentIfMissing(ownerPubkeyStr, outMint) {
   } catch { return 0; }
 }
 
-async function estimateRoundtripEdgePct(ownerPub, outMint, buySolUi, { slippageBps, dynamicFee = true } = {}) {
+async function estimateRoundtripEdgePct(ownerPub, outMint, buySolUi, { slippageBps, dynamicFee = true, ataRentLamports } = {}) {
   try {
     const buyLamports = Math.floor(Number(buySolUi || 0) * 1e9);
     if (!Number.isFinite(buyLamports) || buyLamports <= 0) return null;
@@ -2088,7 +2208,9 @@ async function estimateRoundtripEdgePct(ownerPub, outMint, buySolUi, { slippageB
     // Fees
     const feeBps = Number(getPlatformFeeBps() || 0);
     const txFeesL = EDGE_TX_FEE_ESTIMATE_LAMPORTS;
-    const ataRentL = await requiredOutAtaRentIfMissing(ownerPub, outMint); // one-time
+    const ataRentL = Number.isFinite(ataRentLamports)
+      ? Math.max(0, Math.floor(Number(ataRentLamports)))
+      : await requiredAtaLamportsForSwap(ownerPub, SOL_MINT, outMint); // one-time (wSOL + out ATA if needed)
 
     const outSol = backLamports / 1e9;
     const buySol = buyLamports / 1e9;
@@ -3800,6 +3922,69 @@ async function syncPositionsFromChain(ownerPubkeyStr) {
   }
 }
 
+async function pruneZeroBalancePositions(ownerPubkeyStr, opts = {}) {
+  const limit = Number.isFinite(opts?.limit) ? Math.max(0, opts.limit) : 8;
+  if (!limit) return;
+
+  const nowTs = now();
+  const candidates = [];
+
+  try {
+    for (const mint of Object.keys(state.positions || {})) {
+      if (!mint || mint === SOL_MINT) continue;
+      candidates.push(mint);
+    }
+  } catch {}
+
+  try {
+    const cached = cacheToList(ownerPubkeyStr) || [];
+    for (const it of cached) {
+      const mint = String(it?.mint || "");
+      if (!mint || mint === SOL_MINT) continue;
+      candidates.push(mint);
+    }
+  } catch {}
+
+  const seen = new Set();
+  const unique = [];
+  for (const mint of candidates) {
+    if (!mint || seen.has(mint)) continue;
+    seen.add(mint);
+    unique.push(mint);
+    if (unique.length >= limit) break;
+  }
+
+  if (!unique.length) return;
+
+  let changed = false;
+  for (const mint of unique) {
+    try {
+      const pos = state.positions?.[mint];
+      const ageMs = nowTs - Number(pos?.lastBuyAt || pos?.acquiredAt || 0);
+      const withinGrace = !!pos?.awaitingSizeSync && ageMs < Math.max(5000, Number(state.pendingGraceMs || 20000));
+      const hasPending = (() => { try { return hasPendingCredit(ownerPubkeyStr, mint); } catch { return false; } })();
+      if (withinGrace || hasPending) continue;
+
+      const b = await getAtaBalanceUi(ownerPubkeyStr, mint, pos?.decimals);
+      const uiAmt = Number(b?.sizeUi || 0);
+      if (uiAmt > 0) continue;
+
+      try { removeFromPosCache(ownerPubkeyStr, mint); } catch {}
+      try { removeFromDustCache(ownerPubkeyStr, mint); } catch {}
+      try { clearPendingCredit(ownerPubkeyStr, mint); } catch {}
+
+      if (state.positions?.[mint]) {
+        delete state.positions[mint];
+        changed = true;
+      }
+    } catch {
+      // best-effort pruning only
+    }
+  }
+
+  if (changed) save();
+}
+
 async function sweepNonSolToSolAtStart() {
   const kp = await getAutoKeypair();
   if (!kp) { log("Auto wallet not ready; skipping startup sweep."); return; }
@@ -4098,8 +4283,8 @@ function startFastObserver() {
             if (rec.count >= MOMENTUM_FORCED_EXIT_CONSEC && ageMs >= postBuyCooldownMs) {
               noteMomentumExit(mint, 30_000);
               flagUrgentSell(mint, "momentum_drop_x28", 0.90);
-              log(`Momentum drop x${MOMENTUM_FORCED_EXIT_CONSEC} for ${mint.slice(0,4)}… forced exit armed.`);
-              rec.count = 0; // reset after arming
+              // log(`Momentum drop x${MOMENTUM_FORCED_EXIT_CONSEC} for ${mint.slice(0,4)}… forced exit armed.`);
+              rec.count = 0; 
             }
           } else {
             rec.count = 0;
@@ -4166,82 +4351,6 @@ async function verifyRealTokenBalance(ownerPub, mint, pos) {
   } catch (e) {
     log(`verifyRealTokenBalance error ${mint.slice(0,4)}…: ${e.message||e}`, 'err');
     return { ok: false, reason: "error" };
-  }
-}
-
-async function maybeStealthRotate(tag = "sell") {
-  try {
-    if (!state.stealthMode) return false;
-    const kp = await getAutoKeypair();
-    if (!kp) return false;
-
-    const openPosCount = Object.entries(state.positions || {})
-      .filter(([m, p]) => m !== SOL_MINT && Number(p?.sizeUi || 0) > 0).length;
-    if (openPosCount > 0) {
-      log(`Stealth: deferring wallet rotation (open positions=${openPosCount}).`);
-      return false;
-    }
-
-    const { Keypair, bs58, SystemProgram, Transaction } = await loadDeps();
-    const conn = await getConn();
-    const oldSigner = kp;
-    const oldPubStr = oldSigner.publicKey.toBase58();
-    const oldSecretStr = String(state.autoWalletSecret || bs58.default.encode(oldSigner.secretKey));
-
-    const newKp = Keypair.generate();
-    const newPubStr = newKp.publicKey.toBase58();
-    const newSecretStr = bs58.default.encode(newKp.secretKey);
-
-    try { await unwrapWsolIfAny(oldSigner); } catch {}
-
-    let balL = 0;
-    try { balL = await conn.getBalance(oldSigner.publicKey, "processed"); } catch {}
-    const bufL = Math.max(50_000, TX_FEE_BUFFER_LAMPORTS); // ~0.00005-0.0005 SOL buffer
-    const sendLamports = Math.max(0, balL - bufL);
-    let transferSig = "";
-
-    if (sendLamports <= 0) {
-      log(`Stealth: balance too low to transfer; rotating key only.`);
-    } else {
-      try {
-        const tx = new Transaction().add(
-          SystemProgram.transfer({
-            fromPubkey: oldSigner.publicKey,
-            toPubkey: newKp.publicKey,
-            lamports: sendLamports,
-          })
-        );
-        tx.feePayer = oldSigner.publicKey;
-        tx.recentBlockhash = (await conn.getLatestBlockhash("processed")).blockhash;
-        tx.sign(oldSigner);
-        const sig = await conn.sendRawTransaction(tx.serialize(), { preflightCommitment: "processed", maxRetries: 2 });
-        transferSig = sig;
-        log(`Stealth: SOL moved to new wallet (${newPubStr.slice(0,4)}…) tx=${sig}`);
-        try { await confirmSig(sig, { commitment: "confirmed", timeoutMs: 12000 }); } catch {}
-      } catch (e) {
-        // Archive even on failure so user can recover
-        addOldWalletRecord({ pub: oldPubStr, secret: oldSecretStr, tag: `transfer-failed:${tag}`, movedLamports: sendLamports, txSig: "" });
-        log(`Stealth: transfer failed: ${e.message || e}`);
-        log(`WARNING: Stealth archive (old wallet): pub=${oldPubStr} secret=${oldSecretStr}`);
-        console.log(`WARNING: Stealth new wallet: pub=${newPubStr} secret=${newSecretStr}`);
-        return false;
-      }
-    }
-
-    addOldWalletRecord({ pub: oldPubStr, secret: oldSecretStr, tag, movedLamports: sendLamports, txSig: transferSig });
-
-    log(`WARNING: Stealth archive (old wallet): pub=${oldPubStr} secret=${oldSecretStr}`);
-    log(`WARNING: Stealth new wallet: pub=${newPubStr} secret=${newSecretStr}`);
-    console.log(`WARNING: Stealth archive (old wallet): pub=${oldPubStr} secret=${oldSecretStr}`);
-
-    state.autoWalletPub = newPubStr;
-    state.autoWalletSecret = newSecretStr;
-    save();
-    log(`Stealth: rotated wallet (${tag}). New wallet: ${newPubStr.slice(0,4)}…`);
-    return true;
-  } catch (e) {
-    log(`Stealth: rotation error: ${e.message || e}`, 'err');
-    return false;
   }
 }
 
@@ -4360,8 +4469,6 @@ function applyWarmingPolicy({ mint, pos, nowTs, pnlPct, curSol, decision, forceR
   return result;
 }
 
-// warmingPolicyHook is now provided by createWarmingPolicyHook (DI)
-
 function _mkSellCtx({ kp, mint, pos, nowTs }) {
   const ctx = {
     kp, mint, pos, nowTs,
@@ -4369,9 +4476,9 @@ function _mkSellCtx({ kp, mint, pos, nowTs }) {
     leaderMode: !!state.holdUntilLeaderSwitch,
     ageMs: 0,
     maxHold: 0,
-    forceExpire: false,
+    forceExpire: true,
     inSellGuard: false,
-    forceMomentum: false,
+    forceMomentum: true,
     verified: false,
     hasPending: false,
     creditGraceMs: 0,
@@ -4410,105 +4517,350 @@ function _mkSellCtx({ kp, mint, pos, nowTs }) {
   return ctx;
 }
 
-// rugPumpDropPolicy is now provided by createRugPumpDropPolicy (DI)
-
-// earlyFadePolicy is now provided by createEarlyFadePolicy (DI)
-
-// observerPolicy is now provided by createObserverPolicy (DI)
-
-// volatilityGuardPolicy is now provided by createVolatilityGuardPolicy (DI)
-
-// quoteAndEdgePolicy is now provided by createQuoteAndEdgePolicy (DI)
-
-// fastExitPolicy is now provided by createFastExitPolicy (DI)
-
-// dynamicHardStopPolicy is now provided by createDynamicHardStopPolicy (DI)
-
-// profitLockPolicy is now provided by createProfitLockPolicy (DI)
-
-// observerThreePolicy is now provided by createObserverThreePolicy (DI)
-
-// fallbackSellPolicy is now provided by createFallbackSellPolicy (DI)
-
-// forceFlagDecisionPolicy is now provided by createForceFlagDecisionPolicy (DI)
-
-// reboundGatePolicy is now provided by createReboundGatePolicy (DI)
-
 function momentumForcePolicy(ctx) {
   if (!ctx.forceMomentum) return;
-  ctx.decision = { action: "sell_all", reason: "MOMENTUM_DROP_X18", hardStop: true };
-  log(`Forced sell (momentum x18) for ${ctx.mint.slice(0,4)}…`);
+  ctx.decision = { action: "sell_all", reason: `MOMENTUM_DROP_X${Number(MOMENTUM_FORCED_EXIT_CONSEC || 0) || 0}`, hardStop: true };
+  log(`Forced sell (momentum x${Number(MOMENTUM_FORCED_EXIT_CONSEC || 0) || 0}) for ${ctx.mint.slice(0,4)}…`);
 }
 
-// executeSellDecisionPolicy is now provided by createExecuteSellDecisionPolicy (DI)
-
 async function runPipeline(ctx, steps = []) {
-  for (const fn of steps) {
+  let lastDecisionSig = "";
+  for (const step of steps) {
+    const fn = (typeof step === "function")
+      ? step
+      : (typeof step?.fn === "function" ? step.fn : (typeof step?.run === "function" ? step.run : null));
+    if (typeof fn !== "function") continue;
+
+    const name = (typeof step === "function")
+      ? (step._fdvName || step.name || "(anonymous)")
+      : (step?.name || step?.id || fn._fdvName || fn.name || "(anonymous)");
+
+    const prev = ctx?.decision;
+    const prevSig = prev ? `${String(prev.action || "")}::${String(prev.reason || "")}` : "";
+
+    let out;
+    const dbgOn = _dbgSellEnabled();
+    if (dbgOn) {
+      _dbgSell(`pipeline:step:begin:${name}`, {
+        mint: ctx?.mint,
+        decision: ctx?.decision || null,
+        pnlPct: Number(ctx?.pnlPct ?? 0),
+        pnlNetPct: Number(ctx?.pnlNetPct ?? 0),
+        curSol: Number(ctx?.curSol ?? 0),
+        curSolNet: Number(ctx?.curSolNet ?? 0),
+        hasPending: !!ctx?.hasPending,
+        creditsPending: !!ctx?.creditsPending,
+        warmingHoldActive: !!ctx?.warmingHoldActive,
+        inWarmingHold: !!ctx?.inWarmingHold,
+        skipSoftGates: !!ctx?.skipSoftGates,
+        obsPasses: ctx?.obsPasses ?? null,
+        isFastExit: !!ctx?.isFastExit,
+      });
+    }
+
     try {
-      const out = await fn(ctx);
-      if (out && typeof out === 'object') {
+      out = await fn(ctx);
+      if (dbgOn) _dbgSell(`pipeline:step:return:${name}`, out);
+      if (out && typeof out === "object") {
         // allow policies to optionally return partial updates
         Object.assign(ctx, out);
       }
     } catch (e) {
-      try { log(`Pipeline step failed: ${e.message || e}`, 'err'); } catch {}
+      if (dbgOn) {
+        _dbgSell(`pipeline:step:error:${name}`, {
+          err: String(e?.message || e || ""),
+          stack: String(e?.stack || "").slice(0, 800),
+        });
+      }
+      try { log(`Pipeline step failed (${name}): ${e.message || e}`, "err"); } catch {}
+    }
+
+    // Allow policies (especially preflight) to halt the pipeline cleanly.
+    // This prevents downstream steps from consuming one-shot signals (e.g. urgent)
+    // or attempting execution when prerequisites (balance verification, size sync, etc.)
+    // are not satisfied.
+    if (ctx?.stop || ctx?.done) {
+      if (dbgOn) _dbgSell(`pipeline:halt:${name}`, { stop: !!ctx?.stop, done: !!ctx?.done, decision: ctx?.decision || null });
+      break;
+    }
+
+    if (dbgOn) {
+      _dbgSell(`pipeline:step:end:${name}`, {
+        decision: ctx?.decision || null,
+        done: !!ctx?.done,
+        inFlight: !!_inFlight,
+      });
+    }
+
+    const cur = ctx?.decision;
+    const curSig = cur ? `${String(cur.action || "")}::${String(cur.reason || "")}` : "";
+    if (curSig && curSig !== prevSig && curSig !== lastDecisionSig) {
+      lastDecisionSig = curSig;
+      try {
+        log(`Pipeline decision (${name}) ${ctx.mint?.slice?.(0,4) || "????"}…: ${String(cur.action || "")} ${cur.reason ? `(${String(cur.reason)})` : ""}`);
+      } catch {}
     }
   }
   return ctx;
 }
 
 async function runSellPipelineForPosition(ctx) {
+  const skipPolicies = (() => {
+    const v = _getAutoBotOverride("skipPolicies");
+    if (!v) return new Set();
+    if (Array.isArray(v)) return new Set(v.map((s) => String(s || "")));
+    if (typeof v === "string") return new Set(v.split(",").map((s) => String(s || "").trim()).filter(Boolean));
+    return new Set();
+  })();
+
   const steps = [
-    (c) => preflightSellPolicy(c),
-    (c) => leaderModePolicy(c),
-    (c) => urgentSellPolicy(c),
-    (c) => rugPumpDropPolicy(c),
-    (c) => earlyFadePolicy(c),
-    (c) => observerPolicy(c),
-    (c) => volatilityGuardPolicy(c),
-    (c) => quoteAndEdgePolicy(c),
-    (c) => fastExitPolicy(c),
-    (c) => dynamicHardStopPolicy(c),
-    (c) => warmingPolicyHook(c),
-    (c) => profitLockPolicy(c),
-    (c) => observerThreePolicy(c),
-    (c) => fallbackSellPolicy(c),
-    (c) => forceFlagDecisionPolicy(c),
-    (c) => reboundGatePolicy(c),
-    (c) => momentumForcePolicy(c),
-    (c) => executeSellDecisionPolicy(c),
-  ];
+    { name: "preflight", fn: (c) => preflightSellPolicy(c) },
+    { name: "leaderMode", fn: (c) => leaderModePolicy(c) },
+    { name: "urgent", fn: (c) => urgentSellPolicy(c) },
+    { name: "rugPumpDrop", fn: (c) => rugPumpDropPolicy(c) },
+    { name: "earlyFade", fn: (c) => earlyFadePolicy(c) },
+    { name: "observer", fn: (c) => observerPolicy(c) },
+    { name: "volatilityGuard", fn: (c) => volatilityGuardPolicy(c) },
+    { name: "quoteAndEdge", fn: (c) => quoteAndEdgePolicy(c) },
+    { name: "fastExit", fn: (c) => fastExitPolicy(c) },
+    { name: "dynamicHardStop", fn: (c) => dynamicHardStopPolicy(c) },
+    { name: "warmingHook", fn: (c) => warmingPolicyHook(c) },
+    { name: "profitLock", fn: (c) => profitLockPolicy(c) },
+    { name: "observerThree", fn: (c) => observerThreePolicy(c) },
+    { name: "fallback", fn: (c) => fallbackSellPolicy(c) },
+    { name: "forceFlagDecision", fn: (c) => forceFlagDecisionPolicy(c) },
+    { name: "reboundGate", fn: (c) => reboundGatePolicy(c) },
+    { name: "momentumForce", fn: (c) => momentumForcePolicy(c) },
+    ...(() => {
+      const skip = _getAutoBotOverride("skipExecute");
+      if (skip) return [];
+      return [{ name: "execute", fn: (c) => executeSellDecisionPolicy(c) }];
+    })(),
+  ].filter((s) => !skipPolicies.has(String(s?.name || "")));
 
   await runPipeline(ctx, steps);
+
+  try {
+    if (ctx?.decision) {
+      const d = ctx.decision;
+      log(`Pipeline final ${ctx.mint?.slice?.(0,4) || "????"}…: ${String(d.action || "")} ${d.reason ? `(${String(d.reason)})` : ""}`);
+    }
+  } catch {}
 }
 
 async function evalAndMaybeSellPositions() {
-  if (_inFlight) return;
-  if (_sellEvalRunning) return; 
-  _sellEvalRunning = true;
-  try {
-    const kp = await getAutoKeypair();
-    if (!kp) return;
+  const evalId = _dbgSellNextId();
+  const t0 = now();
 
-    await syncPositionsFromChain(kp.publicKey.toBase58());
-    await pruneZeroBalancePositions(kp.publicKey.toBase58(), { limit: 8 });
-    const entries = Object.entries(state.positions || {});
-    if (!entries.length) return;
+  traceOnce(
+    "sellEval:enter",
+    `sell-eval enter id=${evalId} enabled=${state?.enabled ? 1 : 0} positions=${Object.keys(state.positions || {}).length} running=${_sellEvalRunning ? 1 : 0} inFlight=${_inFlight ? 1 : 0}`,
+    8000
+  );
+
+  if (_sellEvalRunning) {
+    _sellEvalWakePending = true;
+    _dbgSell(`eval:${evalId}:skip:_sellEvalRunning`, { _sellEvalRunning: true, _inFlight: !!_inFlight });
+    traceOnce("sellEval:skipRunning", `sell-eval skip id=${evalId} (already running)`, 8000, "warn");
+    return;
+  }
+  if (_inFlight) {
+    _sellEvalWakePending = true;
+    _dbgSell(`eval:${evalId}:skip:_inFlight`, { _sellEvalRunning: !!_sellEvalRunning, _inFlight: true });
+    traceOnce("sellEval:skipInFlight", `sell-eval skip id=${evalId} (_inFlight true)`, 8000, "warn");
+    wakeSellEval();
+    return;
+  }
+
+  _sellEvalRunning = true;
+  _dbgSell(`eval:${evalId}:start`, {
+    enabled: !!state.enabled,
+    positionsKeys: Object.keys(state.positions || {}).length,
+    lastTradeAgoSec: state.lastTradeTs ? Math.floor((now() - state.lastTradeTs) / 1000) : null,
+    rpcBackoffLeftMs: (() => { try { return rpcBackoffLeft(); } catch { return null; } })(),
+  });
+  try {
+    try {
+      const kpFn = _getAutoBotOverride("getAutoKeypair");
+      const kp = (typeof kpFn === "function") ? await kpFn() : await getAutoKeypair();
+    if (!kp) {
+      _dbgSell(`eval:${evalId}:no_keypair`);
+      traceOnce("sellEval:noKeypair", `sell-eval return id=${evalId} (no keypair)`, 12000, "warn");
+      return;
+    }
+
+    try {
+      _dbgSell(`eval:${evalId}:owner`, { owner: kp.publicKey?.toBase58?.() || "" });
+    } catch {}
+
+    const ownerStr = kp.publicKey.toBase58();
+
+    const syncOverride = _getAutoBotOverride("syncPositionsFromChain");
+    _dbgSell(`eval:${evalId}:syncPositionsFromChain:begin`);
+    try {
+      if (typeof syncOverride === "function") await syncOverride(ownerStr);
+      else await syncPositionsFromChain(ownerStr);
+      _dbgSell(`eval:${evalId}:syncPositionsFromChain:done`, { ms: now() - t0 });
+    } catch (e) {
+      log(`Sell-eval syncPositionsFromChain failed (continuing): ${e?.message || e}`);
+      _dbgSell(`eval:${evalId}:syncPositionsFromChain:error`, {
+        err: String(e?.message || e || ""),
+        stack: String(e?.stack || "").slice(0, 800),
+      });
+    }
+
+    _dbgSell(`eval:${evalId}:pruneZeroBalancePositions:begin`, { limit: 8 });
+    try {
+      const pruneOverride = _getAutoBotOverride("pruneZeroBalancePositions");
+      const pruneFn =
+        (typeof pruneOverride === "function" && pruneOverride) ||
+        (typeof pruneZeroBalancePositions === "function" ? pruneZeroBalancePositions : null);
+      if (!pruneFn) throw new Error("pruneZeroBalancePositions missing");
+      await pruneFn(ownerStr, { limit: 8 });
+      _dbgSell(`eval:${evalId}:pruneZeroBalancePositions:done`, { ms: now() - t0 });
+    } catch (e) {
+      log(`Sell-eval pruneZeroBalancePositions failed (continuing): ${e?.message || e}`);
+      _dbgSell(`eval:${evalId}:pruneZeroBalancePositions:error`, {
+        err: String(e?.message || e || ""),
+        stack: String(e?.stack || "").slice(0, 800),
+      });
+    }
+
+    const rawEntries = Object.entries(state.positions || {});
+    const nonSolEntries = rawEntries.filter(([mint]) => mint && mint !== SOL_MINT);
+    const withPosEntries = nonSolEntries.filter(([_, pos]) => !!pos);
+    const nonEmptyEntries = withPosEntries.filter(([_, pos]) => (Number(pos?.sizeUi || 0) > 0) || (Number(pos?.costSol || 0) > 0));
+
+    try {
+      const droppedAsEmpty = withPosEntries
+        .filter(([_, pos]) => !((Number(pos?.sizeUi || 0) > 0) || (Number(pos?.costSol || 0) > 0)))
+        .slice(0, 8)
+        .map(([mint, pos]) => ({
+          mint: String(mint || ""),
+          sizeUi: Number(pos?.sizeUi || 0),
+          costSol: Number(pos?.costSol || 0),
+        }));
+      _dbgSell(`eval:${evalId}:entries:breakdown`, {
+        raw: rawEntries.length,
+        nonSol: nonSolEntries.length,
+        withPos: withPosEntries.length,
+        nonEmpty: nonEmptyEntries.length,
+        sampleMints: nonEmptyEntries.slice(0, 16).map(([m]) => String(m || "").slice(0, 6)),
+        droppedAsEmpty,
+      });
+    } catch {}
+
+    const entries = nonEmptyEntries;
+    _dbgSell(`eval:${evalId}:entries`, {
+      count: entries.length,
+      mints: entries.slice(0, 32).map(([m]) => String(m || "").slice(0, 6)),
+    });
+    traceOnce(
+      "sellEval:entries",
+      `sell-eval entries=${entries.length} owner=${String(ownerStr || "").slice(0, 6)}…`,
+      8000
+    );
+    if (!entries.length) {
+      _dbgSell(`eval:${evalId}:return:no_entries`, { ms: now() - t0 });
+      traceOnce("sellEval:noEntries", `sell-eval return id=${evalId} (no entries)`, 12000);
+      return;
+    }
 
     const nowTs = now();
     for (const [mint, pos] of entries) {
       try {
+        _dbgSell(`eval:${evalId}:mint:begin`, {
+          mint,
+          sizeUi: Number(pos?.sizeUi || 0),
+          costSol: Number(pos?.costSol || 0),
+          decimals: Number(pos?.decimals || 0),
+          acquiredAt: Number(pos?.acquiredAt || 0),
+          lastBuyAt: Number(pos?.lastBuyAt || 0),
+          lastSellAt: Number(pos?.lastSellAt || 0),
+          warmingHold: !!pos?.warmingHold,
+          postWarmGraceUntil: Number(pos?.postWarmGraceUntil || 0),
+        });
+
+        try {
+          const u = peekUrgentSell?.(mint);
+          if (u) {
+            log(`Sell-eval: urgent pending for ${mint.slice(0,4)}… (${String(u.reason||"?")}, sev=${Number(u.sev||0).toFixed(2)})`);
+            _dbgSell(`eval:${evalId}:urgent`, { mint, reason: String(u.reason || ""), sev: Number(u.sev || 0) });
+          }
+        } catch {}
         const ctx = _mkSellCtx({ kp, mint, pos, nowTs });
+
+        _dbgSell(`eval:${evalId}:ctx:init`, {
+          mint,
+          leaderMode: !!ctx.leaderMode,
+          ageMs: Number(ctx.ageMs || 0),
+          inSellGuard: !!ctx.inSellGuard,
+          forceMomentum: !!ctx.forceMomentum,
+          verified: !!ctx.verified,
+          hasPending: !!ctx.hasPending,
+          sizeOk: !!ctx.sizeOk,
+          forceRug: !!ctx.forceRug,
+          rugSev: Number(ctx.rugSev || 0),
+          forcePumpDrop: !!ctx.forcePumpDrop,
+          forceObserverDrop: !!ctx.forceObserverDrop,
+        });
+
+        log(`Running pipeline for: ${mint.slice(0,4)}… (size ${Number(pos.sizeUi||0).toFixed(6)})`);
+        log(`CTX: ${JSON.stringify({
+          leaderMode: ctx.leaderMode,
+          ageMs: ctx.ageMs,
+          inSellGuard: ctx.inSellGuard,
+          forceMomentum: ctx.forceMomentum,
+          verified: ctx.verified,
+          hasPending: ctx.hasPending,
+          sizeOk: ctx.sizeOk,
+          forceRug: ctx.forceRug,
+          rugSev: ctx.rugSev,
+          forcePumpDrop: ctx.forcePumpDrop,
+          forceObserverDrop: ctx.forceObserverDrop,
+          earlyReason: ctx.earlyReason,} )}`);
+
+        _dbgSell(`eval:${evalId}:pipeline:begin`, { mint });
         await runSellPipelineForPosition(ctx);
-        return; // one sell per tick (preserve original behavior)
+
+        try { _recordSellSnapshot(ctx, { stage: "post_pipeline", evalId }); } catch {}
+
+        _dbgSell(`eval:${evalId}:pipeline:done`, {
+          mint,
+          decision: ctx?.decision || null,
+          done: !!ctx?.done,
+          curSol: Number(ctx?.curSol ?? 0),
+          curSolNet: Number(ctx?.curSolNet ?? 0),
+          minNotional: Number(ctx?.minNotional ?? 0),
+          pnlPct: Number(ctx?.pnlPct ?? 0),
+          pnlNetPct: Number(ctx?.pnlNetPct ?? 0),
+          creditsPending: !!ctx?.creditsPending,
+          hasPending: !!ctx?.hasPending,
+        });
+
+        if (ctx?.done) return; // one action per tick (sell / moved-to-dust / handled)
       } catch (e) {
         log(`Sell check failed for ${mint.slice(0,4)}…: ${e.message||e}`);
+        _dbgSell(`eval:${evalId}:mint:error`, { mint, err: String(e?.message || e || ""), stack: String(e?.stack || "").slice(0, 800) });
       } finally {
         _inFlight = false;
+        _dbgSell(`eval:${evalId}:mint:finally`, { mint, _inFlight: false });
       }
+    }
+    } catch (e) {
+      log(`Sell-eval fatal error: ${e?.message || e}`);
+      try {
+        if (__fdvCli_isHeadless() && e?.stack) {
+          const head = String(e.stack).split("\n").slice(0, 6).join(" | ");
+          log(`Sell-eval fatal stack: ${head}`);
+        }
+      } catch {}
+      _dbgSell(`eval:${evalId}:fatal`, { err: String(e?.message || e || ""), stack: String(e?.stack || "").slice(0, 1200) });
     }
   } finally {
     _sellEvalRunning = false;
+    _dbgSell(`eval:${evalId}:done`, { ms: now() - t0, wakePending: !!_sellEvalWakePending });
+    if (_sellEvalWakePending) wakeSellEval();
   }
 }
 
@@ -4661,6 +5013,12 @@ async function switchToLeader(newMint) {
 async function tick() {
   // const endIn = state.endAt ? ((state.endAt - now())/1000).toFixed(0) : "0";
   if (!state.enabled) return;
+
+  traceOnce(
+    "tick:alive",
+    `tick alive (enabled=1, inFlight=${_inFlight ? 1 : 0}, sellEvalRunning=${_sellEvalRunning ? 1 : 0})`,
+    15000
+  );
 
   if (rpcBackoffLeft() > 0) {
     log("RPC backoff active; skipping tick.");
@@ -5041,7 +5399,7 @@ async function tick() {
           kp.publicKey.toBase58(),
           mint,
           buySol,
-          { slippageBps: state.slippageBps, dynamicFee: true }
+          { slippageBps: state.slippageBps, dynamicFee: true, ataRentLamports: reqRent }
         );
         // let needPct = Number.isFinite(Number(state.minNetEdgePct)) ? Number(state.minNetEdgePct) : -8;
         // try {
@@ -5372,8 +5730,8 @@ async function startAutoAsync() {
       log(`RPC preflight failed: ${e.message || e}`);
       state.enabled = false;
       if (toggleEl) toggleEl.value = "no";
-      startBtn.disabled = false;
-      stopBtn.disabled = true;
+      try { if (startBtn) startBtn.disabled = false; } catch {}
+      try { if (stopBtn) stopBtn.disabled = true; } catch {}
       save();
       try { renderStatusLed(); } catch {}
       return;
@@ -5394,6 +5752,162 @@ async function startAutoAsync() {
     startFastObserver();
   } finally {
     _starting = false;
+  }
+}
+
+function __fdvCli_isHeadless() {
+  try {
+    const o = globalThis && globalThis.__fdvAutoBotOverrides;
+    return !!(o && typeof o === "object" && o.headless);
+  } catch {
+    return false;
+  }
+}
+
+let _cliKpiFeederStop = null;
+
+async function __fdvCli_startKpiFeeder() {
+  try {
+    if (!_isNodeLike() || !__fdvCli_isHeadless()) return false;
+    if (typeof _cliKpiFeederStop === "function") return true;
+
+    const intervalMs = Math.max(2000, Number(state.kpiFeedIntervalMs || 10_000));
+    const topN = Math.max(12, Number(state.kpiFeedTopN || 60));
+
+    const { startKpiFeeder } = await import("./cli/helpers/kpiFeeder.node.js");
+    _cliKpiFeederStop = startKpiFeeder({ log, intervalMs, topN });
+    return true;
+  } catch (e) {
+    try { log(`KPI feeder failed to start: ${e?.message || e}`, "warn"); } catch {}
+    _cliKpiFeederStop = null;
+    return false;
+  }
+}
+
+function __fdvCli_stopKpiFeeder() {
+  try {
+    if (typeof _cliKpiFeederStop === "function") _cliKpiFeederStop();
+  } catch {}
+  _cliKpiFeederStop = null;
+}
+
+export function __fdvCli_applyProfile(profile = {}) {
+  if (!profile || typeof profile !== "object") throw new Error("profile must be an object");
+
+  // Do not load browser-local defaults under Node.
+  state.loadDefaultState = false;
+
+  // Apply plain state keys.
+  for (const [k, v] of Object.entries(profile)) {
+    if (!k) continue;
+    if (k === "rpcUrl" || k === "rpcHeaders") continue; // handled below
+    state[k] = v;
+  }
+
+  // Apply RPC values using internal setters (resets cached conn).
+  if ("rpcUrl" in profile) {
+    try { setRpcUrl(String(profile.rpcUrl || "")); } catch {}
+  }
+  if ("rpcHeaders" in profile) {
+    try {
+      const v = profile.rpcHeaders;
+      if (typeof v === "string") setRpcHeaders(v);
+      else setRpcHeaders(JSON.stringify(v || {}));
+    } catch {}
+  }
+
+  save();
+  return true;
+}
+
+export async function __fdvCli_start({ enable = true } = {}) {
+  // Mark headless so internal code can avoid UI assumptions if needed later.
+  try {
+    if (!globalThis.__fdvAutoBotOverrides || typeof globalThis.__fdvAutoBotOverrides !== "object") {
+      globalThis.__fdvAutoBotOverrides = {};
+    }
+    globalThis.__fdvAutoBotOverrides.headless = true;
+  } catch {}
+
+  if (enable) state.enabled = true;
+
+  // Basic safety check.
+  if (!currentRpcUrl()) throw new Error("Missing rpcUrl (set state.rpcUrl or provide profile.rpcUrl)");
+
+  // Avoid startAutoAsync()'s UI coupling by doing a minimal headless start.
+  if (_starting) return true;
+  _starting = true;
+  try {
+    if (!Number.isFinite(state.pnlBaselineSol)) {
+      state.pnlBaselineSol = Number(state.moneyMadeSol || 0);
+      save();
+    }
+
+    if (!state.endAt && state.lifetimeMins > 0) {
+      state.endAt = now() + state.lifetimeMins * 60_000;
+      save();
+    }
+
+    // RPC preflight
+    try {
+      const conn = await getConn();
+      await conn.getLatestBlockhash("processed");
+      log("RPC preflight OK.");
+    } catch (e) {
+      log(`RPC preflight failed: ${e?.message || e}`);
+      state.enabled = false;
+      save();
+      return false;
+    }
+
+    try {
+      const kpFn = _getAutoBotOverride("getAutoKeypair");
+      const kp = (typeof kpFn === "function") ? await kpFn() : await getAutoKeypair();
+      if (kp) await syncPositionsFromChain(kp.publicKey.toBase58());
+    } catch {}
+
+    try { await sweepNonSolToSolAtStart(); } catch {}
+    if (state.dustExitEnabled) {
+      try { await sweepDustToSolAtStart(); } catch {}
+    }
+
+    if (!timer && state.enabled) {
+      timer = setInterval(tick, Math.max(1200, Number(state.tickMs || 1000)));
+      log("Auto trading started (headless)");
+    }
+    try { startFastObserver(); } catch {}
+
+    // Headless KPI stream: keep the pumping/leader KPIs fed under Node.
+    // (Browser UI ingests snapshots via the home pipeline.)
+    try { await __fdvCli_startKpiFeeder(); } catch {}
+
+    save();
+    return true;
+  } finally {
+    _starting = false;
+  }
+}
+
+export async function __fdvCli_stop({ runFinalSellEval = true } = {}) {
+  try {
+    state.enabled = false;
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+    try { stopFastObserver(); } catch {}
+    try { __fdvCli_stopKpiFeeder(); } catch {}
+    if (runFinalSellEval) {
+      try {
+        const hasOpen = Object.entries(state.positions || {}).some(([m, p]) => m !== SOL_MINT && Number(p?.sizeUi || 0) > 0);
+        if (hasOpen) setTimeout(() => { evalAndMaybeSellPositions().catch(() => {}); }, 0);
+      } catch {}
+    }
+    save();
+    log("Auto trading stopped (headless)");
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -5493,6 +6007,216 @@ function copyLog() {
   }
 }
 
+function _snapshotSafeClone(v, maxLen = 250_000) {
+  try {
+    const s = JSON.stringify(v, (k, val) => {
+      const key = String(k || "");
+      if (/secret|private|seed|keypair|secretKey|autoWalletSecret|rpcHeaders|authorization/i.test(key)) return "[redacted]";
+      if (key === "kp") return "[redacted:kp]";
+      if (typeof val === "bigint") return String(val);
+      if (typeof val === "function") return `[fn ${val.name || "anonymous"}]`;
+      return val;
+    });
+    if (typeof s === "string" && s.length > maxLen) {
+      return JSON.parse(s.slice(0, maxLen));
+    }
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+function _getSafeStateForSnapshot() {
+  try {
+    return {
+      enabled: !!state.enabled,
+      holdUntilLeaderSwitch: !!state.holdUntilLeaderSwitch,
+      rideWarming: !!state.rideWarming,
+      warmingNoHardStopSecs: Number(state.warmingNoHardStopSecs || 0),
+      reboundGateEnabled: !!state.reboundGateEnabled,
+      reboundHoldMs: Number(state.reboundHoldMs || 0),
+
+      takeProfitPct: Number(state.takeProfitPct || 0),
+      stopLossPct: Number(state.stopLossPct || 0),
+      trailPct: Number(state.trailPct || 0),
+      minProfitToTrailPct: Number(state.minProfitToTrailPct || 0),
+      partialTpPct: Number(state.partialTpPct || 0),
+
+      coolDownSecsAfterBuy: Number(state.coolDownSecsAfterBuy || 0),
+      minHoldSecs: Number(state.minHoldSecs || 0),
+      maxHoldSecs: Number(state.maxHoldSecs || 0),
+      sellCooldownMs: Number(state.sellCooldownMs || 0),
+      pendingGraceMs: Number(state.pendingGraceMs || 0),
+      minQuoteIntervalMs: Number(state.minQuoteIntervalMs || 0),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function _recordSellSnapshot(ctx, { stage = "post_pipeline", evalId = null } = {}) {
+  try {
+    const mint = String(ctx?.mint || "");
+    if (!mint) return;
+
+    const urgent = (() => {
+      try {
+        const u = typeof peekUrgentSell === "function" ? peekUrgentSell(mint) : null;
+        return u ? { reason: String(u.reason || ""), sev: Number(u.sev || 0) } : null;
+      } catch { return null; }
+    })();
+
+    const routerHoldUntil = (() => {
+      try { return Number(window._fdvRouterHold?.get?.(mint) || 0); } catch { return 0; }
+    })();
+
+    const snap = {
+      ts: now(),
+      stage,
+      evalId,
+      mint,
+      ownerStr: String(ctx?.ownerStr || ""),
+      state: _getSafeStateForSnapshot(),
+      pos: _snapshotSafeClone(ctx?.pos || null),
+      ctx: _snapshotSafeClone({
+        nowTs: Number(ctx?.nowTs || 0),
+        ageMs: Number(ctx?.ageMs || 0),
+        leaderMode: !!ctx?.leaderMode,
+        inSellGuard: !!ctx?.inSellGuard,
+        hasPending: !!ctx?.hasPending,
+        creditsPending: !!ctx?.creditsPending,
+        sizeOk: !!ctx?.sizeOk,
+
+        forceRug: !!ctx?.forceRug,
+        rugSev: Number(ctx?.rugSev || 0),
+        forcePumpDrop: !!ctx?.forcePumpDrop,
+        forceObserverDrop: !!ctx?.forceObserverDrop,
+        forceMomentum: !!ctx?.forceMomentum,
+        forceExpire: !!ctx?.forceExpire,
+
+        curSol: Number(ctx?.curSol ?? 0),
+        curSolNet: Number(ctx?.curSolNet ?? 0),
+        pnlPct: Number(ctx?.pnlPct ?? 0),
+        pnlNetPct: Number(ctx?.pnlNetPct ?? 0),
+        pxNow: Number(ctx?.pxNow ?? 0),
+        pxCost: Number(ctx?.pxCost ?? 0),
+        dynStopPct: (ctx?.dynStopPct ?? null),
+        minNotional: Number(ctx?.minNotional ?? 0),
+        decision: ctx?.decision || null,
+        isFastExit: !!ctx?.isFastExit,
+        warmingHoldActive: !!ctx?.warmingHoldActive,
+        inWarmingHold: !!ctx?.inWarmingHold,
+        skipSoftGates: !!ctx?.skipSoftGates,
+      }),
+      urgent,
+      routerHoldUntil,
+    };
+
+    if (!window._fdvSellSnapshots) window._fdvSellSnapshots = new Map();
+    try { window._fdvSellSnapshots.set(mint, snap); } catch {}
+    window._fdvLastSellSnapshot = snap;
+  } catch {}
+}
+
+function _getLatestSellSnapshot() {
+  try { return window._fdvLastSellSnapshot || null; } catch { return null; }
+}
+
+function _createManualSellSnapshot({ mint: preferredMint = null, stage = "manual_click" } = {}) {
+  try {
+    const nowTs = now();
+
+    const pickMint = () => {
+      const m0 = String(preferredMint || "");
+      if (m0 && m0 !== SOL_MINT) return m0;
+
+      const leader = String(state?.currentLeaderMint || "");
+      if (leader && leader !== SOL_MINT && state?.positions?.[leader]) return leader;
+
+      const entries = Object.entries(state?.positions || {})
+        .filter(([m]) => m && m !== SOL_MINT)
+        .filter(([_, pos]) => !!pos)
+        .filter(([_, pos]) => (Number(pos?.sizeUi || 0) > 0) || (Number(pos?.costSol || 0) > 0));
+
+      if (!entries.length) return "";
+
+      entries.sort((a, b) => {
+        const pa = a[1] || {};
+        const pb = b[1] || {};
+        const ta = Number(pa.lastBuyAt || pa.acquiredAt || 0);
+        const tb = Number(pb.lastBuyAt || pb.acquiredAt || 0);
+        return tb - ta;
+      });
+      return String(entries[0][0] || "");
+    };
+
+    const mint = pickMint();
+    if (!mint) return null;
+
+    const pos = state?.positions?.[mint] || null;
+    const costSol = Number(pos?.costSol || 0);
+    const curSol = Number(pos?.lastQuotedSol || 0);
+    const pnlPct = costSol > 0 ? ((curSol / costSol) - 1) * 100 : 0;
+
+    const urgent = (() => {
+      try {
+        const u = typeof peekUrgentSell === "function" ? peekUrgentSell(mint) : null;
+        return u ? { reason: String(u.reason || ""), sev: Number(u.sev || 0) } : null;
+      } catch { return null; }
+    })();
+
+    const routerHoldUntil = (() => {
+      try { return Number(window._fdvRouterHold?.get?.(mint) || 0); } catch { return 0; }
+    })();
+
+    const snap = {
+      ts: nowTs,
+      stage,
+      evalId: null,
+      mint,
+      ownerStr: String(state?.autoWalletPub || ""),
+      state: _getSafeStateForSnapshot(),
+      pos: _snapshotSafeClone(pos),
+      ctx: _snapshotSafeClone({
+        nowTs,
+        ageMs: Number(pos?.lastBuyAt || pos?.acquiredAt || 0) ? (nowTs - Number(pos?.lastBuyAt || pos?.acquiredAt || 0)) : 0,
+        hasPending: false,
+        creditsPending: false,
+        sizeOk: Number(pos?.sizeUi || 0) > 0,
+        curSol,
+        curSolNet: null,
+        pnlPct,
+        pnlNetPct: null,
+        pxNow: Number(pos?.lastQuotedPx || 0),
+        pxCost: Number(pos?.costPx || 0),
+        decision: null,
+        isFastExit: false,
+        warmingHoldActive: !!pos?.warmingHold,
+        inWarmingHold: !!pos?.warmingHold,
+        skipSoftGates: false,
+      }),
+      urgent,
+      routerHoldUntil,
+      meta: _snapshotSafeClone({
+        note: "manual snapshot (no sell-eval snapshot available yet)",
+        enabled: !!state?.enabled,
+        currentLeaderMint: String(state?.currentLeaderMint || ""),
+        openMints: Object.entries(state?.positions || {})
+          .filter(([m, p]) => m && m !== SOL_MINT && Number(p?.sizeUi || 0) > 0)
+          .slice(0, 24)
+          .map(([m, p]) => ({ mint: String(m), sizeUi: Number(p?.sizeUi || 0) })),
+      }),
+    };
+
+    if (!window._fdvSellSnapshots) window._fdvSellSnapshots = new Map();
+    try { window._fdvSellSnapshots.set(mint, snap); } catch {}
+    window._fdvLastSellSnapshot = snap;
+    return snap;
+  } catch {
+    return null;
+  }
+}
+
 function _ensureStatsHeader() {
   try {
     if (!logEl) return null;
@@ -5584,7 +6308,8 @@ export function initTraderWidget(container = document.body) {
     <div data-main-tab-panel="auto" class="tab-panel active">
     <div style="display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--fdv-border);padding-bottom:8px;margin-bottom:8px; position:relative;">
       <button class="btn" data-auto-gen>Generate</button>
-      <button class="btn" data-auto-copy>Address</button>
+      <button class="btn" data-auto-copy style="display:none;">Address</button>
+      <button class="btn" data-auto-snapshot title="Download latest sell snapshot">Snapshot</button>
       <button class="btn" data-auto-unwind>Return</button>
       <button class="btn" data-auto-wallet>Wallet</button>
       <div data-auto-wallet-menu
@@ -6188,7 +6913,7 @@ export function initTraderWidget(container = document.body) {
     </div>
     <div class="fdv-bot-footer" style="display:flex;justify-content:space-between;margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
       <a href="https://t.me/fdvlolgroup" target="_blank" data-auto-help-tg>t.me/fdvlolgroup</a>
-      <span>Version: 0.0.4.7</span>
+      <span>Version: 0.0.4.9</span>
     </div>
   `;
 
@@ -6325,6 +7050,7 @@ export function initTraderWidget(container = document.body) {
   const rpcEl = wrap.querySelector("[data-auto-rpc]");
   const rpchEl = wrap.querySelector("[data-auto-rpch]");
   const copyLogBtn = wrap.querySelector("[data-auto-log-copy]");
+  const snapshotBtn = wrap.querySelector("[data-auto-snapshot]");
 
   const walletBtn      = wrap.querySelector("[data-auto-wallet]");
   const walletMenuEl   = wrap.querySelector("[data-auto-wallet-menu]");
@@ -6512,6 +7238,32 @@ export function initTraderWidget(container = document.body) {
 
   if (copyLogBtn) {
     copyLogBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); copyLog(); });
+  }
+
+  if (snapshotBtn) {
+    snapshotBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      let snap = _getLatestSellSnapshot();
+      if (!snap) snap = _createManualSellSnapshot();
+      if (!snap) {
+        log("No snapshot available yet (no positions found).");
+        return;
+      }
+
+      const mint = String(snap.mint || "");
+      const ts = Number(snap.ts || Date.now());
+      const short = mint ? mint.slice(0, 6) : "unknown";
+      const filename = `fdv-sell-snapshot-${short}-${ts}.json`;
+
+      try {
+        downloadTextFile(filename, JSON.stringify(snap, null, 2));
+        log(`Snapshot downloaded (${short}…).`);
+      } catch (err) {
+        log(`Snapshot download failed: ${err?.message || err}`);
+      }
+    });
   }
 
   async function renderWalletMenu() {
@@ -6964,4 +7716,26 @@ function disableOwnerScans(reason) {
   state.ownerScanDisabledReason = String(reason || "RPC forbids owner scans");
   save();
   log("Owner scans disabled. RPC blocks account-owner queries. Update RPC URL or upgrade your plan.");
+}
+
+// Node/CLI debug helpers (no-ops unless explicitly imported and called)
+export async function __fdvDebug_evalAndMaybeSellPositions() {
+  return await evalAndMaybeSellPositions();
+}
+
+export function __fdvDebug_flagUrgentSell(mint, reason = "", sev = 0) {
+  return flagUrgentSell(mint, reason, sev);
+}
+
+export function __fdvDebug_peekUrgentSell(mint) {
+  return peekUrgentSell(mint);
+}
+
+export function __fdvDebug_setOverrides(overrides = null) {
+  try {
+    globalThis.__fdvAutoBotOverrides = overrides && typeof overrides === "object" ? overrides : {};
+    return true;
+  } catch {
+    return false;
+  }
 }

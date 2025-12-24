@@ -1,9 +1,18 @@
-export function createUrgentSellPolicy({ log, takeUrgentSell, urgentSellMinAgeMs } = {}) {
+export function createUrgentSellPolicy({
+  log,
+  takeUrgentSell,
+  peekUrgentSell,
+  clearUrgentSell,
+  urgentSellMinAgeMs,
+} = {}) {
   const _log = typeof log === "function" ? log : () => {};
   const _minAgeMs = Number.isFinite(urgentSellMinAgeMs) ? urgentSellMinAgeMs : 7000;
 
   return function urgentSellPolicy(ctx) {
-    const urgent = typeof takeUrgentSell === "function" ? takeUrgentSell(ctx.mint) : null;
+    const hasPeekClear = typeof peekUrgentSell === "function" && typeof clearUrgentSell === "function";
+    const urgent = hasPeekClear
+      ? peekUrgentSell(ctx.mint)
+      : (typeof takeUrgentSell === "function" ? takeUrgentSell(ctx.mint) : null);
     if (!urgent) return;
 
     if (ctx.ageMs < _minAgeMs) {
@@ -19,8 +28,19 @@ export function createUrgentSellPolicy({ log, takeUrgentSell, urgentSellMinAgeMs
       return;
     }
 
+    // Only consume the urgent signal when we're actually going to act on it.
+    if (hasPeekClear) clearUrgentSell(ctx.mint);
+
+    // Urgent exits must survive downstream soft gates (e.g. warming hold) and must not
+    // be blocked by notional thresholds. Represent them as an explicit hard-stop decision.
+    ctx.isFastExit = true;
     ctx.forceObserverDrop = true;
     ctx.rugSev = Number(urgent.sev || 1);
-    _log(`Urgent sell for ${ctx.mint.slice(0, 4)}… (${urgent.reason}); bypassing notional/cooldowns.`);
+    ctx.decision = {
+      action: "sell_all",
+      reason: `URGENT:${String(urgent.reason || "unknown")}`,
+      hardStop: true,
+    };
+    _log(`Urgent sell for ${ctx.mint.slice(0, 4)}… (${urgent.reason}); forcing sell now.`);
   };
 }

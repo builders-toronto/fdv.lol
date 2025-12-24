@@ -5,6 +5,7 @@ export function createPreflightSellPolicy({
   shouldForceMomentumExit,
   verifyRealTokenBalance,
   hasPendingCredit,
+  peekUrgentSell,
 } = {}) {
   const _now = typeof now === "function" ? now : () => Date.now();
   const _log = typeof log === "function" ? log : () => {};
@@ -18,22 +19,27 @@ export function createPreflightSellPolicy({
     ctx.maxHold = Math.max(0, Number(state.maxHoldSecs || 0));
     ctx.forceExpire = ctx.maxHold > 0 && ctx.ageMs >= ctx.maxHold * 1000;
 
+    // Momentum forced-exit should be computed early so it can bypass soft gates.
+    ctx.forceMomentum = shouldForceMomentumExit ? shouldForceMomentumExit(mint) : false;
+
+    // Peek urgent signal early (if available) so we can bypass cooldown gates when needed.
+    const urgent = (typeof peekUrgentSell === "function") ? peekUrgentSell(mint) : null;
+    const urgentReason = String(urgent?.reason || "");
+    const urgentSev = Number(urgent?.sev || 0);
+    const urgentHard = !!urgent && (/rug/i.test(urgentReason) || urgentSev >= 0.75);
+
     // Router cooldown gate (unless we're at forceExpire)
     try {
       if (!ctx.forceExpire && window._fdvRouterHold && window._fdvRouterHold.get(mint) > _now()) {
         const until = window._fdvRouterHold.get(mint);
-        _log(`Router cooldown for ${mint.slice(0, 4)}… until ${new Date(until).toLocaleTimeString()}`);
-        return { stop: true };
+        if (urgentHard || ctx.forceMomentum) {
+          _log(`Router cooldown bypass for ${mint.slice(0, 4)}… (urgent/momentum hard-exit)`);
+        } else {
+          _log(`Router cooldown for ${mint.slice(0, 4)}… until ${new Date(until).toLocaleTimeString()}`);
+          return { stop: true };
+        }
       }
     } catch {}
-
-    const sz = Number(pos.sizeUi || 0);
-    if (sz <= 0) {
-      _log(`Skip sell eval for ${mint.slice(0, 4)}… (no size)`);
-      return { stop: true };
-    }
-
-    ctx.forceMomentum = shouldForceMomentumExit ? shouldForceMomentumExit(mint) : false;
 
     ctx.inSellGuard = Number(pos.sellGuardUntil || 0) > nowTs;
 
@@ -47,7 +53,10 @@ export function createPreflightSellPolicy({
       _log(`Sell skip (unverified balance) ${mint.slice(0, 4)}…`);
       return { stop: true };
     }
-    if (Number(vr.sizeUi || 0) <= 1e-9) return { stop: true };
+    if (Number(vr.sizeUi || 0) <= 1e-9) {
+      _log(`Skip sell eval for ${mint.slice(0, 4)}… (no on-chain size)`);
+      return { stop: true };
+    }
 
     // Pending credits grace
     ctx.hasPending = typeof hasPendingCredit === "function" ? hasPendingCredit(ctx.ownerStr, mint) : false;

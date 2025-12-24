@@ -1,0 +1,38 @@
+{
+  "mint": "Mint1111111111111111111111111111111111",
+  "ownerStr": "Owner111111111111111111111111111111111",
+  "nowTs": 1735000000000,
+
+  "state": {
+    "takeProfitPct": 12,
+    "stopLossPct": 8,
+    "trailPct": 6,
+    "minProfitToTrailPct": 3,
+    "partialTpPct": 30,
+
+    "sellCooldownMs": 20000,
+    "coolDownSecsAfterBuy": 8,
+    "maxHoldSecs": 0,
+    "minHoldSecs": 0
+  },
+
+  "pos": {
+    "sizeUi": 1000000,
+    "decimals": 6,
+    "costSol": 0.25,
+    "acquiredAt": 1734999990000,
+
+    "hwmPx": 0,
+    "lastSellAt": 0
+  },
+
+  "pxNow": 0.00000030,
+  "curSol": 0.30,
+
+  "urgent": {
+    "reason": "momentum_drop_x28",
+    "sev": 0.9
+  },
+
+  "routerHoldUntil": 1735000100000
+}

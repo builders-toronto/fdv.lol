@@ -319,7 +319,7 @@ export function createDex(deps = {}) {
 
 		if (isBuy) {
 			const rentSol = (_preBuyRent / 1e9).toFixed(6);
-			log(`Buy cost breakdown: input=${(amountRaw / 1e9).toFixed(6)} SOL + ataRent≈${rentSol}`);
+			log(`Buy cost breakdown: input=${(amountRaw / 1e9).toFixed(6)} SOL + ataRent≈${rentSol} (one-time; may include wSOL + out ATA)`);
 		}
 
 		async function notePendingBuySeed() {

@@ -12,6 +12,7 @@
 !/token/**/og.jpg
 
 /testing/*
+/tools/profiles/dev.json
 
 !/sitemap.xml
 !/robots.txt

@@ -1,0 +1,24 @@
+{
+  "profiles": {
+    "default": {
+      "rpcUrl": "https://YOUR_SOLANA_RPC_WITH_CORS_OR_NODE_ACCESS",
+      "rpcHeaders": {
+        "Authorization": "Bearer YOUR_TOKEN"
+      },
+      "autoWalletSecret": "PASTE_AUTO_WALLET_SECRET",
+      "recipientPub": "PASTE_YOUR_SOL_RECIPIENT_PUBKEY",
+
+      "stealthMode": false,
+      "tickMs": 1200,
+      "budgetUi": 0.5,
+      "buyPct": 0.2,
+      "minBuySol": 0.06,
+      "maxBuySol": 0.12,
+
+      "takeProfitPct": 12,
+      "stopLossPct": 4,
+      "trailPct": 6,
+      "slippageBps": 250
+    }
+  }
+}
