@@ -245,7 +245,6 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
 .header{
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  /* background: linear-gradient(180deg, rgba(13, 19, 32, .9), rgb(0 0 0 / 60%) 70%, transparent); */
   z-index:5;
 }
 
@@ -253,7 +252,7 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
   display: flex; align-items:center; gap:8px; padding:6px 0; justify-content: space-between;
 }
 
-.container{max-width:1200px;margin:0 auto;padding:18px}
+.container{max-width:1200px;margin:0 auto;padding:40px}
 
 h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
 
@@ -383,7 +382,7 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
 .addon-list { display:grid; gap:6px; margin:0; padding:0; list-style:none; }
 
 /* Item layout — anchor wraps content; make it a flex row */
-.addon-item { border-radius:12px; overflow:hidden; }
+.addon-item { background: black; border-radius:12px; overflow:hidden; }
 .addon-item > a {
   display:flex; align-items:flex-start; gap:12px;
   width:100%;
@@ -608,8 +607,8 @@ input[type="checkbox"]:disabled{
 }
 
 .cards .card.is-leader {
-  border-color: rgba(26,255,213,.55); /* fallback */
-  border-color: color-mix(in srgb, var(--neon, #1affd5) 55%, rgba(255,255,255,0) );
+  /* border-color: rgba(26,255,213,.55); /* fallback */
+  /* border-color: color-mix(in srgb, var(--neon, #1affd5) 55%, rgba(255,255,255,0) ); */
   box-shadow:
     0 0 0 1px rgba(26,255,213,.22),
     0 14px 36px rgba(26,255,213,.10);
@@ -639,8 +638,8 @@ input[type="checkbox"]:disabled{
   position:relative; 
   z-index:0;
   background: linear-gradient(180deg, rgb(14 16 27 / 95%), rgb(0 0 0 / 80%));
-  border: 1px solid var(--edge);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, .25), inset 0 0 0 1px rgba(26, 255, 213, .05);
+  /* border: 1px solid var(--edge);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, .25), inset 0 0 0 1px rgba(26, 255, 213, .05); */
   will-change: transform, box-shadow;
   border-radius:16px;
   padding:14px 14px 12px;
@@ -1115,7 +1114,7 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 .adbtn{
   position: relative;
   display:inline-flex; align-items:center; gap:8px;
-  padding: 9px 12px; border-radius:10px; font-weight:800;
+  padding: 9px 12px; border-radius:10px; font-weight:600;
   background: transparent;
   border:1px solid rgba(122,222,255,.30); color:var(--text); text-decoration:none; cursor:pointer;
   transition: transform .12s ease, filter .12s ease, border-color .12s ease, background .12s ease;
@@ -1578,15 +1577,16 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 
 /* Auto UI :) */
 .fdv-auto-wrap{
-  background: var(--fdv-surface);
+  background: var(--bg);
+  border: 1px solid var(--edge);
   border-radius: 16px;
   padding: clamp(12px, 2vw, 20px);
   margin: 14px auto;
   color: var(--fdv-text);
   width: 100%;
   max-width: 1200px;
-  border: 1px solid var(--edge);
-  /* box-shadow: 0 10px 24px rgba(0, 0, 0, .25), inset 0 0 0 1px rgba(26, 255, 213, .05); */
+  box-shadow: 0 10px 24px rgba(0, 0, 0, .25), inset 0 0 0 1px rgba(26, 255, 213, .05);
+
 }
 .fdv-auto-head{
   display:flex; align-items:center; justify-content:flex-end; gap:12px;

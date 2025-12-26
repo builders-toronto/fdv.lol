@@ -38,9 +38,9 @@ export function initAutoWidget(container = document.body) {
     <div class="fdv-auto-head"></div>
     <div class="fdv-tabs" style="display:flex; gap:8px; margin:8px 0;">
       <button class="fdv-tab-btn active" data-main-tab="auto">Auto</button>
-      <button class="fdv-tab-btn" data-main-tab="volume">Volume</button>
       <button class="fdv-tab-btn" data-main-tab="follow">Follow</button>
       <button class="fdv-tab-btn" data-main-tab="sniper" disabled>Sniper</button>
+      <button class="fdv-tab-btn" data-main-tab="volume">Volume</button>
     </div>
 
     <div data-main-tab-panel="auto" class="tab-panel active">
