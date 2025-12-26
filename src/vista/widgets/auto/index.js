@@ -40,6 +40,7 @@ export function initAutoWidget(container = document.body) {
       <button class="fdv-tab-btn active" data-main-tab="auto">Auto</button>
       <button class="fdv-tab-btn" data-main-tab="volume">Volume</button>
       <button class="fdv-tab-btn" data-main-tab="follow">Follow</button>
+      <button class="fdv-tab-btn" data-main-tab="sniper" disabled>Sniper</button>
     </div>
 
     <div data-main-tab-panel="auto" class="tab-panel active">
@@ -52,6 +53,10 @@ export function initAutoWidget(container = document.body) {
 
     <div data-main-tab-panel="follow" class="tab-panel" style="display:none;">
       <div id="follow-container"></div>
+    </div>
+
+    <div data-main-tab-panel="sniper" class="tab-panel" style="display:none;">
+      <div id="sniper-container"></div>
     </div>
 
     <div class="fdv-bot-footer" style="display:flex;justify-content:space-between;margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
