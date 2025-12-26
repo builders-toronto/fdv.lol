@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { runAutoTraderCli } from "../src/vista/widgets/auto/trader/cli/app.js";
+import { runAutoTraderCli } from "../src/vista/widgets/auto/cli/app.js";
 
 try {
   const code = await runAutoTraderCli(process.argv.slice(2));

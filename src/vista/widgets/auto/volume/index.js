@@ -16,38 +16,42 @@ import {
 } from '../lib/constants.js';
 import { rpcWait, rpcBackoffLeft, markRpcStress } from '../lib/rpcThrottle.js';
 import { loadSplToken } from '../../../../core/solana/splToken.js';
+import { importFromUrlWithFallback } from '../../../../utils/netImport.js';
 
 let _web3Promise;
 let _bs58Promise;
 let _connPromise;
 
-async function importWithFallback(urls) {
-  let lastErr;
-  for (const url of urls) {
-    try {
-      return await import(url);
-    } catch (e) {
-      lastErr = e;
-    }
-  }
-  throw lastErr || new Error('IMPORT_FAILED');
-}
-
 export async function loadWeb3() {
+  try {
+    if (typeof window !== 'undefined' && window.solanaWeb3) return window.solanaWeb3;
+    if (typeof window !== 'undefined' && window._fdvAutoDepsPromise) {
+      const deps = await window._fdvAutoDepsPromise.catch(() => null);
+      if (deps?.web3) return deps.web3;
+    }
+  } catch {}
   if (_web3Promise) return _web3Promise;
-  _web3Promise = (async () => importWithFallback([
+  _web3Promise = (async () => importFromUrlWithFallback([
     'https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.4/+esm',
     'https://esm.sh/@solana/web3.js@1.95.4?bundle',
-  ]))();
+  ], { cacheKey: 'fdv:volume:web3@1.95.4' }))();
   return _web3Promise;
 }
 
 async function loadBs58() {
+  try {
+    if (typeof window !== 'undefined' && window._fdvBs58Module) return window._fdvBs58Module;
+    if (typeof window !== 'undefined' && window._fdvAutoDepsPromise) {
+      const deps = await window._fdvAutoDepsPromise.catch(() => null);
+      if (deps?.bs58) return { default: deps.bs58 };
+    }
+    if (typeof window !== 'undefined' && window.bs58) return { default: window.bs58 };
+  } catch {}
   if (_bs58Promise) return _bs58Promise;
-  _bs58Promise = (async () => importWithFallback([
+  _bs58Promise = (async () => importFromUrlWithFallback([
     'https://cdn.jsdelivr.net/npm/bs58@6.0.0/+esm',
     'https://esm.sh/bs58@6.0.0?bundle',
-  ]))();
+  ], { cacheKey: 'fdv:volume:bs58@6.0.0' }))();
   return _bs58Promise;
 }
 
@@ -721,6 +725,19 @@ function haltVolumeBot(msg) {
 }
 
 function log(msg, type = 'info') {
+  try {
+    const line = `[${new Date().toLocaleTimeString()}] ${String(msg ?? '')}`;
+    try {
+      const wantConsole = !!(typeof window !== 'undefined' && window._fdvLogToConsole);
+      const nodeLike = typeof process !== 'undefined' && !!process?.stdout;
+      if ((wantConsole || (nodeLike && !logEl)) && line) {
+        const t = String(type || '').toLowerCase();
+        if (t.startsWith('err')) console.error(line);
+        else if (t.startsWith('war')) console.warn(line);
+        else console.log(line);
+      }
+    } catch {}
+  } catch {}
   if (logEl) {
     const div = document.createElement('div');
     const t = String(type || 'info').toLowerCase();
@@ -733,6 +750,136 @@ function log(msg, type = 'info') {
   }
   // const consoleMethod = type === 'error' ? console.error : type === 'warn' ? console.warn : console.log;
   // consoleMethod(`[VolumeBot] ${msg}`);
+}
+
+function _isNodeLike() {
+  try {
+    return typeof process !== 'undefined' && !!process?.versions?.node;
+  } catch {
+    return false;
+  }
+}
+
+function _applyRpcOptsToStateAndStorage({ rpcUrl, rpcHeaders } = {}) {
+  try {
+    if (rpcUrl != null) {
+      const u = String(rpcUrl || '').trim();
+      state.rpcUrl = u;
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem('fdv_rpc_url', u);
+      } catch {}
+    }
+    if (rpcHeaders != null) {
+      const h = rpcHeaders && typeof rpcHeaders === 'object' ? rpcHeaders : {};
+      state.rpcHeaders = h;
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem('fdv_rpc_headers', JSON.stringify(h));
+      } catch {}
+    }
+  } catch {}
+}
+
+export function __fdvCli_applyConfig(cfg = {}) {
+  try {
+    if (cfg?.mint != null) state.mint = String(cfg.mint || '').trim();
+    if (cfg?.bots != null) state.multiBotCount = clampInt(cfg.bots, 1, 10, state.multiBotCount || 1);
+    if (cfg?.targetVolumeSol != null) state.targetVolumeSol = Math.max(0, Number(cfg.targetVolumeSol || 0) || 0);
+    if (cfg?.maxSlippageBps != null) state.maxSlippageBps = clampInt(cfg.maxSlippageBps, 10, 20_000, state.maxSlippageBps || 2000);
+    if (cfg?.minBuyAmountSol != null) state.minBuyAmountSol = Math.max(0, Number(cfg.minBuyAmountSol || 0) || 0);
+    if (cfg?.maxBuyAmountSol != null) state.maxBuyAmountSol = Math.max(0, Number(cfg.maxBuyAmountSol || 0) || 0);
+    if (cfg?.sellAmountPct != null) state.sellAmountPct = Math.max(1, Math.min(100, Number(cfg.sellAmountPct || 100) || 100));
+    if (cfg?.holdTokens != null) state.holdTokens = Math.max(0, Number(cfg.holdTokens || 0) || 0);
+    if (cfg?.holdDelayMs != null) state.holdDelayMs = clampInt(cfg.holdDelayMs, 0, 3_600_000, state.holdDelayMs || 2500);
+    if (cfg?.cycleDelayMs != null) state.cycleDelayMs = clampInt(cfg.cycleDelayMs, 0, 3_600_000, state.cycleDelayMs || 3000);
+    _applyRpcOptsToStateAndStorage({ rpcUrl: cfg?.rpcUrl, rpcHeaders: cfg?.rpcHeaders });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function __fdvCli_start(cfg = {}) {
+  if (!_isNodeLike()) {
+    // Intended for CLI, but can still be used in browser for debugging.
+  }
+
+  try {
+    if (cfg?.logToConsole) {
+      try { window._fdvLogToConsole = true; } catch {}
+    }
+  } catch {}
+
+  __fdvCli_applyConfig(cfg);
+
+  state.enabled = false;
+  state.softStopRequested = false;
+  state.volumeCreated = 0;
+
+  if (!state.mint) {
+    log('Mint is required', 'error');
+    return 2;
+  }
+
+  // Check auto wallet and RPC quickly
+  let autoKp;
+  try {
+    autoKp = await getAutoKeypair();
+    if (!autoKp) {
+      log('No auto wallet configured. Set/import it in the Auto tab first.', 'error');
+      await debugAutoWalletLoad();
+      return 3;
+    }
+    await getConn();
+  } catch (e) {
+    const msg = String(e?.message || e || '');
+    if (/403/.test(msg)) {
+      log('RPC 403 Forbidden: configure RPC URL and headers in Auto settings.', 'error');
+      log(`RPC URL: ${currentRpcUrl()}`, 'help');
+    } else {
+      log(`RPC error: ${msg}`, 'error');
+    }
+    return 3;
+  }
+
+  // Sanity
+  if (!Number.isFinite(state.minBuyAmountSol) || state.minBuyAmountSol <= 0) state.minBuyAmountSol = 0.004;
+  if (!Number.isFinite(state.maxBuyAmountSol) || state.maxBuyAmountSol <= 0 || state.maxBuyAmountSol < state.minBuyAmountSol) {
+    state.maxBuyAmountSol = Math.max(state.minBuyAmountSol + 0.001, state.minBuyAmountSol * 1.5);
+  }
+  state.multiBotCount = clampInt(state.multiBotCount, 1, 10, 1);
+  state.maxSlippageBps = clampInt(state.maxSlippageBps, 10, 20_000, 2000);
+
+  // Dynamically size initial funding from auto wallet
+  try {
+    const { spendable, total } = await getAutoSpendable();
+    const botCount = clampInt(state.multiBotCount, 1, 10, 1);
+    const minFund = Math.max(0.01, (state.minBuyAmountSol || 0.004) + 0.004);
+    if (spendable < botCount * minFund) {
+      log(`Insufficient auto funds for ${botCount} bot(s). Need ~${(botCount * minFund).toFixed(4)} SOL spendable; have ${spendable.toFixed(4)} SOL (total ${total.toFixed(4)} SOL)`, 'error');
+      return 3;
+    }
+    const decided = decideFundPerWallet(spendable, botCount);
+    state.fundSol = decided;
+    log(`Seeding each bot wallet with ${decided.toFixed(4)} SOL (bots=${botCount}, auto spendable ${spendable.toFixed(4)} SOL)`);
+  } catch (e) {
+    log(`Auto fund sizing failed: ${e?.message || e}`, 'error');
+    return 3;
+  }
+
+  log(`Volume started (headless). Mint=${state.mint.slice(0, 8)}… Auto=${autoKp.publicKey.toBase58().slice(0, 8)}…`, 'ok');
+  await startVolumeBot();
+  return 0;
+}
+
+export async function __fdvCli_stop() {
+  try {
+    await stopVolumeBot();
+    log('Volume stopped (headless).', 'warn');
+    return 0;
+  } catch (e) {
+    log(`Stop error: ${String(e?.message || e || '')}`, 'error');
+    return 3;
+  }
 }
 
 function logObj(label, obj) {
@@ -1673,8 +1820,3 @@ export function initVolumeWidget(container = document.body) {
     window.fdvVolume.clearGeneratedWallets = clearGeneratedWallets;
   }
 }
-
-// // For standalone use
-// if (typeof window !== 'undefined' && window.document) {
-//   initVolumeWidget();
-// }

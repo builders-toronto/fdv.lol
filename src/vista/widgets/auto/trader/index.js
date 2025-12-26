@@ -1688,10 +1688,17 @@ function setRpcHeaders(jsonStr) {
   return false;
 }
 
-
-
 export async function loadWeb3() {
-  if (window.solanaWeb3) return window.solanaWeb3;
+  try {
+    if (typeof window !== "undefined" && window.solanaWeb3) return window.solanaWeb3;
+    if (typeof window !== "undefined" && window._fdvAutoDepsPromise) {
+      const deps = await window._fdvAutoDepsPromise.catch(() => null);
+      if (deps?.web3) {
+        window.solanaWeb3 = deps.web3;
+        return deps.web3;
+      }
+    }
+  } catch {}
 
   if (_isNodeLike()) {
     const { loadSolanaWeb3FromWeb } = await import("./cli/helpers/web3.node.js");
@@ -1699,20 +1706,36 @@ export async function loadWeb3() {
   }
 
   try {
-    return await importFromUrl("https://esm.sh/@solana/web3.js@1.95.1?bundle");
+    const web3 = await importFromUrl("https://esm.sh/@solana/web3.js@1.95.1?bundle");
+    try { if (typeof window !== "undefined") window.solanaWeb3 = web3; } catch {}
+    return web3;
   } catch (_) {
-    return await importFromUrl("https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.1/lib/index.browser.esm.js");
+    const web3 = await importFromUrl("https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.1/lib/index.browser.esm.js");
+    try { if (typeof window !== "undefined") window.solanaWeb3 = web3; } catch {}
+    return web3;
   }
 }
 
 export async function loadBs58() {
-  if (window.bs58) return window.bs58;
+  try {
+    if (typeof window !== "undefined" && window.bs58) return window.bs58;
+    if (typeof window !== "undefined" && window._fdvAutoDepsPromise) {
+      const deps = await window._fdvAutoDepsPromise.catch(() => null);
+      if (deps?.bs58) {
+        window.bs58 = deps.bs58;
+        return deps.bs58;
+      }
+    }
+  } catch {}
   if (_isNodeLike()) {
     const mod = await import("./cli/helpers/bs58.node.js");
     window.bs58 = mod?.default || mod?.bs58 || mod;
     return window.bs58;
   }
-  return (await importFromUrl('https://esm.sh/bs58@5.0.0?bundle')).default;
+
+  const bs58 = (await importFromUrl('https://esm.sh/bs58@5.0.0?bundle')).default;
+  try { if (typeof window !== "undefined") window.bs58 = bs58; } catch {}
+  return bs58;
 }
 
 async function loadDeps() {

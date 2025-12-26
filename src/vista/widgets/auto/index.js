@@ -6,8 +6,59 @@ import {
   saveAutoTraderState,
 } from './trader/index.js';
 
+import { importFromUrl } from '../../../utils/netImport.js';
+
+function ensureAutoDeps() {
+  if (typeof window === 'undefined') return Promise.resolve({ web3: null, bs58: null });
+  if (window._fdvAutoDepsPromise) return window._fdvAutoDepsPromise;
+
+  window._fdvAutoDepsPromise = (async () => {
+    // Web3
+    let web3 = window.solanaWeb3;
+    if (!web3) {
+      try {
+        web3 = await importFromUrl('https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.4/+esm', {
+          cacheKey: 'fdv:auto:web3@1.95.4',
+        });
+      } catch {
+        web3 = await importFromUrl('https://esm.sh/@solana/web3.js@1.95.4?bundle', {
+          cacheKey: 'fdv:auto:web3@1.95.4',
+        });
+      }
+      window.solanaWeb3 = web3;
+    }
+
+    // bs58
+    let bs58Mod = window._fdvBs58Module;
+    let bs58 = window.bs58;
+    if (!bs58Mod) {
+      try {
+        bs58Mod = await importFromUrl('https://cdn.jsdelivr.net/npm/bs58@6.0.0/+esm', {
+          cacheKey: 'fdv:auto:bs58@6.0.0',
+        });
+      } catch {
+        bs58Mod = await importFromUrl('https://esm.sh/bs58@6.0.0?bundle', {
+          cacheKey: 'fdv:auto:bs58@6.0.0',
+        });
+      }
+      window._fdvBs58Module = bs58Mod;
+    }
+    if (!bs58) {
+      bs58 = bs58Mod?.default || bs58Mod;
+      window.bs58 = bs58;
+    }
+
+    window._fdvAutoDeps = { web3, bs58 };
+    return window._fdvAutoDeps;
+  })();
+
+  return window._fdvAutoDepsPromise;
+}
+
 
 export function initAutoWidget(container = document.body) {
+  try { ensureAutoDeps(); } catch {}
+
   const wrap = document.createElement('details');
   wrap.className = 'fdv-auto-wrap';
 

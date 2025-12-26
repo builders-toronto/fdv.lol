@@ -135,6 +135,50 @@ Just open the page and get GOOD / WATCH / SHILL signals at a glance.
   - Profiles file can be a local JSON path or an `https://` URL (defaults to `./fdv.profiles.json` or `FDV_PROFILES`).
   - Example: `node tools/trader.mjs --run-profile --profiles tools/profiles/fdv.profiles.example.json --profile dev --log-to-console`
 
+### Headless follow + volume (via `--run-profile`)
+
+`--run-profile` can run **Auto**, **Follow**, and **Volume** together from a *single* profile.
+
+Common/shared keys (top-level inside your chosen profile):
+- `rpcUrl` (recommended): Solana RPC endpoint.
+- `rpcHeaders` (optional): Object of headers for your RPC.
+- `autoWalletSecret` (required for Follow/Volume): Auto wallet secret used for signing swaps.
+  - Accepts either a base58 secret, or a JSON array string like `[12,34,...]`.
+
+Enable/disable rules:
+- Auto runs by default unless you set `"auto": false`.
+- Follow runs when `follow` is an object and `follow.enabled !== false`.
+- Volume runs when `volume` is an object and `volume.enabled !== false`.
+
+Follow config (profile key: `follow`):
+- `enabled`: `true/false` (default: enabled if present)
+- `targetWallet` (required): wallet address to follow
+- `buyPct` (optional): percent of auto wallet SOL to use per mirrored buy (range clamps to 10–70)
+- `maxHoldMin` (optional): max minutes to hold before exiting
+- `pollMs` (optional): polling interval (min 250ms)
+
+Volume config (profile key: `volume`):
+- `enabled`: `true/false` (default: enabled if present)
+- `mint` (required): token mint to generate volume on
+- `bots` (optional): number of bot wallets to run (1–10)
+- `targetVolumeSol` (optional): stop after generating this amount of SOL volume (0 = unlimited)
+- `minBuyAmountSol` / `maxBuyAmountSol` (optional): random buy sizing bounds
+- `sellAmountPct` (optional): percent to sell on each cycle (default 100)
+- `maxSlippageBps` (optional): slippage cap
+- `holdTokens` (optional): keep this many tokens (0 = sell all)
+- `holdDelayMs` / `cycleDelayMs` (optional): pacing
+
+Example profiles file:
+- See `tools/profiles/fdv.profiles.example.json` for a starting point.
+
+Example commands:
+- Follow-only (profile must set `"auto": false` and enable follow):
+  - `node tools/trader.mjs --run-profile --profiles tools/profiles/fdv.profiles.example.json --profile follow_only --log-to-console`
+- Volume-only:
+  - `node tools/trader.mjs --run-profile --profiles tools/profiles/fdv.profiles.example.json --profile volume_only --log-to-console`
+- Auto + Follow + Volume:
+  - `node tools/trader.mjs --run-profile --profiles tools/profiles/fdv.profiles.example.json --profile all_bots --log-to-console`
+
 - Help:
   - `node tools/trader.mjs --help`
 
@@ -167,5 +211,3 @@ fdv.lol is open-source and community-driven. You can help by:
 ---
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
-
-follow: gate buys on Jupiter liquidity quote

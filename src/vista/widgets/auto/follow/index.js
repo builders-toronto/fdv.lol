@@ -1,5 +1,10 @@
 import { createDex } from "../lib/dex.js";
 import {
+	preflightBuyLiquidity,
+	DEFAULT_BUY_EXIT_CHECK_FRACTION,
+	DEFAULT_BUY_MAX_PRICE_IMPACT_PCT,
+} from "../lib/liquidity.js";
+import {
 	SOL_MINT,
 	TX_FEE_BUFFER_LAMPORTS,
 	MIN_SELL_CHUNK_SOL,
@@ -17,40 +22,44 @@ import {
 import { rpcWait, rpcBackoffLeft, markRpcStress } from "../lib/rpcThrottle.js";
 import { loadSplToken } from "../../../../core/solana/splToken.js";
 import { getRugSignalForMint } from "../../../meme/metrics/kpi/pumping.js";
+import { importFromUrlWithFallback } from "../../../../utils/netImport.js";
 
 let _web3Promise;
 let _bs58Promise;
 let _connPromise;
 
-async function importWithFallback(urls) {
-	let lastErr;
-	for (const url of urls) {
-		try {
-			return await import(url);
-		} catch (e) {
-			lastErr = e;
-		}
-	}
-	throw lastErr || new Error("IMPORT_FAILED");
-}
-
 export async function loadWeb3() {
+	try {
+		if (typeof window !== "undefined" && window.solanaWeb3) return window.solanaWeb3;
+		if (typeof window !== "undefined" && window._fdvAutoDepsPromise) {
+			const deps = await window._fdvAutoDepsPromise.catch(() => null);
+			if (deps?.web3) return deps.web3;
+		}
+	} catch {}
 	if (_web3Promise) return _web3Promise;
 	_web3Promise = (async () =>
-		importWithFallback([
+		importFromUrlWithFallback([
 			"https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.4/+esm",
 			"https://esm.sh/@solana/web3.js@1.95.4?bundle",
-		]))();
+		], { cacheKey: "fdv:follow:web3@1.95.4" }))();
 	return _web3Promise;
 }
 
 async function loadBs58() {
+	try {
+		if (typeof window !== "undefined" && window._fdvBs58Module) return window._fdvBs58Module;
+		if (typeof window !== "undefined" && window._fdvAutoDepsPromise) {
+			const deps = await window._fdvAutoDepsPromise.catch(() => null);
+			if (deps?.bs58) return { default: deps.bs58 };
+		}
+		if (typeof window !== "undefined" && window.bs58) return { default: window.bs58 };
+	} catch {}
 	if (_bs58Promise) return _bs58Promise;
 	_bs58Promise = (async () =>
-		importWithFallback([
+		importFromUrlWithFallback([
 			"https://cdn.jsdelivr.net/npm/bs58@6.0.0/+esm",
 			"https://esm.sh/bs58@6.0.0?bundle",
-		]))();
+		], { cacheKey: "fdv:follow:bs58@6.0.0" }))();
 	return _bs58Promise;
 }
 
@@ -657,6 +666,16 @@ let statusEl, rpcEl, activeEl;
 function log(msg, type = "info") {
 	try {
 		const line = `[${new Date().toLocaleTimeString()}] ${String(msg ?? "")}`;
+		try {
+			// Headless/CLI: allow mirroring to stdout.
+			const wantConsole = !!(typeof window !== "undefined" && window._fdvLogToConsole);
+			const nodeLike = typeof process !== "undefined" && !!process?.stdout;
+			if ((wantConsole || (nodeLike && !logEl)) && line) {
+				if (String(type || "").toLowerCase().startsWith("err")) console.error(line);
+				else if (String(type || "").toLowerCase().startsWith("war")) console.warn(line);
+				else console.log(line);
+			}
+		} catch {}
 		if (logEl) {
 			const div = document.createElement("div");
 			div.textContent = line;
@@ -667,6 +686,215 @@ function log(msg, type = "info") {
 		}
 	} catch {}
 }
+
+function _isNodeLike() {
+	try {
+		return typeof process !== "undefined" && !!process?.versions?.node;
+	} catch {
+		return false;
+	}
+}
+
+function _applyRpcOptsToStateAndStorage({ rpcUrl, rpcHeaders } = {}) {
+	try {
+		if (rpcUrl != null) {
+			const u = String(rpcUrl || "").trim();
+			state.rpcUrl = u;
+			try {
+				if (typeof localStorage !== "undefined") localStorage.setItem("fdv_rpc_url", u);
+			} catch {}
+		}
+		if (rpcHeaders != null) {
+			const h = rpcHeaders && typeof rpcHeaders === "object" ? rpcHeaders : {};
+			state.rpcHeaders = h;
+			try {
+				if (typeof localStorage !== "undefined") localStorage.setItem("fdv_rpc_headers", JSON.stringify(h));
+			} catch {}
+		}
+	} catch {}
+}
+
+function __fdvCli_applyFollowConfig(cfg = {}) {
+	try {
+		loadState();
+		if (cfg?.targetWallet != null) state.targetWallet = String(cfg.targetWallet || "").trim();
+		if (cfg?.buyPct != null) state.buyPct = clampBuyPct(cfg.buyPct, state.buyPct);
+		if (cfg?.maxHoldMin != null) state.maxHoldMin = clampMaxHoldMin(cfg.maxHoldMin, state.maxHoldMin);
+		if (cfg?.pollMs != null) state.pollMs = Math.floor(clampNum(cfg.pollMs, 250, 60_000, state.pollMs || 1500));
+		_applyRpcOptsToStateAndStorage({ rpcUrl: cfg?.rpcUrl, rpcHeaders: cfg?.rpcHeaders });
+		saveState();
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function __fdvCli_startFollow(cfg = {}) {
+	// Headless start: do not depend on DOM inputs.
+	if (!_isNodeLike()) {
+		// Still allow in browser, but this is intended for CLI.
+	}
+	try {
+		if (cfg?.logToConsole) {
+			try { window._fdvLogToConsole = true; } catch {}
+		}
+	} catch {}
+
+	loadState();
+	__fdvCli_applyFollowConfig(cfg);
+
+	const target = String(cfg?.targetWallet ?? state.targetWallet ?? "").trim();
+	if (!target) {
+		log("Target wallet is required.", "error");
+		return 2;
+	}
+	if (!(await isValidPubkeyStr(target))) {
+		log("Target wallet pubkey invalid.", "error");
+		return 2;
+	}
+
+	// Basic auto wallet sanity before starting
+	const autoKp = await getAutoKeypair();
+	if (!autoKp) {
+		log("No auto wallet configured. Set/import it in the Auto tab first.", "error");
+		await debugAutoWalletLoad(log);
+		return 3;
+	}
+	try {
+		await getConn();
+	} catch (e) {
+		log(`RPC error: ${String(e?.message || e || "")}`, "error");
+		return 3;
+	}
+
+	state.targetWallet = target;
+	state.buyPct = clampBuyPct(cfg?.buyPct, state.buyPct);
+	state.maxHoldMin = clampMaxHoldMin(cfg?.maxHoldMin, state.maxHoldMin);
+	state.pollMs = Math.floor(clampNum(cfg?.pollMs, 250, 60_000, state.pollMs || 1500));
+	state.pendingAction = "";
+	state.pendingSig = "";
+	state.pendingSince = 0;
+	state.lastActionAttempt = 0;
+
+	const persistedMint = String(state.activeMint || "").trim();
+	if (persistedMint) {
+		const hasPos = await _autoHasTokenBalance(persistedMint);
+		if (!hasPos) {
+			_clearActivePositionState();
+			state.pendingAction = "";
+			state.pendingSig = "";
+			state.pendingAttempts = 0;
+			state.pendingLastTryAt = 0;
+			state.pendingSince = 0;
+			state.lastActionAttempt = 0;
+		}
+	}
+	if (state.entryMint && state.entryMint !== state.activeMint) {
+		state.entryMint = "";
+		state.entrySol = 0;
+		state.entryAt = 0;
+	}
+
+	try {
+		const { PublicKey } = await loadWeb3();
+		const conn = await getConn();
+		const pk = new PublicKey(target);
+		const recent = await conn.getSignaturesForAddress(pk, { limit: 25 }, "confirmed");
+		const list = Array.isArray(recent) ? recent : [];
+		const newest = String(list?.[0]?.signature || "");
+		state.lastSig = newest || "";
+
+		// Always try to find the latest buy from target; only overwrite if we don't already
+		// have an actual open position in the auto wallet.
+		{
+			const hasPos = state.activeMint ? await _autoHasTokenBalance(state.activeMint) : false;
+			if (!hasPos) {
+				const b = await _findLatestBuyMintFromTarget(target, { limit: 200 });
+				if (b) {
+					state.activeMint = b;
+					state.pendingSince = Date.now();
+					state.lastActionAttempt = 0;
+					log(`Startup: latest buy to follow is ${b} (from parsed txs)`, "help");
+				}
+			}
+		}
+
+		if (!state.activeMint && list.length) {
+			const soldMints = new Set();
+			for (const rec of list) {
+				const sig = String(rec?.signature || "");
+				if (!sig) continue;
+				const info = await extractBuySellForTarget(sig, target);
+				if (!info) continue;
+				const s = info.sell?.mint;
+				const b = info.buy?.mint;
+				if (s) soldMints.add(s);
+				if (b && !soldMints.has(b)) {
+					if (isMintBlacklisted(b)) continue;
+					state.activeMint = b;
+					state.pendingSince = Date.now();
+					state.lastActionAttempt = 0;
+					log(`Startup: latest buy to follow is ${b} (sig ${sig.slice(0, 8)}…)`, "help");
+					break;
+				}
+			}
+		}
+	} catch {}
+
+	saveState();
+
+	state.enabled = true;
+	updateUI();
+	log(
+		`Follow started (headless). Target=${target.slice(0, 6)}… Auto=${autoKp.publicKey.toBase58().slice(0, 6)}…`,
+		"ok",
+	);
+	if (state.activeMint) {
+		log(`Following mint: ${state.activeMint}`, "ok");
+		state.entryMint = state.activeMint;
+		state.entrySol = 0;
+		state.entryAt = Date.now();
+		saveState();
+		const r = await mirrorBuy(state.activeMint);
+		if (Number(r?.spentSol || 0) > 0) {
+			state.entrySol = Number(r.spentSol);
+			state.entryAt = Date.now();
+			saveState();
+		}
+		if (!r?.ok) {
+			state.pendingAction = "buy";
+			state.pendingSig = String(r?.sig || "");
+			state.pendingSince = Date.now();
+			saveState();
+		}
+	} else {
+		log("Waiting for new target transactions…", "help");
+	}
+
+	if (_timer) clearInterval(_timer);
+	_timer = setInterval(() => {
+		pollOnce().catch(() => {});
+	}, Math.max(250, Number(state.pollMs || 1500)));
+
+	// quick first poll after start
+	await delay(250);
+	await pollOnce();
+	return 0;
+}
+
+async function __fdvCli_stopFollow() {
+	try {
+		await stopFollowBot();
+		return 0;
+	} catch (e) {
+		log(`Stop error: ${String(e?.message || e || "")}`, "error");
+		return 3;
+	}
+}
+
+export const __fdvCli_applyConfig = __fdvCli_applyFollowConfig;
+export const __fdvCli_start = __fdvCli_startFollow;
+export const __fdvCli_stop = __fdvCli_stopFollow;
 
 function logObj(label, obj) {
 	try {
@@ -1647,35 +1875,6 @@ function getDynamicSlippageBps(kind = "buy") {
 	return Math.floor(clampNum(slip, DYN_SLIP_MIN_BPS, DYN_SLIP_MAX_BPS, base));
 }
 
-const BUY_MAX_PRICE_IMPACT_PCT = 0.25; 
-
-async function _preflightBuyLiquidity(mint, inputSol, slippageBps) {
-	try {
-		const m = String(mint || "").trim();
-		if (!m || m === SOL_MINT) return { ok: false, reason: "bad-mint" };
-		const solUi = Number(inputSol || 0);
-		if (!(solUi > 0)) return { ok: false, reason: "bad-amount" };
-		const slip = Math.floor(clampNum(slippageBps, 1, 20_000, 250));
-
-		const raw = BigInt(Math.max(1, Math.floor(solUi * 1e9)));
-		const q = await getDex().quoteGeneric(SOL_MINT, m, raw.toString(), slip);
-		const outRaw = Number(q?.outAmount || 0);
-		const routeLen = Array.isArray(q?.routePlan) ? q.routePlan.length : 0;
-		if (!(outRaw > 0) || routeLen <= 0) {
-			return { ok: false, reason: "no-route" };
-		}
-
-		const pi = Number(q?.priceImpactPct);
-		if (Number.isFinite(pi) && pi >= BUY_MAX_PRICE_IMPACT_PCT) {
-			return { ok: false, reason: "high-impact", priceImpactPct: pi };
-		}
-
-		return { ok: true, priceImpactPct: Number.isFinite(pi) ? pi : undefined, routeLen };
-	} catch {
-		return { ok: false, reason: "quote-failed" };
-	}
-}
-
 async function mirrorBuy(mint) {
 	if (isMintBlacklisted(mint)) {
 		log(`BUY blocked: mint is blacklisted (${String(mint || "").slice(0, 6)}…)`, "warn");
@@ -1720,10 +1919,18 @@ async function mirrorBuy(mint) {
 
 	// Liquidity sanity check (quote must exist and price impact must be reasonable)
 	{
-		const chk = await _preflightBuyLiquidity(mint, buySol, slip);
+		const chk = await preflightBuyLiquidity({
+			dex: getDex(),
+			solMint: SOL_MINT,
+			mint,
+			inputSol: buySol,
+			slippageBps: slip,
+			maxPriceImpactPct: DEFAULT_BUY_MAX_PRICE_IMPACT_PCT,
+			exitCheckFraction: DEFAULT_BUY_EXIT_CHECK_FRACTION,
+		});
 		if (!chk?.ok) {
 			const why = String(chk?.reason || "");
-			if (why === "high-impact") {
+			if (why === "high-impact" || why === "exit-high-impact") {
 				const piPct = Number(chk?.priceImpactPct || 0) * 100;
 				log(
 					`BUY blocked: low liquidity/high impact for ${String(mint || "").slice(0, 6)}… (impact≈${piPct.toFixed(1)}%)`,
