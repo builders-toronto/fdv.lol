@@ -168,4 +168,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-fixed auto bot bugs (part 1); add follow bot; wire auto-trader CLI
+follow: gate buys on Jupiter liquidity quote

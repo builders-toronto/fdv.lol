@@ -651,7 +651,7 @@ function getDex() {
 // UI + logging
 const MAX_LOG_ENTRIES = 120;
 let logEl, startBtn, stopBtn;
-let targetEl, buySolEl, slipEl, pollEl;
+let targetEl, buyPctEl, maxHoldEl, pollEl;
 let statusEl, rpcEl, activeEl;
 
 function log(msg, type = "info") {
@@ -728,8 +728,8 @@ let state = {
 	queuedAt: 0,
 	lastSig: "",
 	pollMs: 1500,
-	buySol: 0.1,
-	slippageBps: 250,
+	buyPct: 25,
+	maxHoldMin: 5,
 	rpcUrl: "",
 	rpcHeaders: {},
 	pendingAction: "", // "buy" | "sell" | ""
@@ -750,6 +750,13 @@ function loadState() {
 			...parsed,
 			enabled: false, // never auto-run
 		};
+
+		// Migration: older state used fixed SOL buy size (buySol). We now use buyPct.
+		const maxPct = Math.floor(FOLLOW_BUY_MAX_FRACTION_OF_SOL * 100);
+		if (!Number.isFinite(Number(state.buyPct))) state.buyPct = 10;
+		state.buyPct = clampNum(state.buyPct, 10, maxPct, 25);
+
+		state.maxHoldMin = clampMaxHoldMin(state.maxHoldMin, 5);
 	} catch {}
 }
 
@@ -765,8 +772,8 @@ function saveState() {
 		queuedAt: Number(state.queuedAt || 0),
 		lastSig: String(state.lastSig || "").trim(),
 		pollMs: Number(state.pollMs || 1500),
-		buySol: Number(state.buySol || 0.1),
-		slippageBps: Number(state.slippageBps || 250),
+		buyPct: Number(state.buyPct || 25),
+		maxHoldMin: Number(state.maxHoldMin || 5),
 		rpcUrl: String(state.rpcUrl || "").trim(),
 		rpcHeaders: state.rpcHeaders && typeof state.rpcHeaders === "object" ? state.rpcHeaders : {},
 		pendingAction: String(state.pendingAction || ""),
@@ -779,7 +786,15 @@ function saveState() {
 
 const TAKE_PROFIT_BPS = 1000; // +10%
 
-const RECYCLE_HOLD_MS = 5 * 60_000;
+const RECYCLE_HOLD_MAX_MIN = 15;
+
+function clampMaxHoldMin(minsLike, fallbackMin = 5) {
+	return clampNum(minsLike, 1, RECYCLE_HOLD_MAX_MIN, fallbackMin);
+}
+
+function getMaxHoldMs() {
+	return clampMaxHoldMin(state.maxHoldMin, 5) * 60_000;
+}
 
 function _clearActivePositionState() {
 	state.activeMint = "";
@@ -820,7 +835,7 @@ async function _startQueuedMintIfAny() {
 
 		state.activeMint = m;
 		state.entryMint = m;
-		state.entrySol = clampNum(state.buySol, 0.001, 20, 0.1);
+		state.entrySol = 0;
 		state.entryAt = Date.now();
 		state.queuedMint = "";
 		state.queuedSig = "";
@@ -851,12 +866,21 @@ async function _startQueuedMintIfAny() {
 }
 
 const PENDING_MAX_MS = 240_000;
-const PENDING_RETRY_GAP_MS = 25_000;
-const PENDING_MAX_ATTEMPTS = 2;
+const PENDING_RETRY_GAP_MS = 5_000;
+const PENDING_MAX_ATTEMPTS = 4;
 
-// Only ever deploy a portion of the wallet into a followed mint.
-// Leaving SOL behind ensures we can pay fees / swap out later.
 const FOLLOW_BUY_MAX_FRACTION_OF_SOL = 0.7;
+
+const FOLLOW_BUY_MIN_PCT = 10;
+const FOLLOW_BUY_MAX_PCT = Math.floor(FOLLOW_BUY_MAX_FRACTION_OF_SOL * 100);
+
+function clampBuyPct(pctLike, fallbackPct = 25) {
+	return clampNum(pctLike, FOLLOW_BUY_MIN_PCT, FOLLOW_BUY_MAX_PCT, fallbackPct);
+}
+
+function getBuyFraction() {
+	return clampBuyPct(state.buyPct, 25) / 100;
+}
 
 async function _getSigStatus(sig) {
 	try {
@@ -888,7 +912,7 @@ async function _checkPendingBuy() {
 			state.pendingLastTryAt = 0;
 			if (!state.entryMint || state.entryMint !== state.activeMint) {
 				state.entryMint = String(state.activeMint || "");
-				state.entrySol = clampNum(state.buySol, 0.001, 20, 0.1);
+				state.entrySol = 0;
 				state.entryAt = Date.now();
 			}
 			saveState();
@@ -1136,7 +1160,7 @@ async function _maybeRecycleExit() {
 		const entryAt = Number(state.entryAt || 0);
 		if (!(entryAt > 0)) return false;
 		const elapsed = Date.now() - entryAt;
-		if (elapsed < RECYCLE_HOLD_MS) return false;
+		if (elapsed < getMaxHoldMs()) return false;
 
 		const mint = String(state.activeMint || "").trim();
 		if (!mint) return false;
@@ -1203,8 +1227,8 @@ async function _maybeRecycleExit() {
 function updateUI() {
 	try {
 		if (targetEl) targetEl.value = String(state.targetWallet || "");
-		if (buySolEl) buySolEl.value = String(state.buySol ?? "");
-		if (slipEl) slipEl.value = String(state.slippageBps ?? "");
+		if (buyPctEl) buyPctEl.value = String(state.buyPct ?? "");
+		if (maxHoldEl) maxHoldEl.value = String(clampMaxHoldMin(state.maxHoldMin, 5));
 		if (pollEl) pollEl.value = String(state.pollMs ?? "");
 		if (activeEl) activeEl.textContent = state.activeMint ? state.activeMint : "(none)";
 		if (statusEl) {
@@ -1565,7 +1589,7 @@ async function _syncToTargetOpenMintAfterExit(avoidMint) {
 
 		state.activeMint = b;
 		state.entryMint = b;
-		state.entrySol = clampNum(state.buySol, 0.001, 20, 0.1);
+		state.entrySol = 0;
 		state.entryAt = Date.now();
 		state.pendingSince = Date.now();
 		state.lastActionAttempt = 0;
@@ -1613,14 +1637,52 @@ async function _autoHasTokenBalance(mintStr) {
 	}
 }
 
+const DYN_SLIP_MIN_BPS = 50;
+const DYN_SLIP_MAX_BPS = 2500;
+
+function getDynamicSlippageBps(kind = "buy") {
+	const attempts = Math.max(0, Number(state?.pendingAttempts || 0) | 0);
+	const base = kind === "sell" ? 300 : 250;
+	const slip = base + attempts * 200;
+	return Math.floor(clampNum(slip, DYN_SLIP_MIN_BPS, DYN_SLIP_MAX_BPS, base));
+}
+
+const BUY_MAX_PRICE_IMPACT_PCT = 0.25; 
+
+async function _preflightBuyLiquidity(mint, inputSol, slippageBps) {
+	try {
+		const m = String(mint || "").trim();
+		if (!m || m === SOL_MINT) return { ok: false, reason: "bad-mint" };
+		const solUi = Number(inputSol || 0);
+		if (!(solUi > 0)) return { ok: false, reason: "bad-amount" };
+		const slip = Math.floor(clampNum(slippageBps, 1, 20_000, 250));
+
+		const raw = BigInt(Math.max(1, Math.floor(solUi * 1e9)));
+		const q = await getDex().quoteGeneric(SOL_MINT, m, raw.toString(), slip);
+		const outRaw = Number(q?.outAmount || 0);
+		const routeLen = Array.isArray(q?.routePlan) ? q.routePlan.length : 0;
+		if (!(outRaw > 0) || routeLen <= 0) {
+			return { ok: false, reason: "no-route" };
+		}
+
+		const pi = Number(q?.priceImpactPct);
+		if (Number.isFinite(pi) && pi >= BUY_MAX_PRICE_IMPACT_PCT) {
+			return { ok: false, reason: "high-impact", priceImpactPct: pi };
+		}
+
+		return { ok: true, priceImpactPct: Number.isFinite(pi) ? pi : undefined, routeLen };
+	} catch {
+		return { ok: false, reason: "quote-failed" };
+	}
+}
+
 async function mirrorBuy(mint) {
 	if (isMintBlacklisted(mint)) {
 		log(`BUY blocked: mint is blacklisted (${String(mint || "").slice(0, 6)}…)`, "warn");
 		return { ok: false, sig: "", spentSol: 0 };
 	}
 
-	const desiredSol = clampNum(state.buySol, 0.001, 20, 0.1);
-	const slip = Math.floor(clampNum(state.slippageBps, 10, 20_000, 250));
+	const slip = getDynamicSlippageBps("buy");
 	const autoKp = await getAutoKeypair();
 	if (!autoKp) {
 		log("No auto wallet configured. Set/import it in the Auto tab first.", "error");
@@ -1638,6 +1700,7 @@ async function mirrorBuy(mint) {
 		Number(ataRentLamports || 0) +
 		Number(wsolAtaRentLamports || 0);
 	const maxSpendSol = Math.max(0, solBalUi - reserveLamports / 1e9);
+	const desiredSol = Math.max(0, Number(solBalUi || 0) * getBuyFraction());
 	const maxByFractionSol = Math.max(0, Number(solBalUi || 0) * FOLLOW_BUY_MAX_FRACTION_OF_SOL);
 	const buySol = Math.min(desiredSol, maxSpendSol, maxByFractionSol);
 	if (!(buySol >= 0.001)) {
@@ -1648,10 +1711,32 @@ async function mirrorBuy(mint) {
 		return { ok: false, sig: "", spentSol: 0 };
 	}
 	if (buySol + 1e-9 < desiredSol) {
+		const pct = Math.round(getBuyFraction() * 100);
 		log(
-			`BUY capped: desired=${desiredSol.toFixed(4)} SOL, spending=${buySol.toFixed(4)} SOL (balance=${solBalUi.toFixed(4)} SOL, cap70%=${maxByFractionSol.toFixed(4)} SOL)`,
+			`BUY capped: desired≈${pct}% (${desiredSol.toFixed(4)} SOL), spending=${buySol.toFixed(4)} SOL (balance=${solBalUi.toFixed(4)} SOL, cap70%=${maxByFractionSol.toFixed(4)} SOL)`,
 			"help",
 		);
+	}
+
+	// Liquidity sanity check (quote must exist and price impact must be reasonable)
+	{
+		const chk = await _preflightBuyLiquidity(mint, buySol, slip);
+		if (!chk?.ok) {
+			const why = String(chk?.reason || "");
+			if (why === "high-impact") {
+				const piPct = Number(chk?.priceImpactPct || 0) * 100;
+				log(
+					`BUY blocked: low liquidity/high impact for ${String(mint || "").slice(0, 6)}… (impact≈${piPct.toFixed(1)}%)`,
+					"warn",
+				);
+			} else {
+				log(
+					`BUY blocked: no viable liquidity/route for ${String(mint || "").slice(0, 6)}… (${why || "no-route"})`,
+					"warn",
+				);
+			}
+			return { ok: false, sig: "", spentSol: 0 };
+		}
 	}
 
 	log(`Mirror BUY ${mint.slice(0, 6)}… for ~${buySol.toFixed(4)} SOL`, "ok");
@@ -1683,7 +1768,7 @@ async function mirrorBuy(mint) {
 }
 
 async function mirrorSell(mint) {
-	const slip = Math.floor(clampNum(state.slippageBps, 10, 20_000, 250));
+	const slip = getDynamicSlippageBps("sell");
 	const autoKp = await getAutoKeypair();
 	if (!autoKp) {
 		log("No auto wallet configured. Set/import it in the Auto tab first.", "error");
@@ -1774,7 +1859,7 @@ async function pollOnce() {
 				}
 				state.activeMint = evt.mint;
 				state.entryMint = evt.mint;
-				state.entrySol = clampNum(state.buySol, 0.001, 20, 0.1);
+				state.entrySol = 0;
 				state.entryAt = Date.now();
 				state.pendingSince = Date.now();
 				state.lastActionAttempt = 0;
@@ -1877,16 +1962,14 @@ async function startFollowBot() {
 	}
 
 	state.targetWallet = target;
-	state.buySol = clampNum(buySolEl?.value, 0.001, 20, 0.1);
-	state.slippageBps = Math.floor(clampNum(slipEl?.value, 10, 20_000, 250));
+	state.buyPct = clampBuyPct(buyPctEl?.value, state.buyPct);
+	state.maxHoldMin = clampMaxHoldMin(maxHoldEl?.value, state.maxHoldMin);
 	state.pollMs = Math.floor(clampNum(pollEl?.value, 250, 60_000, 1500));
 	state.pendingAction = "";
 	state.pendingSig = "";
 	state.pendingSince = 0;
 	state.lastActionAttempt = 0;
 
-	// If we have a persisted activeMint but the auto wallet doesn't actually hold it,
-	// treat it as stale state so it can't block "latest buy" detection.
 	const persistedMint = String(state.activeMint || "").trim();
 	if (persistedMint) {
 		const hasPos = await _autoHasTokenBalance(persistedMint);
@@ -1960,7 +2043,7 @@ async function startFollowBot() {
 	if (state.activeMint) {
 		log(`Following mint: ${state.activeMint}`, "ok");
 		state.entryMint = state.activeMint;
-		state.entrySol = clampNum(state.buySol, 0.001, 20, 0.1);
+		state.entrySol = 0;
 		state.entryAt = Date.now();
 		saveState();
 		const r = await mirrorBuy(state.activeMint);
@@ -2071,8 +2154,8 @@ export function initFollowWidget(container = document.body) {
 		<div class="fdv-tab-content active" data-tab-content="follow">
 			<div class="fdv-grid">
 				<label>Target Wallet <input id="follow-target" type="text" placeholder="Wallet pubkey"></label>
-				<label>Buy Amount (SOL) <input id="follow-buy-sol" type="number" min="0.001" step="0.001"></label>
-				<label>Slippage (bps) <input id="follow-slip" type="number" min="10" max="20000" step="10"></label>
+				<label>Buy % (${FOLLOW_BUY_MIN_PCT}–${FOLLOW_BUY_MAX_PCT}%) <input id="follow-buy-pct" type="number" min="${FOLLOW_BUY_MIN_PCT}" max="${FOLLOW_BUY_MAX_PCT}" step="1"></label>
+				<label>Max Hold (min, ≤${RECYCLE_HOLD_MAX_MIN}) <input id="follow-max-hold" type="number" min="1" max="${RECYCLE_HOLD_MAX_MIN}" step="1"></label>
 				<label>Poll (ms) <input id="follow-poll" type="number" min="250" max="60000" step="50"></label>
 			</div>
 
@@ -2092,8 +2175,8 @@ export function initFollowWidget(container = document.body) {
 	container.appendChild(wrap);
 
 	targetEl = document.getElementById("follow-target");
-	buySolEl = document.getElementById("follow-buy-sol");
-	slipEl = document.getElementById("follow-slip");
+	buyPctEl = document.getElementById("follow-buy-pct");
+	maxHoldEl = document.getElementById("follow-max-hold");
 	pollEl = document.getElementById("follow-poll");
 	logEl = document.getElementById("follow-log");
 	startBtn = document.getElementById("fdv-follow-start");
@@ -2112,12 +2195,12 @@ export function initFollowWidget(container = document.body) {
 	});
 
 	// Persist edits when stopped
-	for (const el of [targetEl, buySolEl, slipEl, pollEl]) {
+	for (const el of [targetEl, buyPctEl, maxHoldEl, pollEl]) {
 		el?.addEventListener("change", () => {
 			if (state.enabled) return;
 			state.targetWallet = String(targetEl?.value || "").trim();
-			state.buySol = clampNum(buySolEl?.value, 0.001, 20, state.buySol);
-			state.slippageBps = Math.floor(clampNum(slipEl?.value, 10, 20_000, state.slippageBps));
+			state.buyPct = clampBuyPct(buyPctEl?.value, state.buyPct);
+			state.maxHoldMin = clampMaxHoldMin(maxHoldEl?.value, state.maxHoldMin);
 			state.pollMs = Math.floor(clampNum(pollEl?.value, 250, 60_000, state.pollMs));
 			saveState();
 			updateUI();
