@@ -9,12 +9,14 @@ import {
 	MAX_CONSEC_SWAP_400,
 	ROUTER_COOLDOWN_MS,
 	MINT_RUG_BLACKLIST_MS,
+	RUG_FORCE_SELL_SEVERITY,
 	SPLIT_FRACTIONS,
 	FEE_ATAS,
 	AUTO_CFG,
 } from "../lib/constants.js";
 import { rpcWait, rpcBackoffLeft, markRpcStress } from "../lib/rpcThrottle.js";
 import { loadSplToken } from "../../../../core/solana/splToken.js";
+import { getRugSignalForMint } from "../../../meme/metrics/kpi/pumping.js";
 
 let _web3Promise;
 let _bs58Promise;
@@ -412,16 +414,25 @@ async function getTokenBalanceUiByMint(ownerPkOrStr, mintStr) {
 		const res = await conn.getParsedTokenAccountsByOwner(owner, { mint }, "confirmed");
 		const v = res?.value || [];
 		let totalUi = 0;
+		let totalRaw = 0n;
 		let decimals = null;
 		for (const it of v) {
 			const amt = it?.account?.data?.parsed?.info?.tokenAmount;
 			const ui = Number(amt?.uiAmount);
 			if (Number.isFinite(ui)) totalUi += ui;
+			try {
+				const rawStr = String(amt?.amount || "");
+				if (rawStr) totalRaw += BigInt(rawStr);
+			} catch {}
 			const d = Number(amt?.decimals);
 			if (Number.isFinite(d)) decimals = d;
 		}
 		if (!Number.isFinite(totalUi)) totalUi = 0;
-		return { sizeUi: totalUi, decimals: Number.isFinite(decimals) ? decimals : await safeGetDecimalsFast(mintStr) };
+		return {
+			sizeUi: totalUi,
+			decimals: Number.isFinite(decimals) ? decimals : await safeGetDecimalsFast(mintStr),
+			sizeRaw: totalRaw.toString(),
+		};
 	} catch {
 		return { sizeUi: 0, decimals: 0 };
 	}
@@ -438,6 +449,149 @@ async function getSolBalanceUi(ownerPkOrStr) {
 		return Number.isFinite(ui) ? ui : 0;
 	} catch {
 		return 0;
+	}
+}
+
+async function unwrapWsolIfAny(signerOrOwner) {
+	try {
+		const { PublicKey, Transaction, TransactionInstruction } = await loadWeb3();
+		const conn = await getConn();
+
+		let ownerPk = null;
+		let signer = null;
+		try {
+			if (signerOrOwner?.publicKey) {
+				ownerPk = signerOrOwner.publicKey instanceof PublicKey
+					? signerOrOwner.publicKey
+					: new PublicKey(
+						signerOrOwner.publicKey.toBase58 ? signerOrOwner.publicKey.toBase58() : signerOrOwner.publicKey
+					);
+				signer = signerOrOwner;
+			} else if (typeof signerOrOwner === "string" && (await isValidPubkeyStr(signerOrOwner))) {
+				ownerPk = new PublicKey(signerOrOwner);
+			} else if (signerOrOwner && typeof signerOrOwner.toBase58 === "function") {
+				ownerPk = new PublicKey(signerOrOwner.toBase58());
+				signer = signerOrOwner;
+			}
+		} catch {}
+		if (!ownerPk) return false;
+
+		const canSign = !!(
+			signer && (typeof signer.sign === "function" || (signer.secretKey && signer.secretKey.length > 0))
+		);
+		if (!canSign) return false;
+
+		if (!window._fdvUnwrapInflight) window._fdvUnwrapInflight = new Map();
+		const ownerStr = ownerPk.toBase58();
+		if (window._fdvUnwrapInflight.get(ownerStr)) return false;
+		window._fdvUnwrapInflight.set(ownerStr, true);
+
+		try {
+			const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, createCloseAccountInstruction, getAssociatedTokenAddress } =
+				await loadSplToken();
+			const progs = [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].filter(Boolean);
+
+			const atapks = [];
+			for (const pid of progs) {
+				try {
+					const mint = new PublicKey(SOL_MINT);
+					const ataAny = await getAssociatedTokenAddress(mint, ownerPk, true, pid);
+					const ata = typeof ataAny === "string" ? new PublicKey(ataAny) : ataAny;
+					if (ata) atapks.push({ pid, ata });
+				} catch {}
+			}
+
+			const ixs = [];
+			for (const { pid, ata } of atapks) {
+				try {
+					const ai = await conn.getAccountInfo(ata, "processed").catch((e) => {
+						markRpcStress?.(e, 1500);
+						return null;
+					});
+					if (!ai) continue;
+					if (typeof createCloseAccountInstruction === "function") {
+						ixs.push(createCloseAccountInstruction(ata, ownerPk, ownerPk, [], pid));
+					} else {
+						ixs.push(
+							new TransactionInstruction({
+								programId: pid,
+								keys: [
+									{ pubkey: ata, isSigner: false, isWritable: true },
+									{ pubkey: ownerPk, isSigner: false, isWritable: true },
+									{ pubkey: ownerPk, isSigner: true, isWritable: false },
+								],
+								data: Uint8Array.of(9),
+							})
+						);
+					}
+				} catch (e) {
+					markRpcStress?.(e, 1500);
+				}
+			}
+			if (!ixs.length) return false;
+
+			const tx = new Transaction();
+			for (const ix of ixs) tx.add(ix);
+			tx.feePayer = ownerPk;
+			tx.recentBlockhash = (await conn.getLatestBlockhash("processed")).blockhash;
+			tx.sign(signer);
+			const sig = await conn.sendRawTransaction(tx.serialize(), {
+				preflightCommitment: "processed",
+				maxRetries: 2,
+			});
+			log(`WSOL unwrap sent: ${sig}`, "help");
+			return true;
+		} finally {
+			window._fdvUnwrapInflight.delete(ownerStr);
+		}
+	} catch (e) {
+		if (!/Invalid public key input/i.test(String(e?.message || e))) {
+			log(`WSOL unwrap failed: ${String(e?.message || e)}`, "warn");
+		}
+		return false;
+	}
+}
+
+async function listNonSolTokenMintsWithBalance(ownerPkOrStr) {
+	try {
+		if (!ownerPkOrStr) return [];
+		const { PublicKey } = await loadWeb3();
+		const conn = await getConn();
+		const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = await loadSplToken();
+		const owner = typeof ownerPkOrStr === "string" ? new PublicKey(ownerPkOrStr) : ownerPkOrStr;
+
+		const progs = [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].filter(Boolean);
+		const totals = new Map();
+		for (const pid of progs) {
+			let res;
+			try {
+				res = await conn.getParsedTokenAccountsByOwner(owner, { programId: pid }, "confirmed");
+			} catch (e) {
+				markRpcStress?.(e, 1500);
+				continue;
+			}
+			const vals = Array.isArray(res?.value) ? res.value : [];
+			for (const it of vals) {
+				const info = it?.account?.data?.parsed?.info;
+				const mint = String(info?.mint || "");
+				if (!mint || mint === SOL_MINT) continue;
+				const amt = info?.tokenAmount;
+				const ui = Number(amt?.uiAmount);
+				if (!(ui > 0)) continue;
+				const prev = totals.get(mint);
+				const decimals = Number(amt?.decimals);
+				if (prev) {
+					prev.ui += ui;
+					if (!Number.isFinite(prev.decimals) && Number.isFinite(decimals)) prev.decimals = decimals;
+				} else {
+					totals.set(mint, { mint, ui, decimals: Number.isFinite(decimals) ? decimals : undefined });
+				}
+			}
+		}
+
+		return [...totals.values()].sort((a, b) => Number(b.ui || 0) - Number(a.ui || 0));
+	} catch {
+		return [];
 	}
 }
 
@@ -465,6 +619,7 @@ function getDex() {
 		getConn,
 		loadWeb3,
 		loadSplToken,
+		unwrapWsolIfAny,
 		rpcWait,
 		rpcBackoffLeft,
 		markRpcStress,
@@ -476,11 +631,19 @@ function getDex() {
 		tokenAccountRentLamports,
 		requiredAtaLamportsForSwap,
 		requiredOutAtaRentIfMissing: async () => 0,
-		shouldAttachFeeForSell: () => false,
+		shouldAttachFeeForSell: ({ mint } = {}) => {
+			try {
+				const m = String(mint || "");
+				return !!(m && state?.forceFeeSellMint && String(state.forceFeeSellMint) === m);
+			} catch {
+				return false;
+			}
+		},
 		minSellNotionalSol: () => 0,
 		safeGetDecimalsFast,
 
 		confirmSig,
+		setMintBlacklist,
 	});
 	return _dex;
 }
@@ -517,11 +680,52 @@ function clampNum(n, min, max, fallback = min) {
 	return Math.max(min, Math.min(max, v));
 }
 
+function setMintBlacklist(mint, ms = MINT_RUG_BLACKLIST_MS) {
+	try {
+		const m = String(mint || "").trim();
+		if (!m) return false;
+		if (!window._fdvMintBlacklist) window._fdvMintBlacklist = new Map();
+		const map = window._fdvMintBlacklist;
+		const prev = map.get(m) || null;
+		const until = Date.now() + Math.max(5_000, Number(ms || 0));
+		map.set(m, { until, count: Number(prev?.count || 0) + 1 });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function isMintBlacklisted(mint) {
+	try {
+		const m = String(mint || "").trim();
+		if (!m) return false;
+		const map = window._fdvMintBlacklist;
+		if (!map || typeof map.get !== "function") return false;
+		const rec = map.get(m);
+		if (!rec) return false;
+		const until = Number(rec?.until || 0);
+		if (!(until > Date.now())) {
+			try { map.delete(m); } catch {}
+			return false;
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 // Follow state
 let state = {
 	enabled: false,
 	targetWallet: "",
 	activeMint: "",
+	entryMint: "",
+	entrySol: 0,
+	entryAt: 0,
+	forceFeeSellMint: "",
+	queuedMint: "",
+	queuedSig: "",
+	queuedAt: 0,
 	lastSig: "",
 	pollMs: 1500,
 	buySol: 0.1,
@@ -553,6 +757,12 @@ function saveState() {
 	_writeFollowStateRaw({
 		targetWallet: String(state.targetWallet || "").trim(),
 		activeMint: String(state.activeMint || "").trim(),
+		entryMint: String(state.entryMint || "").trim(),
+		entrySol: Number(state.entrySol || 0),
+		entryAt: Number(state.entryAt || 0),
+		queuedMint: String(state.queuedMint || "").trim(),
+		queuedSig: String(state.queuedSig || "").trim(),
+		queuedAt: Number(state.queuedAt || 0),
 		lastSig: String(state.lastSig || "").trim(),
 		pollMs: Number(state.pollMs || 1500),
 		buySol: Number(state.buySol || 0.1),
@@ -565,6 +775,79 @@ function saveState() {
 		pendingLastTryAt: Number(state.pendingLastTryAt || 0),
 		pendingSince: Number(state.pendingSince || 0),
 	});
+}
+
+const TAKE_PROFIT_BPS = 1000; // +10%
+
+const RECYCLE_HOLD_MS = 5 * 60_000;
+
+function _clearActivePositionState() {
+	state.activeMint = "";
+	state.entryMint = "";
+	state.entrySol = 0;
+	state.entryAt = 0;
+	state.forceFeeSellMint = "";
+}
+
+function _queueNextMint(mint, sig) {
+	const m = String(mint || "").trim();
+	if (!m || m === state.activeMint) return false;
+	if (state.queuedMint === m) return false;
+	state.queuedMint = m;
+	state.queuedSig = String(sig || "").trim();
+	state.queuedAt = Date.now();
+	saveState();
+	log(`Queued next mint from target: ${m.slice(0, 6)}…`, "help");
+	return true;
+}
+
+async function _startQueuedMintIfAny() {
+	try {
+		if (!state.enabled) return false;
+		if (state.pendingAction) return false;
+		if (state.activeMint) return false;
+		const m = String(state.queuedMint || "").trim();
+		if (!m) return false;
+		if (isMintBlacklisted(m)) {
+			log(`Queued mint is blacklisted; skipping: ${m.slice(0, 6)}…`, "warn");
+			state.queuedMint = "";
+			state.queuedSig = "";
+			state.queuedAt = 0;
+			saveState();
+			updateUI();
+			return false;
+		}
+
+		state.activeMint = m;
+		state.entryMint = m;
+		state.entrySol = clampNum(state.buySol, 0.001, 20, 0.1);
+		state.entryAt = Date.now();
+		state.queuedMint = "";
+		state.queuedSig = "";
+		state.queuedAt = 0;
+		saveState();
+		updateUI();
+		log(`Starting queued follow: ${m}`, "ok");
+
+		const r = await mirrorBuy(m);
+		if (Number(r?.spentSol || 0) > 0) {
+			state.entrySol = Number(r.spentSol);
+			state.entryAt = Date.now();
+			saveState();
+		}
+		if (!r?.ok) {
+			state.pendingAction = "buy";
+			state.pendingSig = String(r?.sig || "");
+			state.pendingAttempts = 0;
+			state.pendingLastTryAt = Date.now();
+			state.pendingSince = Date.now();
+			saveState();
+			updateUI();
+		}
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 const PENDING_MAX_MS = 240_000;
@@ -603,6 +886,11 @@ async function _checkPendingBuy() {
 			state.pendingSig = "";
 			state.pendingAttempts = 0;
 			state.pendingLastTryAt = 0;
+			if (!state.entryMint || state.entryMint !== state.activeMint) {
+				state.entryMint = String(state.activeMint || "");
+				state.entrySol = clampNum(state.buySol, 0.001, 20, 0.1);
+				state.entryAt = Date.now();
+			}
 			saveState();
 			updateUI();
 			return true;
@@ -643,7 +931,7 @@ async function _checkPendingBuy() {
 			state.pendingSig = "";
 			state.pendingAttempts = 0;
 			state.pendingLastTryAt = 0;
-			state.activeMint = "";
+			_clearActivePositionState();
 			saveState();
 			updateUI();
 			return false;
@@ -671,9 +959,11 @@ async function _checkPendingSell() {
 				state.pendingSig = "";
 				state.pendingAttempts = 0;
 				state.pendingLastTryAt = 0;
-				state.activeMint = "";
+				_clearActivePositionState();
 				saveState();
 				updateUI();
+				await _startQueuedMintIfAny();
+				_kickPollSoon(250);
 				return true;
 			}
 		}
@@ -688,7 +978,7 @@ async function _checkPendingSell() {
 				state.pendingSig = "";
 				state.pendingAttempts = 0;
 				state.pendingLastTryAt = 0;
-				state.activeMint = "";
+				_clearActivePositionState();
 				saveState();
 				updateUI();
 			}
@@ -699,10 +989,212 @@ async function _checkPendingSell() {
 		state.pendingSig = "";
 		state.pendingAttempts = 0;
 		state.pendingLastTryAt = 0;
-		state.activeMint = "";
+		_clearActivePositionState();
 		saveState();
 		updateUI();
+		await _startQueuedMintIfAny();
+		_kickPollSoon(250);
 		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function _maybeTakeProfit() {
+	try {
+		if (!state.enabled) return false;
+		if (!state.activeMint) return false;
+		if (state.pendingAction) return false;
+		if (!state.entryMint || state.entryMint !== state.activeMint) return false;
+		const entrySol = Number(state.entrySol || 0);
+		if (!(entrySol > 0)) return false;
+
+		const autoKp = await getAutoKeypair();
+		if (!autoKp) return false;
+		const ownerStr = autoKp.publicKey.toBase58();
+
+		const bal = await getTokenBalanceUiByMint(ownerStr, state.activeMint);
+		const amountUi = Number(bal?.sizeUi || 0);
+		if (!(amountUi > 0)) return false;
+
+		const rawStr = String(bal?.sizeRaw || "");
+		if (!rawStr) return false;
+
+		const q = await getDex().quoteGeneric(state.activeMint, SOL_MINT, rawStr, 50);
+		const outLamports = Number(q?.outAmount || 0);
+		if (!(outLamports > 0)) return false;
+		const outSol = outLamports / 1e9;
+
+		const targetSol = entrySol * (1 + TAKE_PROFIT_BPS / 10_000);
+		if (outSol + 1e-12 < targetSol) return false;
+
+		const soldMint = String(state.activeMint || "");
+		log(
+			`Take-profit hit: estOut≈${outSol.toFixed(4)} SOL (entry≈${entrySol.toFixed(4)} SOL, target≈${targetSol.toFixed(4)} SOL). Selling…`,
+			"ok",
+		);
+
+		state.forceFeeSellMint = soldMint;
+
+		const r = await mirrorSell(state.activeMint);
+		if (r?.ok === true) {
+			log("Take-profit SELL complete. Ready for next target mint.", "ok");
+			_clearActivePositionState();
+			state.pendingAction = "";
+			state.pendingSig = "";
+			state.pendingAttempts = 0;
+			state.pendingLastTryAt = 0;
+			state.pendingSince = 0;
+			saveState();
+			updateUI();
+			await _syncLastSigToNewest(state.targetWallet);
+			const startedQueued = await _startQueuedMintIfAny();
+			if (!startedQueued) await _syncToTargetOpenMintAfterExit(soldMint);
+			_kickPollSoon(250);
+			return true;
+		}
+
+		state.pendingAction = "sell";
+		state.pendingSig = String(r?.sig || "");
+		state.pendingAttempts = 0;
+		state.pendingLastTryAt = Date.now();
+		state.pendingSince = Date.now();
+		saveState();
+		updateUI();
+		return false;
+	} catch {
+		return false;
+	}
+}
+
+async function _maybeRugExit() {
+	try {
+		if (!state.enabled) return false;
+		if (!state.activeMint) return false;
+		if (state.pendingAction) return false;
+
+		const mint = String(state.activeMint || "").trim();
+		if (!mint) return false;
+
+		const sig = getRugSignalForMint?.(mint);
+		if (!sig) return false;
+		const sev = Number(sig?.sev ?? 0);
+		const thr = Number(RUG_FORCE_SELL_SEVERITY ?? 0);
+
+		if (!sig?.rugged) return false;
+
+		if (!(sev >= thr)) {
+			setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+			log(
+				`Rug soft-flag for ${mint.slice(0, 6)}… sev=${sev.toFixed(2)} < ${thr.toFixed(2)} — staged blacklist, no forced sell.`,
+				"warn",
+			);
+			return false;
+		}
+
+		setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
+		log(
+			`Rug detected for ${mint.slice(0, 6)}… sev=${sev.toFixed(2)} (thr=${thr.toFixed(2)}). Forcing SELL and blacklisting 30m.`,
+			"error",
+		);
+
+		const r = await mirrorSell(mint);
+		if (r?.ok === true) {
+			_clearActivePositionState();
+			state.pendingAction = "";
+			state.pendingSig = "";
+			state.pendingAttempts = 0;
+			state.pendingLastTryAt = 0;
+			state.pendingSince = 0;
+			saveState();
+			updateUI();
+			await _syncLastSigToNewest(state.targetWallet);
+			await _startQueuedMintIfAny();
+			_kickPollSoon(250);
+			return true;
+		}
+
+		state.pendingAction = "sell";
+		state.pendingSig = String(r?.sig || "");
+		state.pendingAttempts = 0;
+		state.pendingLastTryAt = Date.now();
+		state.pendingSince = Date.now();
+		saveState();
+		updateUI();
+		return false;
+	} catch {
+		return false;
+	}
+}
+
+async function _maybeRecycleExit() {
+	try {
+		if (!state.enabled) return false;
+		if (!state.activeMint) return false;
+		if (state.pendingAction) return false;
+		if (!state.entryMint || state.entryMint !== state.activeMint) return false;
+		const entryAt = Number(state.entryAt || 0);
+		if (!(entryAt > 0)) return false;
+		const elapsed = Date.now() - entryAt;
+		if (elapsed < RECYCLE_HOLD_MS) return false;
+
+		const mint = String(state.activeMint || "").trim();
+		if (!mint) return false;
+
+		// If balance is already gone, just clear and continue.
+		const autoKp = await getAutoKeypair();
+		if (autoKp) {
+			const ownerStr = autoKp.publicKey.toBase58();
+			const bal = await getTokenBalanceUiByMint(ownerStr, mint);
+			if (!(Number(bal?.sizeUi || 0) > 0)) {
+				log(`Recycle: position already empty for ${mint.slice(0, 6)}…; clearing.`, "help");
+				const soldMint = mint;
+				_clearActivePositionState();
+				state.pendingAction = "";
+				state.pendingSig = "";
+				state.pendingAttempts = 0;
+				state.pendingLastTryAt = 0;
+				state.pendingSince = 0;
+				saveState();
+				updateUI();
+				await _syncLastSigToNewest(state.targetWallet);
+				const startedQueued = await _startQueuedMintIfAny();
+				if (!startedQueued) await _syncToTargetOpenMintAfterExit(soldMint);
+				_kickPollSoon(250);
+				return true;
+			}
+		}
+
+		const mins = Math.max(0, Math.round(elapsed / 60_000));
+		log(`Recycle: held ${mint.slice(0, 6)}… for ${mins}m; selling…`, "warn");
+
+		const soldMint = mint;
+		const r = await mirrorSell(mint);
+		if (r?.ok === true) {
+			log("Recycle SELL complete. Ready for next target mint.", "ok");
+			_clearActivePositionState();
+			state.pendingAction = "";
+			state.pendingSig = "";
+			state.pendingAttempts = 0;
+			state.pendingLastTryAt = 0;
+			state.pendingSince = 0;
+			saveState();
+			updateUI();
+			await _syncLastSigToNewest(state.targetWallet);
+			const startedQueued = await _startQueuedMintIfAny();
+			if (!startedQueued) await _syncToTargetOpenMintAfterExit(soldMint);
+			_kickPollSoon(250);
+			return true;
+		}
+
+		state.pendingAction = "sell";
+		state.pendingSig = String(r?.sig || "");
+		state.pendingAttempts = 0;
+		state.pendingLastTryAt = Date.now();
+		state.pendingSince = Date.now();
+		saveState();
+		updateUI();
+		return false;
 	} catch {
 		return false;
 	}
@@ -728,9 +1220,21 @@ function updateUI() {
 
 let _timer = null;
 let _pollInFlight = false;
+let _kickTimer = null;
 
 function delay(ms) {
 	return new Promise((r) => setTimeout(r, ms));
+}
+
+function _kickPollSoon(ms = 250) {
+	try {
+		if (!state.enabled) return;
+		if (_kickTimer) return;
+		_kickTimer = setTimeout(() => {
+			_kickTimer = null;
+			pollOnce().catch(() => {});
+		}, Math.max(0, Number(ms || 0)));
+	} catch {}
 }
 
 function _sumTokenBalances(arr, ownerStr) {
@@ -784,7 +1288,7 @@ async function extractBuySellForTarget(sig, targetOwnerStr) {
 
 		const buy = _pickLargestDelta(deltas, (mint, d) => d > 0 && mint !== SOL_MINT);
 		const sell = _pickLargestDelta(deltas, (mint, d) => d < 0 && mint !== SOL_MINT);
-		return { buy, sell, sig };
+		return { buy, sell, sig, deltas };
 	} catch (e) {
 		markRpcStress?.(e, 1500);
 		return null;
@@ -795,10 +1299,22 @@ async function classifyTargetSwap(sig, targetOwnerStr) {
 	const info = await extractBuySellForTarget(sig, targetOwnerStr);
 	if (!info) return null;
 
-	const { buy, sell } = info;
+	const { buy, sell, deltas } = info;
+
+	// If we're following a mint, detect *that specific mint's* sell delta,
+	// even if it isn't the largest negative delta (partial sells, etc.).
+	if (state.activeMint && deltas && typeof deltas.get === "function") {
+		const d = Number(deltas.get(state.activeMint) || 0);
+		if (d < -1e-12) {
+			return { type: "sell", mint: state.activeMint, deltaUi: d, sig };
+		}
+	}
 
 	if (state.activeMint && sell?.mint === state.activeMint) {
 		return { type: "sell", mint: sell.mint, deltaUi: sell.delta, sig };
+	}
+	if (state.activeMint && buy?.mint && buy.mint !== state.activeMint) {
+		return { type: "buy-next", mint: buy.mint, deltaUi: buy.delta, sig };
 	}
 	if (!state.activeMint && buy) {
 		return { type: "buy", mint: buy.mint, deltaUi: buy.delta, sig };
@@ -842,14 +1358,274 @@ async function fetchNewSignatures(targetPkStr) {
 	return ordered;
 }
 
+async function _syncLastSigToNewest(targetPkStr) {
+	try {
+		const target = String(targetPkStr || "").trim();
+		if (!target) return false;
+		const { PublicKey } = await loadWeb3();
+		const conn = await getConn();
+		const pk = new PublicKey(target);
+		const recent = await conn.getSignaturesForAddress(pk, { limit: 1 }, "confirmed");
+		const list = Array.isArray(recent) ? recent : [];
+		const newest = String(list?.[0]?.signature || "");
+		if (!newest) return false;
+		state.lastSig = newest;
+		saveState();
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function _extractBuySellFromParsedTx(parsedTx, targetOwnerStr) {
+	try {
+		const pre = _sumTokenBalances(parsedTx?.meta?.preTokenBalances, targetOwnerStr);
+		const post = _sumTokenBalances(parsedTx?.meta?.postTokenBalances, targetOwnerStr);
+		const mints = new Set([...pre.keys(), ...post.keys()]);
+		if (!mints.size) return null;
+
+		const deltas = new Map();
+		for (const m of mints) {
+			const d = (post.get(m) || 0) - (pre.get(m) || 0);
+			if (Math.abs(d) > 1e-12) deltas.set(m, d);
+		}
+		if (!deltas.size) return null;
+
+		const buy = _pickLargestDelta(deltas, (mint, d) => d > 0 && mint !== SOL_MINT);
+		const sell = _pickLargestDelta(deltas, (mint, d) => d < 0 && mint !== SOL_MINT);
+		return { buy, sell, deltas };
+	} catch {
+		return null;
+	}
+}
+
+async function _findLatestOpenBuyMintFromTarget(targetPkStr, opts = {}) {
+	try {
+		const target = String(targetPkStr || "").trim();
+		if (!target) return "";
+		if (!(await isValidPubkeyStr(target))) return "";
+
+		const avoid = String(opts.avoidMint || "").trim();
+		// Back-compat: older callers pass opts.limit. Treat it as max signatures to scan.
+		const maxSignatures = Math.max(10, Math.min(5000, Number(opts.maxSignatures ?? opts.limit ?? 250)));
+		const pageSize = Math.max(10, Math.min(1000, Number(opts.pageSize || 200)));
+		const maxPages = Math.max(1, Math.min(50, Number(opts.maxPages || Math.ceil(maxSignatures / pageSize))));
+		const { PublicKey } = await loadWeb3();
+		const conn = await getConn();
+		const pk = new PublicKey(target);
+
+		let before = String(opts.before || "").trim() || undefined;
+		let scanned = 0;
+
+		// Newest-first scan: record sells we see in newer txs, then pick the first buy not sold afterwards.
+		const soldMints = new Set();
+		const chunkSize = 20;
+		for (let page = 0; page < maxPages && scanned < maxSignatures; page++) {
+			let sigs;
+			try {
+				sigs = await conn.getSignaturesForAddress(pk, { limit: pageSize, before }, "confirmed");
+			} catch (e) {
+				markRpcStress?.(e, 1500);
+				return "";
+			}
+			const list = Array.isArray(sigs) ? sigs : [];
+			if (!list.length) break;
+			scanned += list.length;
+
+			for (let i = 0; i < list.length; i += chunkSize) {
+				const chunk = list
+					.slice(i, i + chunkSize)
+					.map((x) => String(x?.signature || ""))
+					.filter(Boolean);
+				if (!chunk.length) continue;
+
+				let parsed;
+				try {
+					parsed = await conn.getParsedTransactions(chunk, {
+						commitment: "confirmed",
+						maxSupportedTransactionVersion: 0,
+					});
+				} catch (e) {
+					markRpcStress?.(e, 1500);
+					parsed = null;
+				}
+
+				const txs = Array.isArray(parsed) ? parsed : [];
+				for (const tx of txs) {
+					if (!tx || tx?.meta?.err) continue;
+					const info = _extractBuySellFromParsedTx(tx, target);
+					if (!info) continue;
+					const s = String(info.sell?.mint || "").trim();
+					const b = String(info.buy?.mint || "").trim();
+					if (s) soldMints.add(s);
+					if (!b) continue;
+					if (soldMints.has(b)) continue;
+					if (avoid && b === avoid) continue;
+					if (b === SOL_MINT) continue;
+					if (isMintBlacklisted(b)) continue;
+					if (!(await isValidPubkeyStr(b))) continue;
+					return b;
+				}
+			}
+
+			// Cursor to older history
+			before = String(list[list.length - 1]?.signature || "").trim() || before;
+			if (!before) break;
+		}
+
+		return "";
+	} catch {
+		return "";
+	}
+}
+
+async function _findLatestBuyMintFromTarget(targetPkStr, opts = {}) {
+	try {
+		const target = String(targetPkStr || "").trim();
+		if (!target) return "";
+		if (!(await isValidPubkeyStr(target))) return "";
+
+		const avoid = String(opts.avoidMint || "").trim();
+		const maxSignatures = Math.max(10, Math.min(5000, Number(opts.maxSignatures ?? opts.limit ?? 250)));
+		const pageSize = Math.max(10, Math.min(1000, Number(opts.pageSize || 200)));
+		const maxPages = Math.max(1, Math.min(50, Number(opts.maxPages || Math.ceil(maxSignatures / pageSize))));
+		const { PublicKey } = await loadWeb3();
+		const conn = await getConn();
+		const pk = new PublicKey(target);
+
+		let before = String(opts.before || "").trim() || undefined;
+		let scanned = 0;
+
+		const chunkSize = 20;
+		for (let page = 0; page < maxPages && scanned < maxSignatures; page++) {
+			let sigs;
+			try {
+				sigs = await conn.getSignaturesForAddress(pk, { limit: pageSize, before }, "confirmed");
+			} catch (e) {
+				markRpcStress?.(e, 1500);
+				return "";
+			}
+			const list = Array.isArray(sigs) ? sigs : [];
+			if (!list.length) break;
+			scanned += list.length;
+
+			for (let i = 0; i < list.length; i += chunkSize) {
+				const chunk = list
+					.slice(i, i + chunkSize)
+					.map((x) => String(x?.signature || ""))
+					.filter(Boolean);
+				if (!chunk.length) continue;
+
+				let parsed;
+				try {
+					parsed = await conn.getParsedTransactions(chunk, {
+						commitment: "confirmed",
+						maxSupportedTransactionVersion: 0,
+					});
+				} catch (e) {
+					markRpcStress?.(e, 1500);
+					parsed = null;
+				}
+
+				const txs = Array.isArray(parsed) ? parsed : [];
+				for (const tx of txs) {
+					if (!tx || tx?.meta?.err) continue;
+					const info = _extractBuySellFromParsedTx(tx, target);
+					const b = String(info?.buy?.mint || "").trim();
+					if (!b) continue;
+					if (avoid && b === avoid) continue;
+					if (b === SOL_MINT) continue;
+					if (isMintBlacklisted(b)) continue;
+					if (!(await isValidPubkeyStr(b))) continue;
+					return b;
+				}
+			}
+
+			before = String(list[list.length - 1]?.signature || "").trim() || before;
+			if (!before) break;
+		}
+
+		return "";
+	} catch {
+		return "";
+	}
+}
+
+async function _syncToTargetOpenMintAfterExit(avoidMint) {
+	try {
+		if (!state.enabled) return false;
+		if (state.pendingAction) return false;
+		if (state.activeMint) return false;
+		const target = String(state.targetWallet || "").trim();
+		if (!target) return false;
+
+		// Best-effort: find the most recent target buy mint from parsed transactions.
+		const b = await _findLatestBuyMintFromTarget(target, { avoidMint, limit: 200 });
+		if (!b) return false;
+
+		state.activeMint = b;
+		state.entryMint = b;
+		state.entrySol = clampNum(state.buySol, 0.001, 20, 0.1);
+		state.entryAt = Date.now();
+		state.pendingSince = Date.now();
+		state.lastActionAttempt = 0;
+		state.pendingAction = "";
+		state.pendingSig = "";
+		state.pendingAttempts = 0;
+		state.pendingLastTryAt = 0;
+		saveState();
+		updateUI();
+		log(`Resync: target currently in ${b.slice(0, 6)}…; mirroring buy…`, "help");
+
+		const r = await mirrorBuy(b);
+		if (Number(r?.spentSol || 0) > 0) {
+			state.entrySol = Number(r.spentSol);
+			state.entryAt = Date.now();
+			saveState();
+		}
+		if (!r?.ok) {
+			state.pendingAction = "buy";
+			state.pendingSig = String(r?.sig || "");
+			state.pendingAttempts = 0;
+			state.pendingLastTryAt = Date.now();
+			state.pendingSince = Date.now();
+			saveState();
+			updateUI();
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function _autoHasTokenBalance(mintStr) {
+	try {
+		const mint = String(mintStr || "").trim();
+		if (!mint) return false;
+		if (mint === SOL_MINT) return false;
+		const autoKp = await getAutoKeypair();
+		if (!autoKp) return false;
+		const ownerStr = autoKp.publicKey.toBase58();
+		const bal = await getTokenBalanceUiByMint(ownerStr, mint);
+		return Number(bal?.sizeUi || 0) > 0;
+	} catch {
+		return false;
+	}
+}
+
 async function mirrorBuy(mint) {
+	if (isMintBlacklisted(mint)) {
+		log(`BUY blocked: mint is blacklisted (${String(mint || "").slice(0, 6)}…)`, "warn");
+		return { ok: false, sig: "", spentSol: 0 };
+	}
+
 	const desiredSol = clampNum(state.buySol, 0.001, 20, 0.1);
 	const slip = Math.floor(clampNum(state.slippageBps, 10, 20_000, 250));
 	const autoKp = await getAutoKeypair();
 	if (!autoKp) {
 		log("No auto wallet configured. Set/import it in the Auto tab first.", "error");
 		await debugAutoWalletLoad(log);
-		return { ok: false, sig: "" };
+		return { ok: false, sig: "", spentSol: 0 };
 	}
 
 	const ownerStr = autoKp.publicKey.toBase58();
@@ -869,7 +1645,7 @@ async function mirrorBuy(mint) {
 			`BUY skipped: insufficient SOL. balance=${solBalUi.toFixed(4)} reserve≈${(reserveLamports / 1e9).toFixed(4)} spendable≈${maxSpendSol.toFixed(4)} cap70%≈${maxByFractionSol.toFixed(4)}`,
 			"error",
 		);
-		return { ok: false, sig: "" };
+		return { ok: false, sig: "", spentSol: 0 };
 	}
 	if (buySol + 1e-9 < desiredSol) {
 		log(
@@ -892,18 +1668,18 @@ async function mirrorBuy(mint) {
 
 	if (res?.ok) {
 		log(`BUY ok: ${res.sig}`, "ok");
-		return { ok: true, sig: res.sig };
+		return { ok: true, sig: res.sig, spentSol: buySol };
 	}
 	if (res?.insufficient) {
 		log(`BUY failed (insufficient SOL): ${res.msg || ""}`, "error");
-		return { ok: false, sig: res?.sig || "" };
+		return { ok: false, sig: res?.sig || "", spentSol: 0 };
 	}
 	if (res?.noRoute) {
 		log(`BUY failed (no route): ${res.msg || ""}`, "warn");
-		return { ok: false, sig: res?.sig || "" };
+		return { ok: false, sig: res?.sig || "", spentSol: 0 };
 	}
 	log(`BUY submitted but not confirmed yet: ${res?.sig || "(no sig)"}`, "warn");
-	return { ok: false, sig: res?.sig || "" };
+	return { ok: false, sig: res?.sig || "", spentSol: buySol };
 }
 
 async function mirrorSell(mint) {
@@ -971,19 +1747,35 @@ async function pollOnce() {
 			await _checkPendingSell();
 		}
 
+		// Process target txs first (e.g., sell signals) so we don't get stuck
+		// doing take-profit quoting while missing a target exit.
 		const sigs = await fetchNewSignatures(target);
-		if (!sigs.length) return;
-
 		for (const sig of sigs) {
 			const evt = await classifyTargetSwap(sig, target);
 			if (!evt) continue;
+
+			if (evt.type === "buy-next") {
+				if (isMintBlacklisted(evt.mint)) {
+					log(`Target BUY-next ignored (blacklisted): ${evt.mint.slice(0, 6)}…`, "warn");
+					continue;
+				}
+				_queueNextMint(evt.mint, evt.sig);
+				continue;
+			}
 
 			if (evt.type === "buy") {
 				if (state.activeMint) {
 					log(`Ignoring BUY ${evt.mint.slice(0, 6)}… (already following ${state.activeMint.slice(0, 6)}…)`, "help");
 					continue;
 				}
+				if (isMintBlacklisted(evt.mint)) {
+					log(`Target BUY ignored (blacklisted): ${evt.mint.slice(0, 6)}…`, "warn");
+					continue;
+				}
 				state.activeMint = evt.mint;
+				state.entryMint = evt.mint;
+				state.entrySol = clampNum(state.buySol, 0.001, 20, 0.1);
+				state.entryAt = Date.now();
 				state.pendingSince = Date.now();
 				state.lastActionAttempt = 0;
 				state.pendingAction = "";
@@ -994,6 +1786,11 @@ async function pollOnce() {
 				updateUI();
 				log(`Target BUY detected: ${evt.mint} (Δ ${evt.deltaUi.toFixed(6)})`, "ok");
 				const r = await mirrorBuy(evt.mint);
+				if (Number(r?.spentSol || 0) > 0) {
+					state.entrySol = Number(r.spentSol);
+					state.entryAt = Date.now();
+					saveState();
+				}
 				if (!r?.ok) {
 					state.pendingAction = "buy";
 					state.pendingSig = String(r?.sig || "");
@@ -1012,7 +1809,7 @@ async function pollOnce() {
 				log(`Target SELL detected: ${evt.mint} (Δ ${evt.deltaUi.toFixed(6)})`, "ok");
 				const r = await mirrorSell(evt.mint);
 				if (r?.ok === true) {
-					state.activeMint = "";
+					_clearActivePositionState();
 					state.pendingAction = "";
 					state.pendingSig = "";
 					state.pendingAttempts = 0;
@@ -1026,8 +1823,20 @@ async function pollOnce() {
 				}
 				saveState();
 				updateUI();
+				if (r?.ok === true) {
+					await _startQueuedMintIfAny();
+				}
 			}
 		}
+
+		// Rug check (auto-bot parity): blacklist + force exit on severe rugs.
+		await _maybeRugExit();
+
+		// Time-based recycle exit.
+		await _maybeRecycleExit();
+
+		// take-profit check (can trigger even if target has no new tx)
+		await _maybeTakeProfit();
 	} catch (e) {
 		const msg = String(e?.message || e || "");
 		if (/403/.test(msg)) {
@@ -1076,6 +1885,27 @@ async function startFollowBot() {
 	state.pendingSince = 0;
 	state.lastActionAttempt = 0;
 
+	// If we have a persisted activeMint but the auto wallet doesn't actually hold it,
+	// treat it as stale state so it can't block "latest buy" detection.
+	const persistedMint = String(state.activeMint || "").trim();
+	if (persistedMint) {
+		const hasPos = await _autoHasTokenBalance(persistedMint);
+		if (!hasPos) {
+			_clearActivePositionState();
+			state.pendingAction = "";
+			state.pendingSig = "";
+			state.pendingAttempts = 0;
+			state.pendingLastTryAt = 0;
+			state.pendingSince = 0;
+			state.lastActionAttempt = 0;
+		}
+	}
+	if (state.entryMint && state.entryMint !== state.activeMint) {
+		state.entryMint = "";
+		state.entrySol = 0;
+		state.entryAt = 0;
+	}
+
 	try {
 		const { PublicKey } = await loadWeb3();
 		const conn = await getConn();
@@ -1084,6 +1914,21 @@ async function startFollowBot() {
 		const list = Array.isArray(recent) ? recent : [];
 		const newest = String(list?.[0]?.signature || "");
 		state.lastSig = newest || "";
+
+		// Always try to find the latest buy from target; only overwrite if we don't already
+		// have an actual open position in the auto wallet.
+		{
+			const hasPos = state.activeMint ? await _autoHasTokenBalance(state.activeMint) : false;
+			if (!hasPos) {
+				const b = await _findLatestBuyMintFromTarget(target, { limit: 200 });
+				if (b) {
+					state.activeMint = b;
+					state.pendingSince = Date.now();
+					state.lastActionAttempt = 0;
+					log(`Startup: latest buy to follow is ${b} (from parsed txs)`, "help");
+				}
+			}
+		}
 
 		if (!state.activeMint && list.length) {
 			const soldMints = new Set();
@@ -1096,6 +1941,7 @@ async function startFollowBot() {
 				const b = info.buy?.mint;
 				if (s) soldMints.add(s);
 				if (b && !soldMints.has(b)) {
+					if (isMintBlacklisted(b)) continue;
 					state.activeMint = b;
 					state.pendingSince = Date.now();
 					state.lastActionAttempt = 0;
@@ -1113,7 +1959,16 @@ async function startFollowBot() {
 	log(`Follow started. Target=${target.slice(0, 6)}… Auto=${autoKp.publicKey.toBase58().slice(0, 6)}…`, "ok");
 	if (state.activeMint) {
 		log(`Following mint: ${state.activeMint}`, "ok");
+		state.entryMint = state.activeMint;
+		state.entrySol = clampNum(state.buySol, 0.001, 20, 0.1);
+		state.entryAt = Date.now();
+		saveState();
 		const r = await mirrorBuy(state.activeMint);
+		if (Number(r?.spentSol || 0) > 0) {
+			state.entrySol = Number(r.spentSol);
+			state.entryAt = Date.now();
+			saveState();
+		}
 		if (!r?.ok) {
 			state.pendingAction = "buy";
 			state.pendingSig = String(r?.sig || "");
@@ -1140,11 +1995,71 @@ async function stopFollowBot() {
 		clearInterval(_timer);
 		_timer = null;
 	}
+
 	state.pendingAction = "";
 	state.pendingSig = "";
 	saveState();
 	updateUI();
-	log("Follow stopped.", "warn");
+
+	if (window._fdvFollowStopLiquidateInflight) {
+		log("Follow stopped.", "warn");
+		return;
+	}
+	window._fdvFollowStopLiquidateInflight = true;
+
+	try {
+		// Best-effort: wait briefly for any in-flight poll to finish so we don't race swaps.
+		const waitStart = Date.now();
+		while (_pollInFlight && Date.now() - waitStart < 2000) {
+			await delay(50);
+		}
+
+		const autoKp = await getAutoKeypair();
+		if (!autoKp) {
+			log("Follow stopped.", "warn");
+			return;
+		}
+		const ownerStr = autoKp.publicKey.toBase58();
+		log("Stop: liquidating all token balances back to SOL…", "warn");
+
+		const mints = await listNonSolTokenMintsWithBalance(ownerStr);
+		if (!mints.length) {
+			log("Stop: no token balances to sell.", "help");
+		} else {
+			log(`Stop: selling ${mints.length} token(s)…`, "help");
+			for (const it of mints) {
+				const mint = String(it?.mint || "");
+				if (!mint || mint === SOL_MINT) continue;
+				try {
+					const r = await mirrorSell(mint);
+					if (!r?.ok) {
+						log(`Stop: sell failed for ${mint.slice(0, 6)}… (keeping position).`, "warn");
+					}
+				} catch (e) {
+					log(`Stop: sell error for ${mint.slice(0, 6)}…: ${String(e?.message || e || "")}`, "warn");
+				}
+				await delay(150);
+			}
+		}
+
+		try {
+			await unwrapWsolIfAny(autoKp);
+		} catch {}
+		try {
+			await getDex().closeAllEmptyAtas(autoKp);
+		} catch {}
+
+		_clearActivePositionState();
+		state.pendingAction = "";
+		state.pendingSig = "";
+		state.pendingAttempts = 0;
+		state.pendingLastTryAt = 0;
+		saveState();
+		updateUI();
+		log("Follow stopped.", "warn");
+	} finally {
+		window._fdvFollowStopLiquidateInflight = false;
+	}
 }
 
 export function initFollowWidget(container = document.body) {
