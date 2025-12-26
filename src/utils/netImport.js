@@ -236,3 +236,37 @@ export async function importFromUrl(url, { cacheKey } = {}) {
   _moduleCache.set(key, p);
   return await p;
 }
+
+export async function importFromUrlWithFallback(urls, { cacheKey } = {}) {
+  const list = Array.isArray(urls) ? urls.map((u) => String(u || "").trim()).filter(Boolean) : [];
+  if (!list.length) throw new Error("importFromUrlWithFallback: missing urls");
+
+  // Cache by logical key; do not permanently cache failures.
+  const key = String(cacheKey || `fallback:${list.join("|")}`);
+  if (_moduleCache.has(key)) return await _moduleCache.get(key);
+
+  const p = (async () => {
+    let lastErr = null;
+    for (let i = 0; i < list.length; i += 1) {
+      const u = list[i];
+      try {
+        // Use a per-candidate key so a failing candidate doesn't poison a successful one.
+        return await importFromUrl(u, { cacheKey: `${key}:cand:${i}` });
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr || new Error("IMPORT_FAILED");
+  })();
+
+  // If it fails, allow future retries.
+  _moduleCache.set(
+    key,
+    p.catch((e) => {
+      _moduleCache.delete(key);
+      throw e;
+    }),
+  );
+
+  return await _moduleCache.get(key);
+}

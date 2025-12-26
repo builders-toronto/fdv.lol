@@ -19,6 +19,69 @@
       "stopLossPct": 4,
       "trailPct": 6,
       "slippageBps": 250
+    },
+
+    "follow_only": {
+      "rpcUrl": "https://YOUR_SOLANA_RPC_WITH_CORS_OR_NODE_ACCESS",
+      "rpcHeaders": {
+        "Authorization": "Bearer YOUR_TOKEN"
+      },
+      "autoWalletSecret": "PASTE_AUTO_WALLET_SECRET",
+
+      "auto": false,
+      "follow": {
+        "enabled": true,
+        "targetWallet": "PASTE_TARGET_WALLET_TO_FOLLOW",
+        "buyPct": 25,
+        "maxHoldMin": 5,
+        "pollMs": 1500
+      }
+    },
+
+    "volume_only": {
+      "rpcUrl": "https://YOUR_SOLANA_RPC_WITH_CORS_OR_NODE_ACCESS",
+      "rpcHeaders": {
+        "Authorization": "Bearer YOUR_TOKEN"
+      },
+      "autoWalletSecret": "PASTE_AUTO_WALLET_SECRET",
+
+      "auto": false,
+      "volume": {
+        "enabled": true,
+        "mint": "PASTE_TOKEN_MINT",
+        "bots": 1,
+        "minBuyAmountSol": 0.005,
+        "maxBuyAmountSol": 0.02,
+        "maxSlippageBps": 2000,
+        "targetVolumeSol": 0
+      }
+    },
+
+    "all_bots": {
+      "rpcUrl": "https://YOUR_SOLANA_RPC_WITH_CORS_OR_NODE_ACCESS",
+      "rpcHeaders": {
+        "Authorization": "Bearer YOUR_TOKEN"
+      },
+      "autoWalletSecret": "PASTE_AUTO_WALLET_SECRET",
+      "recipientPub": "PASTE_YOUR_SOL_RECIPIENT_PUBKEY",
+
+      "auto": {
+        "enabled": true
+      },
+      "follow": {
+        "enabled": true,
+        "targetWallet": "PASTE_TARGET_WALLET_TO_FOLLOW",
+        "buyPct": 25,
+        "maxHoldMin": 5,
+        "pollMs": 1500
+      },
+      "volume": {
+        "enabled": false,
+        "mint": "PASTE_TOKEN_MINT",
+        "bots": 1,
+        "minBuyAmountSol": 0.005,
+        "maxBuyAmountSol": 0.02
+      }
     }
   }
 }

@@ -716,16 +716,22 @@ export function createDex(deps = {}) {
 				if (!qRes.ok) {
 					if (isSell) {
 						const altRestrict = restrictIntermediates === "false" ? "true" : (restrictAllowed ? "false" : "true");
-						const alt = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: altRestrict, withFee: false });
-						log(`Primary sell quote failed (${qRes.status}). Retrying with restrictIntermediateTokens=${alt.searchParams.get("restrictIntermediateTokens")} …`);
-						const qRes2 = await jupFetch(alt.pathname + alt.search);
-						if (qRes2.ok) {
-							quote = await qRes2.json();
-							haveQuote = true;
-						} else {
-							const body = await qRes2.text().catch(() => "");
-							log(`Sell quote retry failed: ${body || qRes2.status}`);
+						if (String(altRestrict) === String(restrictIntermediates)) {
+							const body = await qRes.text().catch(() => "");
+							log(`Sell quote failed (${qRes.status}): ${body || "(empty)"}`);
 							haveQuote = false;
+						} else {
+							const alt = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: altRestrict, withFee: false });
+							log(`Primary sell quote failed (${qRes.status}). Retrying with restrictIntermediateTokens=${alt.searchParams.get("restrictIntermediateTokens")} …`);
+							const qRes2 = await jupFetch(alt.pathname + alt.search);
+							if (qRes2.ok) {
+								quote = await qRes2.json();
+								haveQuote = true;
+							} else {
+								const body = await qRes2.text().catch(() => "");
+								log(`Sell quote retry failed: ${body || qRes2.status}`);
+								haveQuote = false;
+							}
 						}
 					} else {
 						throw new Error(`quote ${qRes.status}`);
