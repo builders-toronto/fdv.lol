@@ -213,7 +213,4 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
 
-"Wire Sniper bot into CLI runner"
--m "Adds sniper section support to --run-profile"
--m "Starts/stops Sniper headlessly with clean Ctrl+C shutdown"
--m "Updates CLI help + no bots enabled messaging"
+"Wire Sniper bot into CLI runner" -m "Adds sniper section support to --run-profile" -m "Starts/stops Sniper headlessly with clean Ctrl+C shutdown" -m "Updates CLI help + no bots enabled messaging"

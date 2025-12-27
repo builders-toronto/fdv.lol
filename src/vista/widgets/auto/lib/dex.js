@@ -82,6 +82,75 @@ export function createDex(deps = {}) {
 		quoteOutSol,
 	} = deps;
 
+	function withTimeout(promise, ms, { label = "op" } = {}) {
+		const timeoutMs = Math.max(1, Number(ms || 0));
+		let t = null;
+		return Promise.race([
+			Promise.resolve(promise).finally(() => {
+				try { if (t) clearTimeout(t); } catch {}
+			}),
+			new Promise((_, reject) => {
+				t = setTimeout(() => reject(new Error(`${label}_TIMEOUT_${timeoutMs}`)), timeoutMs);
+			}),
+		]);
+	}
+
+	function rpcTimeoutMs(kind = "rpc") {
+		try {
+			// Keep these fairly short so we can retry rather than hang forever.
+			if (/send/i.test(kind)) return 20_000;
+			if (/blockhash|balance/i.test(kind)) return 12_000;
+			if (/lut|accountInfo|parsed/i.test(kind)) return 12_000;
+			return 10_000;
+		} catch {
+			return 10_000;
+		}
+	}
+
+	async function pollSigStatus(sig, { commitment = "confirmed", timeoutMs = 22_000 } = {}) {
+		try {
+			const conn = await getConn();
+			const start = now();
+			const hardMs = Math.max(4000, Number(timeoutMs || 0));
+			while (now() - start < hardMs) {
+				try {
+					const st = await withTimeout(conn.getSignatureStatuses([sig]), 5000, { label: "sigStatus" });
+					const v = st?.value?.[0];
+					if (v?.err) return { ok: false, err: v.err, status: "TX_ERR" };
+					const c = v?.confirmationStatus;
+					if (commitment === "confirmed" && (c === "confirmed" || c === "finalized")) return { ok: true, status: c };
+					if (commitment === "finalized" && c === "finalized") return { ok: true, status: c };
+				} catch (e) {
+					markRpcStress?.(e, 1500);
+				}
+				await new Promise((r) => setTimeout(r, 700));
+			}
+			return { ok: false, status: "NO_CONFIRM" };
+		} catch (e) {
+			markRpcStress?.(e, 2000);
+			return { ok: false, status: "NO_CONFIRM" };
+		}
+	}
+
+	async function safeConfirmSig(sig, { commitment = "confirmed", timeoutMs = 22_000, requireFinalized = false } = {}) {
+		const want = requireFinalized ? "finalized" : commitment;
+		const hardMs = Math.max(4000, Number(timeoutMs || 0));
+		try {
+			if (typeof confirmSig === "function") {
+				const ok = await withTimeout(
+					confirmSig(sig, { commitment, timeoutMs: hardMs, requireFinalized }),
+					hardMs + 6000,
+					{ label: "confirmSig" },
+				).catch(() => false);
+				if (ok) return true;
+			}
+		} catch (e) {
+			markRpcStress?.(e, 2000);
+		}
+		const polled = await pollSigStatus(sig, { commitment: want, timeoutMs: hardMs });
+		return !!polled?.ok;
+	}
+
 	async function getJupBase() {
 		const cfg = (typeof getCfg === "function") ? await getCfg() : (typeof getCfg === "object" ? getCfg : {});
 		return String(cfg?.jupiterBase || "https://lite-api.jup.ag").replace(/\/+$/, "");
@@ -98,7 +167,11 @@ export function createDex(deps = {}) {
 		try {
 			const { PublicKey } = await loadWeb3();
 			const conn = await getConn();
-			const info = await conn.getParsedAccountInfo(new PublicKey(mintStr), "processed");
+			const info = await withTimeout(
+				conn.getParsedAccountInfo(new PublicKey(mintStr), "processed"),
+				rpcTimeoutMs("parsedAccountInfo"),
+				{ label: "parsedAccountInfo" },
+			);
 			const d = Number(info?.value?.data?.parsed?.info?.decimals);
 			return Number.isFinite(d) ? d : 6;
 		} catch {
@@ -145,19 +218,44 @@ export function createDex(deps = {}) {
 			let lastRes = null;
 			let lastBody = "";
 			for (let attempt = 0; attempt < 3; attempt++) {
-				const res = await fetch(url, {
-					headers: { accept: "application/json", ...(opts?.headers || {}) },
-					...opts,
-				});
-				lastRes = res;
-
-				if (res.ok && isQuote) {
-					try {
-						const json = await res.clone().json();
-						if (!window._fdvJupQuoteCache) window._fdvJupQuoteCache = new Map();
-						window._fdvJupQuoteCache.set(url, { ts: Date.now(), json });
-					} catch {}
+				const controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
+				const method = String(opts?.method || "GET").toUpperCase();
+				const baseT = isQuote ? 12_000 : (method === "POST" ? 25_000 : 16_000);
+				const timeoutMs = Math.max(6000, baseT + attempt * 2500);
+				let to = null;
+				try {
+					if (controller) {
+						to = setTimeout(() => {
+							try { controller.abort(); } catch {}
+						}, timeoutMs);
+					}
+					const res = await fetch(url, {
+						headers: { accept: "application/json", ...(opts?.headers || {}) },
+						signal: controller?.signal,
+						...opts,
+					});
+					lastRes = res;
+					if (res.ok && isQuote) {
+						try {
+							const json = await res.clone().json();
+							if (!window._fdvJupQuoteCache) window._fdvJupQuoteCache = new Map();
+							window._fdvJupQuoteCache.set(url, { ts: Date.now(), json });
+						} catch {}
+					}
+				} catch (e) {
+					markRpcStress?.(e, 1500);
+					const msg = String(e?.message || e || "");
+					log(`JUP fetch error: ${method} ${url} (${msg})`);
+					const backoff = 700 * Math.pow(2, attempt) + Math.floor(Math.random() * 250);
+					window._fdvJupStressUntil = Date.now() + 15_000;
+					await new Promise((r) => setTimeout(r, backoff));
+					continue;
+				} finally {
+					try { if (to) clearTimeout(to); } catch {}
 				}
+
+				const res = lastRes;
+				if (!res) continue;
 
 				if (res.status !== 429) {
 					if (!res.ok && isQuote && res.status === 400) {
@@ -341,7 +439,7 @@ export function createDex(deps = {}) {
 
 		async function _reconcileSplitSellRemainder(sig) {
 			try {
-				await confirmSig?.(sig, { commitment: "confirmed", timeoutMs: 15000 }).catch(() => {});
+				await safeConfirmSig(sig, { commitment: "confirmed", timeoutMs: 15000 }).catch(() => {});
 				let remainUi = 0,
 					d = _decHint;
 				try {
@@ -441,7 +539,11 @@ export function createDex(deps = {}) {
 		async function buildAndSend(useSharedAccounts = true, asLegacy = false) {
 			if (inputMint === SOL_MINT && outputMint !== SOL_MINT) {
 				try {
-					const balL = await conn.getBalance(signer.publicKey, "processed");
+					const balL = await withTimeout(
+						conn.getBalance(signer.publicKey, "processed"),
+						rpcTimeoutMs("balance"),
+						{ label: "getBalance" },
+					);
 					const needL = amountRaw + Math.ceil(_preBuyRent) + Number(TX_FEE_BUFFER_LAMPORTS || 0);
 					if (balL < needL) {
 						log(`Buy preflight: insufficient SOL ${(balL/1e9).toFixed(6)} < ${(needL/1e9).toFixed(6)} (amount+rent+fees).`);
@@ -528,7 +630,11 @@ export function createDex(deps = {}) {
 			const vtx = VersionedTransaction.deserialize(rawBytes);
 			vtx.sign([signer]);
 			try {
-				const sig = await conn.sendRawTransaction(vtx.serialize(), { preflightCommitment: "processed", maxRetries: 3 });
+				const sig = await withTimeout(
+					conn.sendRawTransaction(vtx.serialize(), { preflightCommitment: "processed", maxRetries: 3 }),
+					rpcTimeoutMs("sendRawTransaction"),
+					{ label: "sendRawTransaction" },
+				);
 				log(`Swap sent: ${sig}`);
 				try { log(`Explorer: https://solscan.io/tx/${sig}`); } catch {}
 				try { if (isSell) setTimeout(() => _reconcileSplitSellRemainder(sig), 0); } catch {}
@@ -542,7 +648,11 @@ export function createDex(deps = {}) {
 			} catch (e) {
 				log(`Swap send failed. NO_ROUTES/ROUTER_DUST. export help/wallet.json to recover dust funds. Simulating…`);
 				try {
-					const sim = await conn.simulateTransaction(vtx, { sigVerify: false, replaceRecentBlockhash: true });
+					const sim = await withTimeout(
+						conn.simulateTransaction(vtx, { sigVerify: false, replaceRecentBlockhash: true }),
+						rpcTimeoutMs("simulate"),
+						{ label: "simulateTransaction" },
+					);
 					const logs = sim?.value?.logs || e?.logs || [];
 					const txt = (logs || []).join(" ");
 					const hasDustErr = /0x1788|0x1789/i.test(txt);
@@ -654,12 +764,20 @@ export function createDex(deps = {}) {
 				const lookups = [];
 				for (const addr of addressLookupTableAddresses || []) {
 					try {
-						const lut = await conn.getAddressLookupTable(new PublicKey(addr));
+						const lut = await withTimeout(
+							conn.getAddressLookupTable(new PublicKey(addr)),
+							rpcTimeoutMs("lut"),
+							{ label: "getAddressLookupTable" },
+						);
 						if (lut?.value) lookups.push(lut.value);
 					} catch {}
 				}
 
-				const { blockhash } = await conn.getLatestBlockhash("confirmed");
+				const { blockhash } = await withTimeout(
+					conn.getLatestBlockhash("confirmed"),
+					rpcTimeoutMs("blockhash"),
+					{ label: "getLatestBlockhash" },
+				);
 				const msg = new TransactionMessage({
 					payerKey: signer.publicKey,
 					recentBlockhash: blockhash,
@@ -670,13 +788,17 @@ export function createDex(deps = {}) {
 				vtx.sign([signer]);
 
 				try {
-					const sig = await conn.sendRawTransaction(vtx.serialize(), {
+					const sig = await withTimeout(
+						conn.sendRawTransaction(vtx.serialize(), {
 						preflightCommitment: "confirmed",
 						maxRetries: 3,
-					});
-					const ok = await confirmSig?.(sig, { commitment: "confirmed", timeoutMs: 15000 });
+					}),
+						rpcTimeoutMs("sendRawTransaction"),
+						{ label: "sendRawTransaction" },
+					);
+						const ok = await safeConfirmSig(sig, { commitment: "confirmed", timeoutMs: 15000 });
 					if (!ok) {
-						const st = await conn.getSignatureStatuses([sig]).catch(()=>null);
+						const st = await withTimeout(conn.getSignatureStatuses([sig]), 5000, { label: "sigStatus" }).catch(()=>null);
 						const status = st?.value?.[0]?.err ? "TX_ERR" : "NO_CONFIRM";
 						return { ok: false, code: status, msg: "not confirmed" };
 					}
@@ -982,7 +1104,7 @@ export function createDex(deps = {}) {
 								const r = await send();
 								if (r?.ok) {
 									const sig1 = r.sig;
-									try { await confirmSig?.(sig1, { commitment: "confirmed", timeoutMs: 12000 }); } catch {}
+									try { await safeConfirmSig(sig1, { commitment: "confirmed", timeoutMs: 12000 }); } catch {}
 									try { await waitForTokenCredit?.(userPub, USDC, { timeoutMs: 12000, pollMs: 300 }); } catch {}
 									let usdcUi = 0;
 									try {
@@ -1155,6 +1277,7 @@ export function createDex(deps = {}) {
 	}
 
 	async function executeSwapWithConfirm(opts, { retries = 2, confirmMs = 15000 } = {}) {
+		const totalAttemptMs = Math.max(30_000, Number(confirmMs || 0) + 55_000);
 		let slip = Math.max(150, Number(opts.slippageBps ?? getState().slippageBps ?? 150) | 0);
 		const isBuy = (opts?.inputMint === SOL_MINT && opts?.outputMint && opts.outputMint !== SOL_MINT);
 		if (isBuy) slip = Math.min(300, Math.max(200, slip));
@@ -1166,7 +1289,11 @@ export function createDex(deps = {}) {
 			const needFinal = false;
 			for (let attempt = 0; attempt <= retries; attempt++) {
 				try {
-					const sig = await jupSwapWithKeypair({ ...opts, slippageBps: slip });
+					const sig = await withTimeout(
+						jupSwapWithKeypair({ ...opts, slippageBps: slip }),
+						totalAttemptMs,
+						{ label: "swapAttempt" },
+					);
 					lastSig = sig;
 
 					if (isBuy) {
@@ -1181,7 +1308,7 @@ export function createDex(deps = {}) {
 						} catch {}
 					}
 
-					const ok = await confirmSig?.(sig, {
+					const ok = await safeConfirmSig(sig, {
 						commitment: "confirmed",
 						timeoutMs: Math.max(confirmMs, 22_000),
 						requireFinalized: needFinal,
@@ -1194,6 +1321,9 @@ export function createDex(deps = {}) {
 					}
 				} catch (e) {
 					const msg = String(e?.message || e || "");
+					if (/swapAttempt_TIMEOUT_/i.test(msg) || /sendRawTransaction_TIMEOUT_/i.test(msg)) {
+						log(`Swap attempt ${attempt + 1} stalled; retrying (${msg})`);
+					}
 					log(`Swap attempt ${attempt + 1} failed: ${msg}`);
 					if (/INSUFFICIENT_LAMPORTS/i.test(msg)) {
 						return { ok: false, insufficient: true, msg, sig: lastSig };
