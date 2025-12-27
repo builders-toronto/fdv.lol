@@ -213,4 +213,7 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
 
-"follow: move unsellable mints to dust cache" -m "After repeated Jupiter no-route sell failures, move mint into the shared auto dust cache for later resolution (instead of a follow-only unsellable list)." -m "Retry no-route sells at least 5 times before dusting; skip dusted mints during queue/startup/stop-liquidation flows to avoid infinite retries." -m "Reset buyback/follow loop when a mint is null/blocked (no viable route/liquidity): clear pending buy state and continue polling instead of getting stuck with an empty signature." -m "Adds guards to prevent pendingAction='buy' deadlocks when no signature is produced."
+"Wire Sniper bot into CLI runner"
+-m "Adds sniper section support to --run-profile"
+-m "Starts/stops Sniper headlessly with clean Ctrl+C shutdown"
+-m "Updates CLI help + no bots enabled messaging"

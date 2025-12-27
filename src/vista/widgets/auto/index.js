@@ -1,5 +1,6 @@
 ﻿import { initVolumeWidget } from './volume/index.js';
 import { initFollowWidget } from './follow/index.js';
+import { initSniperWidget } from './sniper/index.js';
 import {
   initTraderWidget,
   getAutoTraderState,
@@ -90,7 +91,7 @@ export function initAutoWidget(container = document.body) {
     <div class="fdv-tabs" style="display:flex; gap:8px; margin:8px 0;">
       <button class="fdv-tab-btn active" data-main-tab="auto">Auto</button>
       <button class="fdv-tab-btn" data-main-tab="follow">Follow</button>
-      <button class="fdv-tab-btn" data-main-tab="sniper" disabled>Sniper</button>
+      <button class="fdv-tab-btn" data-main-tab="sniper">Sniper</button>
       <button class="fdv-tab-btn" data-main-tab="volume">Volume</button>
     </div>
 
@@ -112,7 +113,7 @@ export function initAutoWidget(container = document.body) {
 
     <div class="fdv-bot-footer" style="display:flex;justify-content:space-between;margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
       <a href="https://t.me/fdvlolgroup" target="_blank" data-auto-help-tg>t.me/fdvlolgroup</a>
-      <span>Version: 0.0.4.9</span>
+      <span>Version: 0.0.5.0</span>
     </div>
   `;
 
@@ -123,6 +124,7 @@ export function initAutoWidget(container = document.body) {
   initTraderWidget(body.querySelector('#trader-container'));
   initVolumeWidget(body.querySelector('#volume-container'));
   initFollowWidget(body.querySelector('#follow-container'));
+  initSniperWidget(body.querySelector('#sniper-container'));
 
   const mainTabBtns = wrap.querySelectorAll('[data-main-tab]');
   const mainTabPanels = wrap.querySelectorAll('[data-main-tab-panel]');
