@@ -1,86 +1,52 @@
 {
   "profiles": {
     "default": {
-      "rpcUrl": "https://YOUR_SOLANA_RPC_WITH_CORS_OR_NODE_ACCESS",
-      "rpcHeaders": {
-        "Authorization": "Bearer YOUR_TOKEN"
-      },
-      "autoWalletSecret": "PASTE_AUTO_WALLET_SECRET",
-      "recipientPub": "PASTE_YOUR_SOL_RECIPIENT_PUBKEY",
-
+      "rpcUrl": "https://solana-mainnet.core.chainstack.com/",
+      "rpcHeaders": {},
+      "auto": false,
+      "autoWalletSecret": "",
+      "recipientPub": "",
       "stealthMode": false,
-      "tickMs": 1200,
+      "tickMs": 100,
       "budgetUi": 0.5,
       "buyPct": 0.2,
       "minBuySol": 0.06,
       "maxBuySol": 0.12,
 
+      "finalPumpGateEnabled": false,
+
       "takeProfitPct": 12,
       "stopLossPct": 4,
       "trailPct": 6,
-      "slippageBps": 250
-    },
+      "slippageBps": 250,
 
-    "follow_only": {
-      "rpcUrl": "https://YOUR_SOLANA_RPC_WITH_CORS_OR_NODE_ACCESS",
-      "rpcHeaders": {
-        "Authorization": "Bearer YOUR_TOKEN"
-      },
-      "autoWalletSecret": "PASTE_AUTO_WALLET_SECRET",
-
-      "auto": false,
       "follow": {
         "enabled": true,
-        "targetWallet": "PASTE_TARGET_WALLET_TO_FOLLOW",
+        "targetWallet": "98T65wcMEjoNLDTJszBHGZEX75QRe8QaANXokv4yw3Mp",
         "buyPct": 25,
         "maxHoldMin": 5,
         "pollMs": 1500
-      }
-    },
-
-    "volume_only": {
-      "rpcUrl": "https://YOUR_SOLANA_RPC_WITH_CORS_OR_NODE_ACCESS",
-      "rpcHeaders": {
-        "Authorization": "Bearer YOUR_TOKEN"
       },
-      "autoWalletSecret": "PASTE_AUTO_WALLET_SECRET",
-
-      "auto": false,
-      "volume": {
-        "enabled": true,
-        "mint": "PASTE_TOKEN_MINT",
-        "bots": 1,
-        "minBuyAmountSol": 0.005,
-        "maxBuyAmountSol": 0.02,
-        "maxSlippageBps": 2000,
-        "targetVolumeSol": 0
-      }
-    },
-
-    "all_bots": {
-      "rpcUrl": "https://YOUR_SOLANA_RPC_WITH_CORS_OR_NODE_ACCESS",
-      "rpcHeaders": {
-        "Authorization": "Bearer YOUR_TOKEN"
-      },
-      "autoWalletSecret": "PASTE_AUTO_WALLET_SECRET",
-      "recipientPub": "PASTE_YOUR_SOL_RECIPIENT_PUBKEY",
-
-      "auto": {
-        "enabled": true
-      },
-      "follow": {
-        "enabled": true,
-        "targetWallet": "PASTE_TARGET_WALLET_TO_FOLLOW",
-        "buyPct": 25,
-        "maxHoldMin": 5,
-        "pollMs": 1500
+      "sniper": { 
+        "enabled": false,
+        "mint": "...", 
+        "buyPct": 25, 
+        "pollMs": 1200, 
+        "slippageBps": 250, 
+        "triggerScoreSlopeMin": 0.6 
       },
       "volume": {
         "enabled": false,
-        "mint": "PASTE_TOKEN_MINT",
+        "mint": "",
         "bots": 1,
+        "targetVolumeSol": 0,
+        "maxSlippageBps": 2000,
         "minBuyAmountSol": 0.005,
-        "maxBuyAmountSol": 0.02
+        "maxBuyAmountSol": 0.02,
+        "sellAmountPct": 100,
+        "holdTokens": 0,
+        "holdDelayMs": 2500,
+        "cycleDelayMs": 3000
       }
     }
   }

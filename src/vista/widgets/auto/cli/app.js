@@ -54,7 +54,7 @@ function usage() {
     "    --dt-ms <n>             Milliseconds per sim step (default 1000).",
     "    --throw-prune           Forces pruneZeroBalancePositions to throw (to reproduce the historical abort).",
     "    --debug-sell            Enables window._fdvDebugSellEval during the sim.",
-    "  --run-profile            Runs bots headlessly (no UI) using a named profile (auto/follow/volume).",
+    "  --run-profile            Runs bots headlessly (no UI) using a named profile (auto/follow/volume/sniper).",
     "    --profiles <pathOrUrl>  Profiles JSON file path or https URL.",
     "    --profile <name>        Profile name to select from the profiles file.",
     "    --log-to-console        Mirrors widget logs to stdout.",
@@ -71,6 +71,7 @@ function usage() {
     "        \"auto\": { /* existing auto-bot profile keys */ },",
     "        \"follow\": { \"enabled\": true, \"targetWallet\": \"...\", \"buyPct\": 25, \"maxHoldMin\": 5, \"pollMs\": 1500 },",
     "        \"volume\": { \"enabled\": true, \"mint\": \"...\", \"bots\": 1, \"minBuyAmountSol\": 0.005, \"maxBuyAmountSol\": 0.02, \"maxSlippageBps\": 2000, \"targetVolumeSol\": 0 }",
+    "        \"sniper\": { \"enabled\": true, \"mint\": \"...\", \"buyPct\": 25, \"pollMs\": 1200, \"slippageBps\": 250, \"triggerScoreSlopeMin\": 0.6 }",
     "      }",
     "    }",
     "  }",
@@ -295,15 +296,17 @@ async function runProfile(argv) {
 
   const followCfg = profile?.follow && typeof profile.follow === "object" ? profile.follow : null;
   const volumeCfg = profile?.volume && typeof profile.volume === "object" ? profile.volume : null;
+  const sniperCfg = profile?.sniper && typeof profile.sniper === "object" ? profile.sniper : null;
 
   const enableFollow = shouldEnableSection(followCfg);
   const enableVolume = shouldEnableSection(volumeCfg);
+  const enableSniper = shouldEnableSection(sniperCfg);
   // Auto is enabled by default unless explicitly disabled.
   const autoSection = profile?.auto;
   const enableAuto = autoSection === false ? false : autoSection && typeof autoSection === "object" ? shouldEnableSection(autoSection) : true;
 
-  if (!enableAuto && !enableFollow && !enableVolume) {
-    console.error("Profile enables no bots (auto/follow/volume). Add { auto: {enabled:true} } / { follow: {enabled:true} } / { volume: {enabled:true} }.");
+  if (!enableAuto && !enableFollow && !enableVolume && !enableSniper) {
+    console.error("Profile enables no bots (auto/follow/volume/sniper). Add { auto: {enabled:true} } / { follow: {enabled:true} } / { volume: {enabled:true} } / { sniper: {enabled:true} }.");
     return 2;
   }
 
@@ -313,6 +316,7 @@ async function runProfile(argv) {
   let autoMod = null;
   let followMod = null;
   let volumeMod = null;
+  let sniperMod = null;
 
   if (enableAuto) {
     autoMod = await import("../index.js");
@@ -339,10 +343,10 @@ async function runProfile(argv) {
     }
   }
 
-  if (enableVolume) {
-    volumeMod = await import("../volume/index.js");
-    const code = await volumeMod.__fdvCli_start({
-      ...(volumeCfg || {}),
+  if (enableSniper) {
+    sniperMod = await import("../sniper/index.js");
+    const code = await sniperMod.__fdvCli_start({
+      ...(sniperCfg || {}),
       rpcUrl: profile?.rpcUrl,
       rpcHeaders: profile?.rpcHeaders,
       logToConsole,
@@ -354,10 +358,27 @@ async function runProfile(argv) {
     }
   }
 
+  if (enableVolume) {
+    volumeMod = await import("../volume/index.js");
+    const code = await volumeMod.__fdvCli_start({
+      ...(volumeCfg || {}),
+      rpcUrl: profile?.rpcUrl,
+      rpcHeaders: profile?.rpcHeaders,
+      logToConsole,
+    });
+    if (code) {
+      try { if (sniperMod) await sniperMod.__fdvCli_stop(); } catch {}
+      try { if (followMod) await followMod.__fdvCli_stop(); } catch {}
+      try { if (autoMod) await autoMod.__fdvCli_stop({ runFinalSellEval: true }); } catch {}
+      return code;
+    }
+  }
+
   const stop = async () => {
     try {
       console.log("\nStopping…");
       try { if (volumeMod) await volumeMod.__fdvCli_stop(); } catch {}
+      try { if (sniperMod) await sniperMod.__fdvCli_stop(); } catch {}
       try { if (followMod) await followMod.__fdvCli_stop(); } catch {}
       try { if (autoMod) await autoMod.__fdvCli_stop({ runFinalSellEval: true }); } catch {}
     } finally {
