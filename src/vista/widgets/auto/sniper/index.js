@@ -91,9 +91,12 @@ let triggerEl;
 let _timer = null;
 let _tickInFlight = false;
 let _inFlight = false;
+let _runNonce = 0;
+let _acceptLogs = true;
 
-function log(msg, type = "info") {
+function log(msg, type = "info", force = false) {
 	try {
+		if (!_acceptLogs && !force) return;
 		const line = `[${new Date().toLocaleTimeString()}] ${String(msg ?? "")}`;
 		try {
 			const wantConsole = !!(typeof window !== "undefined" && window._fdvLogToConsole);
@@ -928,11 +931,29 @@ function minSellNotionalSol() {
 	return Math.max(MIN_SELL_SOL_OUT, MIN_JUP_SOL_IN * 1.05, Number(state.dustMinSolOut || 0), MIN_SELL_CHUNK_SOL);
 }
 
+function minRawForJupQuote(decimals = 6) {
+	try {
+		const dec = Number.isFinite(Number(decimals)) ? Number(decimals) : 6;
+		// Heuristic: avoid Jupiter quotes for ultra-dust sizes.
+		// For typical SPL (dec>=3), require at least 0.001 token.
+		// For low-dec tokens, keep a small floor to avoid amount=1 spam.
+		if (dec <= 0) return 1;
+		if (dec < 3) return 2;
+		return Math.max(2, Math.floor(Math.pow(10, dec - 3)));
+	} catch {
+		return 2;
+	}
+}
+
 async function quoteOutSol(mint, amountUi, decimals = 6) {
 	try {
 		if (!mint || mint === SOL_MINT) return 0;
 		const dec = Number.isFinite(Number(decimals)) ? Number(decimals) : 6;
-		const raw = BigInt(Math.max(1, Math.floor(Number(amountUi || 0) * Math.pow(10, dec))));
+		const rawNum = Math.floor(Number(amountUi || 0) * Math.pow(10, dec));
+		if (!(rawNum > 0)) return 0;
+		const minRaw = minRawForJupQuote(dec);
+		if (rawNum < minRaw) return 0;
+		const raw = BigInt(rawNum);
 		const q = await _getDex().quoteGeneric(mint, SOL_MINT, raw.toString(), Math.max(50, Number(state.slippageBps || 250) | 0));
 		const outLamports = Number(q?.outAmount || 0);
 		return outLamports > 0 ? outLamports / 1e9 : 0;
@@ -1571,9 +1592,11 @@ async function mirrorBuy(mint) {
 
 async function tickOnce() {
 	if (!state.enabled) return;
+	const run = _runNonce;
 	if (_tickInFlight) return;
 	_tickInFlight = true;
 	try {
+		if (!state.enabled || run !== _runNonce) return;
 		const mint = String(state.mint || "").trim();
 		if (!mint) {
 			updateUI();
@@ -1582,6 +1605,7 @@ async function tickOnce() {
 
 		// keep sampling signal
 		await snapshotFocus(mint);
+		if (!state.enabled || run !== _runNonce) return;
 		try {
 			const last = getLeaderSeries(mint, 1)?.[0];
 			const lastTs = Number(last?.ts || 0);
@@ -1608,9 +1632,38 @@ async function tickOnce() {
 
 		// pending credits
 		try { await _getPendingMgr().processPendingCredits(); } catch {}
+		if (!state.enabled || run !== _runNonce) return;
 
 		const pos = state.positions?.[mint] || null;
-		const holding = pos && (Number(pos.sizeUi || 0) > 0 || pos.awaitingSizeSync === true);
+		let holding = !!(pos && (Number(pos.sizeUi || 0) > 0 || pos.awaitingSizeSync === true));
+
+		// If we're holding only un-quoteable dust and dustExit is disabled, don't let it block the bot.
+		// Move it out of active positions so we can resume observing/buying.
+		try {
+			if (holding && pos && Number(pos.sizeUi || 0) > 0 && pos.awaitingSizeSync !== true && !state.dustExitEnabled) {
+				const dec = Number.isFinite(pos.decimals) ? pos.decimals : 6;
+				const rawNum = Math.floor(Number(pos.sizeUi || 0) * Math.pow(10, Number(dec || 6)));
+				const minRaw = minRawForJupQuote(dec);
+				if (rawNum > 0 && rawNum < minRaw) {
+					const kp = await getAutoKeypair();
+					const ownerStr = kp?.publicKey?.toBase58?.() || "";
+					if (ownerStr) {
+						try { dustStore.addToDustCache(ownerStr, mint, Number(pos.sizeUi || 0), dec); } catch {}
+						try { posStore.removeFromPosCache(ownerStr, mint); } catch {}
+						try { _getPendingMgr().clearPendingCredit(ownerStr, mint); } catch {}
+					}
+					try { delete state.positions[mint]; } catch {}
+					saveState();
+					traceOnce(
+						`sniper:dust-moved:${mint}`,
+						`Dust position ${mint.slice(0, 4)}… size=${Number(pos.sizeUi || 0)} raw=${rawNum} (<${minRaw}); moved to dust cache; resuming observation` ,
+						60_000,
+						"help",
+					);
+					holding = false;
+				}
+			}
+		} catch {}
 
 		if (!holding) {
 			if (isMintBlacklisted(mint) || isPumpDropBanned(mint)) {
@@ -1678,6 +1731,7 @@ async function tickOnce() {
 
 		// holding: evaluate sell pipeline
 		const kp = await getAutoKeypair();
+		if (!state.enabled || run !== _runNonce) return;
 		if (!kp) {
 			log("Auto wallet missing; cannot manage position.", "err");
 			updateUI();
@@ -1706,7 +1760,9 @@ async function tickOnce() {
 
 		const ctx = _mkSellCtx({ kp, mint, pos, nowTs: now() });
 		await _enrichSellCtx(ctx);
+		if (!state.enabled || run !== _runNonce) return;
 		await runSellPipelineForPosition(ctx);
+		if (!state.enabled || run !== _runNonce) return;
 		try {
 			// post-sell cleanup if empty
 			const p2 = state.positions?.[mint];
@@ -1725,6 +1781,8 @@ async function tickOnce() {
 
 async function startSniper() {
 	if (state.enabled) return;
+	_acceptLogs = true;
+	_runNonce++;
 	const mint = String(mintEl?.value || state.mint || "").trim();
 	if (!mint) {
 		log("Missing mint.", "warn");
@@ -1742,6 +1800,7 @@ async function startSniper() {
 	log(
 		`Sniper started. mint=${mint.slice(0, 6)}… poll=${state.pollMs}ms buyPct=${state.buyPct}% obs=${state.observeMinSamples}/${Math.round(state.observeWindowMs / 1000)}s minHold=${state.minHoldSecs}s thr=${Number(state.triggerScoreSlopeMin || 0.6).toFixed(2)}`,
 		"ok",
+		true,
 	);
 
 	if (_timer) clearInterval(_timer);
@@ -1754,13 +1813,15 @@ async function startSniper() {
 async function stopSniper() {
 	if (!state.enabled) return;
 	state.enabled = false;
+	_runNonce++;
 	saveState();
 	try {
 		if (_timer) clearInterval(_timer);
 	} catch {}
 	_timer = null;
 	updateUI();
-	log("Sniper stopped.", "warn");
+	log("Sniper stopped.", "warn", true);
+	_acceptLogs = false;
 }
 
 async function __fdvCli_applySniperConfig(cfg = {}) {
@@ -1777,12 +1838,14 @@ async function __fdvCli_applySniperConfig(cfg = {}) {
 
 async function __fdvCli_startSniper(cfg = {}) {
 	if (!_isNodeLike()) return 1;
+	_acceptLogs = true;
+	_runNonce++;
 	loadState();
 	await __fdvCli_applySniperConfig(cfg);
 	if (!state.mint) throw new Error("SNIPER_MISSING_MINT");
 	state.enabled = true;
 	saveState();
-	log(`Sniper started (headless). Mint=${String(state.mint).slice(0, 6)}…`, "ok");
+	log(`Sniper started (headless). Mint=${String(state.mint).slice(0, 6)}…`, "ok", true);
 	if (_timer) clearInterval(_timer);
 	_timer = setInterval(() => void tickOnce(), Math.max(250, Number(state.pollMs || 1200)));
 	await tickOnce();
