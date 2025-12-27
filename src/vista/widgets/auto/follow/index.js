@@ -20,6 +20,7 @@ import {
 	AUTO_CFG,
 } from "../lib/constants.js";
 import { rpcWait, rpcBackoffLeft, markRpcStress } from "../lib/rpcThrottle.js";
+import { createDustCacheStore } from "../lib/stores/dustCacheStore.js";
 import { loadSplToken } from "../../../../core/solana/splToken.js";
 import { getRugSignalForMint } from "../../../meme/metrics/kpi/pumping.js";
 import { importFromUrlWithFallback } from "../../../../utils/netImport.js";
@@ -80,6 +81,9 @@ async function getBs58() {
 
 const AUTO_LS_KEY = "fdv_auto_bot_v1";
 const FOLLOW_LS_KEY = "fdv_follow_bot_v1";
+
+const NO_ROUTE_SELL_TRIES = 5;
+const DUST_CACHE_KEY_PREFIX = "fdv_dust_";
 
 function _readAutoStateRaw() {
 	try {
@@ -811,10 +815,14 @@ async function __fdvCli_startFollow(cfg = {}) {
 			if (!hasPos) {
 				const b = await _findLatestBuyMintFromTarget(target, { limit: 200 });
 				if (b) {
+					if (isMintInAutoDustCache(b)) {
+						log(`Startup: latest buy is in dust cache; skipping: ${b.slice(0, 6)}…`, "warn");
+					} else {
 					state.activeMint = b;
 					state.pendingSince = Date.now();
 					state.lastActionAttempt = 0;
 					log(`Startup: latest buy to follow is ${b} (from parsed txs)`, "help");
+					}
 				}
 			}
 		}
@@ -830,6 +838,10 @@ async function __fdvCli_startFollow(cfg = {}) {
 				const b = info.buy?.mint;
 				if (s) soldMints.add(s);
 				if (b && !soldMints.has(b)) {
+					if (isMintInAutoDustCache(b)) {
+						log(`Startup: buy mint is in dust cache; skipping: ${b.slice(0, 6)}…`, "warn");
+						continue;
+					}
 					if (isMintBlacklisted(b)) continue;
 					state.activeMint = b;
 					state.pendingSince = Date.now();
@@ -968,6 +980,45 @@ let state = {
 	lastActionAttempt: 0,
 };
 
+let _dustStore;
+function _getDustStore() {
+	if (_dustStore) return _dustStore;
+	_dustStore = createDustCacheStore({ keyPrefix: DUST_CACHE_KEY_PREFIX, log });
+	return _dustStore;
+}
+
+function _getAutoOwnerPubGuess() {
+	try {
+		const meta = getExistingAutoWalletMeta();
+		return String(meta?.autoWalletPub || "").trim();
+	} catch {
+		return "";
+	}
+}
+
+function isMintInAutoDustCache(mint, ownerPubkeyStr = "") {
+	try {
+		const owner = String(ownerPubkeyStr || "").trim() || _getAutoOwnerPubGuess();
+		const m = String(mint || "").trim();
+		if (!owner || !m) return false;
+		return !!_getDustStore().isMintInDustCache(owner, m);
+	} catch {
+		return false;
+	}
+}
+
+function addMintToAutoDustCache({ ownerPubkeyStr, mint, sizeUi, decimals } = {}) {
+	try {
+		const owner = String(ownerPubkeyStr || "").trim();
+		const m = String(mint || "").trim();
+		if (!owner || !m) return false;
+		_getDustStore().addToDustCache(owner, m, Number(sizeUi || 0), Number.isFinite(decimals) ? decimals : 6);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function loadState() {
 	try {
 		const raw = _readFollowStateRaw();
@@ -1014,7 +1065,7 @@ function saveState() {
 
 const TAKE_PROFIT_BPS = 1000; // +10%
 
-const RECYCLE_HOLD_MAX_MIN = 15;
+const RECYCLE_HOLD_MAX_MIN = 1500; // 25 hours
 
 function clampMaxHoldMin(minsLike, fallbackMin = 5) {
 	return clampNum(minsLike, 1, RECYCLE_HOLD_MAX_MIN, fallbackMin);
@@ -1036,6 +1087,10 @@ function _queueNextMint(mint, sig) {
 	const m = String(mint || "").trim();
 	if (!m || m === state.activeMint) return false;
 	if (state.queuedMint === m) return false;
+	if (isMintInAutoDustCache(m)) {
+		log(`Queued mint is in dust cache; ignoring: ${m.slice(0, 6)}…`, "warn");
+		return false;
+	}
 	state.queuedMint = m;
 	state.queuedSig = String(sig || "").trim();
 	state.queuedAt = Date.now();
@@ -1051,6 +1106,15 @@ async function _startQueuedMintIfAny() {
 		if (state.activeMint) return false;
 		const m = String(state.queuedMint || "").trim();
 		if (!m) return false;
+		if (isMintInAutoDustCache(m)) {
+			log(`Queued mint is in dust cache; skipping: ${m.slice(0, 6)}…`, "warn");
+			state.queuedMint = "";
+			state.queuedSig = "";
+			state.queuedAt = 0;
+			saveState();
+			updateUI();
+			return false;
+		}
 		if (isMintBlacklisted(m)) {
 			log(`Queued mint is blacklisted; skipping: ${m.slice(0, 6)}…`, "warn");
 			state.queuedMint = "";
@@ -1077,6 +1141,19 @@ async function _startQueuedMintIfAny() {
 			state.entrySol = Number(r.spentSol);
 			state.entryAt = Date.now();
 			saveState();
+		}
+		if (r?.blocked) {
+			log(`Queued BUY blocked (${String(r?.reason || "").slice(0, 80)}). Clearing and continuing.`, "warn");
+			_clearActivePositionState();
+			state.pendingAction = "";
+			state.pendingSig = "";
+			state.pendingAttempts = 0;
+			state.pendingLastTryAt = 0;
+			state.pendingSince = 0;
+			saveState();
+			updateUI();
+			_kickPollSoon(250);
+			return false;
 		}
 		if (!r?.ok) {
 			state.pendingAction = "buy";
@@ -1124,7 +1201,22 @@ async function _checkPendingBuy() {
 	try {
 		if (state.pendingAction !== "buy" || !state.activeMint) return false;
 		const sig = String(state.pendingSig || "");
-		if (!sig) return false;
+		if (!sig) {
+			const elapsed = Date.now() - Number(state.pendingSince || 0);
+			if (elapsed > 1500) {
+				log("Pending BUY has no signature (likely blocked). Clearing.", "warn");
+				state.pendingAction = "";
+				state.pendingSig = "";
+				state.pendingAttempts = 0;
+				state.pendingLastTryAt = 0;
+				state.pendingSince = 0;
+				_clearActivePositionState();
+				saveState();
+				updateUI();
+				_kickPollSoon(250);
+			}
+			return false;
+		}
 
 		const autoKp = await getAutoKeypair();
 		if (!autoKp) return false;
@@ -1289,7 +1381,7 @@ async function _maybeTakeProfit() {
 		state.forceFeeSellMint = soldMint;
 
 		const r = await mirrorSell(state.activeMint);
-		if (r?.ok === true) {
+		if (r?.ok === true || r?.noRoute) {
 			log("Take-profit SELL complete. Ready for next target mint.", "ok");
 			_clearActivePositionState();
 			state.pendingAction = "";
@@ -1351,7 +1443,7 @@ async function _maybeRugExit() {
 		);
 
 		const r = await mirrorSell(mint);
-		if (r?.ok === true) {
+		if (r?.ok === true || r?.noRoute) {
 			_clearActivePositionState();
 			state.pendingAction = "";
 			state.pendingSig = "";
@@ -1422,7 +1514,7 @@ async function _maybeRecycleExit() {
 
 		const soldMint = mint;
 		const r = await mirrorSell(mint);
-		if (r?.ok === true) {
+		if (r?.ok === true || r?.noRoute) {
 			log("Recycle SELL complete. Ready for next target mint.", "ok");
 			_clearActivePositionState();
 			state.pendingAction = "";
@@ -1835,6 +1927,18 @@ async function _syncToTargetOpenMintAfterExit(avoidMint) {
 			state.entryAt = Date.now();
 			saveState();
 		}
+		if (r?.blocked) {
+			log(`Resync BUY blocked (${String(r?.reason || "").slice(0, 80)}). Clearing; will keep watching target.`, "warn");
+			_clearActivePositionState();
+			state.pendingAction = "";
+			state.pendingSig = "";
+			state.pendingAttempts = 0;
+			state.pendingLastTryAt = 0;
+			state.pendingSince = 0;
+			saveState();
+			updateUI();
+			return false;
+		}
 		if (!r?.ok) {
 			state.pendingAction = "buy";
 			state.pendingSig = String(r?.sig || "");
@@ -1878,7 +1982,7 @@ function getDynamicSlippageBps(kind = "buy") {
 async function mirrorBuy(mint) {
 	if (isMintBlacklisted(mint)) {
 		log(`BUY blocked: mint is blacklisted (${String(mint || "").slice(0, 6)}…)`, "warn");
-		return { ok: false, sig: "", spentSol: 0 };
+		return { ok: false, sig: "", spentSol: 0, blocked: true, reason: "blacklisted" };
 	}
 
 	const slip = getDynamicSlippageBps("buy");
@@ -1886,7 +1990,7 @@ async function mirrorBuy(mint) {
 	if (!autoKp) {
 		log("No auto wallet configured. Set/import it in the Auto tab first.", "error");
 		await debugAutoWalletLoad(log);
-		return { ok: false, sig: "", spentSol: 0 };
+		return { ok: false, sig: "", spentSol: 0, blocked: true, reason: "no-auto-wallet" };
 	}
 
 	const ownerStr = autoKp.publicKey.toBase58();
@@ -1907,7 +2011,7 @@ async function mirrorBuy(mint) {
 			`BUY skipped: insufficient SOL. balance=${solBalUi.toFixed(4)} reserve≈${(reserveLamports / 1e9).toFixed(4)} spendable≈${maxSpendSol.toFixed(4)} cap70%≈${maxByFractionSol.toFixed(4)}`,
 			"error",
 		);
-		return { ok: false, sig: "", spentSol: 0 };
+		return { ok: false, sig: "", spentSol: 0, blocked: true, reason: "insufficient-sol" };
 	}
 	if (buySol + 1e-9 < desiredSol) {
 		const pct = Math.round(getBuyFraction() * 100);
@@ -1942,7 +2046,7 @@ async function mirrorBuy(mint) {
 					"warn",
 				);
 			}
-			return { ok: false, sig: "", spentSol: 0 };
+			return { ok: false, sig: "", spentSol: 0, blocked: true, reason: why || "no-route" };
 		}
 	}
 
@@ -1989,36 +2093,62 @@ async function mirrorSell(mint) {
 		log(`No balance to sell for ${mint.slice(0, 6)}… (already empty).`, "warn");
 		return { ok: true, sig: "" };
 	}
-
-	log(`Mirror SELL ${mint.slice(0, 6)}… amount=${amountUi.toFixed(6)}`, "ok");
-	const res = await getDex().executeSwapWithConfirm(
-		{
-			signer: autoKp,
-			inputMint: mint,
-			outputMint: SOL_MINT,
-			amountUi,
-			slippageBps: slip,
-		},
-		{ retries: 1, confirmMs: 30_000 },
-	);
-
-	if (res?.ok) {
-		log(`SELL ok: ${res.sig}`, "ok");
-		try {
-			await getDex().closeEmptyTokenAtas(autoKp, mint);
-		} catch {}
-		return { ok: true, sig: res.sig };
+	if (isMintInAutoDustCache(mint, ownerStr)) {
+		log(`SELL skipped: mint is in dust cache (${mint.slice(0, 6)}…).`, "warn");
+		return { ok: false, sig: "", dust: true };
 	}
-	if (res?.insufficient) {
-		log(`SELL failed (fees/lamports): ${res.msg || ""}`, "error");
+
+	const decimals = Number.isFinite(Number(bal?.decimals)) ? Number(bal.decimals) : 6;
+
+	let lastRes = null;
+	for (let attempt = 1; attempt <= NO_ROUTE_SELL_TRIES; attempt++) {
+		log(
+			`Mirror SELL ${mint.slice(0, 6)}… amount=${amountUi.toFixed(6)} (try ${attempt}/${NO_ROUTE_SELL_TRIES})`,
+			"ok",
+		);
+		const res = await getDex().executeSwapWithConfirm(
+			{
+				signer: autoKp,
+				inputMint: mint,
+				outputMint: SOL_MINT,
+				amountUi,
+				slippageBps: slip,
+			},
+			{ retries: 1, confirmMs: 30_000 },
+		);
+		lastRes = res;
+
+		if (res?.ok) {
+			log(`SELL ok: ${res.sig}`, "ok");
+			try {
+				await getDex().closeEmptyTokenAtas(autoKp, mint);
+			} catch {}
+			return { ok: true, sig: res.sig };
+		}
+		if (res?.insufficient) {
+			log(`SELL failed (fees/lamports): ${res.msg || ""}`, "error");
+			return { ok: false, sig: res?.sig || "" };
+		}
+		if (res?.noRoute) {
+			log(`SELL failed (no route): ${res.msg || ""}`, "warn");
+			if (attempt < NO_ROUTE_SELL_TRIES) {
+				await delay(500);
+				continue;
+			}
+
+			// After N tries, move to dust cache so the auto trader UI can manage/sell it later.
+			try {
+				addMintToAutoDustCache({ ownerPubkeyStr: ownerStr, mint, sizeUi: amountUi, decimals });
+				log(`Moved ${mint.slice(0, 6)}… to dust cache after ${NO_ROUTE_SELL_TRIES} no-route tries.`, "warn");
+			} catch {}
+			return { ok: false, sig: res?.sig || "", noRoute: true, dusted: true, msg: res?.msg || "" };
+		}
+		log(`SELL submitted but not confirmed yet: ${res?.sig || "(no sig)"}`, "warn");
 		return { ok: false, sig: res?.sig || "" };
 	}
-	if (res?.noRoute) {
-		log(`SELL failed (no route): ${res.msg || ""}`, "warn");
-		return { ok: false, sig: res?.sig || "" };
-	}
-	log(`SELL submitted but not confirmed yet: ${res?.sig || "(no sig)"}`, "warn");
-	return { ok: false, sig: res?.sig || "" };
+
+	const fallbackSig = String(lastRes?.sig || "");
+	return { ok: false, sig: fallbackSig };
 }
 
 async function pollOnce() {
@@ -2051,6 +2181,10 @@ async function pollOnce() {
 					log(`Target BUY-next ignored (blacklisted): ${evt.mint.slice(0, 6)}…`, "warn");
 					continue;
 				}
+				if (isMintInAutoDustCache(evt.mint)) {
+					log(`Target BUY-next ignored (dust): ${evt.mint.slice(0, 6)}…`, "warn");
+					continue;
+				}
 				_queueNextMint(evt.mint, evt.sig);
 				continue;
 			}
@@ -2062,6 +2196,10 @@ async function pollOnce() {
 				}
 				if (isMintBlacklisted(evt.mint)) {
 					log(`Target BUY ignored (blacklisted): ${evt.mint.slice(0, 6)}…`, "warn");
+					continue;
+				}
+				if (isMintInAutoDustCache(evt.mint)) {
+					log(`Target BUY ignored (dust): ${evt.mint.slice(0, 6)}…`, "warn");
 					continue;
 				}
 				state.activeMint = evt.mint;
@@ -2083,6 +2221,18 @@ async function pollOnce() {
 					state.entryAt = Date.now();
 					saveState();
 				}
+				if (r?.blocked) {
+					log(`Target BUY blocked (${String(r?.reason || "").slice(0, 80)}). Clearing and continuing.`, "warn");
+					_clearActivePositionState();
+					state.pendingAction = "";
+					state.pendingSig = "";
+					state.pendingAttempts = 0;
+					state.pendingLastTryAt = 0;
+					state.pendingSince = 0;
+					saveState();
+					updateUI();
+					continue;
+				}
 				if (!r?.ok) {
 					state.pendingAction = "buy";
 					state.pendingSig = String(r?.sig || "");
@@ -2100,12 +2250,13 @@ async function pollOnce() {
 				if (!state.activeMint || evt.mint !== state.activeMint) continue;
 				log(`Target SELL detected: ${evt.mint} (Δ ${evt.deltaUi.toFixed(6)})`, "ok");
 				const r = await mirrorSell(evt.mint);
-				if (r?.ok === true) {
+				if (r?.ok === true || r?.noRoute) {
 					_clearActivePositionState();
 					state.pendingAction = "";
 					state.pendingSig = "";
 					state.pendingAttempts = 0;
 					state.pendingLastTryAt = 0;
+					state.pendingSince = 0;
 				} else {
 					state.pendingAction = "sell";
 					state.pendingSig = String(r?.sig || "");
@@ -2115,7 +2266,7 @@ async function pollOnce() {
 				}
 				saveState();
 				updateUI();
-				if (r?.ok === true) {
+				if (r?.ok === true || r?.noRoute) {
 					await _startQueuedMintIfAny();
 				}
 			}
@@ -2212,10 +2363,14 @@ async function startFollowBot() {
 			if (!hasPos) {
 				const b = await _findLatestBuyMintFromTarget(target, { limit: 200 });
 				if (b) {
+					if (isMintInAutoDustCache(b)) {
+						log(`Startup: latest buy is in dust cache; skipping: ${b.slice(0, 6)}…`, "warn");
+					} else {
 					state.activeMint = b;
 					state.pendingSince = Date.now();
 					state.lastActionAttempt = 0;
 					log(`Startup: latest buy to follow is ${b} (from parsed txs)`, "help");
+					}
 				}
 			}
 		}
@@ -2231,6 +2386,10 @@ async function startFollowBot() {
 				const b = info.buy?.mint;
 				if (s) soldMints.add(s);
 				if (b && !soldMints.has(b)) {
+					if (isMintInAutoDustCache(b)) {
+						log(`Startup: buy mint is in dust cache; skipping: ${b.slice(0, 6)}…`, "warn");
+						continue;
+					}
 					if (isMintBlacklisted(b)) continue;
 					state.activeMint = b;
 					state.pendingSince = Date.now();
@@ -2320,6 +2479,10 @@ async function stopFollowBot() {
 			for (const it of mints) {
 				const mint = String(it?.mint || "");
 				if (!mint || mint === SOL_MINT) continue;
+				if (isMintInAutoDustCache(mint, ownerStr)) {
+					log(`Stop: skipping dust mint ${mint.slice(0, 6)}…`, "warn");
+					continue;
+				}
 				try {
 					const r = await mirrorSell(mint);
 					if (!r?.ok) {
@@ -2354,6 +2517,27 @@ async function stopFollowBot() {
 
 export function initFollowWidget(container = document.body) {
 	loadState();
+	try {
+		if (typeof window !== "undefined") {
+			window.__fdvFollowMoveToDust = async (mint) => {
+				try {
+					const autoKp = await getAutoKeypair();
+					if (!autoKp) return false;
+					const ownerStr = autoKp.publicKey.toBase58();
+					const bal = await getTokenBalanceUiByMint(ownerStr, String(mint || ""));
+					return addMintToAutoDustCache({
+						ownerPubkeyStr: ownerStr,
+						mint: String(mint || "").trim(),
+						sizeUi: Number(bal?.sizeUi || 0),
+						decimals: Number.isFinite(Number(bal?.decimals)) ? Number(bal.decimals) : 6,
+					});
+				} catch {
+					return false;
+				}
+			};
+			window.__fdvFollowIsDust = (mint) => isMintInAutoDustCache(mint);
+		}
+	} catch {}
 
 	const wrap = document.createElement("div");
 	wrap.className = "fdv-follow-wrap";
