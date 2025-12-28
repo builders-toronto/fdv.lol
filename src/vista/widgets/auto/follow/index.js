@@ -1213,6 +1213,7 @@ async function _checkPendingBuy() {
 				_clearActivePositionState();
 				saveState();
 				updateUI();
+				await _startQueuedMintIfAny();
 				_kickPollSoon(250);
 			}
 			return false;
@@ -1278,6 +1279,8 @@ async function _checkPendingBuy() {
 			_clearActivePositionState();
 			saveState();
 			updateUI();
+			await _startQueuedMintIfAny();
+			_kickPollSoon(250);
 			return false;
 		}
 		log("Pending BUY: waiting for confirm/balance…", "help");
@@ -1357,6 +1360,21 @@ async function _maybeTakeProfit() {
 		if (!autoKp) return false;
 		const ownerStr = autoKp.publicKey.toBase58();
 
+		// Dust mints are managed only via the Auto Trader UI; ignore them here.
+		if (isMintInAutoDustCache(state.activeMint, ownerStr)) {
+			log(`Take-profit ignored (dust): ${String(state.activeMint || "").slice(0, 6)}…`, "warn");
+			_clearActivePositionState();
+			state.pendingAction = "";
+			state.pendingSig = "";
+			state.pendingAttempts = 0;
+			state.pendingLastTryAt = 0;
+			state.pendingSince = 0;
+			saveState();
+			updateUI();
+			_kickPollSoon(250);
+			return true;
+		}
+
 		const bal = await getTokenBalanceUiByMint(ownerStr, state.activeMint);
 		const amountUi = Number(bal?.sizeUi || 0);
 		if (!(amountUi > 0)) return false;
@@ -1381,7 +1399,7 @@ async function _maybeTakeProfit() {
 		state.forceFeeSellMint = soldMint;
 
 		const r = await mirrorSell(state.activeMint);
-		if (r?.ok === true || r?.noRoute) {
+		if (r?.ok === true || r?.noRoute || r?.dust) {
 			log("Take-profit SELL complete. Ready for next target mint.", "ok");
 			_clearActivePositionState();
 			state.pendingAction = "";
@@ -1420,6 +1438,25 @@ async function _maybeRugExit() {
 		const mint = String(state.activeMint || "").trim();
 		if (!mint) return false;
 
+		// Dust mints are managed only via the Auto Trader UI; ignore them here.
+		try {
+			const autoKp = await getAutoKeypair();
+			const ownerStr = autoKp?.publicKey?.toBase58?.() || "";
+			if (ownerStr && isMintInAutoDustCache(mint, ownerStr)) {
+				log(`Rug exit ignored (dust): ${mint.slice(0, 6)}…`, "warn");
+				_clearActivePositionState();
+				state.pendingAction = "";
+				state.pendingSig = "";
+				state.pendingAttempts = 0;
+				state.pendingLastTryAt = 0;
+				state.pendingSince = 0;
+				saveState();
+				updateUI();
+				_kickPollSoon(250);
+				return true;
+			}
+		} catch {}
+
 		const sig = getRugSignalForMint?.(mint);
 		if (!sig) return false;
 		const sev = Number(sig?.sev ?? 0);
@@ -1443,7 +1480,7 @@ async function _maybeRugExit() {
 		);
 
 		const r = await mirrorSell(mint);
-		if (r?.ok === true || r?.noRoute) {
+		if (r?.ok === true || r?.noRoute || r?.dust) {
 			_clearActivePositionState();
 			state.pendingAction = "";
 			state.pendingSig = "";
@@ -1485,6 +1522,25 @@ async function _maybeRecycleExit() {
 		const mint = String(state.activeMint || "").trim();
 		if (!mint) return false;
 
+		// Dust mints are managed only via the Auto Trader UI; ignore them here.
+		try {
+			const autoKp = await getAutoKeypair();
+			const ownerStr = autoKp?.publicKey?.toBase58?.() || "";
+			if (ownerStr && isMintInAutoDustCache(mint, ownerStr)) {
+				log(`Recycle ignored (dust): ${mint.slice(0, 6)}…`, "warn");
+				_clearActivePositionState();
+				state.pendingAction = "";
+				state.pendingSig = "";
+				state.pendingAttempts = 0;
+				state.pendingLastTryAt = 0;
+				state.pendingSince = 0;
+				saveState();
+				updateUI();
+				_kickPollSoon(250);
+				return true;
+			}
+		} catch {}
+
 		// If balance is already gone, just clear and continue.
 		const autoKp = await getAutoKeypair();
 		if (autoKp) {
@@ -1514,7 +1570,7 @@ async function _maybeRecycleExit() {
 
 		const soldMint = mint;
 		const r = await mirrorSell(mint);
-		if (r?.ok === true || r?.noRoute) {
+		if (r?.ok === true || r?.noRoute || r?.dust) {
 			log("Recycle SELL complete. Ready for next target mint.", "ok");
 			_clearActivePositionState();
 			state.pendingAction = "";
@@ -2078,8 +2134,8 @@ async function mirrorBuy(mint) {
 	return { ok: false, sig: res?.sig || "", spentSol: buySol };
 }
 
-async function mirrorSell(mint) {
-	const slip = getDynamicSlippageBps("sell");
+async function mirrorSell(mint, { noRouteTries = NO_ROUTE_SELL_TRIES, dustOnNoRoute = true } = {}) {
+    const slip = getDynamicSlippageBps("sell");
 	const autoKp = await getAutoKeypair();
 	if (!autoKp) {
 		log("No auto wallet configured. Set/import it in the Auto tab first.", "error");
@@ -2095,15 +2151,16 @@ async function mirrorSell(mint) {
 	}
 	if (isMintInAutoDustCache(mint, ownerStr)) {
 		log(`SELL skipped: mint is in dust cache (${mint.slice(0, 6)}…).`, "warn");
-		return { ok: false, sig: "", dust: true };
+		return { ok: true, sig: "", dust: true, skipped: true };
 	}
 
 	const decimals = Number.isFinite(Number(bal?.decimals)) ? Number(bal.decimals) : 6;
 
+	const tries = Math.max(1, Number(noRouteTries || NO_ROUTE_SELL_TRIES) | 0);
 	let lastRes = null;
-	for (let attempt = 1; attempt <= NO_ROUTE_SELL_TRIES; attempt++) {
+	for (let attempt = 1; attempt <= tries; attempt++) {
 		log(
-			`Mirror SELL ${mint.slice(0, 6)}… amount=${amountUi.toFixed(6)} (try ${attempt}/${NO_ROUTE_SELL_TRIES})`,
+			`Mirror SELL ${mint.slice(0, 6)}… amount=${amountUi.toFixed(6)} (try ${attempt}/${tries})`,
 			"ok",
 		);
 		const res = await getDex().executeSwapWithConfirm(
@@ -2131,17 +2188,21 @@ async function mirrorSell(mint) {
 		}
 		if (res?.noRoute) {
 			log(`SELL failed (no route): ${res.msg || ""}`, "warn");
-			if (attempt < NO_ROUTE_SELL_TRIES) {
+			if (attempt < tries) {
 				await delay(500);
 				continue;
 			}
 
-			// After N tries, move to dust cache so the auto trader UI can manage/sell it later.
-			try {
-				addMintToAutoDustCache({ ownerPubkeyStr: ownerStr, mint, sizeUi: amountUi, decimals });
-				log(`Moved ${mint.slice(0, 6)}… to dust cache after ${NO_ROUTE_SELL_TRIES} no-route tries.`, "warn");
-			} catch {}
-			return { ok: false, sig: res?.sig || "", noRoute: true, dusted: true, msg: res?.msg || "" };
+			if (dustOnNoRoute) {
+				// Move to dust cache so the auto trader UI can manage/sell it later.
+				try {
+					addMintToAutoDustCache({ ownerPubkeyStr: ownerStr, mint, sizeUi: amountUi, decimals });
+					log(`Moved ${mint.slice(0, 6)}… to dust cache after ${tries} no-route try(ies).`, "warn");
+				} catch {}
+				return { ok: true, sig: res?.sig || "", noRoute: true, dusted: true, dust: true, skipped: true, msg: res?.msg || "" };
+			}
+
+			return { ok: false, sig: res?.sig || "", noRoute: true, dusted: false, msg: res?.msg || "" };
 		}
 		log(`SELL submitted but not confirmed yet: ${res?.sig || "(no sig)"}`, "warn");
 		return { ok: false, sig: res?.sig || "" };
@@ -2231,6 +2292,8 @@ async function pollOnce() {
 					state.pendingSince = 0;
 					saveState();
 					updateUI();
+					await _startQueuedMintIfAny();
+					_kickPollSoon(250);
 					continue;
 				}
 				if (!r?.ok) {
@@ -2250,7 +2313,7 @@ async function pollOnce() {
 				if (!state.activeMint || evt.mint !== state.activeMint) continue;
 				log(`Target SELL detected: ${evt.mint} (Δ ${evt.deltaUi.toFixed(6)})`, "ok");
 				const r = await mirrorSell(evt.mint);
-				if (r?.ok === true || r?.noRoute) {
+				if (r?.ok === true || r?.noRoute || r?.dust) {
 					_clearActivePositionState();
 					state.pendingAction = "";
 					state.pendingSig = "";
@@ -2266,7 +2329,7 @@ async function pollOnce() {
 				}
 				saveState();
 				updateUI();
-				if (r?.ok === true || r?.noRoute) {
+				if (r?.ok === true || r?.noRoute || r?.dust) {
 					await _startQueuedMintIfAny();
 				}
 			}
@@ -2484,7 +2547,7 @@ async function stopFollowBot() {
 					continue;
 				}
 				try {
-					const r = await mirrorSell(mint);
+					const r = await mirrorSell(mint, { noRouteTries: 1, dustOnNoRoute: true });
 					if (!r?.ok) {
 						log(`Stop: sell failed for ${mint.slice(0, 6)}… (keeping position).`, "warn");
 					}

@@ -12,5 +12,18 @@
     ],
     "cta": "Support",
     "weight": 2
+  },
+  {
+    "mint": "57CFpp3RdFkW3w2iGAvz7Xgf38T4bfNNTNL1iySDpump",
+    "symbol": "FDV",
+    "name": "FDV.lol",
+    "tagline": "Blazing-fast client-side SOL memecoin tools.",
+    "logo": "https://fdv.lol/src/assets/images/fdv.lol.png",
+    "website": "https://fdv.lol",
+    "socials": [
+      {"platform":"x","url":"https://x.com/fdvlol"}
+    ],
+    "cta": "Support",
+    "weight": 1
   }
 ]
