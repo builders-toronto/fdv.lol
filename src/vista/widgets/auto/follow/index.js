@@ -21,6 +21,7 @@ import {
 } from "../lib/constants.js";
 import { rpcWait, rpcBackoffLeft, markRpcStress } from "../lib/rpcThrottle.js";
 import { createDustCacheStore } from "../lib/stores/dustCacheStore.js";
+import { setBotRunning } from "../lib/autoLed.js";
 import { loadSplToken } from "../../../../core/solana/splToken.js";
 import { getRugSignalForMint } from "../../../meme/metrics/kpi/pumping.js";
 import { importFromUrlWithFallback } from "../../../../utils/netImport.js";
@@ -856,6 +857,7 @@ async function __fdvCli_startFollow(cfg = {}) {
 	saveState();
 
 	state.enabled = true;
+	try { setBotRunning('follow', true); } catch {}
 	updateUI();
 	log(
 		`Follow started (headless). Target=${target.slice(0, 6)}… Auto=${autoKp.publicKey.toBase58().slice(0, 6)}…`,
@@ -2107,14 +2109,8 @@ async function mirrorBuy(mint) {
 	}
 
 	log(`Mirror BUY ${mint.slice(0, 6)}… for ~${buySol.toFixed(4)} SOL`, "ok");
-	const res = await getDex().executeSwapWithConfirm(
-		{
-			signer: autoKp,
-			inputMint: SOL_MINT,
-			outputMint: mint,
-			amountUi: buySol,
-			slippageBps: slip,
-		},
+	const res = await getDex().buyWithConfirm(
+		{ signer: autoKp, mint, solUi: buySol, slippageBps: slip },
 		{ retries: 1, confirmMs: 45_000 },
 	);
 
@@ -2142,6 +2138,14 @@ async function mirrorSell(mint, { noRouteTries = NO_ROUTE_SELL_TRIES, dustOnNoRo
 		await debugAutoWalletLoad(log);
 		return { ok: false, sig: "" };
 	}
+	const _isNoRouteRes = (res) => {
+		if (!res) return false;
+		if (res?.noRoute) return true;
+		const code = String(res?.code || "").toUpperCase();
+		if (code === "NO_ROUTE") return true;
+		const msg = String(res?.msg || res?.error || res?.reason || "");
+		return /COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|Could not find any route|Below min notional/i.test(msg);
+	};
 	const ownerStr = autoKp.publicKey.toBase58();
 	const bal = await getTokenBalanceUiByMint(ownerStr, mint);
 	const amountUi = Number(bal?.sizeUi || 0);
@@ -2163,30 +2167,21 @@ async function mirrorSell(mint, { noRouteTries = NO_ROUTE_SELL_TRIES, dustOnNoRo
 			`Mirror SELL ${mint.slice(0, 6)}… amount=${amountUi.toFixed(6)} (try ${attempt}/${tries})`,
 			"ok",
 		);
-		const res = await getDex().executeSwapWithConfirm(
-			{
-				signer: autoKp,
-				inputMint: mint,
-				outputMint: SOL_MINT,
-				amountUi,
-				slippageBps: slip,
-			},
+		const res = await getDex().sellWithConfirm(
+			{ signer: autoKp, mint, amountUi, slippageBps: slip },
 			{ retries: 1, confirmMs: 30_000 },
 		);
 		lastRes = res;
 
 		if (res?.ok) {
 			log(`SELL ok: ${res.sig}`, "ok");
-			try {
-				await getDex().closeEmptyTokenAtas(autoKp, mint);
-			} catch {}
 			return { ok: true, sig: res.sig };
 		}
 		if (res?.insufficient) {
 			log(`SELL failed (fees/lamports): ${res.msg || ""}`, "error");
 			return { ok: false, sig: res?.sig || "" };
 		}
-		if (res?.noRoute) {
+		if (_isNoRouteRes(res)) {
 			log(`SELL failed (no route): ${res.msg || ""}`, "warn");
 			if (attempt < tries) {
 				await delay(500);
@@ -2467,6 +2462,7 @@ async function startFollowBot() {
 	saveState();
 
 	state.enabled = true;
+	try { setBotRunning('follow', true); } catch {}
 	updateUI();
 	log(`Follow started. Target=${target.slice(0, 6)}… Auto=${autoKp.publicKey.toBase58().slice(0, 6)}…`, "ok");
 	if (state.activeMint) {
@@ -2502,6 +2498,7 @@ async function startFollowBot() {
 }
 
 async function stopFollowBot() {
+	try { setBotRunning('follow', false); } catch {}
 	state.enabled = false;
 	if (_timer) {
 		clearInterval(_timer);

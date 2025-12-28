@@ -1,4 +1,5 @@
 import { createDex } from '../lib/dex.js';
+import { setBotRunning } from '../lib/autoLed.js';
 import {
   SOL_MINT,
   FEE_RESERVE_MIN,
@@ -710,6 +711,7 @@ function clampInt(n, min, max, fallback = min) {
 function haltVolumeBot(msg) {
   try {
     state.enabled = false;
+    try { setBotRunning('volume', false); } catch {}
     for (const b of state.bots || []) {
       try {
         b.enabled = false;
@@ -1269,17 +1271,12 @@ async function ensureBought(bot, wallet) {
     const { bps } = await getQuoteAndSlippage(SOL_MINT, state.mint, bot.cycleBuyAmountSol);
     state.slippageBps = bps;
     log(`[B${bot.id}] Buying ${Number(bot.cycleBuyAmountSol || 0).toFixed(4)} SOL of ${state.mint} (slip ${bps}bps) with ${wallet.publicKey.toBase58().slice(0, 8)}`);
-    const res = await getDex().jupSwapWithKeypair({
-      signer: wallet,
-      inputMint: SOL_MINT,
-      outputMint: state.mint,
-      amountUi: bot.cycleBuyAmountSol,
-      slippageBps: bps,
-    });
+    const res = await getDex().buyWithConfirm(
+      { signer: wallet, mint: state.mint, solUi: bot.cycleBuyAmountSol, slippageBps: bps },
+      { retries: 1, confirmMs: 45_000 },
+    );
 
-    // Capture sig if dex returns it, to prevent duplicate sends.
-    if (typeof res === 'string') bot.cycleBuySig = res;
-    else if (res && typeof res === 'object') bot.cycleBuySig = res.sig || res.signature || null;
+    bot.cycleBuySig = res?.sig || null;
 
     if (bot.cycleBuySig) {
       await confirmSig(bot.cycleBuySig, { timeoutMs: 40_000 });
@@ -1346,23 +1343,19 @@ async function ensureSold(bot, wallet) {
     state.slippageBps = sellBps;
     if (holdUi > 0) log(`[B${bot.id}] Selling ${sellUi.toFixed(6)} ${state.mint} (slip ${sellBps}bps; hold ${holdUi.toFixed(6)})`);
     else log(`[B${bot.id}] Selling ${sellUi.toFixed(6)} ${state.mint} (slip ${sellBps}bps)`);
-    let res;
-    try {
-      res = await getDex().jupSwapWithKeypair({ signer: wallet, inputMint: state.mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: sellBps });
-    } catch (e) {
-      // If Jupiter says there are no routes / router dust, don't loop forever trying to sell.
-      const m = String(e?.message || e || '');
-      if (/NO_ROUTES|NO_ROUTE|ROUTER_DUST/i.test(m)) {
-        log('Sell reported NO_ROUTES/ROUTER_DUST; proceeding to return SOL (token dust may remain).', 'warn');
-        bot.cycleStage = CYCLE_STAGE.SOLD;
-        updateUI();
-        return true;
-      }
-      throw e;
+    const res = await getDex().sellWithConfirm(
+      { signer: wallet, mint: state.mint, amountUi: sellUi, slippageBps: sellBps },
+      { retries: 1, confirmMs: 50_000 },
+    );
+
+    if (res?.noRoute) {
+      log('Sell reported NO_ROUTE/ROUTER_DUST; proceeding to return SOL (token dust may remain).', 'warn');
+      bot.cycleStage = CYCLE_STAGE.SOLD;
+      updateUI();
+      return true;
     }
 
-    if (typeof res === 'string') bot.cycleSellSig = res;
-    else if (res && typeof res === 'object') bot.cycleSellSig = res.sig || res.signature || null;
+    bot.cycleSellSig = res?.sig || null;
     if (bot.cycleSellSig) {
       await confirmSig(bot.cycleSellSig, { timeoutMs: 50_000 });
     }
@@ -1392,7 +1385,10 @@ async function ensureSold(bot, wallet) {
         const res = await getQuoteAndSlippage(state.mint, SOL_MINT, afterUi);
         const bps = res.bps;
         log(`Final sweep sell: ${afterUi.toFixed(6)} ${state.mint} (slip ${bps}bps)`, 'help');
-        await getDex().jupSwapWithKeypair({ signer: wallet, inputMint: state.mint, outputMint: SOL_MINT, amountUi: afterUi, slippageBps: bps });
+        await getDex().sellWithConfirm(
+          { signer: wallet, mint: state.mint, amountUi: afterUi, slippageBps: bps },
+          { retries: 1, confirmMs: 50_000 },
+        );
         await delay(250);
       } catch {}
       const finalUi = await getTokenBalanceUiByMint(wallet.publicKey, state.mint);
@@ -1415,7 +1411,10 @@ async function ensureSold(bot, wallet) {
           const res = await getQuoteAndSlippage(state.mint, SOL_MINT, trimUi);
           const bps = res.bps;
           log(`Final trim sell: ${trimUi.toFixed(6)} ${state.mint} (slip ${bps}bps; hold ${holdUi.toFixed(6)})`, 'help');
-          await getDex().jupSwapWithKeypair({ signer: wallet, inputMint: state.mint, outputMint: SOL_MINT, amountUi: trimUi, slippageBps: bps });
+          await getDex().sellWithConfirm(
+            { signer: wallet, mint: state.mint, amountUi: trimUi, slippageBps: bps },
+            { retries: 1, confirmMs: 50_000 },
+          );
           await delay(250);
         } catch {}
       }
@@ -1440,7 +1439,7 @@ async function ensureSold(bot, wallet) {
 async function ensureReturned(bot, wallet, autoKp) {
   await retryUntil('Return SOL stage', async () => {
     try {
-      await closeAllEmptyTokenAccountsForOwner(wallet);
+      await getDex().closeAllEmptyAtas(wallet);
     } catch {}
 
     const conn = await getConn();
@@ -1549,6 +1548,7 @@ async function startVolumeBot() {
   if (state.enabled) return;
   state.softStopRequested = false;
   state.enabled = true;
+  try { setBotRunning('volume', true); } catch {}
   const botCount = clampInt(state.multiBotCount, 1, 10, 1);
   state.bots = Array.from({ length: botCount }, (_, i) => makeBot(i + 1));
   for (const b of state.bots) b.enabled = true;
@@ -1566,6 +1566,7 @@ async function startVolumeBot() {
 async function stopVolumeBot() {
   state.softStopRequested = false;
   state.enabled = false;
+  try { setBotRunning('volume', false); } catch {}
   for (const b of state.bots || []) {
     try {
       b.enabled = false;

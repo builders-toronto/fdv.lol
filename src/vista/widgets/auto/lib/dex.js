@@ -82,6 +82,44 @@ export function createDex(deps = {}) {
 		quoteOutSol,
 	} = deps;
 
+	function _isNoRouteLike(v) {
+		return /ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|NO_ROUTES|BELOW_MIN_NOTIONAL|0x1788|0x1789/i.test(String(v || ""));
+	}
+
+	function _isInsufficientLamportsLike(v) {
+		return /INSUFFICIENT_LAMPORTS/i.test(String(v || ""));
+	}
+
+	function _isDustLike(v) {
+		return /0x1788|0x1789/i.test(String(v || ""));
+	}
+
+	function _shortErr(v, maxLen = 180) {
+		try {
+			let s = String(v?.message || v || "");
+			s = s.replace(/\s+/g, " ").trim();
+			// Avoid dumping embedded simulation logs.
+			s = s.replace(/Logs:\s*\[[\s\S]*$/i, "");
+			if (s.length > maxLen) s = s.slice(0, maxLen) + "…";
+			return s;
+		} catch {
+			return "";
+		}
+	}
+
+	function _throttledLog(key, msg, everyMs = 8000, type = "info") {
+		try {
+			if (!window._fdvDexLogThrottle) window._fdvDexLogThrottle = new Map();
+			const m = window._fdvDexLogThrottle;
+			const last = Number(m.get(key) || 0);
+			if (now() - last < everyMs) return;
+			m.set(key, now());
+			log(msg, type);
+		} catch {
+			try { log(msg, type); } catch {}
+		}
+	}
+
 	function withTimeout(promise, ms, { label = "op" } = {}) {
 		const timeoutMs = Math.max(1, Number(ms || 0));
 		let t = null;
@@ -646,7 +684,12 @@ export function createDex(deps = {}) {
 				} catch {}
 				return { ok: true, sig };
 			} catch (e) {
-				log(`Swap send failed. NO_ROUTES/ROUTER_DUST. export help/wallet.json to recover dust funds. Simulating…`);
+				_throttledLog(
+					`swapSendFail:${inputMint}->${outputMint}`,
+					`Swap send failed. NO_ROUTES/ROUTER_DUST. export help/wallet.json to recover dust funds. Simulating…`,
+					12_000,
+					"warn",
+				);
 				try {
 					const sim = await withTimeout(
 						conn.simulateTransaction(vtx, { sigVerify: false, replaceRecentBlockhash: true }),
@@ -813,7 +856,18 @@ export function createDex(deps = {}) {
 					} catch {}
 					return { ok: true, sig };
 				} catch (e) {
-					log(`Manual send failed: ${e.message || e}. Simulating…`);
+					const emsg = String(e?.message || e || "");
+					if (_isNoRouteLike(emsg) || _isDustLike(emsg)) {
+						_throttledLog(
+							`manualSend:noRoute:${inputMint}`,
+							`Manual send failed (no route/dust) for ${String(inputMint || "").slice(0, 4)}…`,
+							12_000,
+							"warn",
+						);
+						return { ok: false, code: _isDustLike(emsg) ? "ROUTER_DUST" : "NO_ROUTE", msg: _shortErr(emsg) };
+					}
+
+					log(`Manual send failed: ${_shortErr(e)}. Simulating…`);
 					try {
 						const sim = await conn.simulateTransaction(vtx, { sigVerify: false, replaceRecentBlockhash: true });
 						const logs = sim?.value?.logs || e?.logs || [];
@@ -840,7 +894,11 @@ export function createDex(deps = {}) {
 						const altRestrict = restrictIntermediates === "false" ? "true" : (restrictAllowed ? "false" : "true");
 						if (String(altRestrict) === String(restrictIntermediates)) {
 							const body = await qRes.text().catch(() => "");
-							log(`Sell quote failed (${qRes.status}): ${body || "(empty)"}`);
+							if (_isNoRouteLike(body)) {
+								_throttledLog(`quote:noRoute:${inputMint}`, `Sell quote: no route for ${inputMint.slice(0, 4)}…`, 12_000, "warn");
+								throw new Error("NO_ROUTE");
+							}
+							_throttledLog(`quote:fail:${inputMint}`, `Sell quote failed (${qRes.status}) for ${inputMint.slice(0, 4)}…`, 12_000, "warn");
 							haveQuote = false;
 						} else {
 							const alt = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: altRestrict, withFee: false });
@@ -851,12 +909,16 @@ export function createDex(deps = {}) {
 								haveQuote = true;
 							} else {
 								const body = await qRes2.text().catch(() => "");
-								log(`Sell quote retry failed: ${body || qRes2.status}`);
+								if (_isNoRouteLike(body)) {
+									_throttledLog(`quote:noRoute:${inputMint}`, `Sell quote: no route for ${inputMint.slice(0, 4)}…`, 12_000, "warn");
+									throw new Error("NO_ROUTE");
+								}
+								_throttledLog(`quote:retryFail:${inputMint}`, `Sell quote retry failed (${qRes2.status}) for ${inputMint.slice(0, 4)}…`, 12_000, "warn");
 								haveQuote = false;
 							}
 						}
 					} else {
-						throw new Error(`quote ${qRes.status}`);
+						throw new Error(`QUOTE_${qRes.status}`);
 					}
 				} else {
 					quote = await qRes.json();
@@ -891,17 +953,26 @@ export function createDex(deps = {}) {
 			} catch (e) {
 				if (!isSell) throw e;
 				haveQuote = false;
-				log(`Sell quote error; will try fallbacks: ${e.message || e}`, "err");
+				if (_isNoRouteLike(e?.message || e)) throw e;
+				_throttledLog(`quote:err:${inputMint}`, `Sell quote error; will try fallbacks (${inputMint.slice(0, 4)}…)`, 12_000, "warn");
 			}
 		}
 
 		if (haveQuote) {
+			const _isRouteDead = (codeOrMsg) => {
+				return isSell && /ROUTER_DUST|NO_ROUTE/i.test(String(codeOrMsg || ""));
+			};
+
 			if (isSell) {
 				const outRaw = Number(quote?.outAmount || 0);
 				const minOutLamports = Math.floor(Number(minSellNotionalSol?.() || 0) * 1e9);
 				if (!Number.isFinite(outRaw) || outRaw <= 0 || outRaw < minOutLamports) {
-					log(`Sell below minimum; skipping (${(outRaw / 1e9).toFixed(6)} SOL < ${(minOutLamports / 1e9).toFixed(6)})`);
-					log("Consider exporting your wallet and selling DUST manually.");
+					_throttledLog(
+						`sell:belowMin:${inputMint}`,
+						`Sell below minimum; skipping (${(outRaw / 1e9).toFixed(6)} SOL < ${(minOutLamports / 1e9).toFixed(6)})`,
+						15_000,
+						"warn",
+					);
 					throw new Error("BELOW_MIN_NOTIONAL");
 				}
 			}
@@ -963,6 +1034,9 @@ export function createDex(deps = {}) {
 				return first.sig;
 			}
 			if (!first.ok) lastErrCode = first.code || lastErrCode;
+			if (_isRouteDead(first.code) || _isRouteDead(first.msg)) {
+				throw new Error(String(first.code || "NO_ROUTE"));
+			}
 
 			if (first.code === "NOT_SUPPORTED") {
 				log("Retrying with shared accounts …");
@@ -973,6 +1047,9 @@ export function createDex(deps = {}) {
 					return second.sig;
 				}
 				if (!second.ok) lastErrCode = second.code || lastErrCode;
+				if (_isRouteDead(second.code) || _isRouteDead(second.msg)) {
+					throw new Error(String(second.code || "NO_ROUTE"));
+				}
 			} else {
 				log("Primary swap failed. Fallback: shared accounts …");
 				const fallback = await buildAndSend(true);
@@ -982,6 +1059,9 @@ export function createDex(deps = {}) {
 					return fallback.sig;
 				}
 				if (!fallback.ok) lastErrCode = fallback.code || lastErrCode;
+				if (_isRouteDead(fallback.code) || _isRouteDead(fallback.msg)) {
+					throw new Error(String(fallback.code || "NO_ROUTE"));
+				}
 			}
 
 			if (isSell && /ROUTER_DUST|NO_ROUTE/i.test(String(lastErrCode || ""))) {
@@ -1009,6 +1089,11 @@ export function createDex(deps = {}) {
 						if (!b.ok) lastErrCode = b.code || lastErrCode;
 					}
 				} catch {}
+			}
+
+			// If we still have a route/dust failure, do not spam expensive manual paths.
+			if (_isRouteDead(lastErrCode)) {
+				throw new Error(String(lastErrCode || "NO_ROUTE"));
 			}
 
 			{
@@ -1089,7 +1174,7 @@ export function createDex(deps = {}) {
 					const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 					if (!state.USDCfallbackEnabled) {
 						log("USDC fallback disabled; aborting expensive fallback attempt.");
-						return null;
+						throw new Error("USDC_FALLBACK_DISABLED");
 					}
 					const slip3 = 2000;
 					const rFlag = restrictAllowed ? "false" : "true";
@@ -1324,11 +1409,20 @@ export function createDex(deps = {}) {
 					if (/swapAttempt_TIMEOUT_/i.test(msg) || /sendRawTransaction_TIMEOUT_/i.test(msg)) {
 						log(`Swap attempt ${attempt + 1} stalled; retrying (${msg})`);
 					}
-					log(`Swap attempt ${attempt + 1} failed: ${msg}`);
-					if (/INSUFFICIENT_LAMPORTS/i.test(msg)) {
+					const isNoRoute = _isNoRouteLike(msg);
+					const isInsufficient = _isInsufficientLamportsLike(msg);
+					if (!isNoRoute) {
+						_throttledLog(
+							`swapAttempt:${opts?.inputMint}->${opts?.outputMint}`,
+							`Swap attempt ${attempt + 1} failed: ${msg}`,
+							6000,
+							"warn",
+						);
+					}
+					if (isInsufficient) {
 						return { ok: false, insufficient: true, msg, sig: lastSig };
 					}
-					if (/ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|BELOW_MIN_NOTIONAL|0x1788/i.test(msg)) {
+					if (isNoRoute) {
 						if (opts?.inputMint && opts?.outputMint === SOL_MINT && opts.inputMint !== SOL_MINT) {
 							setRouterHold?.(opts.inputMint, ROUTER_COOLDOWN_MS);
 						}
@@ -1344,7 +1438,7 @@ export function createDex(deps = {}) {
 		}
 	}
 
-	async function closeEmptyTokenAtas(signer, mint) {
+	async function closeEmptyTokenAtas(signer, mint, { allowSolMint = false } = {}) {
 		try {
 			const { Transaction, TransactionInstruction } = await loadWeb3();
 			const conn = await getConn();
@@ -1353,7 +1447,8 @@ export function createDex(deps = {}) {
 			const ownerPk = signer.publicKey;
 			const owner = ownerPk.toBase58();
 
-			if (!mint || mint === SOL_MINT) return false;
+			if (!mint) return false;
+			if (mint === SOL_MINT && !allowSolMint) return false;
 			if (rpcBackoffLeft?.() > 0) {
 				log("Backoff active; deferring per-mint ATA close.");
 				return false;
@@ -1540,6 +1635,74 @@ export function createDex(deps = {}) {
 		}
 	}
 
+	async function buyWithConfirm(
+		{ signer, mint, solUi, slippageBps },
+		{ retries = 1, confirmMs = 45_000, closeWsolAta = true } = {},
+	) {
+		const res = await executeSwapWithConfirm(
+			{ signer, inputMint: SOL_MINT, outputMint: mint, amountUi: solUi, slippageBps },
+			{ retries, confirmMs },
+		);
+		if (res?.ok && closeWsolAta) {
+			try { await closeEmptyTokenAtas(signer, SOL_MINT, { allowSolMint: true }); } catch {}
+		}
+		return res;
+	}
+
+	async function sellWithConfirm(
+		{ signer, mint, amountUi, slippageBps },
+		{ retries = 1, confirmMs = 30_000, closeTokenAta = true, closeWsolAta = true } = {},
+	) {
+		let effAmountUi = Number(amountUi || 0);
+		let balanceUi = null;
+		try {
+			const owner = signer?.publicKey?.toBase58?.();
+			if (owner && mint && typeof getAtaBalanceUi === "function") {
+				const b = await getAtaBalanceUi(owner, mint);
+				balanceUi = Number(b?.sizeUi || 0);
+				if (!Number.isFinite(balanceUi)) balanceUi = 0;
+				if (!Number.isFinite(effAmountUi)) effAmountUi = 0;
+				if (balanceUi <= 0) {
+					if (closeTokenAta) {
+						try { await closeEmptyTokenAtas(signer, mint); } catch {}
+					}
+					if (closeWsolAta) {
+						try { await closeEmptyTokenAtas(signer, SOL_MINT, { allowSolMint: true }); } catch {}
+					}
+					return { ok: false, noBalance: true, balanceUi: 0, msg: "NO_BALANCE" };
+				}
+				// Guard against stale cache: never try to sell more than is actually held.
+				if (effAmountUi <= 0) effAmountUi = balanceUi;
+				if (effAmountUi > balanceUi * 1.000001) {
+					_throttledLog(
+						`sell:clamp:${mint}`,
+						`Sell amount clamped to on-chain balance (${effAmountUi.toFixed(6)} -> ${balanceUi.toFixed(6)}) for ${String(mint).slice(0, 4)}…`,
+						15_000,
+						"warn",
+					);
+					effAmountUi = balanceUi;
+				}
+			}
+		} catch {}
+
+		let res;
+		try {
+			res = await executeSwapWithConfirm(
+				{ signer, inputMint: mint, outputMint: SOL_MINT, amountUi: effAmountUi, slippageBps },
+				{ retries, confirmMs },
+			);
+			if (res?.ok && closeTokenAta) {
+				try { await closeEmptyTokenAtas(signer, mint); } catch {}
+			}
+			return res;
+		} finally {
+			// Always best-effort cleanup for wSOL ATA, even if swap failed after creating it.
+			if (closeWsolAta) {
+				try { await closeEmptyTokenAtas(signer, SOL_MINT, { allowSolMint: true }); } catch {}
+			}
+		}
+	}
+
 	return {
 		getJupBase,
 		getMintDecimals,
@@ -1549,5 +1712,7 @@ export function createDex(deps = {}) {
 		executeSwapWithConfirm,
 		closeEmptyTokenAtas,
 		closeAllEmptyAtas,
+		buyWithConfirm,
+		sellWithConfirm,
 	};
 }

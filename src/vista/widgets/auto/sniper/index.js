@@ -31,6 +31,7 @@ import {
 import { clamp, fmtUsd, safeNum } from "../lib/util.js";
 
 import { createDex } from "../lib/dex.js";
+import { setBotRunning } from "../lib/autoLed.js";
 import { preflightBuyLiquidity, DEFAULT_BUY_EXIT_CHECK_FRACTION, DEFAULT_BUY_MAX_PRICE_IMPACT_PCT } from "../lib/liquidity.js";
 import { createPendingCreditManager } from "../lib/pendingCredits.js";
 import { rpcWait, rpcBackoffLeft, markRpcStress } from "../lib/rpcThrottle.js";
@@ -1615,8 +1616,8 @@ async function mirrorBuy(mint) {
 		log(`Sniper BUY ${mint.slice(0, 6)}… ~${buySol.toFixed(4)} SOL`, "ok");
 		setInFlight(true);
 		lockMint(mint, "buy", MINT_OP_LOCK_MS);
-		const res = await _getDex().executeSwapWithConfirm(
-			{ signer: kp, inputMint: SOL_MINT, outputMint: mint, amountUi: buySol, slippageBps: slip },
+		const res = await _getDex().buyWithConfirm(
+			{ signer: kp, mint, solUi: buySol, slippageBps: slip },
 			{ retries: 1, confirmMs: 45_000 },
 		);
 
@@ -1872,6 +1873,7 @@ async function startSniper() {
 	state.takeProfitPct = clamp(Number(maxProfitEl?.value || state.takeProfitPct || 12), PROFIT_TARGET_MIN_PCT, PROFIT_TARGET_MAX_PCT);
 	state.slippageBps = getDynamicSlippageBps("buy");
 	state.enabled = true;
+	try { setBotRunning('sniper', true); } catch {}
 	state.positions = state.positions && typeof state.positions === "object" ? state.positions : {};
 	saveState();
 	updateUI();
@@ -1891,6 +1893,7 @@ async function startSniper() {
 async function stopSniper() {
 	if (!state.enabled) return;
 	state.enabled = false;
+	try { setBotRunning('sniper', false); } catch {}
 	_runNonce++;
 	saveState();
 	try {
@@ -1923,6 +1926,7 @@ async function __fdvCli_startSniper(cfg = {}) {
 	await __fdvCli_applySniperConfig(cfg);
 	if (!state.mint) throw new Error("SNIPER_MISSING_MINT");
 	state.enabled = true;
+	try { setBotRunning('sniper', true); } catch {}
 	saveState();
 	log(`Sniper started (headless). Mint=${String(state.mint).slice(0, 6)}…`, "ok", true);
 	if (_timer) clearInterval(_timer);

@@ -8,6 +8,7 @@ import {
 } from './trader/index.js';
 
 import { importFromUrl } from '../../../utils/netImport.js';
+import { ensureAutoLed } from './lib/autoLed.js';
 
 function ensureAutoDeps() {
   if (typeof window === 'undefined') return Promise.resolve({ web3: null, bs58: null });
@@ -120,6 +121,8 @@ export function initAutoWidget(container = document.body) {
   wrap.appendChild(summary);
   wrap.appendChild(body);
   container.appendChild(wrap);
+
+  try { ensureAutoLed(); } catch {}
 
   initTraderWidget(body.querySelector('#trader-container'));
   initVolumeWidget(body.querySelector('#volume-container'));

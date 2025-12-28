@@ -2368,13 +2368,10 @@ async function sweepAllToSolAndReturn() {
       let estSol = 0;
       try { estSol = await quoteOutSol(mint, uiAmt, dec); } catch {}
 
-      const res = await executeSwapWithConfirm({
-        signer,
-        inputMint: mint,
-        outputMint: SOL_MINT,
-        amountUi: uiAmt,
-        slippageBps: state.slippageBps,
-      }, { retries: 2, confirmMs: 15000 });
+      const res = await _getDex().sellWithConfirm(
+        { signer, mint, amountUi: uiAmt, slippageBps: state.slippageBps },
+        { retries: 2, confirmMs: 15000, closeWsolAta: false },
+      );
 
       if (!res.ok) {
         log(`Sell fail ${mint.slice(0,4)}…: route execution failed`);
@@ -2412,7 +2409,6 @@ async function sweepAllToSolAndReturn() {
       log(`Sold ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
       const costSold = Number(state.positions[mint]?.costSol || 0);
       await _addRealizedPnl(estSol, costSold, "Unwind PnL");
-      try { await closeEmptyTokenAtas(signer, mint); } catch {}
       if (state.positions[mint]) { delete state.positions[mint]; save(); }
       removeFromPosCache(owner, mint);
       if (item.from === "dust") removeFromDustCache(owner, mint);
@@ -4032,24 +4028,52 @@ async function sweepNonSolToSolAtStart() {
   let sold = 0, unsellable = 0;
   for (const { mint, sizeUi, decimals } of items) {
     try {
-      const estSol = await quoteOutSol(mint, sizeUi, decimals).catch(() => 0);
+    // Always trust real on-chain balance over cache to avoid selling ghosts.
+    const b = await getAtaBalanceUi(owner, mint, decimals).catch(() => null);
+    const realUi = Number(b?.sizeUi || 0);
+    const realDec = Number.isFinite(Number(b?.decimals)) ? Number(b.decimals) : Number(decimals || 0);
+    if (!Number.isFinite(realUi) || realUi <= 0) {
+    try { removeFromPosCache(owner, mint); } catch {}
+    try { removeFromDustCache(owner, mint); } catch {}
+    try { clearPendingCredit(owner, mint); } catch {}
+    if (state.positions?.[mint]) { delete state.positions[mint]; save(); }
+    continue;
+    }
+
+    const estSol = await quoteOutSol(mint, realUi, realDec).catch(() => 0);
       const minNotional = minSellNotionalSol();
       if (estSol < minNotional) {
-        moveRemainderToDust(owner, mint, sizeUi, decimals);
+    moveRemainderToDust(owner, mint, realUi, realDec);
         unsellable++;
         continue;
       }
 
-      const res = await executeSwapWithConfirm({
-        signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sizeUi, slippageBps: state.slippageBps,
-      }, { retries: 1, confirmMs: 15000 });
+      const res = await _getDex().sellWithConfirm(
+    { signer: kp, mint, amountUi: realUi, slippageBps: state.slippageBps },
+        { retries: 1, confirmMs: 15000, closeWsolAta: false },
+      );
 
-      if (!res.ok) throw new Error("route execution failed");
+    if (!res?.ok) {
+    // No-balance: stale cache/position entry; prune silently.
+    if (res?.noBalance) {
+      try { removeFromPosCache(owner, mint); } catch {}
+      try { removeFromDustCache(owner, mint); } catch {}
+      try { clearPendingCredit(owner, mint); } catch {}
+      if (state.positions?.[mint]) { delete state.positions[mint]; save(); }
+      continue;
+    }
+    // No-route/dust: keep it out of positions to avoid endless retry spam.
+    if (res?.noRoute || /ROUTER_DUST|NO_ROUTE/i.test(String(res?.msg || ""))) {
+      moveRemainderToDust(owner, mint, realUi, realDec);
+      unsellable++;
+      continue;
+    }
+    throw new Error(String(res?.msg || "route execution failed"));
+    }
 
-      log(`Startup sweep sold ${sizeUi.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
+    log(`Startup sweep sold ${realUi.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
       const costSold = Number(state.positions[mint]?.costSol || 0);
       await _addRealizedPnl(estSol, costSold, "Startup sweep PnL");
-      try { await closeEmptyTokenAtas(kp, mint); } catch {}
       if (state.positions[mint]) { delete state.positions[mint]; save(); }
       removeFromPosCache(owner, mint);
       try { clearPendingCredit(owner, mint); } catch {}
@@ -4115,13 +4139,10 @@ async function sweepDustToSolAtStart() {
         continue;
       }
 
-      const res = await executeSwapWithConfirm({
-        signer: kp,
-        inputMint: mint,
-        outputMint: SOL_MINT,
-        amountUi: uiAmt,
-        slippageBps: state.slippageBps,
-      }, { retries: 2, confirmMs: 15000 });
+      const res = await _getDex().sellWithConfirm(
+        { signer: kp, mint, amountUi: uiAmt, slippageBps: state.slippageBps },
+        { retries: 2, confirmMs: 15000, closeWsolAta: false },
+      );
 
       if (!res.ok) {
         if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
@@ -4164,7 +4185,6 @@ async function sweepDustToSolAtStart() {
         removeFromPosCache(owner, mint);
         try { clearPendingCredit(owner, mint); } catch {}
         if (state.positions[mint]) { delete state.positions[mint]; save(); }
-        try { await closeEmptyTokenAtas(kp, mint); } catch {}
         log(`Dust sweep sold ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
         sold++;
       }
@@ -4953,13 +4973,10 @@ async function switchToLeader(newMint) {
         }
 
         // Full sell
-        const res = await executeSwapWithConfirm({
-          signer: kp,
-          inputMint: mint,
-          outputMint: SOL_MINT,
-          amountUi: uiAmt,
-          slippageBps: state.slippageBps,
-        }, { retries: 2, confirmMs: 15000 });
+        const res = await _getDex().sellWithConfirm(
+          { signer: kp, mint, amountUi: uiAmt, slippageBps: state.slippageBps },
+          { retries: 2, confirmMs: 15000, closeWsolAta: false },
+        );
 
         if (!res.ok) {
           if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
@@ -5002,7 +5019,6 @@ async function switchToLeader(newMint) {
         log(`Rotated out: ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
         const costSold = Number(state.positions[mint]?.costSol || 0);
         await _addRealizedPnl(estSol, costSold, "Rotation PnL");
-        try { await closeEmptyTokenAtas(kp, mint); } catch {}
         delete state.positions[mint];
         removeFromPosCache(owner, mint);
         save();
@@ -5513,13 +5529,10 @@ async function tick() {
         }
       } catch {}
 
-      const res = await executeSwapWithConfirm({
-        signer: kp,
-        inputMint: SOL_MINT,
-        outputMint: mint,
-        amountUi: buySol,
-        slippageBps: dynSlip,
-      }, { retries: 2, confirmMs: 15000 });
+      const res = await _getDex().buyWithConfirm(
+        { signer: kp, mint, solUi: buySol, slippageBps: dynSlip },
+        { retries: 2, confirmMs: 32000 },
+      );
 
       if (!res.ok) {
         try {
@@ -5853,6 +5866,7 @@ export async function __fdvCli_start({ enable = true } = {}) {
   } catch {}
 
   if (enable) state.enabled = true;
+  try { (await import('../lib/autoLed.js')).setBotRunning?.('trader', !!state.enabled); } catch {}
 
   // Basic safety check.
   if (!currentRpcUrl()) throw new Error("Missing rpcUrl (set state.rpcUrl or provide profile.rpcUrl)");
@@ -5914,6 +5928,7 @@ export async function __fdvCli_start({ enable = true } = {}) {
 export async function __fdvCli_stop({ runFinalSellEval = true } = {}) {
   try {
     state.enabled = false;
+    try { (await import('../lib/autoLed.js')).setBotRunning?.('trader', false); } catch {}
     if (timer) {
       clearInterval(timer);
       timer = null;
@@ -5935,20 +5950,13 @@ export async function __fdvCli_stop({ runFinalSellEval = true } = {}) {
 }
 
 function renderStatusLed() {
-  if (!ledEl) return;
-  const on = !!state.enabled;
-  const bg = on ? "#16a34a" : "#b91c1c";
-  const glow = on
-    ? "0 0 0 2px rgba(22,163,74,.35), 0 0 8px rgba(22,163,74,.6)"
-    : "0 0 0 2px rgba(185,28,28,.35), 0 0 8px rgba(185,28,28,.6)";
-  ledEl.style.display = "inline-block"; 
-  ledEl.style.background = bg;
-  ledEl.style.backgroundColor = bg;
-  ledEl.style.boxShadow = glow;
+  // LED is global/aggregated (trader should only report its running state)
+  try { import('../lib/autoLed.js').then((m) => m?.setBotRunning?.('trader', !!state.enabled)).catch(() => {}); } catch {}
 }
 
 function onToggle(on) {
    state.enabled = !!on;
+  try { import('../lib/autoLed.js').then((m) => m?.setBotRunning?.('trader', !!state.enabled)).catch(() => {}); } catch {}
    if (toggleEl) toggleEl.value = state.enabled ? "yes" : "no";
    startBtn.disabled = state.enabled;
    stopBtn.disabled = !state.enabled;
@@ -7143,7 +7151,7 @@ export function initTraderWidget(container = document.body) {
       logEl.classList.toggle("fdv-log-full", !!on);
       expandBtn.textContent = on ? "Close" : "Expand";
       expandBtn.setAttribute("aria-label", on ? "Close log" : "Expand log");
-      // setHeaderFullHeight(!!on);
+      setHeaderFullHeight(!!on);
       if (on) logEl.scrollTop = logEl.scrollHeight;
     };
 
