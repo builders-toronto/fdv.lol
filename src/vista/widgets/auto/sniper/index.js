@@ -64,6 +64,9 @@ import { loadSplToken } from "../../../../core/solana/splToken.js";
 const SNIPER_LS_KEY = "fdv_sniper_bot_v1";
 const AUTO_LS_KEY = "fdv_auto_bot_v1"; 
 
+const PROFIT_TARGET_MIN_PCT = 5;
+const PROFIT_TARGET_MAX_PCT = 15;
+
 const MAX_LOG_ENTRIES = 120;
 
 function _isNodeLike() {
@@ -85,8 +88,8 @@ let stopBtn;
 let mintEl;
 let pollEl;
 let buyPctEl;
-let slipEl;
 let triggerEl;
+let maxProfitEl;
 
 let _timer = null;
 let _tickInFlight = false;
@@ -131,7 +134,7 @@ let state = {
 	mint: "",
 	pollMs: 1200,
 	buyPct: 25,
-	slippageBps: 250,
+	slippageBps: 250, // internal (dynamic); not user-controlled
 	triggerScoreSlopeMin: 0.6, // per-minute pumpScore slope proxy (from focusMint series)
 	minHoldSecs: 5,
 	observeWindowMs: 8000,
@@ -188,7 +191,7 @@ let state = {
 	fastAccelDropFrac: 0.5,
 	fastAlphaZV1Floor: 0.3,
 
-	takeProfitPct: 12,
+	takeProfitPct: 12, // user-facing: Max Profit % (5-15)
 	stopLossPct: 4,
 	trailPct: 6,
 	minProfitToTrailPct: 2,
@@ -206,8 +209,50 @@ function loadState() {
 		if (obj && typeof obj === "object") {
 			state = { ...state, ...obj };
 			if (!state.positions || typeof state.positions !== "object") state.positions = {};
+			state.slippageBps = 250;
+			state.takeProfitPct = clamp(Number(state.takeProfitPct ?? 12), PROFIT_TARGET_MIN_PCT, PROFIT_TARGET_MAX_PCT);
 		}
 	} catch {}
+}
+
+const DYN_SLIP_MIN_BPS = 50;
+const DYN_SLIP_MAX_BPS = 2500;
+
+function getDynamicSlippageBps(kind = "buy") {
+	try {
+		const base = kind === "sell" ? 300 : 250;
+		let slip = base;
+
+		try {
+			const backoffMs = Number(rpcBackoffLeft?.() || 0);
+			if (backoffMs > 0) slip += Math.min(800, Math.floor(backoffMs / 2000) * 100);
+		} catch {}
+
+		return Math.floor(clamp(slip, DYN_SLIP_MIN_BPS, DYN_SLIP_MAX_BPS));
+	} catch {
+		return 250;
+	}
+}
+
+function getProfitTargetPct(pos = null) {
+	try {
+		const raw = Number(pos?.tpPct ?? state.takeProfitPct ?? 12);
+		return clamp(raw, PROFIT_TARGET_MIN_PCT, PROFIT_TARGET_MAX_PCT);
+	} catch {
+		return 12;
+	}
+}
+
+function _isHardExitDecision(decision, ctx = null) {
+	try {
+		if (!decision || typeof decision !== "object") return false;
+		if (decision.hardStop) return true;
+		if (ctx?.forceRug) return true;
+		const reason = String(decision.reason || "");
+		return /\brug\b|HARD_STOP|FAST_HARD_STOP|\bSL\b|urgent|max-hold/i.test(reason);
+	} catch {
+		return false;
+	}
 }
 
 function saveState() {
@@ -220,7 +265,6 @@ function saveState() {
 				mint: String(state.mint || "").trim(),
 				pollMs: Number(state.pollMs || 1200),
 				buyPct: Number(state.buyPct || 25),
-				slippageBps: Number(state.slippageBps || 250),
 				triggerScoreSlopeMin: Number(state.triggerScoreSlopeMin || 0.6),
 				minHoldSecs: Number(state.minHoldSecs ?? 5),
 				observeWindowMs: Number(state.observeWindowMs ?? 8000),
@@ -267,7 +311,7 @@ function saveState() {
 				fastTp1SellPct: Number(state.fastTp1SellPct ?? 30),
 				fastTp2Pct: Number(state.fastTp2Pct ?? 20),
 				fastTp2SellPct: Number(state.fastTp2SellPct ?? 30),
-				takeProfitPct: Number(state.takeProfitPct ?? 12),
+				takeProfitPct: clamp(Number(state.takeProfitPct ?? 12), PROFIT_TARGET_MIN_PCT, PROFIT_TARGET_MAX_PCT),
 				stopLossPct: Number(state.stopLossPct ?? 4),
 				trailPct: Number(state.trailPct ?? 6),
 				minProfitToTrailPct: Number(state.minProfitToTrailPct ?? 2),
@@ -954,7 +998,7 @@ async function quoteOutSol(mint, amountUi, decimals = 6) {
 		const minRaw = minRawForJupQuote(dec);
 		if (rawNum < minRaw) return 0;
 		const raw = BigInt(rawNum);
-		const q = await _getDex().quoteGeneric(mint, SOL_MINT, raw.toString(), Math.max(50, Number(state.slippageBps || 250) | 0));
+		const q = await _getDex().quoteGeneric(mint, SOL_MINT, raw.toString(), getDynamicSlippageBps("sell"));
 		const outLamports = Number(q?.outAmount || 0);
 		return outLamports > 0 ? outLamports / 1e9 : 0;
 	} catch {
@@ -1119,13 +1163,10 @@ function shouldSell(pos, curSol, nowTs) {
 		if (!(sizeUi > 0) || !(costSol > 0)) return { action: "none", reason: "no-size" };
 		const pnlPct = ((Number(curSol || 0) - costSol) / Math.max(1e-9, costSol)) * 100;
 
-		// TP partial
-		const tp = Math.max(1, Number(pos.tpPct ?? state.takeProfitPct ?? 12));
-		const partial = clamp(Number(state.partialTpPct || 50), 1, 99);
-		if (!pos._tpDone && Number.isFinite(pnlPct) && pnlPct >= tp) {
-			pos._tpDone = true;
-			saveState();
-			return { action: "sell_partial", pct: partial, reason: `TP ${pnlPct.toFixed(2)}%>=${tp}%` };
+		// TP (user-facing "Max Profit %" target)
+		const tp = getProfitTargetPct(pos);
+		if (Number.isFinite(pnlPct) && pnlPct >= tp) {
+			return { action: "sell_all", reason: `PROFIT_TARGET ${pnlPct.toFixed(2)}%>=${tp}%` };
 		}
 
 		// Trailing after arm
@@ -1160,6 +1201,38 @@ function shouldSell(pos, curSol, nowTs) {
 	} catch {
 		return { action: "none", reason: "err" };
 	}
+}
+
+function profitTargetHoldPolicy(ctx) {
+	try {
+		const target = getProfitTargetPct(ctx?.pos);
+		const decision = ctx?.decision;
+		if (!decision || decision.action === "none") return;
+		const pnl = Number.isFinite(ctx?.pnlNetPct) ? Number(ctx.pnlNetPct) : Number(ctx?.pnlPct);
+		if (!Number.isFinite(pnl)) return;
+		if (pnl >= target) return;
+		if (_isHardExitDecision(decision, ctx)) return;
+		ctx.decision = { action: "none", reason: `profit-hold ${pnl.toFixed(2)}%<${target}%` };
+	} catch {}
+}
+
+function profitTargetTakePolicy(ctx) {
+	try {
+		const target = getProfitTargetPct(ctx?.pos);
+		const pnl = Number.isFinite(ctx?.pnlNetPct) ? Number(ctx.pnlNetPct) : Number(ctx?.pnlPct);
+		if (!Number.isFinite(pnl)) return;
+		if (pnl < target) return;
+		const decision = ctx?.decision;
+		if (decision && decision.action && decision.action !== "none") {
+			if (_isHardExitDecision(decision, ctx)) return;
+			// Upgrade partial exits to full exit once target is hit.
+			if (decision.action === "sell_partial") {
+				ctx.decision = { action: "sell_all", reason: `PROFIT_TARGET ${pnl.toFixed(2)}%>=${target}%` };
+			}
+			return;
+		}
+		ctx.decision = { action: "sell_all", reason: `PROFIT_TARGET ${pnl.toFixed(2)}%>=${target}%` };
+	} catch {}
 }
 
 async function verifyRealTokenBalance(ownerStr, mint, pos) {
@@ -1425,7 +1498,9 @@ async function runSellPipelineForPosition(ctx) {
 		(c) => observerThreePolicy(c),
 		(c) => fallbackSellPolicy(c),
 		(c) => forceFlagDecisionPolicy(c),
+		(c) => profitTargetHoldPolicy(c),
 		(c) => reboundGatePolicy(c),
+		(c) => profitTargetTakePolicy(c),
 		(c) => executeSellDecisionPolicy(c),
 	];
 	for (const fn of steps) {
@@ -1521,7 +1596,7 @@ async function mirrorBuy(mint) {
 			return { ok: false };
 		}
 
-		const slip = Math.floor(clamp(Number(state.slippageBps || 250), 50, 2000));
+		const slip = getDynamicSlippageBps("buy");
 		const chk = await preflightBuyLiquidity({
 			dex: _getDex(),
 			solMint: SOL_MINT,
@@ -1559,7 +1634,7 @@ async function mirrorBuy(mint) {
 			warmingHold: !!state.rideWarming,
 			warmingHoldAt: now(),
 			entryChg5m: safeNum(getLeaderSeries(mint, 1)?.[0]?.chg5m, NaN),
-			tpPct: Number(state.takeProfitPct || 12),
+			tpPct: getProfitTargetPct(),
 			slPct: Number(state.stopLossPct || 4),
 			trailPct: Number(state.trailPct || 6),
 			minProfitToTrailPct: Number(state.minProfitToTrailPct || 2),
@@ -1761,6 +1836,8 @@ async function tickOnce() {
 		const ctx = _mkSellCtx({ kp, mint, pos, nowTs: now() });
 		await _enrichSellCtx(ctx);
 		if (!state.enabled || run !== _runNonce) return;
+		// slippage is dynamic; set a per-tick baseline for sell execution policies
+		state.slippageBps = getDynamicSlippageBps("sell");
 		await runSellPipelineForPosition(ctx);
 		if (!state.enabled || run !== _runNonce) return;
 		try {
@@ -1791,14 +1868,15 @@ async function startSniper() {
 	state.mint = mint;
 	state.pollMs = Math.floor(clamp(Number(pollEl?.value || state.pollMs || 1200), 250, 60_000));
 	state.buyPct = Math.floor(clamp(Number(buyPctEl?.value || state.buyPct || 25), 1, 70));
-	state.slippageBps = Math.floor(clamp(Number(slipEl?.value || state.slippageBps || 250), 50, 2000));
 	state.triggerScoreSlopeMin = clamp(Number(triggerEl?.value || state.triggerScoreSlopeMin || 0.6), 0, 20);
+	state.takeProfitPct = clamp(Number(maxProfitEl?.value || state.takeProfitPct || 12), PROFIT_TARGET_MIN_PCT, PROFIT_TARGET_MAX_PCT);
+	state.slippageBps = getDynamicSlippageBps("buy");
 	state.enabled = true;
 	state.positions = state.positions && typeof state.positions === "object" ? state.positions : {};
 	saveState();
 	updateUI();
 	log(
-		`Sniper started. mint=${mint.slice(0, 6)}… poll=${state.pollMs}ms buyPct=${state.buyPct}% obs=${state.observeMinSamples}/${Math.round(state.observeWindowMs / 1000)}s minHold=${state.minHoldSecs}s thr=${Number(state.triggerScoreSlopeMin || 0.6).toFixed(2)}`,
+		`Sniper started. mint=${mint.slice(0, 6)}… poll=${state.pollMs}ms buyPct=${state.buyPct}% maxProfit=${Number(state.takeProfitPct || 12).toFixed(1)}% obs=${state.observeMinSamples}/${Math.round(state.observeWindowMs / 1000)}s minHold=${state.minHoldSecs}s thr=${Number(state.triggerScoreSlopeMin || 0.6).toFixed(2)}`,
 		"ok",
 		true,
 	);
@@ -1830,8 +1908,9 @@ async function __fdvCli_applySniperConfig(cfg = {}) {
 		if (cfg.mint) state.mint = String(cfg.mint).trim();
 		if (cfg.pollMs) state.pollMs = Math.floor(clamp(Number(cfg.pollMs), 250, 60_000));
 		if (cfg.buyPct) state.buyPct = Math.floor(clamp(Number(cfg.buyPct), 1, 70));
-		if (cfg.slippageBps) state.slippageBps = Math.floor(clamp(Number(cfg.slippageBps), 50, 2000));
 		if (cfg.triggerScoreSlopeMin !== undefined) state.triggerScoreSlopeMin = clamp(Number(cfg.triggerScoreSlopeMin), 0, 20);
+		if (cfg.takeProfitPct !== undefined) state.takeProfitPct = clamp(Number(cfg.takeProfitPct), PROFIT_TARGET_MIN_PCT, PROFIT_TARGET_MAX_PCT);
+		if (cfg.maxProfitPct !== undefined) state.takeProfitPct = clamp(Number(cfg.maxProfitPct), PROFIT_TARGET_MIN_PCT, PROFIT_TARGET_MAX_PCT);
 		saveState();
 	} catch {}
 }
@@ -1876,8 +1955,8 @@ export function initSniperWidget(container = document.body) {
 				<label>Target Mint <input id="sniper-mint" type="text" placeholder="Mint address"></label>
 				<label>Poll (ms) <input id="sniper-poll" type="number" min="250" max="60000" step="50"></label>
 				<label>Buy % (1-70%) <input id="sniper-buy-pct" type="number" min="1" max="70" step="1"></label>
-				<label>Slippage (bps) <input id="sniper-slip" type="number" min="50" max="2000" step="1"></label>
 				<label>Trigger score slope (/min) <input id="sniper-trigger" type="number" min="0" max="20" step="0.1"></label>
+				<label>Max Profit % (5-15) <input id="sniper-max-profit" type="number" min="5" max="15" step="0.5"></label>
 			</div>
 
 			<div class="fdv-log" id="sniper-log"></div>
@@ -1899,8 +1978,8 @@ export function initSniperWidget(container = document.body) {
 	mintEl = document.getElementById("sniper-mint");
 	pollEl = document.getElementById("sniper-poll");
 	buyPctEl = document.getElementById("sniper-buy-pct");
-	slipEl = document.getElementById("sniper-slip");
 	triggerEl = document.getElementById("sniper-trigger");
+	maxProfitEl = document.getElementById("sniper-max-profit");
 	logEl = document.getElementById("sniper-log");
 	startBtn = document.getElementById("fdv-sniper-start");
 	stopBtn = document.getElementById("fdv-sniper-stop");
@@ -1909,8 +1988,8 @@ export function initSniperWidget(container = document.body) {
 	if (mintEl) mintEl.value = String(state.mint || "");
 	if (pollEl) pollEl.value = String(state.pollMs || 1200);
 	if (buyPctEl) buyPctEl.value = String(state.buyPct || 25);
-	if (slipEl) slipEl.value = String(state.slippageBps || 250);
 	if (triggerEl) triggerEl.value = String(state.triggerScoreSlopeMin || 0.6);
+	if (maxProfitEl) maxProfitEl.value = String(getProfitTargetPct());
 
 	startBtn?.addEventListener("click", async () => {
 		await startSniper();
