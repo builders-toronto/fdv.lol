@@ -317,6 +317,68 @@ function getPlatformFeeBps() {
   return 1;
 }
 
+function _toBigIntSafe(v) {
+  try {
+    if (typeof v === 'bigint') return v;
+    if (typeof v === 'number' && Number.isFinite(v)) return BigInt(Math.trunc(v));
+    const s = String(v ?? '').trim();
+    if (!s) return 0n;
+    if (/^-?\d+$/.test(s)) return BigInt(s);
+    const n = Number(s);
+    return Number.isFinite(n) ? BigInt(Math.trunc(n)) : 0n;
+  } catch {
+    return 0n;
+  }
+}
+
+async function recordVolumeBuyBasis({ mint, solUi, tokenUi } = {}) {
+  try {
+    const m = String(mint || '').trim();
+    if (!m) return;
+    const sol = Number(solUi || 0);
+    const tok = Number(tokenUi || 0);
+    if (!(sol > 0) || !(tok > 0)) return;
+
+    const dec = await getDex().getMintDecimals(m).catch(() => safeGetDecimalsFast(m));
+    const d = Math.max(0, Math.min(12, Number(dec || 0)));
+    const scale = Math.pow(10, d);
+
+    const gotRaw = _toBigIntSafe(Math.round(tok * scale));
+    const spentLamports = _toBigIntSafe(Math.round(sol * 1e9));
+    if (gotRaw <= 0n || spentLamports <= 0n) return;
+
+    state._volumeLastBuyBasis = {
+      mint: m,
+      spentLamports,
+      gotRaw,
+      ts: Date.now(),
+    };
+  } catch {}
+}
+
+function shouldAttachFeeForSellVolume({ mint, amountRaw, quoteOutLamports } = {}) {
+  try {
+    const basis = state?._volumeLastBuyBasis;
+    const m = String(mint || '').trim();
+    if (!basis || !m || basis.mint !== m) return false;
+
+    const gotRaw = _toBigIntSafe(basis.gotRaw);
+    const spentLamports = _toBigIntSafe(basis.spentLamports);
+    const amtRaw = _toBigIntSafe(amountRaw);
+    const outLamports = _toBigIntSafe(quoteOutLamports);
+    if (gotRaw <= 0n || spentLamports <= 0n || amtRaw <= 0n || outLamports <= 0n) return false;
+
+    // Attach fee only when per-token value increased vs the last buy basis.
+    // (outLamports / amtRaw) > (spentLamports / gotRaw) * (1 + marginBps/10000)
+    const marginBps = 1n; // 0.01% guard against rounding noise
+    const lhs = outLamports * gotRaw * 10000n;
+    const rhs = spentLamports * amtRaw * (10000n + marginBps);
+    return lhs > rhs;
+  } catch {
+    return false;
+  }
+}
+
 async function safeGetDecimalsFast(mint) {
   if (!mint) return 6;
   if (mint === SOL_MINT) return 9;
@@ -970,7 +1032,7 @@ function getDex() {
     tokenAccountRentLamports,
     requiredAtaLamportsForSwap,
     requiredOutAtaRentIfMissing: async () => 0,
-    shouldAttachFeeForSell: () => false,
+    shouldAttachFeeForSell: (args) => shouldAttachFeeForSellVolume(args),
     minSellNotionalSol: () => 0,
     safeGetDecimalsFast,
 
@@ -1090,6 +1152,7 @@ function makeBot(id) {
     cycleBuyAmountSol: 0,
     cycleFundSol: 0,
     cycleVolumeCounted: false,
+    cycleBuyBasisRecorded: false,
     cycleBuySig: null,
     cycleSellSig: null,
   };
@@ -1236,6 +1299,12 @@ async function ensureBought(bot, wallet) {
     const already = await getTokenBalanceUiByMint(wallet.publicKey, state.mint);
     if (already > 0) {
       bot.cycleStage = CYCLE_STAGE.BOUGHT;
+
+      if (!bot.cycleBuyBasisRecorded) {
+        bot.cycleBuyBasisRecorded = true;
+        await recordVolumeBuyBasis({ mint: state.mint, solUi: bot.cycleBuyAmountSol, tokenUi: already });
+      }
+
       if (!bot.cycleVolumeCounted) {
         state.volumeCreated += Number(bot.cycleBuyAmountSol || 0);
         bot.cycleVolumeCounted = true;
@@ -1254,6 +1323,12 @@ async function ensureBought(bot, wallet) {
         const b = await getTokenBalanceUiByMint(wallet.publicKey, state.mint);
         if (b > 0) {
           bot.cycleStage = CYCLE_STAGE.BOUGHT;
+
+          if (!bot.cycleBuyBasisRecorded) {
+            bot.cycleBuyBasisRecorded = true;
+            await recordVolumeBuyBasis({ mint: state.mint, solUi: bot.cycleBuyAmountSol, tokenUi: b });
+          }
+
           if (!bot.cycleVolumeCounted) {
             state.volumeCreated += Number(bot.cycleBuyAmountSol || 0);
             bot.cycleVolumeCounted = true;
@@ -1288,6 +1363,12 @@ async function ensureBought(bot, wallet) {
       const after = await getTokenBalanceUiByMint(wallet.publicKey, state.mint);
       if (after > 0) {
         bot.cycleStage = CYCLE_STAGE.BOUGHT;
+
+        if (!bot.cycleBuyBasisRecorded) {
+          bot.cycleBuyBasisRecorded = true;
+          await recordVolumeBuyBasis({ mint: state.mint, solUi: bot.cycleBuyAmountSol, tokenUi: after });
+        }
+
         if (!bot.cycleVolumeCounted) {
           state.volumeCreated += Number(bot.cycleBuyAmountSol || 0);
           bot.cycleVolumeCounted = true;

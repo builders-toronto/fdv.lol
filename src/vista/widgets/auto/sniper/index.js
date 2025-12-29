@@ -70,6 +70,20 @@ const PROFIT_TARGET_MAX_PCT = 15;
 
 const MAX_LOG_ENTRIES = 120;
 
+const MIN_PROFIT_FOR_PLATFORM_FEE_PCT = 1;
+
+const MOMENTUM_GUARD_SECS = 45;
+const MOMENTUM_PLUMMET_CONSEC = 2;
+const MOMENTUM_PLUMMET_CHG5M_PCT = -35;
+const MOMENTUM_PLUMMET_SC_SLOPE = -6; // /min
+const MOMENTUM_PLUMMET_CHG_SLOPE = -20; // /min
+
+const SENTRY_TOP_N = 5;
+const SENTRY_SWITCH_COOLDOWN_MS = 6500;
+const SENTRY_PREFETCH_MAX_AGE_MS = 1400;
+const SENTRY_LOG_EVERY_MS = 2200;
+const SENTRY_LOG_PREFETCH_EVERY_MS = 1600;
+
 function _isNodeLike() {
 	try {
 		return typeof process !== "undefined" && !!process.versions?.node;
@@ -87,6 +101,7 @@ let statusEl;
 let startBtn;
 let stopBtn;
 let mintEl;
+let sentryEl;
 let pollEl;
 let buyPctEl;
 let triggerEl;
@@ -97,6 +112,17 @@ let _tickInFlight = false;
 let _inFlight = false;
 let _runNonce = 0;
 let _acceptLogs = true;
+
+let _sentryStickyUntil = 0;
+let _sentryTargetMint = "";
+let _sentryLastPick = null;
+let _sentryLastScanAt = 0;
+let _sentryScanInFlight = false;
+
+let _sentryPrefetchTimer = null;
+let _sentryPrefetchInFlight = false;
+let _sentryPrefetchAt = 0;
+let _sentryPrefetchRanked = null;
 
 function log(msg, type = "info", force = false) {
 	try {
@@ -130,9 +156,60 @@ function logObj(label, obj) {
 	}
 }
 
+function sentryVerbose() {
+	try {
+		return !!(typeof window !== "undefined" && window._fdvSniperSentryVerbose);
+	} catch {
+		return false;
+	}
+}
+
+function _shortMint(m) {
+	try {
+		const s = String(m || "");
+		return s ? `${s.slice(0, 4)}…` : "";
+	} catch {
+		return "";
+	}
+}
+
+function sentryLog(key, msg, type = "help", everyMs = SENTRY_LOG_EVERY_MS) {
+	try {
+		if (sentryVerbose()) {
+			log(msg, type);
+			return;
+		}
+		traceOnce(`sentry:${key}`, msg, everyMs, type);
+	} catch {}
+}
+
+function sentryLogCandidates(key, title, list, everyMs = SENTRY_LOG_EVERY_MS) {
+	try {
+		if (!Array.isArray(list) || !list.length) {
+			sentryLog(key, `${title}: (no candidates)`, "help", everyMs);
+			return;
+		}
+		const rows = list
+			.slice(0, SENTRY_TOP_N)
+			.map((c, i) => {
+				const mint = _shortMint(c?.mint);
+				const rec = String(c?.rec || "");
+				const score = Number(c?.score || 0).toFixed(0);
+				const ready = c?.readyFrac != null ? `${Math.round(Number(c.readyFrac) * 100)}%` : "-";
+				const trig = c?.trig ? "Y" : "N";
+				const sc = Number.isFinite(Number(c?.scSlope)) ? Number(c.scSlope).toFixed(2) : "-";
+				const chg = Number.isFinite(Number(c?.chgSlope)) ? Number(c.chgSlope).toFixed(2) : "-";
+				return `#${i + 1} ${mint} rec=${rec} score=${score} ready=${ready} trig=${trig} sc=${sc}/m chg=${chg}/m`;
+			})
+			.join(" | ");
+		sentryLog(key, `${title}: ${rows}`, "help", everyMs);
+	} catch {}
+}
+
 let state = {
 	enabled: false,
 	mint: "",
+	sentryEnabled: false,
 	pollMs: 1200,
 	buyPct: 25,
 	slippageBps: 250, // internal (dynamic); not user-controlled
@@ -201,6 +278,286 @@ let state = {
 	positions: {},
 };
 
+function hasAnyActivePosition() {
+	try {
+		const ps = state.positions && typeof state.positions === "object" ? state.positions : {};
+		for (const [mint, pos] of Object.entries(ps)) {
+			if (!mint || !pos) continue;
+			if (Number(pos.sizeUi || 0) > 0 || pos.awaitingSizeSync === true) return { ok: true, mint };
+		}
+		return { ok: false, mint: "" };
+	} catch {
+		return { ok: false, mint: "" };
+	}
+}
+
+function _isMaybeMintStr(s) {
+	try {
+		const v = String(s || "").trim();
+		return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(v);
+	} catch {
+		return false;
+	}
+}
+
+function _recWeight(rec) {
+	const r = String(rec || "").trim().toUpperCase();
+	if (r === "GOOD") return 5;
+	if (r === "WATCH") return 4;
+	if (r === "CONSIDER") return 3;
+	if (r === "NEUTRAL") return 2;
+	if (r === "AVOID") return 1;
+	return 0;
+}
+
+function _parseScoreFromCard(cardEl) {
+	try {
+		const el = cardEl?.querySelector?.(".v-score");
+		const t = String(el?.textContent || "").trim();
+		const m = t.match(/([0-9]+(?:\.[0-9]+)?)/);
+		return m ? clamp(Number(m[1]), 0, 100) : 0;
+	} catch {
+		return 0;
+	}
+}
+
+function _parseRecFromCard(cardEl) {
+	try {
+		const el = cardEl?.querySelector?.(".rec");
+		const t = String(el?.textContent || "").trim();
+		return t || "";
+	} catch {
+		return "";
+	}
+}
+
+function _parseHydrateFromCard(cardEl) {
+	try {
+		const raw = cardEl?.getAttribute?.("data-token-hydrate") || cardEl?.dataset?.tokenHydrate;
+		if (!raw) return null;
+		const obj = JSON.parse(raw);
+		return obj && typeof obj === "object" ? obj : null;
+	} catch {
+		return null;
+	}
+}
+
+function _scanTopCardCandidates(n = SENTRY_TOP_N) {
+	try {
+		if (typeof document === "undefined") return [];
+		let nodes = Array.from(document.querySelectorAll("article.card[data-mint]"));
+		if (!nodes.length) nodes = Array.from(document.querySelectorAll(".card[data-mint]"));
+		const out = [];
+		for (const el of nodes) {
+			if (out.length >= n) break;
+			const mint = String(el?.getAttribute?.("data-mint") || el?.dataset?.mint || "").trim();
+			if (!_isMaybeMintStr(mint)) continue;
+			if (isMintBlacklisted(mint) || isPumpDropBanned(mint)) continue;
+			const score = _parseScoreFromCard(el);
+			const rec = _parseRecFromCard(el);
+			const hydrate = _parseHydrateFromCard(el);
+			const liqUsd = safeNum(hydrate?.liquidityUsd, 0);
+			const v24h = safeNum(hydrate?.v24hTotal, 0);
+			const rw = _recWeight(rec);
+			const liqScore = Math.log10(Math.max(1, liqUsd + 1));
+			const vScore = Math.log10(Math.max(1, v24h + 1));
+			const rank = rw * 1e9 + score * 1e6 + liqScore * 1e4 + vScore * 1e3;
+			out.push({ mint, rec, score, liqUsd, v24h, rank });
+		}
+		return out;
+	} catch {
+		return [];
+	}
+}
+
+
+function _sentryRankWithLiveSignal(mint, base = null) {
+	try {
+		const obs = getObservationStatus(mint);
+		const trig = shouldTriggerBuy(mint);
+		const series3 = getLeaderSeries(mint, 3);
+		const last = series3?.[series3.length - 1] || {};
+		const chgSlope = clamp(slope3pm(series3 || [], "chg5m"), -60, 60);
+		const scSlope = clamp(slope3pm(series3 || [], "pumpScore"), -20, 20);
+		const rw = _recWeight(base?.rec);
+		const uiScore = clamp(Number(base?.score || 0), 0, 100);
+		const liqScore = Math.log10(Math.max(1, Number(base?.liqUsd || 0) + 1));
+		const vScore = Math.log10(Math.max(1, Number(base?.v24h || 0) + 1));
+		const baseRank = rw * 1e9 + uiScore * 1e6 + liqScore * 1e4 + vScore * 1e3;
+		const readyFrac = obs?.ok ? 1 : clamp((Number(obs?.haveN || 0) / Math.max(1, Number(obs?.needN || 1))) * 0.7 + (Number(obs?.spanMs || 0) / Math.max(1, Number(obs?.needMs || 1))) * 0.3, 0, 1);
+		const lastBonus = clamp(Number(last?.pumpScore || 0), 0, 10) * 1e2 + clamp(Number(last?.chg5m || 0), -60, 60) * 2;
+		const slopeBonus = (scSlope * 180 + chgSlope * 8);
+		const triggerBoost = trig ? 2e12 : 0;
+		const readyBoost = readyFrac * 5e11;
+		return {
+			mint,
+			rec: String(base?.rec || ""),
+			score: Number(base?.score || 0),
+			liqUsd: Number(base?.liqUsd || 0),
+			v24h: Number(base?.v24h || 0),
+			readyFrac,
+			trig,
+			chgSlope,
+			scSlope,
+			rank: triggerBoost + readyBoost + baseRank + lastBonus * 1e6 + slopeBonus * 1e7,
+		};
+	} catch {
+		return { mint, rank: Number(base?.rank || 0), ...base };
+	}
+}
+
+async function pickSentryMintAsync() {
+	try {
+		const t = now();
+		if (_sentryTargetMint && t < _sentryStickyUntil) return _sentryTargetMint;
+
+		// prevent overlapping scans if tick is aggressive
+		if (_sentryScanInFlight) return _sentryTargetMint || "";
+		_sentryScanInFlight = true;
+		try {
+			// light throttle to avoid network spam; still parallel within each scan
+			if (t - _sentryLastScanAt < Math.max(350, Math.min(1200, Number(state.pollMs || 1200)))) {
+				return _sentryTargetMint || "";
+			}
+			_sentryLastScanAt = t;
+
+			const cands = _scanTopCardCandidates(SENTRY_TOP_N);
+			if (!cands.length) return "";
+			sentryLogCandidates("scan", "Sentry scan (async) candidates", cands, 1200);
+
+			// Refresh focus/signal for all candidates concurrently
+			const started = now();
+			const settled = await Promise.allSettled(
+				cands.map(async (c) => ({ mint: c.mint, ok: !!(await snapshotFocus(c.mint)) })),
+			);
+			const dt = now() - started;
+			try {
+				const okN = settled.filter((r) => r.status === "fulfilled" && r.value?.ok).length;
+				sentryLog("scan:focus", `Sentry scan (async) focus refresh: ok=${okN}/${cands.length} dt=${dt}ms`, "help", 1200);
+			} catch {}
+
+			const ranked = cands.map((c) => _sentryRankWithLiveSignal(c.mint, c));
+			ranked.sort((a, b) => (b.rank || 0) - (a.rank || 0));
+			const best = ranked[0];
+			sentryLogCandidates("scan:rank", "Sentry scan (async) ranked", ranked, 1200);
+			if (!best?.mint) return "";
+			_sentryTargetMint = best.mint;
+			_sentryStickyUntil = t + SENTRY_SWITCH_COOLDOWN_MS;
+			_sentryLastPick = best;
+			return best.mint;
+		} finally {
+			_sentryScanInFlight = false;
+		}
+	} catch {
+		_sentryScanInFlight = false;
+		return "";
+	}
+}
+
+function _sentryPrefetchIntervalMs() {
+	try {
+		const p = Number(state.pollMs || 1200);
+		return Math.floor(clamp(p * 0.5, 300, 1100));
+	} catch {
+		return 650;
+	}
+}
+
+function _canRunSentryPrefetch() {
+	try {
+		if (typeof document === "undefined") return false;
+		if (!state?.enabled || !state?.sentryEnabled) return false;
+		if (_inFlight) return false;
+		const active = hasAnyActivePosition();
+		if (active.ok) return false;
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function _sentryPrefetchOnce() {
+	if (!_canRunSentryPrefetch()) return;
+	if (_sentryPrefetchInFlight) return;
+	_sentryPrefetchInFlight = true;
+	try {
+		const cands = _scanTopCardCandidates(SENTRY_TOP_N);
+		if (!cands.length) {
+			sentryLog("prefetch:none", "Sentry prefetch: no candidates", "help", SENTRY_LOG_PREFETCH_EVERY_MS);
+			return;
+		}
+		sentryLogCandidates("prefetch:cands", "Sentry prefetch candidates", cands, SENTRY_LOG_PREFETCH_EVERY_MS);
+		const started = now();
+		const settled = await Promise.allSettled(
+			cands.map(async (c) => ({ mint: c.mint, ok: !!(await snapshotFocus(c.mint)) })),
+		);
+		const dt = now() - started;
+		try {
+			const okN = settled.filter((r) => r.status === "fulfilled" && r.value?.ok).length;
+			sentryLog("prefetch:focus", `Sentry prefetch focus refresh: ok=${okN}/${cands.length} dt=${dt}ms`, "help", SENTRY_LOG_PREFETCH_EVERY_MS);
+		} catch {}
+		const ranked = cands.map((c) => _sentryRankWithLiveSignal(c.mint, c));
+		ranked.sort((a, b) => (b.rank || 0) - (a.rank || 0));
+		_sentryPrefetchRanked = ranked;
+		_sentryPrefetchAt = now();
+		sentryLogCandidates("prefetch:rank", "Sentry prefetch ranked", ranked, SENTRY_LOG_PREFETCH_EVERY_MS);
+	} catch {
+	} finally {
+		_sentryPrefetchInFlight = false;
+	}
+}
+
+function startSentryPrefetch() {
+	try {
+		if (_sentryPrefetchTimer) return;
+		if (typeof document === "undefined") return;
+		const ms = _sentryPrefetchIntervalMs();
+		_sentryPrefetchTimer = setInterval(() => void _sentryPrefetchOnce(), ms);
+		sentryLog("prefetch:start", `Sentry prefetch started (interval=${ms}ms)`, "ok", 2500);
+		void _sentryPrefetchOnce();
+	} catch {}
+}
+
+function stopSentryPrefetch() {
+	try {
+		if (_sentryPrefetchTimer) clearInterval(_sentryPrefetchTimer);
+	} catch {}
+	_sentryPrefetchTimer = null;
+	_sentryPrefetchInFlight = false;
+	sentryLog("prefetch:stop", "Sentry prefetch stopped", "warn", 2500);
+}
+
+function pickSentryMintFast() {
+	try {
+		const t = now();
+		if (_sentryTargetMint && t < _sentryStickyUntil) return _sentryTargetMint;
+		if (_sentryPrefetchRanked && t - Number(_sentryPrefetchAt || 0) <= SENTRY_PREFETCH_MAX_AGE_MS) {
+			const best = _sentryPrefetchRanked[0];
+			if (best?.mint) {
+				sentryLog(
+					"pick:cache",
+					`Sentry pick (cache): best=${_shortMint(best.mint)} age=${Math.max(0, t - Number(_sentryPrefetchAt || 0))}ms trig=${best?.trig ? "Y" : "N"} ready=${Math.round(Number(best?.readyFrac || 0) * 100)}%`,
+					"help",
+					900,
+				);
+				_sentryTargetMint = best.mint;
+				_sentryStickyUntil = t + SENTRY_SWITCH_COOLDOWN_MS;
+				_sentryLastPick = best;
+				return best.mint;
+			}
+		}
+		sentryLog(
+			"pick:miss",
+			`Sentry pick: cache miss/stale (age=${Math.max(0, t - Number(_sentryPrefetchAt || 0))}ms)` ,
+			"help",
+			1400,
+		);
+		return "";
+	} catch {
+		return "";
+	}
+}
+
 function loadState() {
 	try {
 		if (typeof localStorage === "undefined") return;
@@ -256,6 +613,91 @@ function _isHardExitDecision(decision, ctx = null) {
 	}
 }
 
+function _isAlwaysAllowSellDecision(decision, ctx = null) {
+	try {
+		if (!decision || typeof decision !== "object") return false;
+		if (ctx?.forceRug) return true;
+		const reason = String(decision.reason || "");
+		return /\brug\b|urgent|max-hold/i.test(reason);
+	} catch {
+		return false;
+	}
+}
+
+function getMomentumPlummetSignal(mint, pos, nowTs) {
+	try {
+		const series3 = getLeaderSeries(mint, 3);
+		const last = series3?.[series3.length - 1] || {};
+		const chg5m = clamp(Number(last?.chg5m || 0), -99, 99);
+		const chgSlope = clamp(slope3pm(series3 || [], "chg5m"), -60, 60);
+		const scSlope = clamp(slope3pm(series3 || [], "pumpScore"), -20, 20);
+		const badgeNorm = normBadge(getRugSignalForMint(mint)?.badge);
+
+		const rawPlummet =
+			(chg5m <= MOMENTUM_PLUMMET_CHG5M_PCT) ||
+			(scSlope <= MOMENTUM_PLUMMET_SC_SLOPE) ||
+			(chgSlope <= MOMENTUM_PLUMMET_CHG_SLOPE) ||
+			(badgeNorm === "calm" && chgSlope < -10 && scSlope < -2);
+
+		const prev = Number(pos?._momPlummetConsec || 0);
+		const consec = rawPlummet ? Math.min(10, prev + 1) : 0;
+		pos._momPlummetConsec = consec;
+
+		return {
+			ok: consec >= MOMENTUM_PLUMMET_CONSEC,
+			rawPlummet,
+			consec,
+			chg5m,
+			chgSlope,
+			scSlope,
+			badgeNorm,
+			reason: `MOMENTUM_PLUMMET c=${consec}/${MOMENTUM_PLUMMET_CONSEC} chg5m=${chg5m.toFixed(1)}% chgSlope=${chgSlope.toFixed(1)}/m scSlope=${scSlope.toFixed(1)}/m badge=${badgeNorm}`,
+		};
+	} catch {
+		return { ok: false, rawPlummet: false, consec: 0, reason: "MOMENTUM_PLUMMET (err)" };
+	}
+}
+
+function momentumLossGuardPolicy(ctx) {
+	try {
+		if (!ctx || typeof ctx !== "object") return;
+		const pos = ctx.pos;
+		if (!pos) return;
+		if (String(pos.entryMode || "") !== "momentum") return;
+		if (ctx.forceRug) return;
+
+		const nowTs = Number(ctx.nowTs || now());
+		const ageSec = (nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0)) / 1000;
+		if (!(ageSec >= 0 && ageSec <= MOMENTUM_GUARD_SECS)) return;
+
+		const pnl = Number.isFinite(Number(ctx.pnlNetPct)) ? Number(ctx.pnlNetPct) : Number(ctx.pnlPct);
+		// Only guard loss-side sells; allow normal profit-taking.
+		if (!(Number.isFinite(pnl) && pnl < 0)) return;
+
+		const decision = ctx.decision;
+		if (!decision) {
+			const sig0 = getMomentumPlummetSignal(ctx.mint, pos, nowTs);
+			if (sig0.ok) ctx.decision = { action: "sell_all", reason: sig0.reason, hardStop: true };
+			return;
+		}
+		const action = String(decision.action || "");
+		if (!/sell/i.test(action)) return;
+		if (_isAlwaysAllowSellDecision(decision, ctx)) return;
+
+		const sig = getMomentumPlummetSignal(ctx.mint, pos, nowTs);
+		if (!sig.ok) {
+			traceOnce(
+				`sniper:mom:veto:${ctx.mint}`,
+				`Momentum guard veto: ${ctx.mint.slice(0, 4)}… pnl=${Number(pnl).toFixed(2)}% age=${ageSec.toFixed(1)}s decision=${String(decision.reason || action)} (waiting for plummet)`,
+				2200,
+				"help",
+			);
+			ctx.decision = null;
+			ctx.stop = false;
+		}
+	} catch {}
+}
+
 function saveState() {
 	try {
 		if (typeof localStorage === "undefined") return;
@@ -264,6 +706,7 @@ function saveState() {
 			JSON.stringify({
 				enabled: !!state.enabled,
 				mint: String(state.mint || "").trim(),
+				sentryEnabled: !!state.sentryEnabled,
 				pollMs: Number(state.pollMs || 1200),
 				buyPct: Number(state.buyPct || 25),
 				triggerScoreSlopeMin: Number(state.triggerScoreSlopeMin || 0.6),
@@ -585,6 +1028,37 @@ async function safeGetDecimalsFast(mint) {
 
 function getPlatformFeeBps() {
 	return 1;
+}
+
+function shouldAttachFeeForSellSniper({ mint, amountRaw, inDecimals, quoteOutLamports } = {}) {
+	try {
+		const m = String(mint || "").trim();
+		if (!m || m === SOL_MINT) return false;
+		const pos = state.positions?.[m];
+		const costSolTotal = Number(pos?.costSol || 0);
+		if (!Number.isFinite(costSolTotal) || costSolTotal <= 0) return false;
+
+		const outSol = Number(quoteOutLamports || 0) / 1e9;
+		if (!Number.isFinite(outSol) || outSol <= 0) return false;
+
+		let frac = 1;
+		try {
+			const dec = Number.isFinite(Number(inDecimals)) ? Number(inDecimals) : Number(pos?.decimals || 6);
+			const amtRaw = Number.isFinite(Number(amountRaw)) ? Number(amountRaw) : Number(amountRaw || 0);
+			const posUi = Number(pos?.sizeUi || 0);
+			const posRaw = posUi > 0 ? posUi * Math.pow(10, dec) : 0;
+			if (amtRaw > 0 && posRaw > 0) frac = clamp(amtRaw / Math.max(1, posRaw), 0, 1);
+		} catch {
+			frac = 1;
+		}
+
+		const costSold = costSolTotal * frac;
+		if (!Number.isFinite(costSold) || costSold <= 0) return false;
+		const pnlPct = ((outSol - costSold) / costSold) * 100;
+		return Number.isFinite(pnlPct) && pnlPct >= MIN_PROFIT_FOR_PLATFORM_FEE_PCT;
+	} catch {
+		return false;
+	}
 }
 
 function setRouterHold(mint, ms = ROUTER_COOLDOWN_MS) {
@@ -934,7 +1408,7 @@ function _getDex() {
 		tokenAccountRentLamports,
 		requiredAtaLamportsForSwap,
 		requiredOutAtaRentIfMissing: async () => 0,
-		shouldAttachFeeForSell: () => true,
+		shouldAttachFeeForSell: (args) => shouldAttachFeeForSellSniper(args),
 		minSellNotionalSol,
 		safeGetDecimalsFast,
 
@@ -1009,14 +1483,17 @@ async function quoteOutSol(mint, amountUi, decimals = 6) {
 
 function estimateNetExitSolFromQuote({ mint, amountUi, inDecimals, quoteOutLamports }) {
 	try {
-		void mint;
-		void amountUi;
-		void inDecimals;
-		const feeBps = Number(getPlatformFeeBps() || 0);
+		const feeEligible = shouldAttachFeeForSellSniper({
+			mint,
+			amountRaw: Math.floor(Number(amountUi || 0) * Math.pow(10, Number(inDecimals || 6))),
+			inDecimals,
+			quoteOutLamports,
+		});
+		const feeBps = feeEligible ? Number(getPlatformFeeBps() || 0) : 0;
 		const platformL = Math.floor(Number(quoteOutLamports || 0) * (feeBps / 10_000));
 		const txL = Number(EDGE_TX_FEE_ESTIMATE_LAMPORTS || 0);
 		const netL = Math.max(0, Number(quoteOutLamports || 0) - platformL - txL);
-		return { netSol: netL / 1e9, feeApplied: true, platformLamports: platformL, txLamports: txL };
+		return { netSol: netL / 1e9, feeApplied: feeBps > 0, platformLamports: platformL, txLamports: txL };
 	} catch {
 		return { netSol: Math.max(0, Number(quoteOutLamports || 0) - Number(EDGE_TX_FEE_ESTIMATE_LAMPORTS || 0)) / 1e9, feeApplied: false, platformLamports: 0, txLamports: Number(EDGE_TX_FEE_ESTIMATE_LAMPORTS || 0) };
 	}
@@ -1502,6 +1979,7 @@ async function runSellPipelineForPosition(ctx) {
 		(c) => profitTargetHoldPolicy(c),
 		(c) => reboundGatePolicy(c),
 		(c) => profitTargetTakePolicy(c),
+		(c) => momentumLossGuardPolicy(c),
 		(c) => executeSellDecisionPolicy(c),
 	];
 	for (const fn of steps) {
@@ -1514,10 +1992,16 @@ async function runSellPipelineForPosition(ctx) {
 function updateUI() {
 	try {
 		if (!statusEl) return;
-		const m = String(state.mint || "").trim();
-		const pos = m && state.positions ? state.positions[m] : null;
-		const holding = pos && Number(pos.sizeUi || 0) > 0;
-		statusEl.textContent = `Holding: ${holding ? "YES" : "NO"}`;
+		const curMint = String(state.mint || "").trim();
+		const active = hasAnyActivePosition();
+		const holding = !!active.ok;
+		const sentry = !!state.sentryEnabled;
+		const target = sentry ? (curMint ? `${curMint.slice(0, 4)}…` : "auto") : (curMint ? `${curMint.slice(0, 4)}…` : "-");
+		statusEl.textContent = `Holding: ${holding ? "YES" : "NO"} | Sentry: ${sentry ? "ON" : "OFF"} | Target: ${target}`;
+		if (mintEl) {
+			mintEl.disabled = sentry;
+			mintEl.placeholder = sentry ? "Auto (top cards)" : "Mint address";
+		}
 	} catch {}
 }
 
@@ -1572,7 +2056,11 @@ function shouldTriggerBuy(mint) {
 	}
 }
 
-async function mirrorBuy(mint) {
+async function mirrorBuy(mint, opts = null) {
+	let entryMode = "";
+	try {
+		if (opts && typeof opts === "object") entryMode = String(opts.entryMode || "");
+	} catch {}
 	if (isMintBlacklisted(mint) || isPumpDropBanned(mint)) {
 		log(`Skipping buy: mint blacklisted/banned ${mint.slice(0, 4)}…`, "warn");
 		return { ok: false };
@@ -1634,6 +2122,8 @@ async function mirrorBuy(mint) {
 			awaitingSizeSync: true,
 			warmingHold: !!state.rideWarming,
 			warmingHoldAt: now(),
+			entryMode: entryMode || String(posPrev.entryMode || ""),
+			_momPlummetConsec: 0,
 			entryChg5m: safeNum(getLeaderSeries(mint, 1)?.[0]?.chg5m, NaN),
 			tpPct: getProfitTargetPct(),
 			slPct: Number(state.stopLossPct || 4),
@@ -1673,6 +2163,29 @@ async function tickOnce() {
 	_tickInFlight = true;
 	try {
 		if (!state.enabled || run !== _runNonce) return;
+
+		try {
+			if (state.sentryEnabled && typeof document !== "undefined") {
+				const active = hasAnyActivePosition();
+				if (!active.ok && !_inFlight) {
+					let picked = pickSentryMintFast();
+					if (!picked) picked = await pickSentryMintAsync();
+					if (picked && picked !== String(state.mint || "").trim()) {
+						state.mint = picked;
+						if (mintEl) mintEl.value = picked;
+						saveState();
+						const p = _sentryLastPick;
+						traceOnce(
+							"sniper:sentry:pick",
+							`Sentry target: ${picked.slice(0, 6)}… rec=${String(p?.rec || "")} score=${Number(p?.score || 0).toFixed(0)} ready=${Math.round(Number(p?.readyFrac || 0) * 100)}% trig=${p?.trig ? "Y" : "N"}`,
+							3500,
+							"help",
+						);
+					}
+				}
+			}
+		} catch {}
+
 		const mint = String(state.mint || "").trim();
 		if (!mint) {
 			updateUI();
@@ -1799,7 +2312,7 @@ async function tickOnce() {
 			}
 			if (trig) {
 				log(`Trigger: upward momentum for ${mint.slice(0, 4)}… buying.`, "info");
-				await mirrorBuy(mint);
+				await mirrorBuy(mint, { entryMode: "momentum" });
 			}
 			updateUI();
 			return;
@@ -1861,8 +2374,9 @@ async function startSniper() {
 	if (state.enabled) return;
 	_acceptLogs = true;
 	_runNonce++;
+	state.sentryEnabled = !!(sentryEl?.checked || state.sentryEnabled);
 	const mint = String(mintEl?.value || state.mint || "").trim();
-	if (!mint) {
+	if (!mint && !state.sentryEnabled) {
 		log("Missing mint.", "warn");
 		return;
 	}
@@ -1877,8 +2391,9 @@ async function startSniper() {
 	state.positions = state.positions && typeof state.positions === "object" ? state.positions : {};
 	saveState();
 	updateUI();
+	if (state.sentryEnabled) startSentryPrefetch();
 	log(
-		`Sniper started. mint=${mint.slice(0, 6)}… poll=${state.pollMs}ms buyPct=${state.buyPct}% maxProfit=${Number(state.takeProfitPct || 12).toFixed(1)}% obs=${state.observeMinSamples}/${Math.round(state.observeWindowMs / 1000)}s minHold=${state.minHoldSecs}s thr=${Number(state.triggerScoreSlopeMin || 0.6).toFixed(2)}`,
+		`Sniper started. ${state.sentryEnabled ? "(sentry)" : ""} mint=${mint ? mint.slice(0, 6) + "…" : "auto"} poll=${state.pollMs}ms buyPct=${state.buyPct}% maxProfit=${Number(state.takeProfitPct || 12).toFixed(1)}% obs=${state.observeMinSamples}/${Math.round(state.observeWindowMs / 1000)}s minHold=${state.minHoldSecs}s thr=${Number(state.triggerScoreSlopeMin || 0.6).toFixed(2)}`,
 		"ok",
 		true,
 	);
@@ -1890,8 +2405,60 @@ async function startSniper() {
 	await tickOnce();
 }
 
+async function liquidateAllPositionsOnStop() {
+	try {
+		const ps = state.positions && typeof state.positions === "object" ? state.positions : {};
+		const entries = Object.entries(ps).filter(([, p]) => p && (Number(p.sizeUi || 0) > 0 || p.awaitingSizeSync === true));
+		if (!entries.length) return { ok: true, sold: 0, reason: "no-positions" };
+
+		const kp = await getAutoKeypair();
+		if (!kp) {
+			log("Stop liquidation skipped: auto wallet missing.", "warn", true);
+			return { ok: false, sold: 0, reason: "no-wallet" };
+		}
+		const ownerStr = kp.publicKey.toBase58();
+
+		log(`Stop liquidation: attempting to sell ${entries.length} position(s)…`, "warn", true);
+		let soldN = 0;
+		for (const [mint, pos] of entries) {
+			try {
+				if (!_isMaybeMintStr(mint)) continue;
+				// Make sure we have real, current size before selling.
+				try {
+					await verifyRealTokenBalance(ownerStr, mint, pos);
+				} catch {}
+				const p2 = state.positions?.[mint];
+				if (!p2 || !(Number(p2.sizeUi || 0) > 0)) continue;
+
+				const ctx = _mkSellCtx({ kp, mint, pos: p2, nowTs: now() });
+				ctx.minNotional = minSellNotionalSol();
+				// Treat stop-liquidation like a fast exit: bypass router cooldown but avoid extreme slippage.
+				ctx.isFastExit = true;
+				ctx.forceMomentum = true;
+				ctx.forceExpire = false;
+				ctx.decision = { action: "sell_all", reason: "USER_STOP" };
+
+				await _enrichSellCtx(ctx);
+				await executeSellDecisionPolicy(ctx);
+				soldN++;
+				await new Promise((r) => setTimeout(r, 250));
+			} catch (e) {
+				log(`Stop liquidation error for ${String(mint || "").slice(0, 4)}… ${e?.message || e}`, "warn", true);
+			}
+		}
+
+		try { await unwrapWsolIfAny(kp); } catch {}
+		return { ok: true, sold: soldN };
+	} catch (e) {
+		log(`Stop liquidation error: ${e?.message || e}`, "warn", true);
+		return { ok: false, sold: 0, reason: "exception" };
+	}
+}
+
 async function stopSniper() {
 	if (!state.enabled) return;
+	_acceptLogs = true;
+	log("Stop requested. Liquidating positions…", "warn", true);
 	state.enabled = false;
 	try { setBotRunning('sniper', false); } catch {}
 	_runNonce++;
@@ -1900,6 +2467,17 @@ async function stopSniper() {
 		if (_timer) clearInterval(_timer);
 	} catch {}
 	_timer = null;
+	stopSentryPrefetch();
+
+	// If a tick/swap is in progress, wait a moment for it to settle.
+	try {
+		const start = now();
+		while ((_inFlight || _tickInFlight) && (now() - start < 10_000)) {
+			await new Promise((r) => setTimeout(r, 200));
+		}
+	} catch {}
+
+	try { await liquidateAllPositionsOnStop(); } catch {}
 	updateUI();
 	log("Sniper stopped.", "warn", true);
 	_acceptLogs = false;
@@ -1957,6 +2535,7 @@ export function initSniperWidget(container = document.body) {
 		<div class="fdv-tab-content active" data-tab-content="sniper">
 			<div class="fdv-grid">
 				<label>Target Mint <input id="sniper-mint" type="text" placeholder="Mint address"></label>
+				
 				<label>Poll (ms) <input id="sniper-poll" type="number" min="250" max="60000" step="50"></label>
 				<label>Buy % (1-70%) <input id="sniper-buy-pct" type="number" min="1" max="70" step="1"></label>
 				<label>Trigger score slope (/min) <input id="sniper-trigger" type="number" min="0" max="20" step="0.1"></label>
@@ -1966,6 +2545,7 @@ export function initSniperWidget(container = document.body) {
 			<div class="fdv-log" id="sniper-log"></div>
 			<div class="fdv-actions" style="margin-top:6px;">
 				<div class="fdv-actions-left" style="display:flex; flex-direction:column; gap:4px;">
+					<label>Sentry<input id="sniper-sentry" type="checkbox"></label>
 					<div class="fdv-rpc-text" id="sniper-status"></div>
 				</div>
 				<div class="fdv-actions-right">
@@ -1980,6 +2560,7 @@ export function initSniperWidget(container = document.body) {
 
 	// Match Follow's lookup style.
 	mintEl = document.getElementById("sniper-mint");
+	sentryEl = document.getElementById("sniper-sentry");
 	pollEl = document.getElementById("sniper-poll");
 	buyPctEl = document.getElementById("sniper-buy-pct");
 	triggerEl = document.getElementById("sniper-trigger");
@@ -1990,10 +2571,19 @@ export function initSniperWidget(container = document.body) {
 	statusEl = document.getElementById("sniper-status");
 
 	if (mintEl) mintEl.value = String(state.mint || "");
+	if (sentryEl) sentryEl.checked = !!state.sentryEnabled;
 	if (pollEl) pollEl.value = String(state.pollMs || 1200);
 	if (buyPctEl) buyPctEl.value = String(state.buyPct || 25);
 	if (triggerEl) triggerEl.value = String(state.triggerScoreSlopeMin || 0.6);
 	if (maxProfitEl) maxProfitEl.value = String(getProfitTargetPct());
+
+	sentryEl?.addEventListener("change", () => {
+		state.sentryEnabled = !!sentryEl.checked;
+		saveState();
+		if (state.enabled && state.sentryEnabled) startSentryPrefetch();
+		if (!state.sentryEnabled) stopSentryPrefetch();
+		updateUI();
+	});
 
 	startBtn?.addEventListener("click", async () => {
 		await startSniper();
@@ -2008,3 +2598,5 @@ export function initSniperWidget(container = document.body) {
 		void startSniper();
 	}
 }
+
+// rawr
