@@ -645,14 +645,6 @@ function getDex() {
 		tokenAccountRentLamports,
 		requiredAtaLamportsForSwap,
 		requiredOutAtaRentIfMissing: async () => 0,
-		shouldAttachFeeForSell: ({ mint } = {}) => {
-			try {
-				const m = String(mint || "");
-				return !!(m && state?.forceFeeSellMint && String(state.forceFeeSellMint) === m);
-			} catch {
-				return false;
-			}
-		},
 		minSellNotionalSol: () => 0,
 		safeGetDecimalsFast,
 

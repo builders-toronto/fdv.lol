@@ -929,7 +929,15 @@ export function createDex(deps = {}) {
 					if (isSell) {
 						const outRaw = Number(quote?.outAmount || 0);
 						const outSol = outRaw / 1e9;
-						const eligible = feeBps > 0 && !!feeDestCandidate;
+						const eligible = feeBps > 0 && !!feeDestCandidate && (
+							typeof shouldAttachFeeForSell !== "function" ||
+							!!shouldAttachFeeForSell({
+								mint: inputMint,
+								amountRaw: amountRaw,
+								inDecimals: inDecimals,
+								quoteOutLamports: outRaw,
+							})
+						);
 						if (eligible) {
 							const qFee = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: restrictIntermediates, withFee: true });
 							const qFeeRes = await jupFetch(qFee.pathname + qFee.search);
@@ -980,12 +988,14 @@ export function createDex(deps = {}) {
 			if (isSell && feeDestCandidate) {
 				try {
 					const outRawNoFee = Number(quote?.outAmount || 0);
-					const profitableNoFee = shouldAttachFeeForSell?.({
-						mint: inputMint,
-						amountRaw: amountRaw,
-						inDecimals: inDecimals,
-						quoteOutLamports: outRawNoFee,
-					});
+					const profitableNoFee = (typeof shouldAttachFeeForSell === "function")
+						? shouldAttachFeeForSell({
+							mint: inputMint,
+							amountRaw: amountRaw,
+							inDecimals: inDecimals,
+							quoteOutLamports: outRawNoFee,
+						})
+						: true;
 
 					if (profitableNoFee) {
 						const qFee = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: restrictIntermediates, withFee: true });
@@ -993,12 +1003,14 @@ export function createDex(deps = {}) {
 						if (qFeeRes.ok) {
 							const quoteWithFee = await qFeeRes.json();
 							const outRawWithFee = Number(quoteWithFee?.outAmount || 0);
-							const stillProfitable = shouldAttachFeeForSell?.({
-								mint: inputMint,
-								amountRaw: amountRaw,
-								inDecimals: inDecimals,
-								quoteOutLamports: outRawWithFee,
-							});
+							const stillProfitable = (typeof shouldAttachFeeForSell === "function")
+								? shouldAttachFeeForSell({
+									mint: inputMint,
+									amountRaw: amountRaw,
+									inDecimals: inDecimals,
+									quoteOutLamports: outRawWithFee,
+								})
+								: true;
 							if (stillProfitable) {
 								quote = quoteWithFee;
 								feeAccount = feeDestCandidate;

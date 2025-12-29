@@ -254,6 +254,10 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
 
 .container{max-width:1200px;margin:0 auto;padding:40px}
 
+@media (max-width: 500px) {
+  .container{padding:15px}  
+}
+
 h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
 
 .sub{color:var(--muted); font-size:.8rem}
