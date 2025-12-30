@@ -1,4 +1,5 @@
 import { addKpiAddon } from '../ingest.js';
+import { scoreSnapshot, mapAggToRegistryRows } from './shared.js';
 
 export const EFF_STORAGE_KEY    = 'meme_liq_eff_history_v1';
 export const EFF_WINDOW_DAYS    = 3;

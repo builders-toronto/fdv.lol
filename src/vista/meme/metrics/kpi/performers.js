@@ -1,4 +1,5 @@
 import { addKpiAddon } from '../ingest.js';
+import { scoreSnapshot, mapAggToRegistryRows } from './shared.js';
 
 export const CONSIST_STORAGE_KEY    = 'meme_consistency_history_v1';
 export const CONSIST_WINDOW_DAYS    = 3;
@@ -119,12 +120,35 @@ addKpiAddon(
     limit: 3,
   },
   {
-    computePayload() {
+    computePayload(snapshot) {
       const agg = computeConsistencyFromHistory();
+      if (agg && agg.length) {
+        return {
+          title: 'Consistent performers',
+          metricLabel: 'Consistency',
+          items: mapAggToRegistryRows(agg),
+        };
+      }
+
+      // Instant fallback: show current snapshot performers until enough history exists.
+      const scored = scoreSnapshot(snapshot).slice(0, 3);
+      const items = scored.map(it => ({
+        mint: it.mint,
+        symbol: it.symbol || '',
+        name: it.name || '',
+        imageUrl: it.imageUrl || '',
+        priceUsd: it.priceUsd ?? 0,
+        chg24: it.chg24 ?? 0,
+        liqUsd: it.liqUsd ?? 0,
+        vol24: it.vol24 ?? 0,
+        pairUrl: it.pairUrl || '',
+        metric: it.score ?? 0,
+      }));
+
       return {
         title: 'Consistent performers',
         metricLabel: 'Consistency',
-        items: mapAggToRegistryRows(agg),
+        items,
       };
     },
     ingestSnapshot(items) {

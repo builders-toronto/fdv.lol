@@ -1,4 +1,5 @@
 import { addKpiAddon } from '../ingest.js';
+import { scoreSnapshot } from './shared.js';
 
 export const SMQ_STORAGE_KEY = 'meme_top3_history_v1';
 export const SMQ_WINDOW_DAYS = 3;
@@ -152,12 +153,36 @@ addKpiAddon(
     limit: 3,
   },
   {
-    computePayload() {
-      const tbl = computeSMQTable(SMQ_WINDOW_DAYS).slice(0, 3);
+    computePayload(snapshot) {
+      const tblAll = computeSMQTable(SMQ_WINDOW_DAYS);
+      const tbl = tblAll.filter(r => Number(r.smq || 0) > 0).slice(0, 3);
+      if (tbl.length) {
+        return {
+          title: `SMQ leaders`,
+          metricLabel: 'SMQ',
+          items: mapToRegistryRows(tbl),
+        };
+      }
+
+      // Instant fallback: reuse snapshot score until SMQ has enough history.
+      const scored = scoreSnapshot(snapshot).slice(0, 3);
+      const items = scored.map(it => ({
+        mint: it.mint,
+        symbol: it.symbol || '',
+        name: it.name || '',
+        imageUrl: it.imageUrl || '',
+        priceUsd: it.priceUsd ?? 0,
+        chg24: it.chg24 ?? 0,
+        liqUsd: it.liqUsd ?? 0,
+        vol24: it.vol24 ?? 0,
+        pairUrl: it.pairUrl || '',
+        metric: it.score ?? 0,
+      }));
+
       return {
         title: `SMQ leaders`,
         metricLabel: 'SMQ',
-        items: mapToRegistryRows(tbl),
+        items,
       };
     },
     ingestSnapshot() {}

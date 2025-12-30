@@ -1,4 +1,55 @@
 import { addKpiAddon } from '../ingest.js';
+import { scoreSnapshot, mapAggToRegistryRows } from './shared.js';
+
+function nzNum(v, d = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+}
+
+function clamp(n, lo, hi) {
+  return Math.min(hi, Math.max(lo, n));
+}
+
+function computeComebackInstant(snapshot, limit = 3) {
+  const list = Array.isArray(snapshot) ? snapshot : [];
+  const out = [];
+
+  for (const it of list) {
+    const mint = it.mint || it.id;
+    if (!mint) continue;
+
+    const chg24 = nzNum(it?.change?.h24, 0);
+    const vol24 = nzNum(it?.volume?.h24, 0);
+    const liqUsd = nzNum(it?.liquidityUsd, 0);
+    const priceUsd = nzNum(it?.priceUsd, 0);
+    if (!Number.isFinite(priceUsd) || priceUsd <= 0) continue;
+
+    // Very rough "instant" proxy: reward being green today + having volume.
+    const volBoost01 = clamp(Math.log10(1 + Math.max(0, vol24)) / 6, 0, 1);
+    const liqBoost01 = clamp(Math.log10(1 + Math.max(0, liqUsd)) / 6, 0, 1);
+    const green = Math.max(0, chg24);
+    const score = Math.round(green * (0.8 + 0.2 * volBoost01) * (0.9 + 0.1 * liqBoost01));
+    if (!Number.isFinite(score) || score <= 0) continue;
+
+    out.push({
+      mint,
+      avgScore: score,
+      kp: {
+        chg24,
+        liqUsd,
+        vol24,
+        priceUsd,
+        symbol: it.symbol || '',
+        name: it.name || '',
+        imageUrl: it.imageUrl || it.logoURI || '',
+        pairUrl: it.pairUrl || '',
+      },
+    });
+  }
+
+  out.sort((a, b) => b.avgScore - a.avgScore);
+  return out.slice(0, limit);
+}
 
 export const COMEBACK_STORAGE_KEY    = 'meme_comeback_history_v1';
 export const COMEBACK_WINDOW_DAYS    = 3;
@@ -143,12 +194,13 @@ addKpiAddon(
     limit: 3,
   },
   {
-    computePayload() {
+    computePayload(snapshot) {
       const agg = computeComebackFromHistory();
+      const use = (agg && agg.length) ? agg : computeComebackInstant(snapshot, 3);
       return {
         title: 'Comeback memes',
         metricLabel: 'Comeback',
-        items: mapAggToRegistryRows(agg),
+        items: mapAggToRegistryRows(use),
       };
     },
     ingestSnapshot(items) {

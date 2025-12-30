@@ -23,7 +23,14 @@ export function addKpiAddon(def, handlers) {
     ADDONS.set(def.id, {
       def: { ...def, updateMode, throttleMs },
       ...handlers,
-      _meta: { nextAt: 0, lastSig: '', sentFirst: false, active: updateMode === 'realtime' }
+      _meta: {
+        nextAt: 0,
+        lastSig: '',
+        sentFirst: false,
+        active: updateMode === 'realtime',
+        ingestNextAt: 0,
+        ingestedFirst: false,
+      }
     });
     try { registerAddon(def); } catch {}
   } else {
@@ -81,7 +88,7 @@ function pushAll() {
       if (!isActive(a) && !firstSendDue) continue;
       if (!shouldSend(a)) continue;
 
-      const payload = a.computePayload?.();
+      const payload = a.computePayload?.(latestSnapshot);
       if (payload && typeof payload === 'object') {
         setAddonData(id, payload);
         markSent(a);
@@ -96,10 +103,21 @@ export function ingestSnapshot(items) {
     latestSnapshot = Array.isArray(items) ? items : [];
     if (latestSnapshot.length) {
       for (const [, a] of ADDONS) {
-        // Allow first ingest for throttled KPIs even if not active (warm-up data)
-        const firstSendDue = !a._meta.sentFirst;
-        if (!isActive(a) && !firstSendDue) continue;
-        try { a.ingestSnapshot?.(latestSnapshot); } catch {}
+        const t = now();
+        const isRealtime = a.def.updateMode === 'realtime';
+        const ingestThrottleMs = Number(a.def.ingestThrottleMs) > 0
+          ? Number(a.def.ingestThrottleMs)
+          : (a._meta.active || isRealtime ? 0 : Math.max(1000, a.def.throttleMs));
+
+        const due = isRealtime || !a._meta.ingestedFirst || t >= (a._meta.ingestNextAt || 0);
+        if (!due) continue;
+
+        const ingestLimit = Number(a.def.ingestLimit) > 0 ? Number(a.def.ingestLimit) : 0;
+        const ingestItems = ingestLimit ? latestSnapshot.slice(0, ingestLimit) : latestSnapshot;
+        try { a.ingestSnapshot?.(ingestItems); } catch {}
+
+        a._meta.ingestedFirst = true;
+        a._meta.ingestNextAt = t + Math.max(0, ingestThrottleMs);
       }
     }
   } finally {
