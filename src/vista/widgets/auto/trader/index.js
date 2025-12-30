@@ -5,6 +5,8 @@ function _isNodeLike() {
 }
 
 import { computePumpingLeaders, getRugSignalForMint, focusMint } from "../../../meme/metrics/kpi/pumping.js";
+import { getLatestSnapshot } from "../../../meme/metrics/ingest.js";
+import { selectTradeCandidatesFromKpis } from "../lib/kpi/kpiSelection.js";
 
 import {
   SOL_MINT,
@@ -5136,19 +5138,50 @@ async function tick() {
 
   const leaderMode = !!state.holdUntilLeaderSwitch;
   let picks = [];
-  if (leaderMode) {
-    // Simple mode: always take the top KPI leader
-    const leadersTop = computePumpingLeaders(1) || [];
-    const top = leadersTop[0]?.mint || "";
-    if (top && !isMintBlacklisted(top) && !isPumpDropBanned(top)) picks = [top];
-  } else if (state.allowMultiBuy) {
-    const primary = await pickTopPumper(); // requires >=4/5 internally
-    const rest = pickPumpCandidates(Math.max(1, state.multiBuyTopN|0), 3)
-      .filter(m => m && m !== primary);
-    picks = [primary, ...rest].filter(Boolean);
-  } else {
-    const p = await pickTopPumper();
-    if (p) picks = [p];
+
+  // Higher-level selection: use the full KPI snapshot to rank trade candidates.
+  // Falls back to legacy pumping selection when snapshot is unavailable.
+  const kpiSnapshot = (() => {
+    try { return getLatestSnapshot() || []; } catch { return []; }
+  })();
+  const kpiSelectEnabled = state.kpiSelectEnabled !== false;
+
+  if (kpiSelectEnabled && Array.isArray(kpiSnapshot) && kpiSnapshot.length) {
+    const desiredN = leaderMode
+      ? 1
+      : (state.allowMultiBuy ? Math.max(1, state.multiBuyTopN | 0) : 1);
+
+    const pumpLeaders = computePumpingLeaders(Math.max(12, Number(state.kpiSelectPumpTopN || 30))) || [];
+    const rows = selectTradeCandidatesFromKpis({
+      snapshot: kpiSnapshot,
+      pumpLeaders,
+      topN: desiredN,
+      rugFn: getRugSignalForMint,
+      minLiqUsd: Number(state.kpiSelectMinLiqUsd || 2500),
+      minVol24: Number(state.kpiSelectMinVol24 || 250),
+    });
+    picks = rows.map(r => r?.mint).filter(Boolean);
+
+    // Apply existing blacklist / pump-drop bans.
+    picks = picks.filter(m => m && !isMintBlacklisted(m) && !isPumpDropBanned(m));
+  }
+
+  // Legacy selection fallback.
+  if (!picks.length) {
+    if (leaderMode) {
+      // Simple mode: always take the top KPI leader
+      const leadersTop = computePumpingLeaders(1) || [];
+      const top = leadersTop[0]?.mint || "";
+      if (top && !isMintBlacklisted(top) && !isPumpDropBanned(top)) picks = [top];
+    } else if (state.allowMultiBuy) {
+      const primary = await pickTopPumper(); // requires >=4/5 internally
+      const rest = pickPumpCandidates(Math.max(1, state.multiBuyTopN|0), 3)
+        .filter(m => m && m !== primary);
+      picks = [primary, ...rest].filter(Boolean);
+    } else {
+      const p = await pickTopPumper();
+      if (p) picks = [p];
+    }
   }
   if (!picks.length) return;
 
@@ -5166,7 +5199,6 @@ async function tick() {
     log("Buy lock held; skipping buys this tick.");
     return;
   }
-
 
   try {
     const kp = await getAutoKeypair();
