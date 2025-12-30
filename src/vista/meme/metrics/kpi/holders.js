@@ -176,8 +176,54 @@ addKpiAddon(
     limit: 3,
   },
   {
-    computePayload() {
-      const agg = computeHolderVelocityFromHistory();
+    computePayload(snapshot) {
+      let agg = computeHolderVelocityFromHistory();
+
+      // Instant fallback: "delta" vs snapshot median activity.
+      if ((!agg || !agg.length) && Array.isArray(snapshot) && snapshot.length) {
+        const rows = [];
+        const vals = [];
+
+        for (const it of snapshot) {
+          const mint = it.mint || it.id;
+          if (!mint) continue;
+          const activity24 = extractActivity24(it);
+          if (!Number.isFinite(activity24)) continue;
+          vals.push(activity24);
+          rows.push({ mint, it, activity24 });
+        }
+
+        vals.sort((a, b) => a - b);
+        const med = vals.length ? vals[Math.floor(vals.length / 2)] : 0;
+
+        const out = [];
+        for (const r of rows) {
+          const velocity = (r.activity24 - med);
+          if (!Number.isFinite(velocity) || velocity <= 0) continue;
+          out.push({
+            mint: r.mint,
+            velocity,
+            activityStart: med,
+            activityEnd: r.activity24,
+            dtDays: 1,
+            kp: {
+              symbol: r.it.symbol || '',
+              name: r.it.name || '',
+              imageUrl: r.it.logoURI || r.it.imageUrl || '',
+              priceUsd: nzNum(r.it.priceUsd, 0),
+              liqUsd: nzNum(r.it.liquidityUsd, 0),
+              vol24: nzNum(r.it?.volume?.h24, 0),
+              chg24: nzNum(r.it?.change?.h24, 0),
+              pairUrl: r.it.pairUrl || '',
+              activity24: r.activity24,
+            },
+          });
+        }
+
+        out.sort((a, b) => b.velocity - a.velocity);
+        agg = out;
+      }
+
       return {
         title: 'Holder growth velocity',
         metricLabel: 'Tx/day Δ ',

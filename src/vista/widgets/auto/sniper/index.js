@@ -1992,15 +1992,16 @@ async function runSellPipelineForPosition(ctx) {
 function updateUI() {
 	try {
 		if (!statusEl) return;
+		if (startBtn) startBtn.disabled = _inFlight;
 		const curMint = String(state.mint || "").trim();
 		const active = hasAnyActivePosition();
 		const holding = !!active.ok;
 		const sentry = !!state.sentryEnabled;
 		const target = sentry ? (curMint ? `${curMint.slice(0, 4)}…` : "auto") : (curMint ? `${curMint.slice(0, 4)}…` : "-");
-		statusEl.textContent = `Holding: ${holding ? "YES" : "NO"} | Sentry: ${sentry ? "ON" : "OFF"} | Target: ${target}`;
+		statusEl.textContent = `Target: ${target}`;
 		if (mintEl) {
 			mintEl.disabled = sentry;
-			mintEl.placeholder = sentry ? "Auto (top cards)" : "Mint address";
+			mintEl.placeholder = sentry ? "Sentry Mode" : "Mint address";
 		}
 	} catch {}
 }
@@ -2545,7 +2546,7 @@ export function initSniperWidget(container = document.body) {
 			<div class="fdv-log" id="sniper-log"></div>
 			<div class="fdv-actions" style="margin-top:6px;">
 				<div class="fdv-actions-left" style="display:flex; flex-direction:column; gap:4px;">
-					<label>Sentry<input id="sniper-sentry" type="checkbox"></label>
+					<label style="display:flex;flex-direction:row;align-items:center;gap:4px;">Sentry<input id="sniper-sentry" type="checkbox"></label>
 					<div class="fdv-rpc-text" id="sniper-status"></div>
 				</div>
 				<div class="fdv-actions-right">

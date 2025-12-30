@@ -15,6 +15,10 @@ export function createObserverPolicy({
     try {
       const obs = await observeMintOnce(ctx.mint, { windowMs: 2000, sampleMs: 600, minPasses: 4, adjustHold: !!state.dynamicHoldEnabled });
       if (!obs.ok) {
+        if (obs?.unavailable) {
+          noteObserverConsider(ctx.mint, 30_000);
+          return;
+        }
         const p = Number(obs.passes || 0);
         recordObserverPasses(ctx.mint, p);
         const thr = Math.max(0, Number(state.observerDropSellAt ?? 4));

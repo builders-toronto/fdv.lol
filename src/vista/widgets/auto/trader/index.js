@@ -3722,7 +3722,11 @@ async function observeMintOnce(mint, opts = {}) {
       }
     } catch {}
   }
-  if (!it0) { noteObserverConsider(mint, 30_000); log(`Observer: ${mint.slice(0,4)}… not in leaders; using focus failed; skip.`); return { ok: false, passes: 0 }; }
+  if (!it0) {
+    noteObserverConsider(mint, 30_000);
+    log(`Observer: ${mint.slice(0,4)}… not in leaders; using focus failed; skip.`);
+    return { ok: false, passes: 0, unavailable: true, reason: "focus_unavailable" };
+  }
 
   const kp0 = it0.kp || {};
   const s0 = {
@@ -3737,7 +3741,7 @@ async function observeMintOnce(mint, opts = {}) {
   let sN = s0;
   while (now() - start < windowMs) {
     await new Promise(r => setTimeout(r, sampleMs));
-    const itN = findLeader();
+    let itN = findLeader();
     if (!itN) {
       try {
         const foc = await focusMint(mint, { refresh: true, ttlMs: 2000 });
@@ -3754,7 +3758,10 @@ async function observeMintOnce(mint, opts = {}) {
         }
       } catch {}
     }
-    if (!itN) { log(`Observer: ${mint.slice(0,4)}… dropped; focus unavailable; skip.`); return { ok: false, passes: 0 }; }
+    if (!itN) {
+      log(`Observer: ${mint.slice(0,4)}… dropped; focus unavailable; skip.`);
+      return { ok: false, passes: 0, unavailable: true, reason: "focus_unavailable" };
+    }
 
     const kpN = itN.kp || {};
     sN = {

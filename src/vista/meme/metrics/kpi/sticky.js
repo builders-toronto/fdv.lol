@@ -101,6 +101,34 @@ function computeStickiness(prices) {
   return clamp01(stickiness);
 }
 
+function computeStickinessInstant(snapshot, limit = 3) {
+  const list = Array.isArray(snapshot) ? snapshot : [];
+  const out = [];
+
+  for (const it of list) {
+    const mint = it.mint || it.id;
+    if (!mint) continue;
+    const chg24 = nzNum(it?.change?.h24, 0);
+    const s01 = clamp01((chg24 + 100) / 200);
+    out.push({
+      mint,
+      s01,
+      kp: {
+        symbol: it.symbol || '',
+        name: it.name || '',
+        imageUrl: it.logoURI || it.imageUrl || '',
+        liqUsd: nzNum(it.liquidityUsd, 0),
+        vol24: nzNum(it?.volume?.h24, 0),
+        chg24,
+        pairUrl: it.pairUrl || '',
+      },
+    });
+  }
+
+  out.sort((a, b) => b.s01 - a.s01);
+  return out.slice(0, limit);
+}
+
 export function updateStickHistory(items) {
   const h = loadStickHistory();
   const ts = Date.now();
@@ -187,12 +215,13 @@ addKpiAddon(
     limit: 3,
   },
   {
-    computePayload() {
+    computePayload(snapshot) {
       const agg = computeStickinessIndexFromHistory();
+      const use = (agg && agg.length) ? agg : computeStickinessInstant(snapshot, 3);
       return {
         title: 'Stickiness index',
         metricLabel: 'Recovery (0–100)',
-        items: mapStickinessIndexToRegistryRows(agg, 3),
+        items: mapStickinessIndexToRegistryRows(use, 3),
       };
     },
     ingestSnapshot(items) {

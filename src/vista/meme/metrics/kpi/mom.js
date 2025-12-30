@@ -163,8 +163,45 @@ addKpiAddon(
     limit: 3,
   },
   {
-    computePayload() {
-      const agg = computeMcapMomentumFromHistory();
+    computePayload(snapshot) {
+      let agg = computeMcapMomentumFromHistory();
+
+      // Instant fallback: approximate $/h from (fdv * chg24)/24.
+      if ((!agg || !agg.length) && Array.isArray(snapshot) && snapshot.length) {
+        const out = [];
+        for (const it of snapshot) {
+          const mint = it.mint || it.id;
+          if (!mint) continue;
+          const mcapEnd = nzNum(it.fdv, null) ?? nzNum(it.marketCap, null);
+          if (!Number.isFinite(mcapEnd) || mcapEnd <= 0) continue;
+          const chg24 = nzNum(it?.change?.h24, 0);
+          const denom = 1 + chg24 / 100;
+          const mcapStart = denom > 0.01 ? (mcapEnd / denom) : mcapEnd;
+          const velocity = (mcapEnd - mcapStart) / 24;
+          if (!Number.isFinite(velocity) || velocity <= 0) continue;
+
+          out.push({
+            mint,
+            velocity,
+            mcapStart,
+            mcapEnd,
+            dtHours: 24,
+            kp: {
+              symbol: it.symbol || '',
+              name: it.name || '',
+              imageUrl: it.logoURI || it.imageUrl || '',
+              priceUsd: nzNum(it.priceUsd, 0),
+              liqUsd: nzNum(it.liquidityUsd, 0),
+              vol24: nzNum(it?.volume?.h24, 0),
+              chg24,
+              pairUrl: it.pairUrl || '',
+            },
+          });
+        }
+        out.sort((a, b) => b.velocity - a.velocity);
+        agg = out;
+      }
+
       return {
         title: 'MCap momentum',
         metricLabel: '$/h',

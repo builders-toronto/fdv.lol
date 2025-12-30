@@ -75,6 +75,39 @@ function computeMaxDrawdownPct(prices) {
   }
   return maxDd * 100; // %
 }
+
+function clamp(n, lo, hi) {
+  return Math.min(hi, Math.max(lo, n));
+}
+
+function computeDrawdownResistanceInstant(snapshot, limit = 3) {
+  const list = Array.isArray(snapshot) ? snapshot : [];
+  const out = [];
+
+  for (const it of list) {
+    const mint = it.mint || it.id;
+    if (!mint) continue;
+    const chg24 = nzNum(it?.change?.h24, 0);
+    const resistance = clamp(100 + chg24, 0, 100);
+    out.push({
+      mint,
+      resistance,
+      maxDdPct: 100 - resistance,
+      kp: {
+        symbol: it.symbol || '',
+        name: it.name || '',
+        imageUrl: it.logoURI || it.imageUrl || '',
+        liqUsd: nzNum(it.liquidityUsd, 0),
+        vol24: nzNum(it?.volume?.h24, 0),
+        chg24,
+        pairUrl: it.pairUrl || '',
+      },
+    });
+  }
+
+  out.sort((a, b) => b.resistance - a.resistance);
+  return out.slice(0, limit);
+}
 export function updateDdHistory(items) {
   const h = loadDdHistory();
   const ts = Date.now();
@@ -165,12 +198,13 @@ addKpiAddon(
     limit: 3,
   },
   {
-    computePayload() {
+    computePayload(snapshot) {
       const agg = computeDrawdownResistanceFromHistory();
+      const use = (agg && agg.length) ? agg : computeDrawdownResistanceInstant(snapshot, 3);
       return {
         title: 'Drawdown resistance',
         metricLabel: 'Resistance (0–100)',
-        items: mapDrawdownResistanceToRegistryRows(agg, 3),
+        items: mapDrawdownResistanceToRegistryRows(use, 3),
       };
     },
     ingestSnapshot(items) {
