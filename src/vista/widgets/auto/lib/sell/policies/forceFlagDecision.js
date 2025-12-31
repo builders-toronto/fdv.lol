@@ -2,9 +2,21 @@ export function createForceFlagDecisionPolicy({ log, getState }) {
   return function forceFlagDecisionPolicy(ctx) {
     const state = getState();
 
-    // If an earlier policy has already set a hard-stop decision (e.g. urgent sell),
-    // do not override it with a softer force-flag mapping. This avoids accidentally
-    // dropping `hardStop` and letting downstream soft gates (like rebound) defer.
+    const inMinHold = (() => {
+      try {
+        if (ctx?.inMinHold === true) return true;
+        const minHoldMs = Math.max(0, Number(state?.minHoldSecs || 0) * 1000);
+        if (minHoldMs <= 0) return false;
+        const nowTs = Number(ctx?.nowTs || 0) || Date.now();
+        const acquiredAt = Number(ctx?.pos?.acquiredAt || ctx?.pos?.lastBuyAt || 0);
+        if (!acquiredAt) return false;
+        const ageMs = nowTs - acquiredAt;
+        return ageMs >= 0 && ageMs < minHoldMs;
+      } catch {
+        return false;
+      }
+    })();
+
     if (ctx?.decision?.hardStop) {
       void state;
       return;
@@ -19,9 +31,20 @@ export function createForceFlagDecisionPolicy({ log, getState }) {
     if (ctx.forceRug) {
       ctx.decision = { action: "sell_all", reason: `rug sev=${ctx.rugSev.toFixed(2)}` };
     } else if (ctx.forcePumpDrop) {
-      ctx.decision = { action: "sell_all", reason: "pump->calm" };
+      if (inMinHold) {
+        try { log(`Min-hold active; suppressing pump-drop force sell for ${ctx.mint.slice(0,4)}…`); } catch {}
+      } else {
+        ctx.decision = { action: "sell_all", reason: "pump->calm" };
+      }
     } else if (ctx.forceObserverDrop) {
-      ctx.decision = { action: "sell_all", reason: ctx.earlyReason || "observer detection system" };
+      if (inMinHold) {
+        try {
+          const rsn = String(ctx.earlyReason || "observer detection system");
+          log(`Min-hold active; suppressing observer force sell for ${ctx.mint.slice(0,4)}… (${rsn})`);
+        } catch {}
+      } else {
+        ctx.decision = { action: "sell_all", reason: ctx.earlyReason || "observer detection system" };
+      }
     } else if (ctx.forceExpire && (!ctx.decision || ctx.decision.action === "none")) {
       const inPostWarmGrace = Number(ctx.pos.postWarmGraceUntil || 0) > ctx.nowTs;
       if (!inPostWarmGrace) {

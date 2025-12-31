@@ -23,6 +23,9 @@ export function createObserverPolicy({
         recordObserverPasses(ctx.mint, p);
         const thr = Math.max(0, Number(state.observerDropSellAt ?? 4));
 
+        const minHoldMs = Math.max(0, Number(state.minHoldSecs || 0)) * 1000;
+        const inMinHold = !!(minHoldMs > 0 && Number(ctx.ageMs || 0) < minHoldMs);
+
         const badgeNow = normBadge(getRugSignalForMint(ctx.mint)?.badge);
         const pumpingish = (badgeNow === "pumping" || badgeNow === "warming");
 
@@ -33,6 +36,11 @@ export function createObserverPolicy({
         const hardBypass = (p <= bypassAt);
 
         if (p <= 2) {
+          if (inMinHold && !hardBypass) {
+            log(`Min-hold active; suppressing observer drop (${p}/5) for ${ctx.mint.slice(0,4)}…`);
+            noteObserverConsider(ctx.mint, 30_000);
+            return;
+          }
           if (hardBypass) {
             ctx.forceObserverDrop = true;
             setMintBlacklist(ctx.mint);

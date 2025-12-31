@@ -214,6 +214,16 @@ let state = {
 	buyPct: 25,
 	slippageBps: 250, // internal (dynamic); not user-controlled
 	triggerScoreSlopeMin: 0.6, // per-minute pumpScore slope proxy (from focusMint series)
+
+	// Sniper behavior: hold until profit target; only cut losses early if entry slips.
+	slipExitEnabled: true,
+	slipExitWindowSecs: MOMENTUM_GUARD_SECS,
+	slipExitMinLossPct: 0.75,
+	slipExitConsec: MOMENTUM_PLUMMET_CONSEC,
+	slipExitChg5mPct: -12,
+	slipExitScSlope: -4,
+	slipExitChgSlope: -12,
+
 	minHoldSecs: 5,
 	observeWindowMs: 8000,
 	observeMinSamples: 6,
@@ -626,6 +636,11 @@ function _isAlwaysAllowSellDecision(decision, ctx = null) {
 
 function getMomentumPlummetSignal(mint, pos, nowTs) {
 	try {
+		const needConsec = Math.max(1, Number(state.slipExitConsec ?? MOMENTUM_PLUMMET_CONSEC));
+		const thrChg5m = Number(state.slipExitChg5mPct ?? MOMENTUM_PLUMMET_CHG5M_PCT);
+		const thrScSlope = Number(state.slipExitScSlope ?? MOMENTUM_PLUMMET_SC_SLOPE);
+		const thrChgSlope = Number(state.slipExitChgSlope ?? MOMENTUM_PLUMMET_CHG_SLOPE);
+
 		const series3 = getLeaderSeries(mint, 3);
 		const last = series3?.[series3.length - 1] || {};
 		const chg5m = clamp(Number(last?.chg5m || 0), -99, 99);
@@ -634,9 +649,9 @@ function getMomentumPlummetSignal(mint, pos, nowTs) {
 		const badgeNorm = normBadge(getRugSignalForMint(mint)?.badge);
 
 		const rawPlummet =
-			(chg5m <= MOMENTUM_PLUMMET_CHG5M_PCT) ||
-			(scSlope <= MOMENTUM_PLUMMET_SC_SLOPE) ||
-			(chgSlope <= MOMENTUM_PLUMMET_CHG_SLOPE) ||
+			(chg5m <= thrChg5m) ||
+			(scSlope <= thrScSlope) ||
+			(chgSlope <= thrChgSlope) ||
 			(badgeNorm === "calm" && chgSlope < -10 && scSlope < -2);
 
 		const prev = Number(pos?._momPlummetConsec || 0);
@@ -644,14 +659,14 @@ function getMomentumPlummetSignal(mint, pos, nowTs) {
 		pos._momPlummetConsec = consec;
 
 		return {
-			ok: consec >= MOMENTUM_PLUMMET_CONSEC,
+			ok: consec >= needConsec,
 			rawPlummet,
 			consec,
 			chg5m,
 			chgSlope,
 			scSlope,
 			badgeNorm,
-			reason: `MOMENTUM_PLUMMET c=${consec}/${MOMENTUM_PLUMMET_CONSEC} chg5m=${chg5m.toFixed(1)}% chgSlope=${chgSlope.toFixed(1)}/m scSlope=${scSlope.toFixed(1)}/m badge=${badgeNorm}`,
+			reason: `SLIP_EXIT c=${consec}/${needConsec} chg5m=${chg5m.toFixed(1)}% chgSlope=${chgSlope.toFixed(1)}/m scSlope=${scSlope.toFixed(1)}/m badge=${badgeNorm}`,
 		};
 	} catch {
 		return { ok: false, rawPlummet: false, consec: 0, reason: "MOMENTUM_PLUMMET (err)" };
@@ -664,15 +679,20 @@ function momentumLossGuardPolicy(ctx) {
 		const pos = ctx.pos;
 		if (!pos) return;
 		if (String(pos.entryMode || "") !== "momentum") return;
+		if (!state.slipExitEnabled) return;
 		if (ctx.forceRug) return;
 
 		const nowTs = Number(ctx.nowTs || now());
 		const ageSec = (nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0)) / 1000;
-		if (!(ageSec >= 0 && ageSec <= MOMENTUM_GUARD_SECS)) return;
+		const guardSecs = Math.max(0, Number(state.slipExitWindowSecs ?? MOMENTUM_GUARD_SECS));
+		if (!(ageSec >= 0 && ageSec <= guardSecs)) return;
 
 		const pnl = Number.isFinite(Number(ctx.pnlNetPct)) ? Number(ctx.pnlNetPct) : Number(ctx.pnlPct);
 		// Only guard loss-side sells; allow normal profit-taking.
 		if (!(Number.isFinite(pnl) && pnl < 0)) return;
+
+		const minLoss = Math.max(0, Number(state.slipExitMinLossPct ?? 0));
+		if (minLoss > 0 && pnl > -minLoss) return;
 
 		const decision = ctx.decision;
 		if (!decision) {
@@ -688,7 +708,7 @@ function momentumLossGuardPolicy(ctx) {
 		if (!sig.ok) {
 			traceOnce(
 				`sniper:mom:veto:${ctx.mint}`,
-				`Momentum guard veto: ${ctx.mint.slice(0, 4)}… pnl=${Number(pnl).toFixed(2)}% age=${ageSec.toFixed(1)}s decision=${String(decision.reason || action)} (waiting for plummet)`,
+				`Slip-exit guard: holding ${ctx.mint.slice(0, 4)}… pnl=${Number(pnl).toFixed(2)}% age=${ageSec.toFixed(1)}s decision=${String(decision.reason || action)} (waiting for slip confirm)`,
 				2200,
 				"help",
 			);
@@ -710,6 +730,13 @@ function saveState() {
 				pollMs: Number(state.pollMs || 1200),
 				buyPct: Number(state.buyPct || 25),
 				triggerScoreSlopeMin: Number(state.triggerScoreSlopeMin || 0.6),
+				slipExitEnabled: !!state.slipExitEnabled,
+				slipExitWindowSecs: Number(state.slipExitWindowSecs ?? MOMENTUM_GUARD_SECS),
+				slipExitMinLossPct: Number(state.slipExitMinLossPct ?? 0.75),
+				slipExitConsec: Number(state.slipExitConsec ?? MOMENTUM_PLUMMET_CONSEC),
+				slipExitChg5mPct: Number(state.slipExitChg5mPct ?? -12),
+				slipExitScSlope: Number(state.slipExitScSlope ?? -4),
+				slipExitChgSlope: Number(state.slipExitChgSlope ?? -12),
 				minHoldSecs: Number(state.minHoldSecs ?? 5),
 				observeWindowMs: Number(state.observeWindowMs ?? 8000),
 				observeMinSamples: Number(state.observeMinSamples ?? 6),

@@ -16,11 +16,15 @@ export function createPreflightSellPolicy({
     const state = _getState();
 
     ctx.ageMs = nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0);
+    ctx.minHoldMs = Math.max(0, Number(state.minHoldSecs || 0)) * 1000;
+    ctx.inMinHold = ctx.minHoldMs > 0 && ctx.ageMs < ctx.minHoldMs;
     ctx.maxHold = Math.max(0, Number(state.maxHoldSecs || 0));
     ctx.forceExpire = ctx.maxHold > 0 && ctx.ageMs >= ctx.maxHold * 1000;
 
     // Momentum forced-exit should be computed early so it can bypass soft gates.
     ctx.forceMomentum = shouldForceMomentumExit ? shouldForceMomentumExit(mint) : false;
+    // But do not allow momentum-only forced exits to bypass the configured min-hold window.
+    if (ctx.inMinHold && ctx.forceMomentum) ctx.forceMomentum = false;
 
     // Peek urgent signal early (if available) so we can bypass cooldown gates when needed.
     const urgent = (typeof peekUrgentSell === "function") ? peekUrgentSell(mint) : null;

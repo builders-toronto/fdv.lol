@@ -732,6 +732,10 @@ let state = {
   hideMoneyMade: false,           
   logNetBalance: true,          
   solSessionStartLamports: 0,
+
+  // Entry simulation / profit-goal settings 
+  entrySimHorizonSecs: 120,
+  entrySimMinWinProb: 0.55,
 };
 
 export function getAutoTraderState() {
@@ -854,6 +858,7 @@ let _sellEvalRunning = false;
 let _sellEvalWakePending = false;
 let _sellEvalWakeTimer = 0;
 let _sellEvalWakeBlockedAt = 0;
+let _sellEvalWakeLastLogAt = 0;
 
 let _buyBatchUntil = 0;
 
@@ -972,6 +977,11 @@ function normalizeState(raw = {}) {
   out.coolDownSecsAfterBuy = Math.max(0, Math.min(12, coerceNumber(out.coolDownSecsAfterBuy, 5)));
   out.pendingGraceMs = Math.max(120_000, coerceNumber(out.pendingGraceMs, 120_000));
   out.fricSnapEpsSol = coerceNumber(out.fricSnapEpsSol, 0.0020, { min: 0, max: 0.05 });
+
+  // Holds (seconds)
+  out.minHoldSecs = coerceNumber(out.minHoldSecs, 5, { min: 0, max: 500 });
+  out.maxHoldSecs = coerceNumber(out.maxHoldSecs, 50, { min: 0, max: 500 });
+  if (out.maxHoldSecs > 0 && out.minHoldSecs > out.maxHoldSecs) out.minHoldSecs = out.maxHoldSecs;
 
   out.finalPumpGateEnabled  = !!out.finalPumpGateEnabled;
   out.finalPumpGateMinStart = coerceNumber(out.finalPumpGateMinStart, 2,  { min: 0, max: 50 });
@@ -1165,7 +1175,7 @@ function startPendingCreditWatchdog() {
   } catch {}
 }
 
-function wakeSellEval() {
+function wakeSellEval(delayMs = 0) {
   try {
     traceOnce(
       "sellEval:wake",
@@ -1175,6 +1185,8 @@ function wakeSellEval() {
     _sellEvalWakePending = true;
 
     if (_sellEvalWakeTimer) return;
+
+    const initialDelayMs = Math.max(0, Number(delayMs || 0) | 0);
     _sellEvalWakeTimer = setTimeout(() => {
       _sellEvalWakeTimer = 0;
       if (!_sellEvalWakePending) return;
@@ -1184,16 +1196,24 @@ function wakeSellEval() {
         if (!_sellEvalWakeBlockedAt) _sellEvalWakeBlockedAt = nowTs;
         const blockedMs = nowTs - _sellEvalWakeBlockedAt;
         if (blockedMs >= 3000) {
-          log(`Sell-eval wake blocked (${Math.floor(blockedMs / 1000)}s) ${_sellEvalRunning ? "_sellEvalRunning" : "_inFlight"}; will retry …`);
+          if (!_sellEvalWakeLastLogAt || (nowTs - _sellEvalWakeLastLogAt) >= 5000) {
+            _sellEvalWakeLastLogAt = nowTs;
+            log(`Sell-eval wake blocked (${Math.floor(blockedMs / 1000)}s) ${_sellEvalRunning ? "_sellEvalRunning" : "_inFlight"}; will retry …`);
+          }
         }
-        wakeSellEval();
+
+        // Preserve functionality (keep retrying), but avoid a 0ms tight-loop that spams logs.
+        // Backoff ramps up to 1s while blocked; once unblocked we run immediately.
+        const backoffMs = Math.min(1000, 50 + Math.floor(blockedMs / 10));
+        wakeSellEval(backoffMs);
         return;
       }
 
       _sellEvalWakePending = false;
       _sellEvalWakeBlockedAt = 0;
+      _sellEvalWakeLastLogAt = 0;
       evalAndMaybeSellPositions().catch(()=>{});
-    }, 0);
+    }, initialDelayMs);
   } catch {}
 }
 
@@ -2650,6 +2670,129 @@ function slope3pm(series, key) {
   return dv / dtm;
 }
 
+function _stddev(values) {
+  if (!Array.isArray(values) || values.length < 2) return 0;
+  let sum = 0;
+  let n = 0;
+  for (const v of values) {
+    const x = Number(v);
+    if (!Number.isFinite(x)) continue;
+    sum += x;
+    n++;
+  }
+  if (n < 2) return 0;
+  const mean = sum / n;
+  let sse = 0;
+  for (const v of values) {
+    const x = Number(v);
+    if (!Number.isFinite(x)) continue;
+    const d = x - mean;
+    sse += d * d;
+  }
+  return Math.sqrt(sse / Math.max(1, n - 1));
+}
+
+function _erfApprox(x) {
+  // Abramowitz & Stegun 7.1.26
+  const sign = x < 0 ? -1 : 1;
+  const ax = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * ax);
+  const a1 = 0.254829592;
+  const a2 = -0.284496736;
+  const a3 = 1.421413741;
+  const a4 = -1.453152027;
+  const a5 = 1.061405429;
+  const y = 1 - (((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t) * Math.exp(-ax * ax);
+  return sign * y;
+}
+
+function _normCdf(z) {
+  if (!Number.isFinite(z)) return z < 0 ? 0 : 1;
+  return 0.5 * (1 + _erfApprox(z / Math.SQRT2));
+}
+
+function simulateEntryChanceFromLeaderSeries(mint, { horizonSecs = 120, requiredGrossPct = 0 } = {}) {
+  try {
+    const series3 = getLeaderSeries(mint, 3);
+    const series5 = getLeaderSeries(mint, 5);
+    if (!Array.isArray(series3) || series3.length < 3) return null;
+
+    const horizonMin = Math.max(0.25, Math.min(10, Number(horizonSecs || 0) / 60));
+    const thr = Number(requiredGrossPct || 0);
+
+    const last3 = series3[series3.length - 1] || {};
+    const chg5mNow = Number(last3?.chg5m ?? 0);
+
+    const chgSlopeMin = slope3pm(series3, "chg5m");
+    const scSlopeMin  = slope3pm(series3, "pumpScore");
+
+    const scale5m = horizonMin / 5;
+    const muFromLevel = chg5mNow * scale5m;
+    const muFromSlope = 0.20 * (Number(chgSlopeMin) || 0) * horizonMin;
+    const muFromScore = 0.08 * (Number(scSlopeMin) || 0) * horizonMin;
+
+    const muRaw = muFromLevel + muFromSlope + muFromScore;
+    const mu = Math.max(-100, Math.min(500, muRaw));
+
+    const rates = [];
+    if (Array.isArray(series5) && series5.length >= 3) {
+      for (let i = 1; i < series5.length; i++) {
+        const a = series5[i - 1];
+        const b = series5[i];
+        const dtm = Math.max(0.06, (Number(b?.ts || 0) - Number(a?.ts || 0)) / 60000);
+        const dv = Number(b?.chg5m ?? 0) - Number(a?.chg5m ?? 0);
+        rates.push(dv / dtm);
+      }
+    }
+
+    const sigmaPerMin = _stddev(rates);
+    const sigmaRate = Math.max(0, sigmaPerMin * Math.sqrt(horizonMin));
+
+    // Also consider variation of the `chg5m` level itself (some feeds quantize dv/dt to ~0).
+    const levelValues = Array.isArray(series5) ? series5.map(r => Number(r?.chg5m ?? 0)) : [];
+    const sigmaLevel = Math.max(0, _stddev(levelValues) * scale5m);
+
+    // Prevent degenerate zero-variance outputs from forcing pHit to exactly 0/1.
+    const sigmaFloor = 0.15;
+    const sigma = Math.max(sigmaFloor, sigmaRate, sigmaLevel);
+
+    let pHit = 0;
+    let pTerminal = 0;
+    if (sigma <= 1e-9) {
+      pHit = mu >= thr ? 1 : 0;
+      pTerminal = pHit;
+    } else {
+      // Terminal exceedance probability (X_T >= a)
+      const z = (thr - mu) / sigma;
+      pTerminal = 1 - _normCdf(z);
+
+      const a = thr;
+      const mT = mu;
+      const sig = sigma;
+      const z1 = (mT - a) / sig;
+      const z2 = -(mT + a) / sig;
+      const expArg = (2 * mT * a) / (sig * sig);
+      const expTerm = Math.exp(Math.max(-50, Math.min(50, expArg)));
+      const pHitMax = _normCdf(z1) + expTerm * _normCdf(z2);
+
+      pHit = Math.max(0, Math.min(1, pHitMax));
+    }
+
+    return {
+      muPct: mu,
+      sigmaPct: sigma,
+      pHit,
+      pTerminal,
+      chgSlopeMin,
+      scSlopeMin,
+      horizonSecs: Math.round(horizonMin * 60),
+      requiredGrossPct: thr,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function recordLeaderSample(mint, sample) {
   if (!mint) return;
   const s = _getSeriesStore();
@@ -2665,7 +2808,6 @@ function recordLeaderSample(mint, sample) {
     chg1h:     safeNum(sample.chg1h, 0),
   };
 
-  // Coalesce samples that are too close in time (e.g., tick() + pickPumpCandidates() back-to-back)
   const last = list[list.length - 1];
   if (last && (nowTs - Number(last.ts || 0)) < LEADER_SAMPLE_MIN_MS) {
     // Replace the last sample with the latest values instead of pushing a new entry
@@ -3416,9 +3558,9 @@ async function pickTopPumper() {
   }
 
   const hold =
-    passes >= 5 ? 120 :
-    passes === 4 ? 95 : 70;
-  const holdClamped = Math.min(120, Math.max(30, hold));
+    passes >= 5 ? 500 :
+    passes === 4 ? 300 : 180;
+  const holdClamped = Math.min(500, Math.max(30, hold));
   if (state.dynamicHoldEnabled) {
     if (state.maxHoldSecs !== holdClamped) {
       state.maxHoldSecs = holdClamped;
@@ -3802,10 +3944,10 @@ async function observeMintOnce(mint, opts = {}) {
     return { ok: false, passes };
   }
 
-  const holdSecs = passes >= 5 ? 120 : passes === 4 ? 95 : 70;
+  const holdSecs = passes >= 5 ? 500 : passes === 4 ? 300 : 180;
   if (passes >= minPasses) {
     if (adjustHold) {
-      const _clamped = Math.min(120, Math.max(30, holdSecs));
+      const _clamped = Math.min(500, Math.max(30, holdSecs));
       if (state.maxHoldSecs !== _clamped) { state.maxHoldSecs = _clamped; save(); }
     }
     //log(`Observer: approve ${mint.slice(0,4)}… (score ${passes}/5)`);
@@ -4322,27 +4464,38 @@ function startFastObserver() {
         const postBuyCooldownMs = Math.max(8_000, Number(state.coolDownSecsAfterBuy || 0) * 1000);
         const inWarmingHold = !!(state.rideWarming && pos.warmingHold === true);
 
+        const minHoldMs = Math.max(0, Number(state.minHoldSecs || 0) * 1000);
+        const inMinHold = minHoldMs > 0 && ageMs < minHoldMs;
+
         const r = fastDropCheck(mint, pos);
 
         try {
           const momStore = _getMomentumDropStore();
-          const rec = momStore.get(mint) || { count: 0, lastAt: 0 };
+          const rec = momStore.get(mint) || { count: 0, lastAt: 0, lastCountAt: 0 };
           const isMom = r.trigger && /momentum\s*drop/i.test(String(r.reason || ""));
-          if (isMom) {
-            rec.count = (rec.count | 0) + 1;
-            rec.lastAt = now();
+          const nowTs = now();
+          const minCountGapMs = Math.max(150, Number(LEADER_SAMPLE_MIN_MS || 0) || 0);
+
+          if (isMom && !inMinHold) {
+            // With a fast observer cadence (e.g. 5ms), require spacing between increments
+            if ((nowTs - Number(rec.lastCountAt || 0)) >= minCountGapMs) {
+              rec.count = (rec.count | 0) + 1;
+              rec.lastCountAt = nowTs;
+            }
 
             // Only arm if outside immediate post-buy guard
             if (rec.count >= MOMENTUM_FORCED_EXIT_CONSEC && ageMs >= postBuyCooldownMs) {
               noteMomentumExit(mint, 30_000);
               flagUrgentSell(mint, "momentum_drop_x28", 0.90);
-              // log(`Momentum drop x${MOMENTUM_FORCED_EXIT_CONSEC} for ${mint.slice(0,4)}… forced exit armed.`);
-              rec.count = 0; 
+              rec.count = 0;
             }
           } else {
+            // Reset during min-hold or when momentum signal is absent.
             rec.count = 0;
-            rec.lastAt = now();
+            rec.lastCountAt = nowTs;
           }
+
+          rec.lastAt = nowTs;
           momStore.set(mint, rec);
         } catch {}
 
@@ -4572,6 +4725,19 @@ function _mkSellCtx({ kp, mint, pos, nowTs }) {
 
 function momentumForcePolicy(ctx) {
   if (!ctx.forceMomentum) return;
+  if (ctx.inMinHold) {
+    try {
+      traceOnce(
+        `sell:minhold:momentumForce:${ctx.mint}`,
+        `Min-hold active; suppressing momentum forced-exit for ${ctx.mint.slice(0, 4)}…`,
+        5000,
+        "help",
+      );
+    } catch {
+      try { log(`Min-hold active; suppressing momentum forced-exit for ${ctx.mint.slice(0, 4)}…`); } catch {}
+    }
+    return;
+  }
   ctx.decision = { action: "sell_all", reason: `MOMENTUM_DROP_X${Number(MOMENTUM_FORCED_EXIT_CONSEC || 0) || 0}`, hardStop: true };
   log(`Forced sell (momentum x${Number(MOMENTUM_FORCED_EXIT_CONSEC || 0) || 0}) for ${ctx.mint.slice(0,4)}…`);
 }
@@ -5130,8 +5296,9 @@ async function tick() {
 
   if (_buyInFlight || _inFlight || _switchingLeader) return;
 
-  if (window._fdvJupStressUntil && now() < window._fdvJupStressUntil) {
-    const left = Math.ceil((window._fdvJupStressUntil - now()) / 1000);
+  const _epochNow = Date.now();
+  if (window._fdvJupStressUntil && _epochNow < window._fdvJupStressUntil) {
+    const left = Math.ceil((window._fdvJupStressUntil - _epochNow) / 1000);
     log(`Backoff active (${left}s); pausing new buys.`);
     return;
   }
@@ -5473,7 +5640,26 @@ async function tick() {
 
       const buySol = buyLamports / 1e9;
 
+      let entryEdgeExclPct = NaN;
+      let entryEdgeCostPct = 0;
+      let entryTpBumpPct = 0;
+
       try {
+        const horizonSecsBase = Math.max(30, Math.min(600, Number(state.entrySimHorizonSecs || 120)));
+        const horizonCapHold = Math.max(30, Math.min(600, Number(state.maxHoldSecs || 500)));
+        const minWinProb = Math.max(0, Math.min(1, Number(state.entrySimMinWinProb || 0.55)));
+
+        let _seriesN = 0;
+        try { _seriesN = (getLeaderSeries(mint, 3) || []).length; } catch {}
+        if (_seriesN < 3) {
+          try { await focusMintAndRecord(mint, { refresh: true, ttlMs: 2000 }); } catch {}
+          try { _seriesN = (getLeaderSeries(mint, 3) || []).length; } catch {}
+          if (_seriesN < 3) {
+            log(`Skip ${mint.slice(0,4)}… (sim: warming series ${_seriesN}/3)`);
+            continue;
+          }
+        }
+
         const edge = await estimateRoundtripEdgePct(
           kp.publicKey.toBase58(),
           mint,
@@ -5499,22 +5685,30 @@ async function tick() {
         // const hasOnetime = Number(edge.ataRentLamports || 0) > 0;
         // const incl = Number(edge.pct);          // includes one-time ATA rent
         const excl = Number(edge.pctNoOnetime); // excludes one-time ATA rent
-        const pumping = (badgeNow === "pumping");
 
-        const baseUser = Number.isFinite(state.minNetEdgePct) ? state.minNetEdgePct : -4;
-        const warmOverride = state.warmingEdgeMinExclPct;
-        const hasWarmOverride = typeof warmOverride === "number" && Number.isFinite(warmOverride);
-        const warmUser = hasWarmOverride ? warmOverride : baseUser;
+        entryEdgeExclPct = excl;
+        entryEdgeCostPct = Math.max(0, -excl);
         const buffer   = Math.max(0, Number(state.edgeSafetyBufferPct || 0.1));
+        entryTpBumpPct = entryEdgeCostPct + buffer;
 
-        const needExcl = pumping
-          ? (baseUser - 2.0)
-          : (badgeNow === "warming" ? warmUser : baseUser);
+        const baseGoal = Math.max(0.5, Number(state.minProfitToTrailPct || 2));
+        const requiredGrossTp = baseGoal + entryTpBumpPct;
 
-        const baseNeed = needExcl;
-        const needWithBuf = baseNeed + buffer;
-
-        const curEdge = excl;
+        // Adaptive sim horizon: if the current 5m change implies the goal is reachable only
+        // on a slightly longer horizon, allow it (up to maxHold). This keeps the sim as a
+        // plausibility filter instead of a hard blocker on strong trends.
+        let horizonSecs = horizonSecsBase;
+        try {
+          const s3 = getLeaderSeries(mint, 3) || [];
+          const last3 = s3[s3.length - 1] || {};
+          const chg5mNow = Number(last3?.chg5m ?? NaN);
+          if (Number.isFinite(chg5mNow) && chg5mNow > 0.5 && requiredGrossTp > 0) {
+            const impliedPerSec = chg5mNow / 300;
+            const secsToMean = requiredGrossTp / impliedPerSec;
+            const want = Math.ceil(secsToMean * 1.12); // nudge so mean is slightly above the goal
+            horizonSecs = Math.max(horizonSecs, Math.min(horizonCapHold, want));
+          }
+        } catch {}
 
         try {
           const fwdLen = Number(edge?.forward?.routePlan?.length || edge?.forward?.routePlanLen || 0);
@@ -5525,28 +5719,39 @@ async function tick() {
           const ataSol = Number(edge.ataRentLamports || 0) / 1e9;
           const mode    = "excl-ATA";
           log(
-            `Edge gate ${mint.slice(0,4)}… mode=${mode} (ATA rent excluded; refundable); ` +
-            `curEdge=${curEdge.toFixed(2)}% need=${baseNeed.toFixed(2)}% buf=${buffer.toFixed(2)}% thr=${needWithBuf.toFixed(2)}%; ` +
+            `Edge model ${mint.slice(0,4)}… mode=${mode}; ` +
+            `edgeExcl=${excl.toFixed(2)}% => edgeCost=${entryEdgeCostPct.toFixed(2)}% + buf=${buffer.toFixed(2)}% => tpBump=${entryTpBumpPct.toFixed(2)}%; ` +
             `fee=${feeBps}bps, routes fwd=${fwdLen} back=${backLen}, ` +
-            `friction≈${fricSolRec.toFixed(6)} SOL (${fricPct.toFixed(2)}% of buy ${buySol.toFixed(6)} SOL), ataRent≈${ataSol.toFixed(6)} SOL`
+            `friction≈${fricSolRec.toFixed(6)} SOL (${fricPct.toFixed(2)}% of buy ${buySol.toFixed(6)} SOL), ataRent≈${ataSol.toFixed(6)} SOL, ` +
+            `grossTPGoal≈${requiredGrossTp.toFixed(2)}% (baseGoal≈${baseGoal.toFixed(2)}% + tpBump≈${entryTpBumpPct.toFixed(2)}%)`
           );
         } catch {}
 
-        const pass = Number.isFinite(curEdge) && (curEdge >= needWithBuf);
+        // Simulation gate: only buy if recent leader-series trend can plausibly reach a
+        // profit goal that covers configured TP + estimated friction.
+        const sim = simulateEntryChanceFromLeaderSeries(mint, {
+          horizonSecs,
+          requiredGrossPct: requiredGrossTp,
+        });
 
-        if (!pass) {
-          const srcStr  = (badgeNow === "warming" && hasWarmOverride) ? " (warming override)" : "";
-          log(
-            `Skip ${mint.slice(0,4)}… net edge ${curEdge.toFixed(2)}% < ${needWithBuf.toFixed(2)}% ` +
-            `(need=${baseNeed.toFixed(2)}% + buffer=${buffer.toFixed(2)}% => thr=${needWithBuf.toFixed(2)}%; mode=excl-ATA)${srcStr}`
-          );
+        if (!sim) {
+          log(`Skip ${mint.slice(0,4)}… (sim: insufficient leader series)`);
           continue;
         }
 
         log(
-          `Edge OK ${mint.slice(0,4)}… net≈${curEdge.toFixed(2)}% (thr ${needWithBuf.toFixed(2)}%,` +
-          ` excl-ATA=${excl.toFixed(2)}%)`
+          `Sim gate ${mint.slice(0,4)}… horizon=${sim.horizonSecs}s ` +
+          `mu≈${Number(sim.muPct).toFixed(2)}% σ≈${Number(sim.sigmaPct).toFixed(2)}% ` +
+          `P(hit≥${requiredGrossTp.toFixed(2)}%)≈${(Number(sim.pHit) * 100).toFixed(1)}% (min ${(minWinProb * 100).toFixed(0)}%)`
         );
+
+        if (!(Number(sim.pHit) >= minWinProb)) {
+          log(
+            `Skip ${mint.slice(0,4)}… sim P(hit goal) ${(Number(sim.pHit) * 100).toFixed(1)}% < ${(minWinProb * 100).toFixed(0)}% ` +
+            `(goal≈${requiredGrossTp.toFixed(2)}% = baseGoal + edgeCost + buf)`
+          );
+          continue;
+        }
       } catch {
         log(`Skip ${mint.slice(0,4)}… (edge calc failed)`);
         continue;
@@ -5676,15 +5881,18 @@ async function tick() {
           entryPre,
           entryPreMin,
           entryScSlope,
+          entryEdgeExclPct: Number.isFinite(entryEdgeExclPct) ? entryEdgeExclPct : undefined,
+          entryEdgeCostPct: Number.isFinite(entryEdgeCostPct) ? entryEdgeCostPct : undefined,
+          entryTpBumpPct: Number.isFinite(entryTpBumpPct) ? entryTpBumpPct : undefined,
           earlyNegScCount: 0,
         };
         try {
           const dyn = pickTpSlForMint(mint);
-          pos.tpPct = dyn.tp;
+          pos.tpPct = Math.min(500, Number(dyn.tp) + (Number.isFinite(entryTpBumpPct) ? entryTpBumpPct : 0));
           pos.slPct = dyn.sl;
           pos.trailPct = dyn.trailPct;
           pos.minProfitToTrailPct = dyn.arm;
-          log(`Dynamic TP/SL ${mint.slice(0,4)}…: TP=${dyn.tp}% SL=${dyn.sl}% Trail=${dyn.trailPct}% Arm=${dyn.arm}% (${dyn.tier} I=${dyn.intensity.toFixed(2)})`);
+          log(`Dynamic TP/SL ${mint.slice(0,4)}…: TP=${pos.tpPct}% (base ${dyn.tp}% + bump ${Number(entryTpBumpPct||0).toFixed(2)}%) SL=${dyn.sl}% Trail=${dyn.trailPct}% Arm=${dyn.arm}% (${dyn.tier} I=${dyn.intensity.toFixed(2)})`);
         } catch {}
         state.positions[mint] = pos;
         updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
@@ -5729,15 +5937,18 @@ async function tick() {
           entryPre,
           entryPreMin,
           entryScSlope,
+          entryEdgeExclPct: Number.isFinite(entryEdgeExclPct) ? entryEdgeExclPct : undefined,
+          entryEdgeCostPct: Number.isFinite(entryEdgeCostPct) ? entryEdgeCostPct : undefined,
+          entryTpBumpPct: Number.isFinite(entryTpBumpPct) ? entryTpBumpPct : undefined,
           earlyNegScCount: 0,
         };
         try {
           const dyn = pickTpSlForMint(mint);
-          pos.tpPct = dyn.tp;
+          pos.tpPct = Math.min(500, Number(dyn.tp) + (Number.isFinite(entryTpBumpPct) ? entryTpBumpPct : 0));
           pos.slPct = dyn.sl;
           pos.trailPct = dyn.trailPct;
           pos.minProfitToTrailPct = dyn.arm;
-          log(`Dynamic TP/SL ${mint.slice(0,4)}…: TP=${dyn.tp}% SL=${dyn.sl}% Trail=${dyn.trailPct}% Arm=${dyn.arm}% (${dyn.tier} I=${dyn.intensity.toFixed(2)})`);
+          log(`Dynamic TP/SL ${mint.slice(0,4)}…: TP=${pos.tpPct}% (base ${dyn.tp}% + bump ${Number(entryTpBumpPct||0).toFixed(2)}%) SL=${dyn.sl}% Trail=${dyn.trailPct}% Arm=${dyn.arm}% (${dyn.tier} I=${dyn.intensity.toFixed(2)})`);
         } catch {}
         state.positions[mint] = pos;
         save();
@@ -6957,7 +7168,7 @@ export function initTraderWidget(container = document.body) {
 
   const holdTimeWrap = wrap.querySelector(".fdv-hold-time-slider");
   if (holdTimeWrap) {
-    const MIN_HOLD = 30, MAX_HOLD = 120;
+    const MIN_HOLD = 30, MAX_HOLD = 500;
     let cur = Number(state.maxHoldSecs || 50);
     cur = Math.min(MAX_HOLD, Math.max(MIN_HOLD, cur));
     if (cur !== state.maxHoldSecs) { state.maxHoldSecs = cur; save(); }
@@ -6990,11 +7201,35 @@ export function initTraderWidget(container = document.body) {
     render();
 
     dynEl.checked = state.dynamicHoldEnabled !== false;
+    rangeEl.disabled = !!dynEl.checked;
     dynEl.addEventListener("change", () => {
       state.dynamicHoldEnabled = dynEl.checked;
       save();
+      rangeEl.disabled = !!dynEl.checked;
       log(`Dynamic hold: ${state.dynamicHoldEnabled ? "ON" : "OFF"}`);
     });
+
+    // Automation: when dynamic hold is ON, observer can change maxHoldSecs.
+    // Keep the slider synced so the UI reflects the current auto-tuned value.
+    try {
+      if (window._fdvDynHoldUiTimer) clearInterval(window._fdvDynHoldUiTimer);
+    } catch {}
+    window._fdvDynHoldUiTimer = setInterval(() => {
+      try {
+        if (!rangeEl.isConnected || !dynEl.isConnected || !valEl.isConnected) {
+          try { clearInterval(window._fdvDynHoldUiTimer); } catch {}
+          window._fdvDynHoldUiTimer = 0;
+          return;
+        }
+        if (!dynEl.checked) return;
+        const v = Math.max(MIN_HOLD, Math.min(MAX_HOLD, Number(state.maxHoldSecs || cur)));
+        if (Number(rangeEl.value || 0) !== v) {
+          rangeEl.value = String(v);
+          cur = v;
+          render();
+        }
+      } catch {}
+    }, 750);
   }
 
   secExportBtn.addEventListener("click", () => {
