@@ -15,12 +15,24 @@ export function createUrgentSellPolicy({
       : (typeof takeUrgentSell === "function" ? takeUrgentSell(ctx.mint) : null);
     if (!urgent) return;
 
+    const urgentReason = String(urgent.reason || "");
+    const isMomentumUrg = /momentum/i.test(urgentReason);
+    const isRugUrg = /rug/i.test(urgentReason);
+
+    if (ctx.inMinHold && isMomentumUrg && !isRugUrg) {
+      // Drop momentum-only urgent signals during min-hold so they don't fire later on stale data.
+      if (hasPeekClear) clearUrgentSell(ctx.mint);
+      _log(
+        `Min-hold active; dropping momentum urgent sell for ${ctx.mint.slice(0, 4)}… (${Math.round(ctx.ageMs / 1000)}s < ${Math.round((Number(ctx.minHoldMs || 0) || 0) / 1000)}s)`
+      );
+      return;
+    }
+
     if (ctx.ageMs < _minAgeMs) {
       _log(`Urgent sell suppressed (warmup ${Math.round(ctx.ageMs / 1000)}s) for ${ctx.mint.slice(0, 4)}…`);
       return;
     }
 
-    const isRugUrg = /rug/i.test(String(urgent.reason || ""));
     const highSev = Number(urgent.sev || 0) >= 0.75;
 
     if (ctx.inSellGuard && !isRugUrg && !highSev) {
@@ -31,8 +43,7 @@ export function createUrgentSellPolicy({
     // Only consume the urgent signal when we're actually going to act on it.
     if (hasPeekClear) clearUrgentSell(ctx.mint);
 
-    // Urgent exits must survive downstream soft gates (e.g. warming hold) and must not
-    // be blocked by notional thresholds. Represent them as an explicit hard-stop decision.
+    // Urgent exits must survive downstream
     ctx.isFastExit = true;
     ctx.forceObserverDrop = true;
     ctx.rugSev = Number(urgent.sev || 1);
