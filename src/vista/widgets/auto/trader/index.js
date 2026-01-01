@@ -735,8 +735,11 @@ let state = {
   solSessionStartLamports: 0,
 
   // Entry simulation / profit-goal settings 
+  entrySimMode: "enforce",
   entrySimHorizonSecs: 120,
   entrySimMinWinProb: 0.55,
+  entrySimSigmaFloorPct: 0.75,
+  entrySimMuLevelWeight: 0.35,
 };
 
 export function getAutoTraderState() {
@@ -755,7 +758,7 @@ let tpEl, slEl, trailEl, slipEl, fricSnapEl;
 let advBoxEl, warmMinPEl, warmFloorEl, warmDelayEl, warmReleaseEl, warmMaxLossEl, warmMaxWindowEl, warmConsecEl, warmEdgeEl;
 let reboundScoreEl, reboundLookbackEl;
 let finalGateEnabledEl, finalGateMinStartEl, finalGateDeltaEl, finalGateWindowEl;
-let entrySimModeEl, entrySimHorizonEl, entrySimMinProbEl;
+let entrySimModeEl, entrySimHorizonEl, entrySimMinProbEl, entrySimSigmaFloorEl, entrySimMuLevelWeightEl;
 
 let _logQueue = [];
 let _logRaf = 0;
@@ -951,6 +954,8 @@ const CONFIG_SCHEMA = {
   entrySimMode:             { type: "string",  def: "enforce" }, // off | warn | enforce
   entrySimHorizonSecs:      { type: "number",  def: 120, min: 30, max: 600 },
   entrySimMinWinProb:       { type: "number",  def: 0.55, min: 0, max: 1 },
+  entrySimSigmaFloorPct:    { type: "number",  def: 0.75, min: 0, max: 10 },
+  entrySimMuLevelWeight:    { type: "number",  def: 0.35, min: 0, max: 1 },
 };
 
 function coerceNumber(v, def, opts = {}) {
@@ -2726,7 +2731,7 @@ function _normCdf(z) {
   return 0.5 * (1 + _erfApprox(z / Math.SQRT2));
 }
 
-function simulateEntryChanceFromLeaderSeries(mint, { horizonSecs = 120, requiredGrossPct = 0 } = {}) {
+function simulateEntryChanceFromLeaderSeries(mint, { horizonSecs = 120, requiredGrossPct = 0, sigmaFloorPct = 0.75, muLevelWeight = 0.35 } = {}) {
   try {
     const series3 = getLeaderSeries(mint, 3);
     const series5 = getLeaderSeries(mint, 5);
@@ -2742,9 +2747,16 @@ function simulateEntryChanceFromLeaderSeries(mint, { horizonSecs = 120, required
     const scSlopeMin  = slope3pm(series3, "pumpScore");
 
     const scale5m = horizonMin / 5;
-    const muFromLevel = chg5mNow * scale5m;
-    const muFromSlope = 0.20 * (Number(chgSlopeMin) || 0) * horizonMin;
-    const muFromScore = 0.08 * (Number(scSlopeMin) || 0) * horizonMin;
+    // Be conservative: recent 5m % change is a noisy momentum proxy and often mean-reverts.
+    // Also, pumpScore is unitless (not %), so keep its contribution small and bounded.
+    const wLevel = (() => {
+      const w = Number(muLevelWeight);
+      return Number.isFinite(w) ? Math.max(0, Math.min(1, w)) : 0.35;
+    })();
+    const muFromLevel = wLevel * chg5mNow * scale5m;
+    const muFromSlope = 0.25 * (Number(chgSlopeMin) || 0) * horizonMin;
+    const muFromScoreRaw = 0.02 * (Number(scSlopeMin) || 0) * horizonMin;
+    const muFromScore = Math.max(-2, Math.min(2, muFromScoreRaw));
 
     const muRaw = muFromLevel + muFromSlope + muFromScore;
     const mu = Math.max(-100, Math.min(500, muRaw));
@@ -2767,8 +2779,11 @@ function simulateEntryChanceFromLeaderSeries(mint, { horizonSecs = 120, required
     const levelValues = Array.isArray(series5) ? series5.map(r => Number(r?.chg5m ?? 0)) : [];
     const sigmaLevel = Math.max(0, _stddev(levelValues) * scale5m);
 
-    // Prevent degenerate zero-variance outputs from forcing pHit to exactly 0/1.
-    const sigmaFloor = 0.15;
+    // Prevent degenerate low-variance outputs from producing overconfident pHit.
+    const sigmaFloor = (() => {
+      const x = Number(sigmaFloorPct);
+      return Number.isFinite(x) ? Math.max(0, Math.min(10, x)) : 0.75;
+    })();
     const sigma = Math.max(sigmaFloor, sigmaRate, sigmaLevel);
 
     let pHit = 0;
@@ -5797,6 +5812,8 @@ async function tick() {
           const sim = simulateEntryChanceFromLeaderSeries(mint, {
             horizonSecs,
             requiredGrossPct: requiredGrossTp,
+            sigmaFloorPct: state.entrySimSigmaFloorPct,
+            muLevelWeight: state.entrySimMuLevelWeight,
           });
 
           if (!sim) {
@@ -5807,7 +5824,9 @@ async function tick() {
             log(
               `Sim gate ${mint.slice(0,4)}… horizon=${sim.horizonSecs}s ` +
               `mu≈${Number(sim.muPct).toFixed(2)}% σ≈${Number(sim.sigmaPct).toFixed(2)}% ` +
-              `P(hit≥${requiredGrossTp.toFixed(2)}%)≈${(Number(sim.pHit) * 100).toFixed(1)}% (min ${(minWinProb * 100).toFixed(0)}%)`
+              `P(hit≥${requiredGrossTp.toFixed(2)}%)≈${(Number(sim.pHit) * 100).toFixed(1)}% ` +
+              `P(term≥${requiredGrossTp.toFixed(2)}%)≈${(Number(sim.pTerminal) * 100).toFixed(1)}% ` +
+              `(min ${(minWinProb * 100).toFixed(0)}%)`
             );
 
             if (!(Number(sim.pHit) >= minWinProb)) {
@@ -6770,6 +6789,12 @@ export function initTraderWidget(container = document.body) {
         <label>Sim min win P (0-1)
           <input data-auto-entry-sim-minprob type="number" step="0.01" min="0" max="1" placeholder="0.55"/>
         </label>
+        <label>Sigma floor (%)
+          <input data-auto-entry-sim-sigmafloor type="number" step="0.05" min="0" max="10" placeholder="0.75"/>
+        </label>
+        <label>Sigma μ level weight (0-1)
+          <input data-auto-entry-sim-mulevelw type="number" step="0.05" min="0" max="1" placeholder="0.35"/>
+        </label>
       </div>
       <div class="fdv-hold-time-slider"></div>
     </details>
@@ -6891,6 +6916,8 @@ export function initTraderWidget(container = document.body) {
   entrySimModeEl     = wrap.querySelector("[data-auto-entry-sim-mode]");
   entrySimHorizonEl  = wrap.querySelector("[data-auto-entry-sim-horizon]");
   entrySimMinProbEl  = wrap.querySelector("[data-auto-entry-sim-minprob]");
+  entrySimSigmaFloorEl    = wrap.querySelector("[data-auto-entry-sim-sigmafloor]");
+  entrySimMuLevelWeightEl = wrap.querySelector("[data-auto-entry-sim-mulevelw]");
 
   setTimeout(() => {
     try {
@@ -6962,6 +6989,8 @@ export function initTraderWidget(container = document.body) {
   if (entrySimModeEl)    entrySimModeEl.value    = String(state.entrySimMode || "enforce");
   if (entrySimHorizonEl) entrySimHorizonEl.value = String(Number.isFinite(Number(state.entrySimHorizonSecs)) ? Number(state.entrySimHorizonSecs) : 120);
   if (entrySimMinProbEl) entrySimMinProbEl.value = String(Number.isFinite(Number(state.entrySimMinWinProb)) ? Number(state.entrySimMinWinProb) : 0.55);
+  if (entrySimSigmaFloorEl) entrySimSigmaFloorEl.value = String(Number.isFinite(Number(state.entrySimSigmaFloorPct)) ? Number(state.entrySimSigmaFloorPct) : 0.75);
+  if (entrySimMuLevelWeightEl) entrySimMuLevelWeightEl.value = String(Number.isFinite(Number(state.entrySimMuLevelWeight)) ? Number(state.entrySimMuLevelWeight) : 0.35);
 
   if (expandBtn && logEl) {
     log("Log panel: click 'Expand' or press Alt+6 to enlarge. Press Esc to close.", "help");
@@ -7531,6 +7560,12 @@ export function initTraderWidget(container = document.body) {
     if (entrySimMinProbEl) {
       state.entrySimMinWinProb = clamp(n(entrySimMinProbEl.value), 0, 1, 0.55);
     }
+    if (entrySimSigmaFloorEl) {
+      state.entrySimSigmaFloorPct = clamp(n(entrySimSigmaFloorEl.value), 0, 10, 0.75);
+    }
+    if (entrySimMuLevelWeightEl) {
+      state.entrySimMuLevelWeight = clamp(n(entrySimMuLevelWeightEl.value), 0, 1, 0.35);
+    }
 
     const rawEdgeStr = (warmEdgeEl?.value ?? "").toString().trim();
     if (rawEdgeStr.length > 0) {
@@ -7564,13 +7599,15 @@ export function initTraderWidget(container = document.body) {
     if (entrySimModeEl)    entrySimModeEl.value    = String(state.entrySimMode || "enforce");
     if (entrySimHorizonEl) entrySimHorizonEl.value = String(state.entrySimHorizonSecs);
     if (entrySimMinProbEl) entrySimMinProbEl.value = String(state.entrySimMinWinProb);
+    if (entrySimSigmaFloorEl) entrySimSigmaFloorEl.value = String(state.entrySimSigmaFloorPct);
+    if (entrySimMuLevelWeightEl) entrySimMuLevelWeightEl.value = String(state.entrySimMuLevelWeight);
 
     save();
   }
 
   [warmMinPEl, warmFloorEl, warmDelayEl, warmReleaseEl, warmMaxLossEl, warmMaxWindowEl, warmConsecEl, warmEdgeEl,
    reboundScoreEl, reboundLookbackEl, fricSnapEl, finalGateEnabledEl, finalGateMinStartEl, finalGateDeltaEl, finalGateWindowEl,
-   entrySimModeEl, entrySimHorizonEl, entrySimMinProbEl]
+   entrySimModeEl, entrySimHorizonEl, entrySimMinProbEl, entrySimSigmaFloorEl, entrySimMuLevelWeightEl]
     .filter(Boolean)
     .forEach(el => {
       el.addEventListener("input", saveAdvanced);
