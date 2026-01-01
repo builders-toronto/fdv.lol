@@ -213,4 +213,9 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
 
-KPI: fix empty “Loading…” cards on cold start
+feat(auto-trader): add sim sigma floor + mu weight knobs
+
+Add Advanced UI controls for entry simulation calibration:
+Sim σ floor (%) (entrySimSigmaFloorPct): minimum volatility used by the sim so it doesn’t output overconfident P(hit) when the input series is flat/quantized.
+Sim μ level weight (0-1) (entrySimMuLevelWeight): how much the current chg5m “level” contributes to drift; lower = more conservative (less momentum-chasing).
+Wire both settings through state/config and into simulateEntryChanceFromLeaderSeries()/sim gate call.
