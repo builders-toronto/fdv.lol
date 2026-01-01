@@ -74,6 +74,11 @@ function buildContext(list) {
   };
 }
 
+export function buildKpiScoreContext(snapshot) {
+  const list = Array.isArray(snapshot) ? snapshot : [];
+  return buildContext(list);
+}
+
 function scoreItem(it, ctx) {
   const mint = getMint(it);
   const chg24 = getChg24(it);
@@ -135,6 +140,10 @@ function scoreItem(it, ctx) {
       mcap,
     },
   };
+}
+
+export function scoreKpiItem(it, ctx) {
+  return scoreItem(it, ctx);
 }
 
 export function selectTradeCandidatesFromKpis({

@@ -6,7 +6,8 @@ function _isNodeLike() {
 
 import { computePumpingLeaders, getRugSignalForMint, focusMint } from "../../../meme/metrics/kpi/pumping.js";
 import { getLatestSnapshot } from "../../../meme/metrics/ingest.js";
-import { selectTradeCandidatesFromKpis } from "../lib/kpi/kpiSelection.js";
+import { buildKpiScoreContext, scoreKpiItem, selectTradeCandidatesFromKpis } from "../lib/kpi/kpiSelection.js";
+import { getMint as kpiGetMint, getLiqUsd as kpiGetLiqUsd, getVol24 as kpiGetVol24 } from "../lib/kpi/kpiExtract.js";
 
 import {
   SOL_MINT,
@@ -382,7 +383,7 @@ const urgentSellPolicy = createUrgentSellPolicy({
   urgentSellMinAgeMs: URGENT_SELL_MIN_AGE_MS,
 });
 
-// Final extraction batch – remaining sell policies wired as DI factories
+// Final extraction batch - remaining sell policies wired as DI factories
 const rugPumpDropPolicy = createRugPumpDropPolicy({
   log,
   getRugSignalForMint,
@@ -754,6 +755,7 @@ let tpEl, slEl, trailEl, slipEl, fricSnapEl;
 let advBoxEl, warmMinPEl, warmFloorEl, warmDelayEl, warmReleaseEl, warmMaxLossEl, warmMaxWindowEl, warmConsecEl, warmEdgeEl;
 let reboundScoreEl, reboundLookbackEl;
 let finalGateEnabledEl, finalGateMinStartEl, finalGateDeltaEl, finalGateWindowEl;
+let entrySimModeEl, entrySimHorizonEl, entrySimMinProbEl;
 
 let _logQueue = [];
 let _logRaf = 0;
@@ -944,6 +946,11 @@ const CONFIG_SCHEMA = {
   finalPumpGateMinStart:    { type: "number",  def: 2 },  
   finalPumpGateDelta:       { type: "number",  def: 3 },   
   finalPumpGateWindowMs:    { type: "number",  def: 10000, min: 1000, max: 30_000 },
+
+  // Entry simulation / profit-goal settings
+  entrySimMode:             { type: "string",  def: "enforce" }, // off | warn | enforce
+  entrySimHorizonSecs:      { type: "number",  def: 120, min: 30, max: 600 },
+  entrySimMinWinProb:       { type: "number",  def: 0.55, min: 0, max: 1 },
 };
 
 function coerceNumber(v, def, opts = {}) {
@@ -995,6 +1002,14 @@ function normalizeState(raw = {}) {
   out.reboundMinChgSlope  = coerceNumber(out.reboundMinChgSlope, 10);
   out.reboundMinScSlope   = coerceNumber(out.reboundMinScSlope, 7);
   out.reboundMinPnLPct    = coerceNumber(out.reboundMinPnLPct, -2, { min: -90, max: 90 });
+
+  // Entry sim mode normalization
+  try {
+    const m = String(out.entrySimMode || "enforce").toLowerCase();
+    out.entrySimMode = (m === "off" || m === "warn" || m === "enforce") ? m : "enforce";
+  } catch {
+    out.entrySimMode = "enforce";
+  }
 
   if (typeof out.warmingEdgeMinExclPct !== "number" || !Number.isFinite(out.warmingEdgeMinExclPct)) {
     delete out.warmingEdgeMinExclPct;
@@ -5304,6 +5319,9 @@ async function tick() {
   }
 
   const leaderMode = !!state.holdUntilLeaderSwitch;
+  const desiredBuyCount = leaderMode
+    ? 1
+    : (state.allowMultiBuy ? Math.max(1, state.multiBuyTopN | 0) : 1);
   let picks = [];
 
   // Higher-level selection: use the full KPI snapshot to rank trade candidates.
@@ -5314,20 +5332,61 @@ async function tick() {
   const kpiSelectEnabled = state.kpiSelectEnabled !== false;
 
   if (kpiSelectEnabled && Array.isArray(kpiSnapshot) && kpiSnapshot.length) {
-    const desiredN = leaderMode
+    // When multi-buy is enabled, request a larger pool than the final buy count.
+    // This allows us to still place N buys after eligibility/locks/blacklists.
+    const poolN = leaderMode
       ? 1
-      : (state.allowMultiBuy ? Math.max(1, state.multiBuyTopN | 0) : 1);
+      : (state.allowMultiBuy ? Math.max(desiredBuyCount, Math.min(24, desiredBuyCount * 4 + 2)) : 1);
+
+    const minLiqUsd = Number(state.kpiSelectMinLiqUsd || 2500);
+    const minVol24 = Number(state.kpiSelectMinVol24 || 250);
 
     const pumpLeaders = computePumpingLeaders(Math.max(12, Number(state.kpiSelectPumpTopN || 30))) || [];
     const rows = selectTradeCandidatesFromKpis({
       snapshot: kpiSnapshot,
       pumpLeaders,
-      topN: desiredN,
+      topN: poolN,
       rugFn: getRugSignalForMint,
-      minLiqUsd: Number(state.kpiSelectMinLiqUsd || 2500),
-      minVol24: Number(state.kpiSelectMinVol24 || 250),
+      minLiqUsd,
+      minVol24,
     });
-    picks = rows.map(r => r?.mint).filter(Boolean);
+
+    // Explicitly score the top pump-leader mint (if present in the KPI snapshot)
+    // and include it in the comparison set before selecting picks.
+    let merged = Array.isArray(rows) ? rows.slice() : [];
+    try {
+      const pumpTopMint = String((computePumpingLeaders(1) || [])[0]?.mint || "");
+      if (pumpTopMint) {
+        const pumpItem = (kpiSnapshot || []).find(it => kpiGetMint(it) === pumpTopMint) || null;
+        if (pumpItem) {
+          const liq = Number(kpiGetLiqUsd(pumpItem) || 0);
+          const vol = Number(kpiGetVol24(pumpItem) || 0);
+
+          const sig = (() => { try { return getRugSignalForMint(pumpTopMint); } catch { return null; } })();
+          const sev = Number(sig?.severity ?? sig?.sev ?? 0);
+
+          if (Number.isFinite(sev) && sev >= 2) {
+            log(`Pump pick ${pumpTopMint.slice(0,4)}… rejected by rug filter (sev=${sev.toFixed(2)}).`);
+          } else if (!Number.isFinite(liq) || liq < minLiqUsd) {
+            log(`Pump pick ${pumpTopMint.slice(0,4)}… rejected by KPI liq gate (${fmtUsd(liq)} < ${fmtUsd(minLiqUsd)}).`);
+          } else if (!Number.isFinite(vol) || vol < minVol24) {
+            log(`Pump pick ${pumpTopMint.slice(0,4)}… rejected by KPI vol gate (${fmtUsd(vol)} < ${fmtUsd(minVol24)}).`);
+          } else {
+            const ctx = buildKpiScoreContext(kpiSnapshot);
+            const pumpRow = scoreKpiItem(pumpItem, ctx);
+            if (pumpRow?.mint && !merged.some(r => r?.mint === pumpRow.mint)) {
+              pumpRow.pumpChoice = true;
+              merged.push(pumpRow);
+            }
+          }
+        } else {
+          log(`Pump pick ${pumpTopMint.slice(0,4)}… not found in KPI snapshot; cannot compare.`);
+        }
+      }
+    } catch {}
+
+    merged.sort((a, b) => (Number(b?.score01 || 0) - Number(a?.score01 || 0)));
+    picks = merged.slice(0, poolN).map(r => r?.mint).filter(Boolean);
 
     // Apply existing blacklist / pump-drop bans.
     picks = picks.filter(m => m && !isMintBlacklisted(m) && !isPumpDropBanned(m));
@@ -5412,6 +5471,10 @@ async function tick() {
 
     if (!state.allowMultiBuy && buyCandidates.length > 1) {
       buyCandidates = buyCandidates.slice(0, 1);
+    }
+
+    if (state.allowMultiBuy && buyCandidates.length > desiredBuyCount) {
+      buyCandidates = buyCandidates.slice(0, desiredBuyCount);
     }
 
 
@@ -5645,20 +5708,11 @@ async function tick() {
       let entryTpBumpPct = 0;
 
       try {
+        const simMode = String(state.entrySimMode || "enforce").toLowerCase();
+        const simEnabled = simMode !== "off";
         const horizonSecsBase = Math.max(30, Math.min(600, Number(state.entrySimHorizonSecs || 120)));
         const horizonCapHold = Math.max(30, Math.min(600, Number(state.maxHoldSecs || 500)));
         const minWinProb = Math.max(0, Math.min(1, Number(state.entrySimMinWinProb || 0.55)));
-
-        let _seriesN = 0;
-        try { _seriesN = (getLeaderSeries(mint, 3) || []).length; } catch {}
-        if (_seriesN < 3) {
-          try { await focusMintAndRecord(mint, { refresh: true, ttlMs: 2000 }); } catch {}
-          try { _seriesN = (getLeaderSeries(mint, 3) || []).length; } catch {}
-          if (_seriesN < 3) {
-            log(`Skip ${mint.slice(0,4)}… (sim: warming series ${_seriesN}/3)`);
-            continue;
-          }
-        }
 
         const edge = await estimateRoundtripEdgePct(
           kp.publicKey.toBase58(),
@@ -5694,21 +5748,33 @@ async function tick() {
         const baseGoal = Math.max(0.5, Number(state.minProfitToTrailPct || 2));
         const requiredGrossTp = baseGoal + entryTpBumpPct;
 
-        // Adaptive sim horizon: if the current 5m change implies the goal is reachable only
-        // on a slightly longer horizon, allow it (up to maxHold). This keeps the sim as a
-        // plausibility filter instead of a hard blocker on strong trends.
         let horizonSecs = horizonSecsBase;
-        try {
-          const s3 = getLeaderSeries(mint, 3) || [];
-          const last3 = s3[s3.length - 1] || {};
-          const chg5mNow = Number(last3?.chg5m ?? NaN);
-          if (Number.isFinite(chg5mNow) && chg5mNow > 0.5 && requiredGrossTp > 0) {
-            const impliedPerSec = chg5mNow / 300;
-            const secsToMean = requiredGrossTp / impliedPerSec;
-            const want = Math.ceil(secsToMean * 1.12); // nudge so mean is slightly above the goal
-            horizonSecs = Math.max(horizonSecs, Math.min(horizonCapHold, want));
+        if (simEnabled) {
+          // Ensure we have enough series before sim-gating.
+          let _seriesN = 0;
+          try { _seriesN = (getLeaderSeries(mint, 3) || []).length; } catch {}
+          if (_seriesN < 3) {
+            try { await focusMintAndRecord(mint, { refresh: true, ttlMs: 2000 }); } catch {}
+            try { _seriesN = (getLeaderSeries(mint, 3) || []).length; } catch {}
+            if (_seriesN < 3) {
+              const msg = `Skip ${mint.slice(0,4)}… (sim: warming series ${_seriesN}/3)`;
+              if (simMode === "enforce") { log(msg); continue; }
+              log(msg.replace(/^Skip /, "Sim warn ")); // warn-only mode: allow buy
+            }
           }
-        } catch {}
+
+          try {
+            const s3 = getLeaderSeries(mint, 3) || [];
+            const last3 = s3[s3.length - 1] || {};
+            const chg5mNow = Number(last3?.chg5m ?? NaN);
+            if (Number.isFinite(chg5mNow) && chg5mNow > 0.5 && requiredGrossTp > 0) {
+              const impliedPerSec = chg5mNow / 300;
+              const secsToMean = requiredGrossTp / impliedPerSec;
+              const want = Math.ceil(secsToMean * 1.12); // nudge so mean is slightly above the goal
+              horizonSecs = Math.max(horizonSecs, Math.min(horizonCapHold, want));
+            }
+          } catch {}
+        }
 
         try {
           const fwdLen = Number(edge?.forward?.routePlan?.length || edge?.forward?.routePlanLen || 0);
@@ -5727,30 +5793,31 @@ async function tick() {
           );
         } catch {}
 
-        // Simulation gate: only buy if recent leader-series trend can plausibly reach a
-        // profit goal that covers configured TP + estimated friction.
-        const sim = simulateEntryChanceFromLeaderSeries(mint, {
-          horizonSecs,
-          requiredGrossPct: requiredGrossTp,
-        });
+        if (simEnabled) {
+          const sim = simulateEntryChanceFromLeaderSeries(mint, {
+            horizonSecs,
+            requiredGrossPct: requiredGrossTp,
+          });
 
-        if (!sim) {
-          log(`Skip ${mint.slice(0,4)}… (sim: insufficient leader series)`);
-          continue;
-        }
+          if (!sim) {
+            const msg = `Skip ${mint.slice(0,4)}… (sim: insufficient leader series)`;
+            if (simMode === "enforce") { log(msg); continue; }
+            log(msg.replace(/^Skip /, "Sim warn "));
+          } else {
+            log(
+              `Sim gate ${mint.slice(0,4)}… horizon=${sim.horizonSecs}s ` +
+              `mu≈${Number(sim.muPct).toFixed(2)}% σ≈${Number(sim.sigmaPct).toFixed(2)}% ` +
+              `P(hit≥${requiredGrossTp.toFixed(2)}%)≈${(Number(sim.pHit) * 100).toFixed(1)}% (min ${(minWinProb * 100).toFixed(0)}%)`
+            );
 
-        log(
-          `Sim gate ${mint.slice(0,4)}… horizon=${sim.horizonSecs}s ` +
-          `mu≈${Number(sim.muPct).toFixed(2)}% σ≈${Number(sim.sigmaPct).toFixed(2)}% ` +
-          `P(hit≥${requiredGrossTp.toFixed(2)}%)≈${(Number(sim.pHit) * 100).toFixed(1)}% (min ${(minWinProb * 100).toFixed(0)}%)`
-        );
-
-        if (!(Number(sim.pHit) >= minWinProb)) {
-          log(
-            `Skip ${mint.slice(0,4)}… sim P(hit goal) ${(Number(sim.pHit) * 100).toFixed(1)}% < ${(minWinProb * 100).toFixed(0)}% ` +
-            `(goal≈${requiredGrossTp.toFixed(2)}% = baseGoal + edgeCost + buf)`
-          );
-          continue;
+            if (!(Number(sim.pHit) >= minWinProb)) {
+              const msg =
+                `Skip ${mint.slice(0,4)}… sim P(hit goal) ${(Number(sim.pHit) * 100).toFixed(1)}% < ${(minWinProb * 100).toFixed(0)}% ` +
+                `(goal≈${requiredGrossTp.toFixed(2)}% = baseGoal + edgeCost + buf)`;
+              if (simMode === "enforce") { log(msg); continue; }
+              log(msg.replace(/^Skip /, "Sim warn "));
+            }
+          }
         }
       } catch {
         log(`Skip ${mint.slice(0,4)}… (edge calc failed)`);
@@ -6628,7 +6695,7 @@ export function initTraderWidget(container = document.body) {
  
 
       <label>Multi-buy
-        <select data-auto-multi disabled>
+        <select data-auto-multi>
           <option value="no">No</option>
           <option value="yes" selected>Yes</option>
         </select>
@@ -6689,9 +6756,23 @@ export function initTraderWidget(container = document.body) {
         <label>Final gate window (ms)
           <input data-auto-final-gate-window type="number" step="100" min="1000" max="30000" placeholder="10000"/>
         </label>
+
+        <label>Simulation mode
+          <select data-auto-entry-sim-mode>
+            <option value="off">Off</option>
+            <option value="warn">Warn</option>
+            <option value="enforce">Enforce</option>
+          </select>
+        </label>
+        <label>Sim horizon (s)
+          <input data-auto-entry-sim-horizon type="number" step="1" min="30" max="600" placeholder="120"/>
+        </label>
+        <label>Sim min win P (0-1)
+          <input data-auto-entry-sim-minprob type="number" step="0.01" min="0" max="1" placeholder="0.55"/>
+        </label>
       </div>
+      <div class="fdv-hold-time-slider"></div>
     </details>
-    <div class="fdv-hold-time-slider"></div>
     <div class="fdv-log" data-auto-log>
     <button class="btn" data-auto-log-expand title="Expand log" style="display: none;">Expand</button>
     </div>
@@ -6807,6 +6888,10 @@ export function initTraderWidget(container = document.body) {
   finalGateDeltaEl     = wrap.querySelector("[data-auto-final-gate-delta]");
   finalGateWindowEl    = wrap.querySelector("[data-auto-final-gate-window]");
 
+  entrySimModeEl     = wrap.querySelector("[data-auto-entry-sim-mode]");
+  entrySimHorizonEl  = wrap.querySelector("[data-auto-entry-sim-horizon]");
+  entrySimMinProbEl  = wrap.querySelector("[data-auto-entry-sim-minprob]");
+
   setTimeout(() => {
     try {
       logObj("Warming thresholds", {
@@ -6873,6 +6958,10 @@ export function initTraderWidget(container = document.body) {
   if (finalGateMinStartEl)  finalGateMinStartEl.value = String(Number.isFinite(state.finalPumpGateMinStart) ? state.finalPumpGateMinStart : 2);
   if (finalGateDeltaEl)     finalGateDeltaEl.value    = String(Number.isFinite(state.finalPumpGateDelta) ? state.finalPumpGateDelta : 3);
   if (finalGateWindowEl)    finalGateWindowEl.value   = String(Number.isFinite(state.finalPumpGateWindowMs) ? state.finalPumpGateWindowMs : 10000);
+
+  if (entrySimModeEl)    entrySimModeEl.value    = String(state.entrySimMode || "enforce");
+  if (entrySimHorizonEl) entrySimHorizonEl.value = String(Number.isFinite(Number(state.entrySimHorizonSecs)) ? Number(state.entrySimHorizonSecs) : 120);
+  if (entrySimMinProbEl) entrySimMinProbEl.value = String(Number.isFinite(Number(state.entrySimMinWinProb)) ? Number(state.entrySimMinWinProb) : 0.55);
 
   if (expandBtn && logEl) {
     log("Log panel: click 'Expand' or press Alt+6 to enlarge. Press Esc to close.", "help");
@@ -7432,6 +7521,17 @@ export function initTraderWidget(container = document.body) {
       );
     }
 
+    if (entrySimModeEl) {
+      const m = String(entrySimModeEl.value || "enforce").toLowerCase();
+      state.entrySimMode = (m === "off" || m === "warn" || m === "enforce") ? m : "enforce";
+    }
+    if (entrySimHorizonEl) {
+      state.entrySimHorizonSecs = clamp(n(entrySimHorizonEl.value), 30, 600, 120);
+    }
+    if (entrySimMinProbEl) {
+      state.entrySimMinWinProb = clamp(n(entrySimMinProbEl.value), 0, 1, 0.55);
+    }
+
     const rawEdgeStr = (warmEdgeEl?.value ?? "").toString().trim();
     if (rawEdgeStr.length > 0) {
       const edgeVal = Number(rawEdgeStr);
@@ -7461,11 +7561,16 @@ export function initTraderWidget(container = document.body) {
     if (finalGateDeltaEl)     finalGateDeltaEl.value    = String(state.finalPumpGateDelta);
     if (finalGateWindowEl)    finalGateWindowEl.value   = String(state.finalPumpGateWindowMs);
 
+    if (entrySimModeEl)    entrySimModeEl.value    = String(state.entrySimMode || "enforce");
+    if (entrySimHorizonEl) entrySimHorizonEl.value = String(state.entrySimHorizonSecs);
+    if (entrySimMinProbEl) entrySimMinProbEl.value = String(state.entrySimMinWinProb);
+
     save();
   }
 
   [warmMinPEl, warmFloorEl, warmDelayEl, warmReleaseEl, warmMaxLossEl, warmMaxWindowEl, warmConsecEl, warmEdgeEl,
-   reboundScoreEl, reboundLookbackEl, fricSnapEl, finalGateEnabledEl, finalGateMinStartEl, finalGateDeltaEl, finalGateWindowEl]
+   reboundScoreEl, reboundLookbackEl, fricSnapEl, finalGateEnabledEl, finalGateMinStartEl, finalGateDeltaEl, finalGateWindowEl,
+   entrySimModeEl, entrySimHorizonEl, entrySimMinProbEl]
     .filter(Boolean)
     .forEach(el => {
       el.addEventListener("input", saveAdvanced);

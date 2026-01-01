@@ -6,6 +6,11 @@ export function createDynamicHardStopPolicy({ log, getState, DYN_HS, computeFina
     ctx.creditsPending = ctx.pos.awaitingSizeSync === true || ctx.pos._pendingCostAug === true;
     ctx.canHardStop = ctx.ageSec >= ctx.remorseSecs && !ctx.creditsPending;
 
+    if (ctx.inMinHold && !ctx.forceRug) {
+      ctx.canHardStop = false;
+      ctx.hardStopSuppressedByMinHold = true;
+    }
+
     if (state.rideWarming && ctx.pos.warmingHold === true) {
       const warmNoHs = Math.max(ctx.remorseSecs, Number(state.warmingNoHardStopSecs || 35));
       if (ctx.ageSec < warmNoHs) {
@@ -33,7 +38,10 @@ export function createDynamicHardStopPolicy({ log, getState, DYN_HS, computeFina
       ctx.isFastExit = true;
       log(`Dynamic hard stop for ${ctx.mint.slice(0,4)}… netPnL=${ctx.pnlNetPct.toFixed(2)}% thr=-${Math.abs(ctx.dynStopPct).toFixed(2)}% (age ${ctx.ageSec.toFixed(1)}s)`);
     } else if (!ctx.canHardStop) {
-      log(`Hard stop suppressed (age ${ctx.ageSec.toFixed(1)}s${ctx.creditsPending ? ", pending credit" : ""}) for ${ctx.mint.slice(0,4)}… netPnL=${ctx.pnlNetPct.toFixed(2)}%`);
+      const why = ctx.hardStopSuppressedByMinHold
+        ? ", min-hold"
+        : (ctx.creditsPending ? ", pending credit" : "");
+      log(`Hard stop suppressed (age ${ctx.ageSec.toFixed(1)}s${why}) for ${ctx.mint.slice(0,4)}… netPnL=${ctx.pnlNetPct.toFixed(2)}%`);
     }
   };
 }
