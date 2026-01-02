@@ -589,6 +589,25 @@ function redactHeaders(hdrs) {
 
 const LS_KEY = "fdv_auto_bot_v1";
 
+// Hold time bounds (seconds). Raised to support longer holds.
+const HOLD_MIN_SECS = 30;
+const HOLD_MAX_SECS = 6700;
+
+function clampHoldSecs(v) {
+  const n = Number(v);
+  const x = Number.isFinite(n) ? n : HOLD_MIN_SECS;
+  return Math.min(HOLD_MAX_SECS, Math.max(HOLD_MIN_SECS, x));
+}
+
+function recommendDynamicHoldSecs(passes) {
+  const p = Number(passes || 0);
+  const hold =
+    p >= 5 ? HOLD_MAX_SECS :
+    p === 4 ? Math.round(HOLD_MAX_SECS * 0.60) :
+    Math.round(HOLD_MAX_SECS * 0.36);
+  return clampHoldSecs(hold);
+}
+
 let state = {
   enabled: false,
   stealthMode: false,
@@ -609,7 +628,7 @@ let state = {
   minProfitToTrailPct: 2,     
   coolDownSecsAfterBuy: 3,    
   minHoldSecs: 60,
-  maxHoldSecs: 300,
+  maxHoldSecs: HOLD_MAX_SECS,
   partialTpPct: 50,            
   minQuoteIntervalMs: 10000, 
   sellCooldownMs: 30000,  
@@ -670,10 +689,10 @@ let state = {
   dynamicHoldEnabled: true,
   // Badge status selection
   rideWarming: true,
-  warmingMinProfitPct: 100,
+  warmingMinProfitPct: 2,
   warmingDecayPctPerMin: 0.45,      
   warmingDecayDelaySecs: 20,         
-  warmingMinProfitFloorPct: -2.0,   
+  warmingMinProfitFloorPct: 0,   
   warmingAutoReleaseSecs: 45,
   warmingUptickMinAccel: 1.001,        
   warmingUptickMinPre: 0.35,         
@@ -1050,8 +1069,11 @@ function normalizeState(raw = {}) {
   out.fricSnapEpsSol = coerceNumber(out.fricSnapEpsSol, 0.0020, { min: 0, max: 0.05 });
 
   // Holds (seconds)
-  out.minHoldSecs = coerceNumber(out.minHoldSecs, 5, { min: 0, max: 500 });
-  out.maxHoldSecs = coerceNumber(out.maxHoldSecs, 50, { min: 0, max: 500 });
+  out.minHoldSecs = coerceNumber(out.minHoldSecs, 5, { min: 0, max: HOLD_MAX_SECS });
+  // Migration: older configs were capped at 500s (and defaulted to 300s). Promote those legacy values to the new default.
+  const rawMaxHold = Number(raw?.maxHoldSecs);
+  const isLegacyMaxHold = !Number.isFinite(rawMaxHold) || rawMaxHold === 300 || rawMaxHold === 500;
+  out.maxHoldSecs = coerceNumber(out.maxHoldSecs, isLegacyMaxHold ? HOLD_MAX_SECS : 50, { min: 0, max: HOLD_MAX_SECS });
   if (out.maxHoldSecs > 0 && out.minHoldSecs > out.maxHoldSecs) out.minHoldSecs = out.maxHoldSecs;
 
   out.finalPumpGateEnabled  = !!out.finalPumpGateEnabled;
@@ -3646,10 +3668,7 @@ async function pickTopPumper() {
     return "";
   }
 
-  const hold =
-    passes >= 5 ? 500 :
-    passes === 4 ? 300 : 180;
-  const holdClamped = Math.min(500, Math.max(30, hold));
+  const holdClamped = recommendDynamicHoldSecs(passes);
   if (state.dynamicHoldEnabled) {
     if (state.maxHoldSecs !== holdClamped) {
       state.maxHoldSecs = holdClamped;
@@ -4033,10 +4052,10 @@ async function observeMintOnce(mint, opts = {}) {
     return { ok: false, passes };
   }
 
-  const holdSecs = passes >= 5 ? 500 : passes === 4 ? 300 : 180;
+  const holdSecs = recommendDynamicHoldSecs(passes);
   if (passes >= minPasses) {
     if (adjustHold) {
-      const _clamped = Math.min(500, Math.max(30, holdSecs));
+      const _clamped = clampHoldSecs(holdSecs);
       if (state.maxHoldSecs !== _clamped) { state.maxHoldSecs = _clamped; save(); }
     }
     //log(`Observer: approve ${mint.slice(0,4)}… (score ${passes}/5)`);
@@ -4651,24 +4670,9 @@ async function verifyRealTokenBalance(ownerPub, mint, pos) {
 
 function shouldApplyWarmingHold(mint, pos, nowTs) {
   try {
-    const badge = normBadge(getRugSignalForMint(mint)?.badge);
-    if (badge === "calm") return false;
     if (isPumpDropBanned(mint) || isMintBlacklisted(mint)) return false;
-
-    const series = getLeaderSeries(mint, 3) || [];
-    const scSlopeMin  = _clamp(slope3pm(series, "pumpScore"), -20, 20);
-    const chgSlopeMin = _clamp(slope3pm(series, "chg5m"),     -60, 60);
-
-    // if both micro-slopes turned down or we already stacked consecutive negative score-slope, warming no longer applies
-    if (scSlopeMin < 0 && chgSlopeMin < 0) return false;
-    if (Number(pos.earlyNegScCount || 0) >= 2) return false;
-
-    // age sanity: if we’re long past auto-release and still negative, don’t wait for warming target
-    const ageSec = (nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0)) / 1000;
-    const releaseSec = Math.max(0, Number(state.warmingAutoReleaseSecs || 0));
-    if (ageSec > releaseSec * 1.5) return false;
-
-    return (badge === "warming" || badge === "pumping");
+    // Profit-decay hold is a global mechanic (applies to all buys) when enabled.
+    return true;
   } catch { return false; }
 }
 
@@ -5489,7 +5493,7 @@ async function tick() {
             }
           }
         } else {
-          log(`Pump pick ${pumpTopMint.slice(0,4)}… not found in KPI snapshot; cannot compare.`);
+          log(`Pump pick ${pumpTopMint.slice(0,4)}… not found in KPI snapshot; cannot compare - still loading.`);
         }
       }
     } catch {}
@@ -5540,6 +5544,26 @@ async function tick() {
     if (!kp) return;
 
     await syncPositionsFromChain(kp.publicKey.toBase58());
+
+    if (!state.allowMultiBuy) {
+      const activeMints = Object.entries(state.positions || {})
+        .filter(([m, p]) => {
+          if (!m || m === SOL_MINT) return false;
+          const sizeUi = Number(p?.sizeUi || 0);
+          const costSol = Number(p?.costSol || 0);
+          return (sizeUi > 1e-9) || (costSol > 0) || (p?.awaitingSizeSync === true);
+        })
+        .map(([m]) => m);
+
+      if (activeMints.length > 1) {
+        log(`Multi-buy OFF: ${activeMints.length} positions already open; skipping new buys.`);
+        return;
+      }
+      if (activeMints.length === 1 && activeMints[0] !== picks[0]) {
+        log(`Multi-buy OFF: holding ${activeMints[0].slice(0,4)}…; skipping new buy ${picks[0].slice(0,4)}…`);
+        return;
+      }
+    }
 
     const cur = state.positions[picks[0]];
     const alreadyHoldingLeader = Number(cur?.sizeUi || 0) > 0 || Number(cur?.costSol || 0) > 0;
@@ -5845,7 +5869,7 @@ async function tick() {
         const simMode = String(state.entrySimMode || "enforce").toLowerCase();
         const simEnabled = simMode !== "off";
         const horizonSecsBase = Math.max(30, Math.min(600, Number(state.entrySimHorizonSecs || 120)));
-        const horizonCapHold = Math.max(30, Math.min(600, Number(state.maxHoldSecs || 500)));
+        const horizonCapHold = Math.max(30, Math.min(600, Number(state.maxHoldSecs || HOLD_MAX_SECS)));
         const minWinProb = Math.max(0, Math.min(1, Number(state.entrySimMinWinProb || 0.55)));
 
         const edge = await estimateRoundtripEdgePct(
@@ -6050,7 +6074,7 @@ async function tick() {
 
       if (Number(got.sizeUi || 0) > 0) {
         const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
-        const warmingHold = !!(state.rideWarming && (badgeNow === "warming" || badgeNow === "pumping"));
+        const warmingHold = !!state.rideWarming;
         const guardMs = Math.max(10_000, Number(state.observerGraceSecs || 0) * 1000);
         let entryChg5m = 0, entryPre = NaN, entryPreMin = NaN, entryScSlope = NaN;
         try {
@@ -6079,7 +6103,7 @@ async function tick() {
           lastSplitSellAt: undefined,
           warmingHold: warmingHold,
           warmingHoldAt: warmingHold ? now() : undefined,
-          warmingMinProfitPct: Number(state.warmingMinProfitPct || 100),
+          warmingMinProfitPct: Number.isFinite(Number(state.warmingMinProfitPct)) ? Number(state.warmingMinProfitPct) : 2,
           sellGuardUntil: now() + guardMs,
           entryChg5m,
           entryPre,
@@ -6116,7 +6140,7 @@ async function tick() {
       } else {
         log(`Buy confirmed for ${mint.slice(0,4)}… but no token credit yet; will sync later.`);
         const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
-        const warmingHold = !!(state.rideWarming && (badgeNow === "warming" || badgeNow === "pumping"));
+        const warmingHold = !!state.rideWarming;
         const guardMs = Math.max(10_000, Number(state.observerGraceSecs || 0) * 1000);
         let entryChg5m = 0, entryPre = NaN, entryPreMin = NaN, entryScSlope = NaN;
         try {
@@ -6142,7 +6166,7 @@ async function tick() {
           lastSplitSellAt: undefined,
           warmingHold: warmingHold,
           warmingHoldAt: warmingHold ? now() : undefined,
-          warmingMinProfitPct: Number(state.warmingMinProfitPct || 100),
+          warmingMinProfitPct: Number.isFinite(Number(state.warmingMinProfitPct)) ? Number(state.warmingMinProfitPct) : 2,
           sellGuardUntil: now() + guardMs,
           entryChg5m,
           entryPre,
@@ -7412,8 +7436,8 @@ export function initTraderWidget(container = document.body) {
 
   const holdTimeWrap = wrap.querySelector(".fdv-hold-time-slider");
   if (holdTimeWrap) {
-    const MIN_HOLD = 30, MAX_HOLD = 500;
-    let cur = Number(state.maxHoldSecs || 50);
+    const MIN_HOLD = HOLD_MIN_SECS, MAX_HOLD = HOLD_MAX_SECS;
+    let cur = Number(state.maxHoldSecs || HOLD_MAX_SECS);
     cur = Math.min(MAX_HOLD, Math.max(MIN_HOLD, cur));
     if (cur !== state.maxHoldSecs) { state.maxHoldSecs = cur; save(); }
 
