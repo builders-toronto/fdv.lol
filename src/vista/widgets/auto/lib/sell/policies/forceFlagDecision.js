@@ -29,7 +29,15 @@ export function createForceFlagDecisionPolicy({ log, getState }) {
     }
 
     if (ctx.forceRug) {
-      ctx.decision = { action: "sell_all", reason: `rug sev=${ctx.rugSev.toFixed(2)}` };
+      const sev = Number(ctx?.rugSev ?? 0);
+      const hardRugSev = 2.0;
+      if (inMinHold && Number.isFinite(sev) && sev < hardRugSev) {
+        try {
+          log(`Min-hold active; suppressing rug force sell for ${ctx.mint.slice(0,4)}… sev=${sev.toFixed(2)} < ${hardRugSev.toFixed(2)}`);
+        } catch {}
+      } else {
+        ctx.decision = { action: "sell_all", reason: `rug sev=${sev.toFixed(2)}` };
+      }
     } else if (ctx.forcePumpDrop) {
       if (inMinHold) {
         try { log(`Min-hold active; suppressing pump-drop force sell for ${ctx.mint.slice(0,4)}…`); } catch {}

@@ -5405,6 +5405,15 @@ async function tick() {
 
   try { await evalAndMaybeSellPositions(); } catch {}
 
+  // Light-entry top-up: if a light position starts trending up, add the remaining buy amount.
+  try {
+    if (_hasPendingLightTopUps()) {
+      const kpTmp2 = await getAutoKeypair();
+      const didTopUp = kpTmp2 ? await _tryLightTopUp(kpTmp2) : false;
+      if (didTopUp) return;
+    }
+  } catch {}
+
   try { updateStatsHeader(); } catch {}
 
   log("Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!", "info");
@@ -5801,6 +5810,31 @@ async function tick() {
         }
       }
 
+      const prevPos = state.positions[mint];
+
+      let lightPlan = null;
+      try {
+        const prevSz = Number(prevPos?.sizeUi || 0);
+        const prevCost = Number(prevPos?.costSol || 0);
+        const isFreshEntry = !(prevSz > 0 || prevCost > 0);
+        if (isFreshEntry) {
+          const fullL = Math.floor(buyLamports);
+          const lightL = Math.floor(fullL * LIGHT_ENTRY_FRACTION);
+          const remL = Math.max(0, fullL - lightL);
+          if (lightL >= minPerOrderLamports && remL >= minPerOrderLamports) {
+            buyLamports = lightL;
+            lightPlan = { fullLamports: fullL, remainingLamports: remL };
+            log(
+              `Light entry ${mint.slice(0,4)}…: now ${(lightL/1e9).toFixed(6)} SOL, later ${(remL/1e9).toFixed(6)} SOL on trend-up.`
+            );
+          } else {
+            log(
+              `Light entry skipped ${mint.slice(0,4)}…: buy ${(fullL/1e9).toFixed(6)} SOL cannot split into two legs >= ${(minPerOrderLamports/1e9).toFixed(6)} SOL.`
+            );
+          }
+        }
+      } catch {}
+
       const buySol = buyLamports / 1e9;
 
       let entryEdgeExclPct = NaN;
@@ -5929,7 +5963,6 @@ async function tick() {
       }
 
       const ownerStr = kp.publicKey.toBase58();
-      const prevPos  = state.positions[mint];
       const basePos  = prevPos || { costSol: 0, hwmSol: 0, acquiredAt: now() };
 
       let dynSlip = Math.max(150, Number(state.slippageBps || 150));
@@ -6056,6 +6089,13 @@ async function tick() {
           entryEdgeCostPct: Number.isFinite(entryEdgeCostPct) ? entryEdgeCostPct : undefined,
           entryTpBumpPct: Number.isFinite(entryTpBumpPct) ? entryTpBumpPct : undefined,
           earlyNegScCount: 0,
+
+          // Light-entry bookkeeping
+          lightEntry: !!lightPlan,
+          lightPlannedSol: lightPlan ? (Number(lightPlan.fullLamports || 0) / 1e9) : undefined,
+          lightRemainingSol: lightPlan ? (Number(lightPlan.remainingLamports || 0) / 1e9) : 0,
+          lightTopUpArmedAt: lightPlan ? (now() + LIGHT_TOPUP_ARM_MS) : undefined,
+          lightTopUpTries: lightPlan ? 0 : undefined,
         };
         try {
           const dyn = pickTpSlForMint(mint);
@@ -7742,6 +7782,207 @@ export function __fdvDebug_setOverrides(overrides = null) {
   try {
     globalThis.__fdvAutoBotOverrides = overrides && typeof overrides === "object" ? overrides : {};
     return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForTokenIncrease(ownerPubkeyStr, mintStr, prevSizeUi, { timeoutMs = 12000, pollMs = 350 } = {}) {
+  const start = now();
+  const prev = Number(prevSizeUi || 0);
+  while (now() - start < timeoutMs) {
+    try {
+      const b = await getAtaBalanceUi(ownerPubkeyStr, mintStr, undefined);
+      const cur = Number(b.sizeUi || 0);
+      if (cur > prev + Math.max(1e-9, prev * 0.0005)) {
+        return { increased: true, sizeUi: cur, decimals: Number.isFinite(b.decimals) ? b.decimals : undefined };
+      }
+    } catch {}
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+  try {
+    await reconcileFromOwnerScan(ownerPubkeyStr);
+  } catch {}
+  try {
+    const b = await getAtaBalanceUi(ownerPubkeyStr, mintStr, undefined);
+    const cur = Number(b.sizeUi || 0);
+    return { increased: cur > prev + Math.max(1e-9, prev * 0.0005), sizeUi: cur, decimals: Number.isFinite(b.decimals) ? b.decimals : undefined };
+  } catch {
+    return { increased: false, sizeUi: prev, decimals: undefined };
+  }
+}
+
+// Light-entry mechanism: buy 1/3 now, add remaining 2/3 on trend-up.
+const LIGHT_ENTRY_FRACTION = 1 / 3;
+const LIGHT_TOPUP_ARM_MS = 7000;
+const LIGHT_TOPUP_MIN_CHG5M = 0.8;
+const LIGHT_TOPUP_MIN_CHG_SLOPE = 6;
+const LIGHT_TOPUP_MIN_SC_SLOPE = 3;
+
+function _hasPendingLightTopUps() {
+  try {
+    for (const [mint, pos] of Object.entries(state.positions || {})) {
+      if (!mint || mint === SOL_MINT) continue;
+      if (!pos) continue;
+      if (Number(pos.lightRemainingSol || 0) > 0) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function _shouldLightTopUpMint(mint, pos, nowTs = now()) {
+  try {
+    if (!mint || !pos) return false;
+    if (!(Number(pos.lightRemainingSol || 0) > 0)) return false;
+    if (pos.awaitingSizeSync) return false;
+    if (isMintLocked(mint)) return false;
+    if (isMintBlacklisted(mint) || isPumpDropBanned(mint)) return false;
+    if (Number(pos.sizeUi || 0) <= 0) return false;
+    const armAt = Number(pos.lightTopUpArmedAt || 0);
+    if (armAt && nowTs < armAt) return false;
+
+    const series3 = getLeaderSeries(mint, 3) || [];
+    const last = series3?.[series3.length - 1] || {};
+    const chg5m = Number(last?.chg5m ?? 0);
+    const chgSlope = slope3pm(series3, "chg5m");
+    const scSlope = slope3pm(series3, "pumpScore");
+
+    // Simple "starts to go up" trigger (either level or slope-based).
+    const ok =
+      (Number.isFinite(chg5m) && chg5m >= LIGHT_TOPUP_MIN_CHG5M) ||
+      (Number.isFinite(chgSlope) && chgSlope >= LIGHT_TOPUP_MIN_CHG_SLOPE) ||
+      (Number.isFinite(scSlope) && scSlope >= LIGHT_TOPUP_MIN_SC_SLOPE);
+    return !!ok;
+  } catch {
+    return false;
+  }
+}
+
+async function _tryLightTopUp(kp) {
+  try {
+    if (!kp) return false;
+    if (_buyInFlight || _inFlight || _switchingLeader) return false;
+    const nowTs = now();
+    const ownerStr = kp.publicKey?.toBase58?.() || "";
+    if (!ownerStr) return false;
+
+    const entries = Object.entries(state.positions || {})
+      .filter(([m, p]) => m && m !== SOL_MINT && p && Number(p.lightRemainingSol || 0) > 0);
+    if (!entries.length) return false;
+
+    const candidate = entries.find(([m, p]) => _shouldLightTopUpMint(m, p, nowTs));
+    if (!candidate) return false;
+
+    const [mint, pos] = candidate;
+
+    if (!tryAcquireBuyLock(BUY_LOCK_MS)) return false;
+
+    // One mint op at a time.
+    lockMint(mint);
+    _buyInFlight = true;
+    try {
+      const remainingTargetSol = Math.max(0, Number(pos.lightRemainingSol || 0));
+      if (!(remainingTargetSol > 0)) return false;
+
+      const solBal = await fetchSolBalance(ownerStr);
+      const ceiling = await computeSpendCeiling(ownerStr, { solBalHint: solBal });
+      const minThreshold = Math.max(state.minBuySol, MIN_SELL_SOL_OUT);
+
+      const reqRent = await requiredAtaLamportsForSwap(ownerStr, SOL_MINT, mint);
+      const spendableLamports = Math.floor(Math.max(0, Number(ceiling.spendableSol || 0)) * 1e9);
+      const candidateBudgetLamports = Math.max(0, spendableLamports - reqRent - TX_FEE_BUFFER_LAMPORTS);
+
+      const targetLamports = Math.floor(remainingTargetSol * 1e9);
+      let buyLamports = Math.min(targetLamports, candidateBudgetLamports);
+
+      const minInLamports = Math.floor(MIN_JUP_SOL_IN * 1e9);
+      let minPerOrderLamports = Math.max(minInLamports, Math.floor(minThreshold * 1e9));
+      try {
+        const recurringL   = EDGE_TX_FEE_ESTIMATE_LAMPORTS;
+        const oneTimeL     = Math.max(0, reqRent);
+        const needByRecurr = Math.ceil(recurringL / Math.max(1e-12, MAX_RECURRING_COST_FRAC));
+        const needByOne    = Math.ceil(
+          oneTimeL / Math.max(1e-12, MAX_ONETIME_COST_FRAC * Math.max(1, ONE_TIME_COST_AMORTIZE))
+        );
+        const needByFrictionSplit = Math.max(needByRecurr, needByOne);
+        minPerOrderLamports = Math.max(minPerOrderLamports, needByFrictionSplit);
+      } catch {}
+      if (reqRent > 0) {
+        const elevatedL = Math.floor(ELEVATED_MIN_BUY_SOL * 1e9);
+        minPerOrderLamports = Math.max(minPerOrderLamports, elevatedL);
+      }
+
+      if (buyLamports < minPerOrderLamports) {
+        const canCover = candidateBudgetLamports >= minPerOrderLamports;
+        if (canCover) {
+          buyLamports = minPerOrderLamports;
+        } else {
+          // Not enough spendable right now; try again later.
+          pos.lightTopUpArmedAt = nowTs + Math.max(2500, LIGHT_TOPUP_ARM_MS);
+          save();
+          return false;
+        }
+      }
+
+      const buySol = buyLamports / 1e9;
+      const prevSize = Number(pos.sizeUi || 0);
+
+      log(
+        `Light top-up ${mint.slice(0,4)}… +${buySol.toFixed(6)} SOL (remaining≈${remainingTargetSol.toFixed(6)} SOL)`
+      );
+
+      let dynSlip = Math.max(150, Number(state.slippageBps || 150));
+      try {
+        const leadersNow = computePumpingLeaders(3) || [];
+        const itNow = leadersNow.find(x => x?.mint === mint);
+        const kpNow = itNow?.kp || {};
+        const solPx = await getSolUsd();
+        const liq = Number(kpNow.liqUsd || 0);
+        if (solPx > 0 && liq > 0) {
+          const imp = Math.max(0, Math.min(0.01, (buySol * solPx) / liq));
+          dynSlip = Math.min(600, Math.max(150, Math.floor(10000 * imp * 1.2)));
+        }
+      } catch {}
+
+      const res = await _getDex().buyWithConfirm(
+        { signer: kp, mint, solUi: buySol, slippageBps: dynSlip },
+        { retries: 2, confirmMs: 32000 },
+      );
+      if (!res.ok) {
+        log(`Light top-up not confirmed for ${mint.slice(0,4)}… will retry later.`, "warn");
+        pos.lightTopUpArmedAt = nowTs + Math.max(2500, LIGHT_TOPUP_ARM_MS);
+        save();
+        return false;
+      }
+
+      let got = { increased: false, sizeUi: prevSize, decimals: Number.isFinite(pos.decimals) ? pos.decimals : 6 };
+      try {
+        got = await waitForTokenIncrease(ownerStr, mint, prevSize, { timeoutMs: 12000, pollMs: 350 });
+      } catch {}
+
+      pos.costSol = Number(pos.costSol || 0) + buySol;
+      pos.lastBuyAt = now();
+      pos.lastSeenAt = now();
+      pos.awaitingSizeSync = !got.increased;
+      if (Number(got.sizeUi || 0) > 0) pos.sizeUi = Number(got.sizeUi || 0);
+      if (Number.isFinite(got.decimals)) pos.decimals = got.decimals;
+
+      pos.lightRemainingSol = Math.max(0, Number(pos.lightRemainingSol || 0) - buySol);
+      pos.lightTopUpTries = Number(pos.lightTopUpTries || 0) + 1;
+      if (!(Number(pos.lightRemainingSol || 0) > 0)) {
+        pos.lightRemainingSol = 0;
+        pos.lightEntry = false;
+      } else {
+        pos.lightTopUpArmedAt = now() + Math.max(2500, LIGHT_TOPUP_ARM_MS);
+      }
+      save();
+      return true;
+    } finally {
+      _buyInFlight = false;
+      unlockMint(mint);
+    }
   } catch {
     return false;
   }
