@@ -1196,15 +1196,17 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 .fdv-modal-backdrop.show{ display:flex }
 
 .fdv-modal{
-  width:min(980px, 96vw); 
+  display: none;
+  margin-top: 25px;
+  position: relative;
   background:var(--fdv-surface); 
   color:var(--fdv-fg);
   border:1px solid var(--fdv-border); 
   border-radius:16px;
   box-shadow:0 20px 60px rgba(0,0,0,.45);
-  display:flex; 
   flex-direction:column; 
   overflow:hidden;
+  z-index: 9999;
   animation:fdv-pop .16s ease-out;
 }
 

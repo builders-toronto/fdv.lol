@@ -245,10 +245,10 @@ let state = {
 	dynamicHoldEnabled: true,
 
 	rideWarming: true,
-	warmingMinProfitPct: 100,
+	warmingMinProfitPct: 2,
 	warmingDecayPctPerMin: 0.45,
 	warmingDecayDelaySecs: 20,
-	warmingMinProfitFloorPct: -2.0,
+	warmingMinProfitFloorPct: 0.0,
 	warmingAutoReleaseSecs: 45,
 	warmingMaxLossPct: 8,
 	warmingMaxLossWindowSecs: 30,
@@ -579,6 +579,8 @@ function loadState() {
 			if (!state.positions || typeof state.positions !== "object") state.positions = {};
 			state.slippageBps = 250;
 			state.takeProfitPct = clamp(Number(state.takeProfitPct ?? 12), PROFIT_TARGET_MIN_PCT, PROFIT_TARGET_MAX_PCT);
+			state.warmingMinProfitPct = clamp(Number(state.warmingMinProfitPct ?? 2), 0, 50);
+			state.warmingMinProfitFloorPct = clamp(Number(state.warmingMinProfitFloorPct ?? 0), 0, 50);
 		}
 	} catch {}
 }
@@ -718,6 +720,36 @@ function momentumLossGuardPolicy(ctx) {
 	} catch {}
 }
 
+function profitFloorGatePolicy(ctx) {
+	try {
+		if (!ctx || typeof ctx !== "object") return;
+		const decision = ctx.decision;
+		if (!decision || typeof decision !== "object") return;
+		const action = String(decision.action || "");
+		if (!/sell/i.test(action)) return;
+		if (ctx.forceRug) return;
+		const reason = String(decision.reason || "");
+		if (/\bmax-hold\b/i.test(reason)) return;
+
+		const floor = Math.max(0, Number(state.warmingMinProfitFloorPct ?? 0));
+		if (!(floor > 0)) {
+			// Default behavior: hold until at least break-even.
+			const pnl0 = Number.isFinite(Number(ctx.pnlNetPct)) ? Number(ctx.pnlNetPct) : Number(ctx.pnlPct);
+			if (Number.isFinite(pnl0) && pnl0 < 0) {
+				ctx.decision = { action: "none", reason: "profit-floor" };
+				ctx.stop = false;
+			}
+			return;
+		}
+
+		const pnl = Number.isFinite(Number(ctx.pnlNetPct)) ? Number(ctx.pnlNetPct) : Number(ctx.pnlPct);
+		if (Number.isFinite(pnl) && pnl < floor) {
+			ctx.decision = { action: "none", reason: "profit-floor" };
+			ctx.stop = false;
+		}
+	} catch {}
+}
+
 function saveState() {
 	try {
 		if (typeof localStorage === "undefined") return;
@@ -755,10 +787,10 @@ function saveState() {
 				observerDropTrailPct: Number(state.observerDropTrailPct ?? 2.5),
 				dynamicHoldEnabled: !!state.dynamicHoldEnabled,
 				rideWarming: !!state.rideWarming,
-				warmingMinProfitPct: Number(state.warmingMinProfitPct ?? 100),
+				warmingMinProfitPct: Number(state.warmingMinProfitPct ?? 2),
 				warmingDecayPctPerMin: Number(state.warmingDecayPctPerMin ?? 0.45),
 				warmingDecayDelaySecs: Number(state.warmingDecayDelaySecs ?? 20),
-				warmingMinProfitFloorPct: Number(state.warmingMinProfitFloorPct ?? -2),
+				warmingMinProfitFloorPct: Number(state.warmingMinProfitFloorPct ?? 0),
 				warmingAutoReleaseSecs: Number(state.warmingAutoReleaseSecs ?? 45),
 				warmingMaxLossPct: Number(state.warmingMaxLossPct ?? 8),
 				warmingMaxLossWindowSecs: Number(state.warmingMaxLossWindowSecs ?? 30),
@@ -1593,22 +1625,23 @@ function shouldDeferSellForRebound(mint, pos, pnlPct, nowTs, reason = "") {
 }
 
 function computeWarmingRequirement(pos, nowTs = now()) {
-	const base = Number.isFinite(pos?.warmingMinProfitPct) ? Number(pos.warmingMinProfitPct) : Number(state.warmingMinProfitPct || 100);
+	const base = Number.isFinite(pos?.warmingMinProfitPct) ? Number(pos.warmingMinProfitPct) : Number(state.warmingMinProfitPct || 2);
 	const delayMs = Math.max(0, Number(state.warmingDecayDelaySecs || 0) * 1000);
 	const perMin = Math.max(0, Number(state.warmingDecayPctPerMin || 0));
-	const floor = Number(state.warmingMinProfitFloorPct);
+	const floorRaw = Number(state.warmingMinProfitFloorPct);
+	const floor = Number.isFinite(floorRaw) ? Math.max(0, floorRaw) : 0;
 	const holdAt = Number(pos?.warmingHoldAt || pos?.lastBuyAt || pos?.acquiredAt || nowTs);
 	const elapsedTotalMs = Math.max(0, nowTs - holdAt);
 	const elapsedMs = Math.max(0, elapsedTotalMs - delayMs);
 	const elapsedMin = elapsedMs > 0 ? elapsedMs / 60000 : 0;
 	const decayed = base - perMin * elapsedMin;
-	const req = Number.isFinite(floor) ? Math.max(floor, decayed) : decayed;
+	const req = Math.max(floor, decayed);
 	const autoSecs = Math.max(0, Number(state.warmingAutoReleaseSecs || 0));
 	const shouldAutoRelease = autoSecs > 0 && elapsedTotalMs >= autoSecs * 1000;
 	return { req, base, elapsedMin, perMin, floor, shouldAutoRelease };
 }
 
-function applyWarmingPolicy({ mint, pos, nowTs, pnlPct, decision, forceRug, forcePumpDrop, forceObserverDrop, forceEarlyFade }) {
+function applyWarmingPolicy({ mint, pos, nowTs, pnlPct, pnlNetPct, decision, forceRug, forcePumpDrop, forceObserverDrop, forceEarlyFade }) {
 	const out = {
 		decision,
 		forceObserverDrop: !!forceObserverDrop,
@@ -1618,6 +1651,7 @@ function applyWarmingPolicy({ mint, pos, nowTs, pnlPct, decision, forceRug, forc
 	try {
 		if (!state.rideWarming) return out;
 		if (pos.warmingHold !== true) return out;
+		const pnl = Number.isFinite(Number(pnlNetPct)) ? Number(pnlNetPct) : Number(pnlPct);
 		const warmReq = computeWarmingRequirement(pos, nowTs);
 		out.warmingHoldActive = true;
 
@@ -1626,18 +1660,18 @@ function applyWarmingPolicy({ mint, pos, nowTs, pnlPct, decision, forceRug, forc
 		if (maxLoss > 0) {
 			const anchor = Number(pos.warmingHoldAt || pos.lastBuyAt || pos.acquiredAt || nowTs);
 			const within = nowTs - anchor <= maxLossWin;
-			if (within && Number.isFinite(pnlPct) && pnlPct <= -Math.abs(maxLoss) && !forceRug) {
-				out.decision = { action: "sell_all", reason: `warming-max-loss ${pnlPct.toFixed(2)}%<=-${Math.abs(maxLoss).toFixed(2)}%`, hardStop: true };
+			if (within && Number.isFinite(pnl) && pnl <= -Math.abs(maxLoss) && !forceRug) {
+				out.decision = { action: "sell_all", reason: `warming-max-loss ${pnl.toFixed(2)}%<=-${Math.abs(maxLoss).toFixed(2)}%`, hardStop: true };
 				return out;
 			}
 		}
 
-		if (Number.isFinite(pnlPct) && pnlPct >= warmReq.req) {
+		if (Number.isFinite(pnl) && pnl >= warmReq.req) {
 			pos.warmingHold = false;
 			pos.warmingClearedAt = nowTs;
 			saveState();
 			out.warmingHoldActive = false;
-			out.decision = { action: "sell_all", reason: `WARMING_TARGET ${pnlPct.toFixed(2)}%>=${warmReq.req.toFixed(2)}%`, hardStop: true };
+			out.decision = { action: "sell_all", reason: `WARMING_TARGET ${pnl.toFixed(2)}%>=${warmReq.req.toFixed(2)}%`, hardStop: true };
 			return out;
 		}
 
@@ -2007,6 +2041,7 @@ async function runSellPipelineForPosition(ctx) {
 		(c) => reboundGatePolicy(c),
 		(c) => profitTargetTakePolicy(c),
 		(c) => momentumLossGuardPolicy(c),
+		(c) => profitFloorGatePolicy(c),
 		(c) => executeSellDecisionPolicy(c),
 	];
 	for (const fn of steps) {
