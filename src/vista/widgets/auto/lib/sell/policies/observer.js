@@ -36,7 +36,7 @@ export function createObserverPolicy({
         const hardBypass = (p <= bypassAt);
 
         if (p <= 2) {
-          if (inMinHold && !hardBypass) {
+          if (inMinHold) {
             log(`Min-hold active; suppressing observer drop (${p}/5) for ${ctx.mint.slice(0,4)}…`);
             noteObserverConsider(ctx.mint, 30_000);
             return;

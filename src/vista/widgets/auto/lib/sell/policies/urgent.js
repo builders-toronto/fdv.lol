@@ -19,11 +19,14 @@ export function createUrgentSellPolicy({
     const isMomentumUrg = /momentum/i.test(urgentReason);
     const isRugUrg = /rug/i.test(urgentReason);
 
-    if (ctx.inMinHold && isMomentumUrg && !isRugUrg) {
-      // Drop momentum-only urgent signals during min-hold so they don't fire later on stale data.
+    const highSev = Number(urgent.sev || 0) >= 0.75;
+
+    // During min-hold, drop non-rug / non-high-severity urgent signals.
+    // This prevents force-sells from noisy observers/momentum immediately after entry.
+    if (ctx.inMinHold && !isRugUrg && !highSev) {
       if (hasPeekClear) clearUrgentSell(ctx.mint);
       _log(
-        `Min-hold active; dropping momentum urgent sell for ${ctx.mint.slice(0, 4)}… (${Math.round(ctx.ageMs / 1000)}s < ${Math.round((Number(ctx.minHoldMs || 0) || 0) / 1000)}s)`
+        `Min-hold active; dropping urgent sell for ${ctx.mint.slice(0, 4)}… (${Math.round(ctx.ageMs / 1000)}s < ${Math.round((Number(ctx.minHoldMs || 0) || 0) / 1000)}s)`
       );
       return;
     }
@@ -32,8 +35,6 @@ export function createUrgentSellPolicy({
       _log(`Urgent sell suppressed (warmup ${Math.round(ctx.ageMs / 1000)}s) for ${ctx.mint.slice(0, 4)}…`);
       return;
     }
-
-    const highSev = Number(urgent.sev || 0) >= 0.75;
 
     if (ctx.inSellGuard && !isRugUrg && !highSev) {
       _log(`Sell guard active; deferring urgent sell for ${ctx.mint.slice(0, 4)}…`);

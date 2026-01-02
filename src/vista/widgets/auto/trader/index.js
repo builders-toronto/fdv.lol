@@ -608,8 +608,8 @@ let state = {
   trailPct: 6,                 
   minProfitToTrailPct: 2,     
   coolDownSecsAfterBuy: 3,    
-  minHoldSecs: 5,  
-  maxHoldSecs: 50,           
+  minHoldSecs: 60,
+  maxHoldSecs: 300,
   partialTpPct: 50,            
   minQuoteIntervalMs: 10000, 
   sellCooldownMs: 30000,  
@@ -762,37 +762,72 @@ let entrySimModeEl, entrySimHorizonEl, entrySimMinProbEl, entrySimSigmaFloorEl, 
 
 let _logQueue = [];
 let _logRaf = 0;
-function _flushLogFrame() {
-  if (!logEl) { _logRaf = 0; return; }
-  const pinned = (logEl.scrollTop + logEl.clientHeight) >= (logEl.scrollHeight - 4);
-  if (_logQueue.length) {
-    for (let i = 0; i < 3 && _logQueue.length; i++) {
+
+function _trimLogDom() {
+  try {
+    if (!logEl) return;
+    const expandBtn = logEl.querySelector("[data-auto-log-expand]");
+    const statsHdr  = logEl.querySelector("[data-auto-stats-header]");
+    const stickyCount = (expandBtn ? 1 : 0) + (statsHdr ? 1 : 0);
+    const max = Math.max(100, Number(MAX_DOM_LOG_LINES || 600));
+    const isSticky = (node) =>
+      !!node && (node.hasAttribute("data-auto-log-expand") || node.hasAttribute("data-auto-stats-header"));
+
+    while ((logEl.children.length - stickyCount) > max) {
+      let target = logEl.firstElementChild;
+      while (target && isSticky(target)) target = target.nextElementSibling;
+      if (!target) break;
+      logEl.removeChild(target);
+    }
+  } catch {}
+}
+
+function _flushLogSync(maxLines = 200) {
+  try {
+    if (!logEl) return;
+    const pinned = (logEl.scrollTop + logEl.clientHeight) >= (logEl.scrollHeight - 4);
+    if (!_logQueue.length) return;
+
+    const frag = document.createDocumentFragment();
+    const n = Math.max(1, Math.min(maxLines | 0, _logQueue.length));
+    for (let i = 0; i < n; i++) {
       const entry = _logQueue.shift();
       const line = typeof entry === "string" ? entry : String(entry?.text ?? "");
       const type = typeof entry === "object" ? String(entry.type || "ok") : "ok";
       const d = document.createElement("div");
       d.className = `log-row ${type}`;
       d.textContent = line;
-      logEl.appendChild(d);
-
-      const expandBtn = logEl.querySelector("[data-auto-log-expand]");
-      const statsHdr  = logEl.querySelector("[data-auto-stats-header]");
-      const stickyCount = (expandBtn ? 1 : 0) + (statsHdr ? 1 : 0);
-      const max = Math.max(100, Number(MAX_DOM_LOG_LINES || 600));
-
-      const isSticky = (node) =>
-        !!node && (node.hasAttribute("data-auto-log-expand") || node.hasAttribute("data-auto-stats-header"));
-
-      while ((logEl.children.length - stickyCount) > max) {
-        let target = logEl.firstElementChild;
-        while (target && isSticky(target)) target = target.nextElementSibling;
-        if (!target) break;
-        logEl.removeChild(target);
-      }
-
+      frag.appendChild(d);
       requestAnimationFrame(() => d.classList.add("in"));
-      if (pinned) logEl.scrollTop = logEl.scrollHeight;
     }
+    logEl.appendChild(frag);
+    _trimLogDom();
+    if (pinned) logEl.scrollTop = logEl.scrollHeight;
+  } catch {}
+}
+
+function _flushLogFrame() {
+  if (!logEl) { _logRaf = 0; return; }
+  const pinned = (logEl.scrollTop + logEl.clientHeight) >= (logEl.scrollHeight - 4);
+  if (_logQueue.length) {
+    const backlog = _logQueue.length;
+    const maxPerFrame = backlog > 800 ? 80 : backlog > 200 ? 40 : backlog > 50 ? 15 : 6;
+
+    const frag = document.createDocumentFragment();
+    const n = Math.max(1, Math.min(maxPerFrame, _logQueue.length));
+    for (let i = 0; i < n; i++) {
+      const entry = _logQueue.shift();
+      const line = typeof entry === "string" ? entry : String(entry?.text ?? "");
+      const type = typeof entry === "object" ? String(entry.type || "ok") : "ok";
+      const d = document.createElement("div");
+      d.className = `log-row ${type}`;
+      d.textContent = line;
+      frag.appendChild(d);
+      requestAnimationFrame(() => d.classList.add("in"));
+    }
+    logEl.appendChild(frag);
+    _trimLogDom();
+    if (pinned) logEl.scrollTop = logEl.scrollHeight;
   }
 
   if (_logQueue.length) {
@@ -800,6 +835,18 @@ function _flushLogFrame() {
   } else {
     _logRaf = 0;
   }
+}
+
+function _kickLogFlush() {
+  try {
+    if (!_logQueue.length) return;
+    // Fast catch-up on resume (timers/rAF can be heavily throttled while hidden).
+    _flushLogSync(200);
+    if (_logQueue.length) {
+      try { if (_logRaf) cancelAnimationFrame(_logRaf); } catch {}
+      _logRaf = requestAnimationFrame(_flushLogFrame);
+    }
+  } catch {}
 }
 
 // Upgrade early buffered logger to UI logger once DOM is available.
@@ -831,6 +878,18 @@ log = function log(msg, type) {
   _logQueue.push({ text: line, type: map });
   if (!_logRaf) _logRaf = requestAnimationFrame(_flushLogFrame);
 };
+
+try {
+  const g = (typeof window !== "undefined") ? window : globalThis;
+  if (!g._fdvAutoTraderLogResumeHookInstalled && typeof document !== "undefined") {
+    g._fdvAutoTraderLogResumeHookInstalled = true;
+    document.addEventListener("visibilitychange", () => {
+      try { if (!document.hidden) _kickLogFlush(); } catch {}
+    });
+    window.addEventListener("focus", () => { try { _kickLogFlush(); } catch {} });
+    window.addEventListener("pageshow", () => { try { _kickLogFlush(); } catch {} });
+  }
+} catch {}
 
 logObj = function logObj(label, obj) {
   try { log(`${label}: ${JSON.stringify(obj)}`); } catch {}
@@ -897,11 +956,11 @@ const CONFIG_SCHEMA = {
   fricSnapEpsSol:           { type: "number",  def: 0.0020, min: 0, max: 0.05 },
   allowMultiBuy:            { type: "boolean", def: false },
   rideWarming:              { type: "boolean", def: true },
-  warmingMinProfitPct:      { type: "number",  def: 100,  min: -50, max: 500 },
+  warmingMinProfitPct:      { type: "number",  def: 2,    min: 0,  max: 50 },
   warmingDecayPctPerMin:    { type: "number",  def: 0.45, min: 0, max: 5 },
-  warmingDecayDelaySecs:    { type: "number",  def: 45,   min: 0, max: 600 },
-  warmingMinProfitFloorPct: { type: "number",  def: -2.0, min: -50, max: 50 },
-  warmingAutoReleaseSecs:   { type: "number",  def: 90,   min: 0, max: 600 },
+  warmingDecayDelaySecs:    { type: "number",  def: 20,   min: 0, max: 600 },
+  warmingMinProfitFloorPct: { type: "number",  def: 0,    min: 0,  max: 50 },
+  warmingAutoReleaseSecs:   { type: "number",  def: 45,   min: 0, max: 600 },
   warmingUptickMinAccel:    { type: "number",  def: 1.001 },
   warmingUptickMinPre:      { type: "number",  def: 0.35 },
   warmingUptickMinDeltaChg5m:{ type: "number", def: 0.012 },
@@ -2860,7 +2919,7 @@ function getLeaderSeries(mint, n = 3) {
 function computeWarmingRequirement(pos, nowTs = now()) {
   const base = Number.isFinite(pos?.warmingMinProfitPct)
     ? Number(pos.warmingMinProfitPct)
-    : Number.isFinite(state.warmingMinProfitPct) ? Number(state.warmingMinProfitPct) : 100;
+    : Number.isFinite(state.warmingMinProfitPct) ? Number(state.warmingMinProfitPct) : 2;
 
   const delayMs = Math.max(0, Number(state.warmingDecayDelaySecs || 0) * 1000);
   const perMin = Math.max(0, Number(state.warmingDecayPctPerMin || 0));
@@ -4613,12 +4672,14 @@ function shouldApplyWarmingHold(mint, pos, nowTs) {
   } catch { return false; }
 }
 
-function applyWarmingPolicy({ mint, pos, nowTs, pnlPct, curSol, decision, forceRug, forcePumpDrop, forceObserverDrop, forceEarlyFade }) {
+function applyWarmingPolicy({ mint, pos, nowTs, pnlNetPct, pnlPct, curSol, decision, forceRug, forcePumpDrop, forceObserverDrop, forceEarlyFade }) {
   const result = { decision, forceObserverDrop, forcePumpDrop, warmingActive: false, warmingHoldActive: false, warmingMaxLossTriggered: false };
   try {
     const warmingActive = !!(state.rideWarming && pos.warmingHold === true);
     result.warmingActive = warmingActive;
     if (!warmingActive) return result;
+
+    const pnl = Number.isFinite(pnlNetPct) ? pnlNetPct : pnlPct;
 
     if (!shouldApplyWarmingHold(mint, pos, nowTs)) {
       pos.warmingHold = false;
@@ -4633,8 +4694,8 @@ function applyWarmingPolicy({ mint, pos, nowTs, pnlPct, curSol, decision, forceR
     const maxLossPctCfg = Math.max(1, Number(state.warmingMaxLossPct || 6));
     const maxLossWindowMs = Math.max(5_000, Number(state.warmingMaxLossWindowSecs || 60) * 1000);
     if (warmAgeMs <= maxLossWindowMs) {
-      if (Number.isFinite(pnlPct) && pnlPct <= -maxLossPctCfg) {
-        const msg = `WARMING MAX LOSS ${pnlPct.toFixed(2)}% <= -${maxLossPctCfg}%`;
+      if (Number.isFinite(pnl) && pnl <= -maxLossPctCfg) {
+        const msg = `WARMING MAX LOSS ${pnl.toFixed(2)}% <= -${maxLossPctCfg}%`;
         log(`Warming max-loss hit for ${mint.slice(0,4)}… (${msg}). Selling now.`);
         pos.warmingHold = false;
         pos.warmingClearedAt = now();
@@ -4650,12 +4711,12 @@ function applyWarmingPolicy({ mint, pos, nowTs, pnlPct, curSol, decision, forceR
     const ext = isWarmingHoldActive(mint, pos, warmReq, nowTs);
     result.warmingHoldActive = !!ext.active;
 
-    if (Number.isFinite(pnlPct) && pnlPct >= warmReq.req) {
+    if (Number.isFinite(pnl) && pnl >= warmReq.req) {
       pos.warmingHold = false;
       pos.warmingClearedAt = now();
       delete pos.warmingExtendUntil;
       save();
-      const msg = `WARMING_TARGET ${pnlPct.toFixed(2)}% ≥ ${warmReq.req.toFixed(2)}%`;
+      const msg = `WARMING_TARGET ${pnl.toFixed(2)}% ≥ ${warmReq.req.toFixed(2)}%`;
       result.decision = { action: "sell_all", reason: msg, hardStop: true };
       log(`Warming target met for ${mint.slice(0,4)}… selling now (${msg}).`);
       return result;
@@ -4672,11 +4733,11 @@ function applyWarmingPolicy({ mint, pos, nowTs, pnlPct, curSol, decision, forceR
 
     if (!result.warmingMaxLossTriggered &&
         result.warmingHoldActive &&
-        pnlPct < warmReq.req &&
+        pnl < warmReq.req &&
         !forceRug &&
         !forceEarlyFade) {
       if (result.forceObserverDrop || result.forcePumpDrop) {
-        log(`Warming hold: suppressing volatility sell for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
+        log(`Warming hold: suppressing volatility sell for ${mint.slice(0,4)}… (PnL ${pnl.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
       }
       result.forceObserverDrop = false;
       result.forcePumpDrop = false;
@@ -4684,7 +4745,7 @@ function applyWarmingPolicy({ mint, pos, nowTs, pnlPct, curSol, decision, forceR
       const rsn = String(result.decision?.reason || "");
       const isHardOrFast = !!result.decision?.hardStop || /rug|warming-max-loss|HARD_STOP|FAST_/i.test(rsn);
       if (result.decision && result.decision.action !== "none" && !isHardOrFast) {
-        log(`Warming hold: skipping sell (${result.decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnlPct.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
+        log(`Warming hold: skipping sell (${result.decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnl.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
         result.decision = { action: "none", reason: "warming-hold-until-profit" };
       }
     }
@@ -4770,6 +4831,29 @@ function momentumForcePolicy(ctx) {
   }
   ctx.decision = { action: "sell_all", reason: `MOMENTUM_DROP_X${Number(MOMENTUM_FORCED_EXIT_CONSEC || 0) || 0}`, hardStop: true };
   log(`Forced sell (momentum x${Number(MOMENTUM_FORCED_EXIT_CONSEC || 0) || 0}) for ${ctx.mint.slice(0,4)}…`);
+}
+
+function profitFloorGatePolicy(ctx) {
+  try {
+    const d = ctx?.decision;
+    if (!d || d.action === "none") return;
+
+    // Allow severe rugs (and explicit max-hold expiry) to exit even if red.
+    if (ctx.forceRug) return;
+    if (ctx.forceExpire) return;
+
+    const floor = Math.max(0, Number(state.warmingMinProfitFloorPct ?? 0));
+    const pnl = Number.isFinite(ctx.pnlNetPct) ? Number(ctx.pnlNetPct) : Number(ctx.pnlPct);
+    if (!Number.isFinite(pnl)) return;
+
+    if (pnl < floor) {
+      log(
+        `Profit floor: suppressing sell for ${ctx.mint.slice(0,4)}… netPnL=${pnl.toFixed(2)}% < ${floor.toFixed(2)}% (${String(d.reason || "").slice(0, 60)})`
+      );
+      ctx.decision = { action: "none", reason: "profit-floor" };
+      ctx.isFastExit = false;
+    }
+  } catch {}
 }
 
 async function runPipeline(ctx, steps = []) {
@@ -4880,6 +4964,7 @@ async function runSellPipelineForPosition(ctx) {
     { name: "forceFlagDecision", fn: (c) => forceFlagDecisionPolicy(c) },
     { name: "reboundGate", fn: (c) => reboundGatePolicy(c) },
     { name: "momentumForce", fn: (c) => momentumForcePolicy(c) },
+    { name: "profitFloor", fn: (c) => profitFloorGatePolicy(c) },
     ...(() => {
       const skip = _getAutoBotOverride("skipExecute");
       if (skip) return [];
@@ -6805,7 +6890,8 @@ export function initTraderWidget(container = document.body) {
     <div class="fdv-actions-left">
         <button class="btn" data-auto-help title="How the bot works">Help</button>
         <button class="btn" data-auto-log-copy title="Copy log">Log</button>
-        ${getAutoHelpModalHtml()}
+        <!-- TODO: fix help modal positioning -->
+        ${ getAutoHelpModalHtml() }
     </div>
     <div class="fdv-actions-right">
       <button data-auto-start>Start</button>
@@ -6966,8 +7052,8 @@ export function initTraderWidget(container = document.body) {
   trailEl.value = String(state.trailPct);
   slipEl.value  = String(state.slippageBps);
 
-  if (warmMinPEl)      warmMinPEl.value      = String(Number.isFinite(state.warmingMinProfitPct) ? state.warmingMinProfitPct : 100);
-  if (warmFloorEl)     warmFloorEl.value     = String(Number.isFinite(state.warmingMinProfitFloorPct) ? state.warmingMinProfitFloorPct : -2);
+  if (warmMinPEl)      warmMinPEl.value      = String(Number.isFinite(state.warmingMinProfitPct) ? state.warmingMinProfitPct : 2);
+  if (warmFloorEl)     warmFloorEl.value     = String(Number.isFinite(state.warmingMinProfitFloorPct) ? state.warmingMinProfitFloorPct : 0);
   if (warmDelayEl)     warmDelayEl.value     = String(Number.isFinite(state.warmingDecayDelaySecs) ? state.warmingDecayDelaySecs : 15);
   if (warmReleaseEl)   warmReleaseEl.value   = String(Number.isFinite(state.warmingAutoReleaseSecs) ? state.warmingAutoReleaseSecs : 45);
   if (warmMaxLossEl)   warmMaxLossEl.value   = String(Number.isFinite(state.warmingMaxLossPct) ? state.warmingMaxLossPct : 6);
@@ -7505,8 +7591,8 @@ export function initTraderWidget(container = document.body) {
       return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : def;
     };
 
-    state.warmingMinProfitPct       = clamp(n(warmMinPEl?.value),      -50, 50, 2);
-    state.warmingMinProfitFloorPct  = clamp(n(warmFloorEl?.value),     -50, 50, -2);
+    state.warmingMinProfitPct       = clamp(n(warmMinPEl?.value),      0, 50, 2);
+    state.warmingMinProfitFloorPct  = clamp(n(warmFloorEl?.value),     0, 50, 0);
     state.warmingDecayDelaySecs     = clamp(n(warmDelayEl?.value),       0, 600, 15);
     state.warmingAutoReleaseSecs    = clamp(n(warmReleaseEl?.value),     0, 600, 45);
     state.warmingMaxLossPct         = clamp(n(warmMaxLossEl?.value),     1,  50, 6);

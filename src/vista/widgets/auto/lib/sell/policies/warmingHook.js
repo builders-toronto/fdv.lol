@@ -4,6 +4,7 @@ export function createWarmingPolicyHook({ applyWarmingPolicy, log }) {
       mint: ctx.mint,
       pos: ctx.pos,
       nowTs: ctx.nowTs,
+      pnlNetPct: ctx.pnlNetPct,
       pnlPct: ctx.pnlPct,
       curSol: ctx.curSol,
       decision: ctx.decision,

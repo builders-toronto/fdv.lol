@@ -29,6 +29,13 @@ export function createDynamicHardStopPolicy({ log, getState, DYN_HS, computeFina
         drawdownPct: ddPct,
         intensity: Number(gate?.intensity || 1)
       });
+
+      // Never stop out earlier than the configured stop-loss.
+      // Otherwise the "hard stop" undercuts SL and causes surprising early exits.
+      const slFloorPct = Math.max(0, Number(ctx.pos.slPct ?? state.stopLossPct ?? 0));
+      if (slFloorPct > 0 && Number.isFinite(ctx.dynStopPct)) {
+        ctx.dynStopPct = Math.max(ctx.dynStopPct, slFloorPct);
+      }
     }
 
     if (ctx.canHardStop &&
