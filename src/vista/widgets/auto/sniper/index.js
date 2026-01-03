@@ -96,6 +96,19 @@ function now() {
 	return Date.now();
 }
 
+function withTimeout(promise, ms, { label = "op" } = {}) {
+	const timeoutMs = Math.max(1, Number(ms || 0));
+	let t = null;
+	return Promise.race([
+		Promise.resolve(promise).finally(() => {
+			try { if (t) clearTimeout(t); } catch {}
+		}),
+		new Promise((_, reject) => {
+			t = setTimeout(() => reject(new Error(`${label}_TIMEOUT_${timeoutMs}`)), timeoutMs);
+		}),
+	]);
+}
+
 let logEl;
 let statusEl;
 let startBtn;
@@ -907,7 +920,7 @@ async function confirmSig(sig, { commitment = "confirmed", timeoutMs = 20_000 } 
 	const start = Date.now();
 	while (Date.now() - start < timeoutMs) {
 		try {
-			const st = await conn.getSignatureStatuses([sig]);
+			const st = await withTimeout(conn.getSignatureStatuses([sig]), 8_000, { label: "sigStatus" });
 			const v = st?.value?.[0];
 			if (v && !v.err) {
 				const c = v.confirmationStatus;
@@ -935,7 +948,10 @@ async function _detectTokenProgramIdForMint(mintStr) {
 		const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = await loadSplToken();
 		const conn = await getConn();
 		const mintPk = new PublicKey(mintStr);
-		const info = await conn.getAccountInfo(mintPk, "processed");
+		const info = await withTimeout(conn.getAccountInfo(mintPk, "processed"), 10_000, { label: "getAccountInfo" }).catch((e) => {
+			markRpcStress?.(e, 1500);
+			return null;
+		});
 		const owner = info?.owner;
 		if (owner && TOKEN_2022_PROGRAM_ID && owner.equals && owner.equals(TOKEN_2022_PROGRAM_ID)) return TOKEN_2022_PROGRAM_ID;
 		if (owner && TOKEN_PROGRAM_ID && owner.equals && owner.equals(TOKEN_PROGRAM_ID)) return TOKEN_PROGRAM_ID;
@@ -968,7 +984,10 @@ async function requiredAtaLamportsForSwap(ownerStr, _inMint, outMint) {
 		const mint = new PublicKey(outMint);
 		const pid = await _detectTokenProgramIdForMint(outMint);
 		const ata = await getAssociatedTokenAddress(mint, owner, true, pid);
-		const info = await conn.getAccountInfo(ata, "processed");
+		const info = await withTimeout(conn.getAccountInfo(ata, "processed"), 10_000, { label: "getAccountInfo" }).catch((e) => {
+			markRpcStress?.(e, 1500);
+			return null;
+		});
 		if (info) return 0;
 		return await _tokenAccountRentLamportsForMint(outMint);
 	} catch {
@@ -986,7 +1005,14 @@ async function getTokenBalanceUiByMint(ownerPkOrStr, mintStr) {
 		const mintPk = new PublicKey(mintStr);
 
 		const scan = async (programId) => {
-			const res = await conn.getParsedTokenAccountsByOwner(owner, { programId }, "confirmed");
+			const res = await withTimeout(
+				conn.getParsedTokenAccountsByOwner(owner, { programId }, "confirmed"),
+				12_000,
+				{ label: "balScan" },
+			).catch((e) => {
+				markRpcStress?.(e, 1500);
+				return { value: [] };
+			});
 			const list = Array.isArray(res?.value) ? res.value : [];
 			let sum = 0;
 			let decimals = 6;
@@ -1021,7 +1047,10 @@ async function getSolBalanceUi(ownerPkOrStr) {
 		const { PublicKey } = await loadWeb3();
 		const conn = await getConn();
 		const pk = typeof ownerPkOrStr === "string" ? new PublicKey(ownerPkOrStr) : ownerPkOrStr;
-		const lamports = await conn.getBalance(pk, "confirmed");
+		const lamports = await withTimeout(conn.getBalance(pk, "confirmed"), 10_000, { label: "getBalance" }).catch((e) => {
+			markRpcStress?.(e, 1500);
+			return 0;
+		});
 		return Number(lamports || 0) / 1e9;
 	} catch {
 		return 0;
@@ -1039,7 +1068,10 @@ async function unwrapWsolIfAny(signerOrOwner) {
 		if (!ownerPk) return false;
 		const mint = new PublicKey(SOL_MINT);
 		const ata = await getAssociatedTokenAddress(mint, ownerPk, true, TOKEN_PROGRAM_ID);
-		const info = await conn.getAccountInfo(ata, "processed");
+		const info = await withTimeout(conn.getAccountInfo(ata, "processed"), 10_000, { label: "getAccountInfo" }).catch((e) => {
+			markRpcStress?.(e, 1500);
+			return null;
+		});
 		if (!info) return false;
 
 		if (!isSigner) return false;
@@ -1047,10 +1079,19 @@ async function unwrapWsolIfAny(signerOrOwner) {
 		const tx = new Transaction();
 		tx.add(createCloseAccountInstruction(ata, ownerPk, ownerPk, [], TOKEN_PROGRAM_ID));
 		tx.feePayer = ownerPk;
-		tx.recentBlockhash = (await conn.getLatestBlockhash("processed")).blockhash;
+		const bh = await withTimeout(conn.getLatestBlockhash("processed"), 10_000, { label: "getBlockhash" }).catch((e) => {
+			markRpcStress?.(e, 1500);
+			return null;
+		});
+		if (!bh?.blockhash) return false;
+		tx.recentBlockhash = bh.blockhash;
 		tx.sign(signerOrOwner);
 		await rpcWait("tx-close-wsol", 350);
-		const sig = await conn.sendRawTransaction(tx.serialize(), { preflightCommitment: "processed", maxRetries: 2 });
+		const sig = await withTimeout(
+			conn.sendRawTransaction(tx.serialize(), { preflightCommitment: "processed", maxRetries: 2 }),
+			15_000,
+			{ label: "sendTx" },
+		);
 		log(`Unwrapped WSOL: ${sig}`);
 		return true;
 	} catch {
@@ -2120,19 +2161,6 @@ function shouldTriggerBuy(mint) {
 }
 
 async function mirrorBuy(mint, opts = null) {
-	function withTimeout(promise, ms, { label = "op" } = {}) {
-		const timeoutMs = Math.max(1, Number(ms || 0));
-		let t = null;
-		return Promise.race([
-			Promise.resolve(promise).finally(() => {
-				try { if (t) clearTimeout(t); } catch {}
-			}),
-			new Promise((_, reject) => {
-				t = setTimeout(() => reject(new Error(`${label}_TIMEOUT_${timeoutMs}`)), timeoutMs);
-			}),
-		]);
-	}
-
 	let entryMode = "";
 	try {
 		if (opts && typeof opts === "object") entryMode = String(opts.entryMode || "");
