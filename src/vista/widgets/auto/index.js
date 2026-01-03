@@ -1,6 +1,7 @@
 ﻿import { initVolumeWidget } from './volume/index.js';
 import { initFollowWidget } from './follow/index.js';
 import { initSniperWidget } from './sniper/index.js';
+import { initHoldWidget } from './hold/index.js';
 import {
   initTraderWidget,
   getAutoTraderState,
@@ -92,8 +93,9 @@ export function initAutoWidget(container = document.body) {
     <div class="fdv-tabs" style="display:flex; gap:8px; margin:8px 0;">
       <button class="fdv-tab-btn active" data-main-tab="auto">Auto</button>
       <button class="fdv-tab-btn" data-main-tab="follow">Follow</button>
-      <button class="fdv-tab-btn" data-main-tab="sniper">Sniper</button>
-      <button class="fdv-tab-btn" data-main-tab="volume">Volume</button>
+      <button class="fdv-tab-btn" data-main-tab="sniper">Sentry</button>
+      <button class="fdv-tab-btn" data-main-tab="hold">Hold</button>
+      <button class="fdv-tab-btn" data-main-tab="volume">Vol</button>
     </div>
 
     <div data-main-tab-panel="auto" class="tab-panel active">
@@ -112,6 +114,10 @@ export function initAutoWidget(container = document.body) {
       <div id="sniper-container"></div>
     </div>
 
+    <div data-main-tab-panel="hold" class="tab-panel" style="display:none;">
+      <div id="hold-container"></div>
+    </div>
+
     <div class="fdv-bot-footer" style="display:flex;justify-content:space-between;margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
       <a href="https://t.me/fdvlolgroup" target="_blank" data-auto-help-tg>t.me/fdvlolgroup</a>
       <span>Version: 0.0.5.4</span>
@@ -128,6 +134,7 @@ export function initAutoWidget(container = document.body) {
   initVolumeWidget(body.querySelector('#volume-container'));
   initFollowWidget(body.querySelector('#follow-container'));
   initSniperWidget(body.querySelector('#sniper-container'));
+  initHoldWidget(body.querySelector('#hold-container'));
 
   const mainTabBtns = wrap.querySelectorAll('[data-main-tab]');
   const mainTabPanels = wrap.querySelectorAll('[data-main-tab-panel]');

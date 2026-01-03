@@ -97,6 +97,10 @@ export function ensureAutoLed() {
         const sniper = _readEnabledFromLS('fdv_sniper_bot_v1');
         if (sniper !== null) store.bots.sniper = !!sniper;
       } catch {}
+      try {
+        const hold = _readEnabledFromLS('fdv_hold_bot_v1');
+        if (hold !== null) store.bots.hold = !!hold;
+      } catch {}
       store.render();
     },
   };

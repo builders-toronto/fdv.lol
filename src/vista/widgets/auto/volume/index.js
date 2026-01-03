@@ -17,50 +17,22 @@ import {
 } from '../lib/constants.js';
 import { rpcWait, rpcBackoffLeft, markRpcStress } from '../lib/rpcThrottle.js';
 import { loadSplToken } from '../../../../core/solana/splToken.js';
-import { importFromUrlWithFallback } from '../../../../utils/netImport.js';
+import { createSolanaDepsLoader } from '../lib/solana/deps.js';
+import { createConnectionGetter } from '../lib/solana/connection.js';
+import { createConfirmSig } from '../lib/solana/confirm.js';
+import { delay } from '../lib/async.js';
+import { isNodeLike } from '../lib/runtime.js';
 
-let _web3Promise;
-let _bs58Promise;
-let _connPromise;
+const { loadWeb3, loadBs58 } = createSolanaDepsLoader({
+  cacheKeyPrefix: 'fdv:volume',
+  web3Version: '1.95.4',
+  bs58Version: '6.0.0',
+});
 
-export async function loadWeb3() {
-  try {
-    if (typeof window !== 'undefined' && window.solanaWeb3) return window.solanaWeb3;
-    if (typeof window !== 'undefined' && window._fdvAutoDepsPromise) {
-      const deps = await window._fdvAutoDepsPromise.catch(() => null);
-      if (deps?.web3) return deps.web3;
-    }
-  } catch {}
-  if (_web3Promise) return _web3Promise;
-  _web3Promise = (async () => importFromUrlWithFallback([
-    'https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.4/+esm',
-    'https://esm.sh/@solana/web3.js@1.95.4?bundle',
-  ], { cacheKey: 'fdv:volume:web3@1.95.4' }))();
-  return _web3Promise;
-}
-
-async function loadBs58() {
-  try {
-    if (typeof window !== 'undefined' && window._fdvBs58Module) return window._fdvBs58Module;
-    if (typeof window !== 'undefined' && window._fdvAutoDepsPromise) {
-      const deps = await window._fdvAutoDepsPromise.catch(() => null);
-      if (deps?.bs58) return { default: deps.bs58 };
-    }
-    if (typeof window !== 'undefined' && window.bs58) return { default: window.bs58 };
-  } catch {}
-  if (_bs58Promise) return _bs58Promise;
-  _bs58Promise = (async () => importFromUrlWithFallback([
-    'https://cdn.jsdelivr.net/npm/bs58@6.0.0/+esm',
-    'https://esm.sh/bs58@6.0.0?bundle',
-  ], { cacheKey: 'fdv:volume:bs58@6.0.0' }))();
-  return _bs58Promise;
-}
+export { loadWeb3 };
 
 async function getBs58() {
-  const mod = await loadBs58();
-  if (mod?.default && typeof mod.default.decode === 'function' && typeof mod.default.encode === 'function') return mod.default;
-  if (typeof mod?.decode === 'function' && typeof mod?.encode === 'function') return mod;
-  return mod?.default || mod;
+  return await loadBs58();
 }
 
 function currentRpcUrl() {
@@ -83,40 +55,20 @@ function currentRpcHeaders() {
   }
 }
 
-async function getConn() {
-  const url = currentRpcUrl();
-  if (_connPromise && _connPromise._url === url) return _connPromise;
-  const { Connection } = await loadWeb3();
-  const headers = currentRpcHeaders();
-  const conn = new Connection(url, {
-    commitment: 'confirmed',
-    wsEndpoint: undefined,
-    httpHeaders: headers && Object.keys(headers).length ? headers : undefined,
-  });
-  // tiny cache key
-  conn._url = url;
-  _connPromise = Promise.resolve(conn);
-  _connPromise._url = url;
-  return conn;
-}
+const getConn = createConnectionGetter({
+  loadWeb3,
+  getRpcUrl: currentRpcUrl,
+  getRpcHeaders: currentRpcHeaders,
+  commitment: 'confirmed',
+});
 
-async function confirmSig(sig, opts = {}) {
-  const conn = await getConn();
-  const commitment = opts.commitment || 'confirmed';
-  const timeoutMs = Number(opts.timeoutMs || 20_000);
-
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const st = await conn.getSignatureStatus(sig, { searchTransactionHistory: true });
-      const s = st?.value;
-      if (s?.err) throw new Error(String(s.err));
-      if (s?.confirmationStatus === 'confirmed' || s?.confirmationStatus === 'finalized') return true;
-    } catch {}
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  throw new Error('CONFIRM_TIMEOUT');
-}
+const confirmSig = createConfirmSig({
+  getConn,
+  markRpcStress,
+  defaultCommitment: 'confirmed',
+  defaultTimeoutMs: 20_000,
+  throwOnTimeout: true,
+});
 
 async function fetchSolBalance(pubkeyOrStr) {
   const { PublicKey } = await loadWeb3();
@@ -817,11 +769,7 @@ function log(msg, type = 'info') {
 }
 
 function _isNodeLike() {
-  try {
-    return typeof process !== 'undefined' && !!process?.versions?.node;
-  } catch {
-    return false;
-  }
+  return isNodeLike();
 }
 
 function _applyRpcOptsToStateAndStorage({ rpcUrl, rpcHeaders } = {}) {
@@ -1047,7 +995,7 @@ function getDex() {
   return _dex;
 }
 
-function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+// delay imported from ../lib/async.js
 
 function isStopRequested() {
   return !state?.enabled;

@@ -24,61 +24,19 @@ import { createDustCacheStore } from "../lib/stores/dustCacheStore.js";
 import { setBotRunning } from "../lib/autoLed.js";
 import { loadSplToken } from "../../../../core/solana/splToken.js";
 import { focusMint, getRugSignalForMint } from "../../../meme/metrics/kpi/pumping.js";
-import { importFromUrlWithFallback } from "../../../../utils/netImport.js";
+import { createSolanaDepsLoader } from "../lib/solana/deps.js";
+import { createConnectionGetter } from "../lib/solana/connection.js";
+import { createConfirmSig } from "../lib/solana/confirm.js";
+import { withTimeout, delay } from "../lib/async.js";
+import { isNodeLike } from "../lib/runtime.js";
 
-let _web3Promise;
-let _bs58Promise;
-let _connPromise;
+const { loadWeb3, loadBs58 } = createSolanaDepsLoader({
+	cacheKeyPrefix: "fdv:follow",
+	web3Version: "1.95.4",
+	bs58Version: "6.0.0",
+});
 
-export async function loadWeb3() {
-	try {
-		if (typeof window !== "undefined" && window.solanaWeb3) return window.solanaWeb3;
-		if (typeof window !== "undefined" && window._fdvAutoDepsPromise) {
-			const deps = await window._fdvAutoDepsPromise.catch(() => null);
-			if (deps?.web3) return deps.web3;
-		}
-	} catch {}
-	if (_web3Promise) return _web3Promise;
-	_web3Promise = (async () =>
-		importFromUrlWithFallback([
-			"https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.4/+esm",
-			"https://esm.sh/@solana/web3.js@1.95.4?bundle",
-		], { cacheKey: "fdv:follow:web3@1.95.4" }))();
-	return _web3Promise;
-}
-
-async function loadBs58() {
-	try {
-		if (typeof window !== "undefined" && window._fdvBs58Module) return window._fdvBs58Module;
-		if (typeof window !== "undefined" && window._fdvAutoDepsPromise) {
-			const deps = await window._fdvAutoDepsPromise.catch(() => null);
-			if (deps?.bs58) return { default: deps.bs58 };
-		}
-		if (typeof window !== "undefined" && window.bs58) return { default: window.bs58 };
-	} catch {}
-	if (_bs58Promise) return _bs58Promise;
-	_bs58Promise = (async () =>
-		importFromUrlWithFallback([
-			"https://cdn.jsdelivr.net/npm/bs58@6.0.0/+esm",
-			"https://esm.sh/bs58@6.0.0?bundle",
-		], { cacheKey: "fdv:follow:bs58@6.0.0" }))();
-	return _bs58Promise;
-}
-
-async function getBs58() {
-	const mod = await loadBs58();
-	if (
-		mod?.default &&
-		typeof mod.default.decode === "function" &&
-		typeof mod.default.encode === "function"
-	) {
-		return mod.default;
-	}
-	if (typeof mod?.decode === "function" && typeof mod?.encode === "function") {
-		return mod;
-	}
-	return mod?.default || mod;
-}
+export { loadWeb3 };
 
 const AUTO_LS_KEY = "fdv_auto_bot_v1";
 const FOLLOW_LS_KEY = "fdv_follow_bot_v1";
@@ -170,7 +128,7 @@ async function debugAutoWalletLoad(log) {
 			return;
 		}
 
-		const bs58 = await getBs58();
+		const bs58 = await loadBs58();
 		const { Keypair } = await loadWeb3();
 
 		let secretBytes;
@@ -201,7 +159,7 @@ async function getAutoKeypair() {
 		const skB58 =
 			parsed?.autoWalletSecret || parsed?.secretKeyB58 || parsed?.secretKey || parsed?.sk;
 
-		const bs58 = await getBs58();
+		const bs58 = await loadBs58();
 		const { Keypair } = await loadWeb3();
 
 		if (Array.isArray(parsed?.secretKeyBytes)) return Keypair.fromSecretKey(Uint8Array.from(parsed.secretKeyBytes));
@@ -254,42 +212,20 @@ function currentRpcHeaders() {
 	}
 }
 
-async function getConn() {
-	const url = currentRpcUrl();
-	if (_connPromise && _connPromise._url === url) return _connPromise;
-	const { Connection } = await loadWeb3();
-	const headers = currentRpcHeaders();
-	const conn = new Connection(url, {
-		commitment: "confirmed",
-		wsEndpoint: undefined,
-		httpHeaders: headers && Object.keys(headers).length ? headers : undefined,
-	});
-	conn._url = url;
-	_connPromise = Promise.resolve(conn);
-	_connPromise._url = url;
-	return conn;
-}
+const getConn = createConnectionGetter({
+	loadWeb3,
+	getRpcUrl: currentRpcUrl,
+	getRpcHeaders: currentRpcHeaders,
+	commitment: "confirmed",
+});
 
-async function confirmSig(sig, opts = {}) {
-	const conn = await getConn();
-	const commitment = opts.commitment || "confirmed";
-	const timeoutMs = Number(opts.timeoutMs || 20_000);
-
-	const start = Date.now();
-	while (Date.now() - start < timeoutMs) {
-		try {
-			const st = await conn.getSignatureStatus(sig, { searchTransactionHistory: true });
-			const cs = st?.value?.confirmationStatus;
-			if (st?.value && !st.value.err) {
-				if (commitment === "processed") return true;
-				if (commitment === "confirmed" && (cs === "confirmed" || cs === "finalized")) return true;
-				if (commitment === "finalized" && cs === "finalized") return true;
-			}
-		} catch {}
-		await new Promise((r) => setTimeout(r, 500));
-	}
-	throw new Error("CONFIRM_TIMEOUT");
-}
+const confirmSig = createConfirmSig({
+	getConn,
+	markRpcStress,
+	defaultCommitment: "confirmed",
+	defaultTimeoutMs: 20_000,
+	throwOnTimeout: true,
+});
 
 async function tokenAccountRentLamports() {
 	try {
@@ -702,11 +638,7 @@ function logEvery(key, minMs, msg, type = "help") {
 }
 
 function _isNodeLike() {
-	try {
-		return typeof process !== "undefined" && !!process?.versions?.node;
-	} catch {
-		return false;
-	}
+	return isNodeLike();
 }
 
 function _applyRpcOptsToStateAndStorage({ rpcUrl, rpcHeaders } = {}) {
@@ -1286,18 +1218,7 @@ function getBuyFraction() {
 	return clampBuyPct(state.buyPct, 25) / 100;
 }
 
-function withTimeout(promise, ms, { label = "op" } = {}) {
-	const timeoutMs = Math.max(1, Number(ms || 0));
-	let t = null;
-	return Promise.race([
-		Promise.resolve(promise).finally(() => {
-			try { if (t) clearTimeout(t); } catch {}
-		}),
-		new Promise((_, reject) => {
-			t = setTimeout(() => reject(new Error(`${label}_TIMEOUT_${timeoutMs}`)), timeoutMs);
-		}),
-	]);
-}
+// withTimeout imported from ../lib/async.js
 
 function _isNoRouteLike(v) {
 	return /ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|NO_ROUTES|BELOW_MIN_NOTIONAL|0x1788|0x1789/i.test(String(v || ""));
@@ -1865,9 +1786,7 @@ let _timer = null;
 let _pollInFlight = false;
 let _kickTimer = null;
 
-function delay(ms) {
-	return new Promise((r) => setTimeout(r, ms));
-}
+// delay imported from ../lib/async.js
 
 function _kickPollSoon(ms = 250) {
 	try {

@@ -1,8 +1,7 @@
-import { importFromUrl } from "../../../../utils/netImport.js";
-
-function _isNodeLike() {
-  return typeof process !== "undefined" && !!process.versions?.node;
-}
+import { isNodeLike as _isNodeLike } from "../lib/runtime.js";
+import { createSolanaDepsLoader } from "../lib/solana/deps.js";
+import { createConnectionGetter } from "../lib/solana/connection.js";
+import { createConfirmSig } from "../lib/solana/confirm.js";
 
 import { computePumpingLeaders, getRugSignalForMint, focusMint } from "../../../meme/metrics/kpi/pumping.js";
 import { getLatestSnapshot } from "../../../meme/metrics/ingest.js";
@@ -951,9 +950,8 @@ let _lastOwnerReconTs = 0;
 
 let _solPxCache = { ts: 0, usd: 0 };
 
-let _conn = null, _connUrl = "";
-
-let _connHdrKey = "";
+let _getConnImpl = null;
+let _lastConnLogKey = "";
 
 let _lastDepFetchTs = 0;
 
@@ -1651,24 +1649,22 @@ async function unwrapWsolIfAny(signerOrOwner) {
 }
 
 export async function confirmSig(sig, { commitment = "confirmed", timeoutMs = 12000, pollMs = 700, requireFinalized = false } = {}) {
-  const conn = await getConn();
-  const start = now();
-  while (now() - start < timeoutMs) {
-    try {
-      const st = await conn.getSignatureStatuses([sig], { searchTransactionHistory: true });
-      const v = st?.value?.[0];
-      if (v) {
-        const cs = v.confirmationStatus;
-        const ok = (!v.err) && (requireFinalized ? cs === "finalized" : (cs === "confirmed" || cs === "finalized"));
-        if (ok) return true;
-        if (v.err) return false;
-      }
-    } catch (e) { _markRpcStress(e, 1500); }
-    const left = rpcBackoffLeft();
-    await new Promise(r => setTimeout(r, left > 0 ? left : pollMs));
-  }
-  return false;
+  return _confirmSigImpl(sig, {
+    commitment,
+    timeoutMs,
+    pollMs,
+    requireFinalized,
+    searchTransactionHistory: true,
+  });
 }
+
+const _confirmSigImpl = createConfirmSig({
+  getConn,
+  markRpcStress: _markRpcStress,
+  defaultCommitment: "confirmed",
+  defaultTimeoutMs: 12_000,
+  throwOnTimeout: false,
+});
 
 async function waitForTokenDebit(ownerPubkeyStr, mintStr, prevSizeUi, { timeoutMs = 20000, pollMs = 350 } = {}) {
   const start = now();
@@ -1791,7 +1787,7 @@ export function currentRpcHeaders() {
 function setRpcUrl(url) {
   state.rpcUrl = String(url || "").trim();
   try { localStorage.setItem("fdv_rpc_url", state.rpcUrl); } catch {}
-  _conn = null; _connUrl = ""; _connHdrKey = "";
+  _resetConn();
   save();
   log(`RPC URL set to: ${state.rpcUrl || "(empty)"}`);
 }
@@ -1802,7 +1798,7 @@ function setRpcHeaders(jsonStr) {
     if (obj && typeof obj === "object") {
       state.rpcHeaders = obj;
       localStorage.setItem("fdv_rpc_headers", JSON.stringify(obj));
-      _conn = null; _connUrl = ""; _connHdrKey = "";
+      _resetConn();
       save();
       log(`RPC headers saved: ${redactHeaders(obj)}`);
       return true;
@@ -1812,54 +1808,55 @@ function setRpcHeaders(jsonStr) {
   return false;
 }
 
+const { loadWeb3: _loadWeb3Browser, loadBs58: _loadBs58Browser } = createSolanaDepsLoader({
+  cacheKeyPrefix: "fdv:trader",
+  web3Version: "1.95.1",
+  bs58Version: "5.0.0",
+  prefer: "esm",
+});
+
+let _web3NodePromise;
+let _bs58NodePromise;
+
+function _resetConn() {
+  _getConnImpl = null;
+  _lastConnLogKey = "";
+}
+
 export async function loadWeb3() {
-  try {
-    if (typeof window !== "undefined" && window.solanaWeb3) return window.solanaWeb3;
-    if (typeof window !== "undefined" && window._fdvAutoDepsPromise) {
-      const deps = await window._fdvAutoDepsPromise.catch(() => null);
-      if (deps?.web3) {
-        window.solanaWeb3 = deps.web3;
-        return deps.web3;
-      }
-    }
-  } catch {}
-
   if (_isNodeLike()) {
-    const { loadSolanaWeb3FromWeb } = await import("./cli/helpers/web3.node.js");
-    return await loadSolanaWeb3FromWeb();
+    if (_web3NodePromise) return _web3NodePromise;
+    _web3NodePromise = (async () => {
+      const { loadSolanaWeb3FromWeb } = await import("./cli/helpers/web3.node.js");
+      return await loadSolanaWeb3FromWeb();
+    })();
+    const web3 = await _web3NodePromise;
+    try {
+      const g = (typeof window !== "undefined") ? window : globalThis;
+      g.solanaWeb3 = web3;
+    } catch {}
+    return web3;
   }
 
-  try {
-    const web3 = await importFromUrl("https://esm.sh/@solana/web3.js@1.95.1?bundle");
-    try { if (typeof window !== "undefined") window.solanaWeb3 = web3; } catch {}
-    return web3;
-  } catch (_) {
-    const web3 = await importFromUrl("https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.1/lib/index.browser.esm.js");
-    try { if (typeof window !== "undefined") window.solanaWeb3 = web3; } catch {}
-    return web3;
-  }
+  return await _loadWeb3Browser();
 }
 
 export async function loadBs58() {
-  try {
-    if (typeof window !== "undefined" && window.bs58) return window.bs58;
-    if (typeof window !== "undefined" && window._fdvAutoDepsPromise) {
-      const deps = await window._fdvAutoDepsPromise.catch(() => null);
-      if (deps?.bs58) {
-        window.bs58 = deps.bs58;
-        return deps.bs58;
-      }
-    }
-  } catch {}
   if (_isNodeLike()) {
-    const mod = await import("./cli/helpers/bs58.node.js");
-    window.bs58 = mod?.default || mod?.bs58 || mod;
-    return window.bs58;
+    if (_bs58NodePromise) return _bs58NodePromise;
+    _bs58NodePromise = (async () => {
+      const mod = await import("./cli/helpers/bs58.node.js");
+      return mod?.default || mod?.bs58 || mod;
+    })();
+    const bs58 = await _bs58NodePromise;
+    try {
+      const g = (typeof window !== "undefined") ? window : globalThis;
+      g.bs58 = bs58;
+    } catch {}
+    return bs58;
   }
 
-  const bs58 = (await importFromUrl('https://esm.sh/bs58@5.0.0?bundle')).default;
-  try { if (typeof window !== "undefined") window.bs58 = bs58; } catch {}
-  return bs58;
+  return await _loadBs58Browser();
 }
 
 async function loadDeps() {
@@ -1869,16 +1866,24 @@ async function loadDeps() {
 }
 
 export async function getConn() {
-  const url = currentRpcUrl().replace(/\/+$/,"");
-  if (!url) throw new Error("RPC URL not configured");
+  if (!_getConnImpl) {
+    _getConnImpl = createConnectionGetter({
+      loadWeb3,
+      getRpcUrl: () => currentRpcUrl().replace(/\/+$/g, ""),
+      getRpcHeaders: currentRpcHeaders,
+      commitment: "confirmed",
+    });
+  }
+  const url = currentRpcUrl().replace(/\/+$/g, "");
   const headers = currentRpcHeaders();
-  const hdrKey = JSON.stringify(headers);
-  if (_conn && _connUrl === url && _connHdrKey === hdrKey) return _conn;
-  const { Connection } = await loadWeb3();
-  _conn = new Connection(url, { commitment: "confirmed", httpHeaders: headers });
-  _connUrl = url; _connHdrKey = hdrKey;
-  log(`RPC connection ready -> ${url} ${redactHeaders(headers)}`, 'info');
-  return _conn;
+  const hdrKey = JSON.stringify(headers || {});
+  const key = `${url}|${hdrKey}`;
+  const conn = await _getConnImpl();
+  if (key && key !== _lastConnLogKey) {
+    _lastConnLogKey = key;
+    log(`RPC connection ready -> ${url} ${redactHeaders(headers)}`, 'info');
+  }
+  return conn;
 }
 
 async function _getMultipleAccountsInfoBatched(conn, pubkeys, { commitment = "processed", batchSize = 95, kind = "gmai" } = {}) {
@@ -6823,27 +6828,6 @@ export function initTraderWidget(container = document.body) {
   body.innerHTML = `
     <div class="fdv-auto-head"></div>
     <div data-main-tab-panel="auto" class="tab-panel active">
-    <div style="display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--fdv-border);padding-bottom:8px;margin-bottom:8px; position:relative;">
-      <button class="btn" data-auto-gen>Generate</button>
-      <button class="btn" data-auto-copy style="display:none;">Address</button>
-      <button class="btn" data-auto-snapshot title="Download latest sell snapshot">Snapshot</button>
-      <button class="btn" data-auto-unwind>Return</button>
-      <button class="btn" data-auto-wallet>Wallet</button>
-      <div data-auto-wallet-menu
-           style="display:none; position:absolute; top:38px; left:0; z-index:999; min-width:520px; max-width:92vw;
-                  background:var(--fdv-bg,#111); color:var(--fdv-fg,#fff); border:1px solid var(--fdv-border,#333);
-                  border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,.5); padding:10px;">
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
-          <strong>Wallet Holdings</strong>
-          <button data-auto-dump style="background:#7f1d1d;color:#fff;border:1px solid #a11;padding:6px 10px;border-radius:6px;">Dump Wallet</button>
-        </div>
-        <div data-auto-wallet-sol style="font-size:12px; opacity:0.9; margin-bottom:6px;">SOL: …</div>
-        <div data-auto-wallet-list style="display:flex; flex-direction:column; gap:6px; max-height:40vh; overflow:auto;">
-          <div style="opacity:0.7;">Loading…</div>
-        </div>
-        <div data-auto-wallet-totals style="display: flex;flex-direction: row;justify-content: space-between;margin-top:8px; font-weight:600;">Total: …</div>
-      </div>
-    </div>
     <div class="fdv-grid">
       <label><a href="https://chainstack.com/" target="_blank">RPC (CORS)</a> <input data-auto-rpc placeholder="https://your-provider.example/solana?api-key=..."/></label>
       <label>RPC Headers (JSON) <input data-auto-rpch placeholder='{"Authorization":"Bearer ..."}'/></label>
@@ -6892,6 +6876,27 @@ export function initTraderWidget(container = document.body) {
           <option value="yes">Yes</option>
         </select>
       </label>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--fdv-border);padding-bottom:8px;margin-bottom:8px; position:relative;">
+      <button class="btn" data-auto-gen>Generate</button>
+      <button class="btn" data-auto-copy style="display:none;">Address</button>
+      <button class="btn" data-auto-snapshot title="Download latest sell snapshot">Snapshot</button>
+      <button class="btn" data-auto-unwind>Return</button>
+      <button class="btn" data-auto-wallet>Wallet</button>
+      <div data-auto-wallet-menu
+           style="display:none; position:absolute; top:38px; left:0; z-index:999; min-width:520px; max-width:92vw;
+                  background:var(--fdv-bg,#111); color:var(--fdv-fg,#fff); border:1px solid var(--fdv-border,#333);
+                  border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,.5); padding:10px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
+          <strong>Wallet Holdings</strong>
+          <button data-auto-dump style="background:#7f1d1d;color:#fff;border:1px solid #a11;padding:6px 10px;border-radius:6px;">Dump Wallet</button>
+        </div>
+        <div data-auto-wallet-sol style="font-size:12px; opacity:0.9; margin-bottom:6px;">SOL: …</div>
+        <div data-auto-wallet-list style="display:flex; flex-direction:column; gap:6px; max-height:40vh; overflow:auto;">
+          <div style="opacity:0.7;">Loading…</div>
+        </div>
+        <div data-auto-wallet-totals style="display: flex;flex-direction: row;justify-content: space-between;margin-top:8px; font-weight:600;">Total: …</div>
+      </div>
     </div>
     <details class="fdv-advanced" data-auto-adv style="margin:8px 0;">
       <summary style="cursor:pointer; user-select:none;">Advanced</summary>
