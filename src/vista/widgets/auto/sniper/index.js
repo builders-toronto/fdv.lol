@@ -1,4 +1,8 @@
-import { importFromUrlWithFallback } from "../../../../utils/netImport.js";
+import { withTimeout } from "../lib/async.js";
+import { isNodeLike } from "../lib/runtime.js";
+import { createSolanaDepsLoader } from "../lib/solana/deps.js";
+import { createConnectionGetter } from "../lib/solana/connection.js";
+import { createConfirmSig } from "../lib/solana/confirm.js";
 
 import { focusMint, getRugSignalForMint } from "../../../meme/metrics/kpi/pumping.js";
 
@@ -85,29 +89,14 @@ const SENTRY_LOG_EVERY_MS = 2200;
 const SENTRY_LOG_PREFETCH_EVERY_MS = 1600;
 
 function _isNodeLike() {
-	try {
-		return typeof process !== "undefined" && !!process.versions?.node;
-	} catch {
-		return false;
-	}
+	return isNodeLike();
 }
 
 function now() {
 	return Date.now();
 }
 
-function withTimeout(promise, ms, { label = "op" } = {}) {
-	const timeoutMs = Math.max(1, Number(ms || 0));
-	let t = null;
-	return Promise.race([
-		Promise.resolve(promise).finally(() => {
-			try { if (t) clearTimeout(t); } catch {}
-		}),
-		new Promise((_, reject) => {
-			t = setTimeout(() => reject(new Error(`${label}_TIMEOUT_${timeoutMs}`)), timeoutMs);
-		}),
-	]);
-}
+// withTimeout imported from ../lib/async.js
 
 let logEl;
 let statusEl;
@@ -838,46 +827,11 @@ function saveState() {
 	} catch {}
 }
 
-let _web3Promise;
-let _bs58Promise;
-let _connPromise;
-
-async function loadWeb3() {
-	try {
-		if (typeof window !== "undefined" && window.solanaWeb3) return window.solanaWeb3;
-	} catch {}
-	if (_web3Promise) return _web3Promise;
-	_web3Promise = (async () =>
-		importFromUrlWithFallback(
-			[
-				"https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.4/+esm",
-				"https://esm.sh/@solana/web3.js@1.95.4?bundle",
-			],
-			{ cacheKey: "fdv:sniper:web3@1.95.4" },
-		))();
-	const mod = await _web3Promise;
-	try {
-		if (typeof window !== "undefined") window.solanaWeb3 = mod;
-	} catch {}
-	return mod;
-}
-
-async function loadBs58() {
-	try {
-		if (typeof window !== "undefined" && window.bs58) return window.bs58;
-	} catch {}
-	if (_bs58Promise) return _bs58Promise;
-	_bs58Promise = (async () =>
-		importFromUrlWithFallback(["https://cdn.jsdelivr.net/npm/bs58@6.0.0/+esm", "https://esm.sh/bs58@6.0.0?bundle"], {
-			cacheKey: "fdv:sniper:bs58@6.0.0",
-		}))();
-	const mod = await _bs58Promise;
-	const bs58 = mod?.default || mod;
-	try {
-		if (typeof window !== "undefined") window.bs58 = bs58;
-	} catch {}
-	return bs58;
-}
+const { loadWeb3, loadBs58 } = createSolanaDepsLoader({
+	cacheKeyPrefix: "fdv:sniper",
+	web3Version: "1.95.4",
+	bs58Version: "6.0.0",
+});
 
 function currentRpcUrl() {
 	try {
@@ -900,38 +854,20 @@ function currentRpcHeaders() {
 	}
 }
 
-async function getConn() {
-	const url = currentRpcUrl();
-	if (_connPromise && _connPromise._url === url) return _connPromise;
-	const { Connection } = await loadWeb3();
-	const headers = currentRpcHeaders();
-	const conn = new Connection(url, {
-		commitment: "confirmed",
-		wsEndpoint: undefined,
-		httpHeaders: headers && Object.keys(headers).length ? headers : undefined,
-	});
-	_connPromise = Promise.resolve(conn);
-	_connPromise._url = url;
-	return conn;
-}
+const getConn = createConnectionGetter({
+	loadWeb3,
+	getRpcUrl: currentRpcUrl,
+	getRpcHeaders: currentRpcHeaders,
+	commitment: "confirmed",
+});
 
-async function confirmSig(sig, { commitment = "confirmed", timeoutMs = 20_000 } = {}) {
-	const conn = await getConn();
-	const start = Date.now();
-	while (Date.now() - start < timeoutMs) {
-		try {
-			const st = await withTimeout(conn.getSignatureStatuses([sig]), 8_000, { label: "sigStatus" });
-			const v = st?.value?.[0];
-			if (v && !v.err) {
-				const c = v.confirmationStatus;
-				if (commitment === "confirmed" && (c === "confirmed" || c === "finalized")) return true;
-				if (commitment === "finalized" && c === "finalized") return true;
-			}
-		} catch {}
-		await new Promise((r) => setTimeout(r, 500));
-	}
-	return false;
-}
+const confirmSig = createConfirmSig({
+	getConn,
+	markRpcStress,
+	defaultCommitment: "confirmed",
+	defaultTimeoutMs: 20_000,
+	throwOnTimeout: false,
+});
 
 async function tokenAccountRentLamports(len = 165) {
 	try {
@@ -2094,14 +2030,14 @@ async function runSellPipelineForPosition(ctx) {
 
 function updateUI() {
 	try {
-		if (!statusEl) return;
+		// if (!statusEl) return;
 		if (startBtn) startBtn.disabled = _inFlight;
 		const curMint = String(state.mint || "").trim();
 		const active = hasAnyActivePosition();
 		const holding = !!active.ok;
 		const sentry = !!state.sentryEnabled;
 		const target = sentry ? (curMint ? `${curMint.slice(0, 4)}…` : "auto") : (curMint ? `${curMint.slice(0, 4)}…` : "-");
-		statusEl.textContent = `Target: ${target}`;
+		// statusEl.textContent = `Target: ${target}`;
 		if (mintEl) {
 			mintEl.disabled = sentry;
 			mintEl.placeholder = sentry ? "Sentry Mode" : "Mint address";
@@ -2655,7 +2591,6 @@ export function initSniperWidget(container = document.body) {
 		<div class="fdv-tab-content active" data-tab-content="sniper">
 			<div class="fdv-grid">
 				<label>Target Mint <input id="sniper-mint" type="text" placeholder="Mint address"></label>
-				
 				<label>Poll (ms) <input id="sniper-poll" type="number" min="250" max="60000" step="50"></label>
 				<label>Buy % (1-70%) <input id="sniper-buy-pct" type="number" min="1" max="70" step="1"></label>
 				<label>Trigger score slope (/min) <input id="sniper-trigger" type="number" min="0" max="20" step="0.1"></label>
@@ -2666,7 +2601,6 @@ export function initSniperWidget(container = document.body) {
 			<div class="fdv-actions" style="margin-top:6px;">
 				<div class="fdv-actions-left" style="display:flex; flex-direction:column; gap:4px;">
 					<label style="display:flex;flex-direction:row;align-items:center;gap:4px;">Sentry<input id="sniper-sentry" type="checkbox"></label>
-					<div class="fdv-rpc-text" id="sniper-status"></div>
 				</div>
 				<div class="fdv-actions-right">
 					<button id="fdv-sniper-start">Start</button>

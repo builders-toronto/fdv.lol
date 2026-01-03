@@ -1717,6 +1717,16 @@ export function createDex(deps = {}) {
 	}
 
 	return {
+		processPendingCredits: async () => {
+			try { return await processPendingCredits?.(); } catch { return 0; }
+		},
+		syncPositionsFromChain: async (ownerPubkeyStr) => {
+			try { return await syncPositionsFromChain?.(ownerPubkeyStr); } catch { return null; }
+		},
+		waitForTokenCredit: async (ownerPubkeyStr, mintStr, opts) => {
+			try { return await waitForTokenCredit?.(ownerPubkeyStr, mintStr, opts); } catch { return { sizeUi: 0, decimals: 6 }; }
+		},
+
 		getJupBase,
 		getMintDecimals,
 		jupFetch,
