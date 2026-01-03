@@ -2120,6 +2120,19 @@ function shouldTriggerBuy(mint) {
 }
 
 async function mirrorBuy(mint, opts = null) {
+	function withTimeout(promise, ms, { label = "op" } = {}) {
+		const timeoutMs = Math.max(1, Number(ms || 0));
+		let t = null;
+		return Promise.race([
+			Promise.resolve(promise).finally(() => {
+				try { if (t) clearTimeout(t); } catch {}
+			}),
+			new Promise((_, reject) => {
+				t = setTimeout(() => reject(new Error(`${label}_TIMEOUT_${timeoutMs}`)), timeoutMs);
+			}),
+		]);
+	}
+
 	let entryMode = "";
 	try {
 		if (opts && typeof opts === "object") entryMode = String(opts.entryMode || "");
@@ -2167,10 +2180,31 @@ async function mirrorBuy(mint, opts = null) {
 		log(`Sniper BUY ${mint.slice(0, 6)}… ~${buySol.toFixed(4)} SOL`, "ok");
 		setInFlight(true);
 		lockMint(mint, "buy", MINT_OP_LOCK_MS);
-		const res = await _getDex().buyWithConfirm(
-			{ signer: kp, mint, solUi: buySol, slippageBps: slip },
-			{ retries: 1, confirmMs: 45_000 },
-		);
+		let sig = "";
+		try {
+			sig = await withTimeout(
+				_getDex().jupSwapWithKeypair({
+					signer: kp,
+					inputMint: SOL_MINT,
+					outputMint: mint,
+					amountUi: buySol,
+					slippageBps: slip,
+				}),
+				75_000,
+				{ label: "sniper_buy" },
+			);
+		} catch (e) {
+			const msg = String(e?.message || e || "");
+			if (/COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|NO_ROUTES|BELOW_MIN_NOTIONAL|0x1788|0x1789/i.test(msg)) {
+				log(`BUY failed (no route): ${msg}`, "warn");
+			} else if (/INSUFFICIENT_LAMPORTS/i.test(msg)) {
+				log(`BUY failed (insufficient SOL): ${msg}`, "warn");
+			} else {
+				log(`BUY error: ${msg}`, "warn");
+			}
+			setMintBlacklist(mint, MINT_BLACKLIST_STAGES_MS?.[0] || 2 * 60 * 1000);
+			return { ok: false };
+		}
 
 		// optimistic seed (for sell pipeline to have a pos)
 		const dec = await safeGetDecimalsFast(mint);
@@ -2202,16 +2236,11 @@ async function mirrorBuy(mint, opts = null) {
 			addCostSol: 0,
 			decimalsHint: pos.decimals,
 			basePos: pos,
-			sig: String(res?.sig || ""),
+			sig: String(sig || ""),
 		});
 		saveState();
-
-		if (res?.ok) {
-			log(`BUY confirmed: ${res.sig}`, "ok");
-			return { ok: true, sig: res.sig };
-		}
-		log(`BUY submitted (pending credit): ${res?.sig || "(no sig)"}`, "warn");
-		return { ok: false, sig: res?.sig || "" };
+		log(`BUY submitted (pending credit): ${String(sig || "")}`, "warn");
+		return { ok: false, sig: String(sig || "") };
 	} finally {
 		setInFlight(false);
 		unlockMint(mint);
