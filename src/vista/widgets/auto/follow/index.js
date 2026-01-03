@@ -1471,6 +1471,7 @@ async function _checkPendingSell() {
 				{ label: "autoBal" },
 			).catch(() => ({ sizeUi: 0, decimals: 0 }));
 			if (!(Number(bal0?.sizeUi || 0) > 0)) {
+				const soldMint = String(state.activeMint || "");
 				log("Pending SELL resolved by balance (now empty).", "ok");
 				state.pendingAction = "";
 				state.pendingSig = "";
@@ -1479,7 +1480,9 @@ async function _checkPendingSell() {
 				_clearActivePositionState();
 				saveState();
 				updateUI();
-				await _startQueuedMintIfAny();
+				await _syncLastSigToNewest(state.targetWallet);
+				const startedQueued = await _startQueuedMintIfAny();
+				if (!startedQueued) await _syncToTargetOpenMintAfterExit(soldMint);
 				_kickPollSoon(250);
 				return true;
 			}
@@ -1502,6 +1505,7 @@ async function _checkPendingSell() {
 			return false;
 		}
 		log("Pending SELL confirmed.", "ok");
+		const soldMint = String(state.activeMint || "");
 		state.pendingAction = "";
 		state.pendingSig = "";
 		state.pendingAttempts = 0;
@@ -1509,7 +1513,9 @@ async function _checkPendingSell() {
 		_clearActivePositionState();
 		saveState();
 		updateUI();
-		await _startQueuedMintIfAny();
+		await _syncLastSigToNewest(state.targetWallet);
+		const startedQueued = await _startQueuedMintIfAny();
+		if (!startedQueued) await _syncToTargetOpenMintAfterExit(soldMint);
 		_kickPollSoon(250);
 		return true;
 	} catch {
@@ -1535,7 +1541,6 @@ async function _maybeTakeProfit() {
 		if (!autoKp) return false;
 		const ownerStr = autoKp.publicKey.toBase58();
 
-		// Dust mints are managed only via the Auto Trader UI; ignore them here.
 		if (isMintInAutoDustCache(state.activeMint, ownerStr)) {
 			log(`Take-profit ignored (dust): ${String(state.activeMint || "").slice(0, 6)}…`, "warn");
 			_clearActivePositionState();

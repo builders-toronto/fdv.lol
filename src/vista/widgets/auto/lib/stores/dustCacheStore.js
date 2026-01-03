@@ -3,8 +3,10 @@ export function createDustCacheStore({ keyPrefix, log } = {}) {
   const _log = typeof log === "function" ? log : () => {};
 
   const _mem = new Map();
-  const _LOAD_TTL_MS = 5000;
-  const _LOG_TTL_MS = 5000;
+
+  // NOTE: `localStorage` is synchronous and can block the UI thread.
+  // Keep an in-memory copy and only reload when explicitly invalidated.
+  // This avoids repeated reads on hot paths (poll loops, quote loops, etc.).
 
   function _key(ownerPubkeyStr) {
     return prefix + String(ownerPubkeyStr || "");
@@ -15,44 +17,59 @@ export function createDustCacheStore({ keyPrefix, log } = {}) {
     if (!owner) return null;
     const hit = _mem.get(owner);
     if (!hit) return null;
-    if (Date.now() - Number(hit.loadedAt || 0) > _LOAD_TTL_MS) return null;
     return hit;
   }
 
   function _setMem(ownerPubkeyStr, data, { loadedAt = Date.now() } = {}) {
     const owner = String(ownerPubkeyStr || "");
     if (!owner) return;
-    const prev = _mem.get(owner) || {};
     _mem.set(owner, {
       data: data && typeof data === "object" ? data : {},
       loadedAt,
-      lastLogAt: Number(prev.lastLogAt || 0),
     });
   }
+
+  function invalidateDustCache(ownerPubkeyStr) {
+    try {
+      const owner = String(ownerPubkeyStr || "");
+      if (!owner) return false;
+      _mem.delete(owner);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Best-effort cross-tab consistency without polling localStorage.
+  try {
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      window.addEventListener("storage", (e) => {
+        try {
+          const k = String(e?.key || "");
+          if (!k || !prefix) return;
+          if (!k.startsWith(prefix)) return;
+          const owner = k.slice(prefix.length);
+          if (owner) _mem.delete(owner);
+        } catch {}
+      });
+    }
+  } catch {}
 
   function loadDustCache(ownerPubkeyStr) {
     const mem = _getMem(ownerPubkeyStr);
     if (mem && mem.data && typeof mem.data === "object") return mem.data;
 
     const k = _key(ownerPubkeyStr);
-    if (localStorage.getItem(k) === null) {
-      localStorage.setItem(k, JSON.stringify({}));
-    }
     try {
-      const raw = localStorage.getItem(k) || "{}";
+      const raw = localStorage.getItem(k);
+      if (raw == null) {
+        const empty = {};
+        _setMem(ownerPubkeyStr, empty);
+        return empty;
+      }
+
       const obj = JSON.parse(raw) || {};
       _setMem(ownerPubkeyStr, obj);
-      try {
-        const rec = _mem.get(String(ownerPubkeyStr || "")) || {};
-        const last = Number(rec.lastLogAt || 0);
-        if (Date.now() - last > _LOG_TTL_MS) {
-          rec.lastLogAt = Date.now();
-          _mem.set(String(ownerPubkeyStr || ""), rec);
-          _log(
-            `Loaded dust cache for ${String(ownerPubkeyStr || "").slice(0, 4)}… with ${Object.keys(obj).length} entries.`,
-          );
-        }
-      } catch {}
       return _mem.get(String(ownerPubkeyStr || ""))?.data || obj;
     } catch {
       return {};
@@ -106,6 +123,7 @@ export function createDustCacheStore({ keyPrefix, log } = {}) {
   return {
     loadDustCache,
     saveDustCache,
+    invalidateDustCache,
     addToDustCache,
     removeFromDustCache,
     dustCacheToList,
