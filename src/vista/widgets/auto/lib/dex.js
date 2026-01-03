@@ -1377,6 +1377,7 @@ export function createDex(deps = {}) {
 		const totalAttemptMs = Math.max(30_000, Number(confirmMs || 0) + 55_000);
 		let slip = Math.max(150, Number(opts.slippageBps ?? getState().slippageBps ?? 150) | 0);
 		const isBuy = (opts?.inputMint === SOL_MINT && opts?.outputMint && opts.outputMint !== SOL_MINT);
+		const minConfirmMs = isBuy ? 32_000 : 15_000;
 		if (isBuy) slip = Math.min(300, Math.max(200, slip));
 
 		const prevDefer = !!window._fdvDeferSeed;
@@ -1407,7 +1408,7 @@ export function createDex(deps = {}) {
 
 					const ok = await safeConfirmSig(sig, {
 						commitment: "confirmed",
-						timeoutMs: Math.max(confirmMs, 22_000),
+						timeoutMs: Math.max(Number(confirmMs || 0), minConfirmMs),
 						requireFinalized: needFinal,
 					}).catch(() => false);
 					if (ok) return { ok: true, sig, slip };

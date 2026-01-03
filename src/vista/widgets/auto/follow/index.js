@@ -1100,6 +1100,15 @@ async function _startQueuedMintIfAny() {
 		if (state.activeMint) return false;
 		const m = String(state.queuedMint || "").trim();
 		if (!m) return false;
+		if (!(await _targetHasTokenBalance(m, state.targetWallet))) {
+			log(`Queued mint not held by target anymore; skipping: ${m.slice(0, 6)}…`, "warn");
+			state.queuedMint = "";
+			state.queuedSig = "";
+			state.queuedAt = 0;
+			saveState();
+			updateUI();
+			return false;
+		}
 		if (isMintInAutoDustCache(m)) {
 			log(`Queued mint is in dust cache; skipping: ${m.slice(0, 6)}…`, "warn");
 			state.queuedMint = "";
@@ -1181,10 +1190,46 @@ function getBuyFraction() {
 	return clampBuyPct(state.buyPct, 25) / 100;
 }
 
+function withTimeout(promise, ms, { label = "op" } = {}) {
+	const timeoutMs = Math.max(1, Number(ms || 0));
+	let t = null;
+	return Promise.race([
+		Promise.resolve(promise).finally(() => {
+			try { if (t) clearTimeout(t); } catch {}
+		}),
+		new Promise((_, reject) => {
+			t = setTimeout(() => reject(new Error(`${label}_TIMEOUT_${timeoutMs}`)), timeoutMs);
+		}),
+	]);
+}
+
+function _isNoRouteLike(v) {
+	return /ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|NO_ROUTES|BELOW_MIN_NOTIONAL|0x1788|0x1789/i.test(String(v || ""));
+}
+
+async function _targetHasTokenBalance(mintStr, targetOwnerStr = "") {
+	try {
+		const mint = String(mintStr || "").trim();
+		if (!mint || mint === SOL_MINT) return false;
+		const owner = String(targetOwnerStr || state.targetWallet || "").trim();
+		if (!owner) return false;
+		if (!(await isValidPubkeyStr(owner))) return false;
+		if (!(await isValidPubkeyStr(mint))) return false;
+		const bal = await withTimeout(getTokenBalanceUiByMint(owner, mint), 8000, { label: "targetBal" });
+		return Number(bal?.sizeUi || 0) > 0;
+	} catch {
+		return false;
+	}
+}
+
 async function _getSigStatus(sig) {
 	try {
 		const conn = await getConn();
-		const st = await conn.getSignatureStatuses([sig], { searchTransactionHistory: true });
+		const st = await withTimeout(
+			conn.getSignatureStatuses([sig], { searchTransactionHistory: true }),
+			6000,
+			{ label: "sigStatus" },
+		);
 		return st?.value?.[0] || null;
 	} catch {
 		return null;
@@ -1858,6 +1903,7 @@ async function _findLatestOpenBuyMintFromTarget(targetPkStr, opts = {}) {
 					if (b === SOL_MINT) continue;
 					if (isMintBlacklisted(b)) continue;
 					if (!(await isValidPubkeyStr(b))) continue;
+					if (!(await _targetHasTokenBalance(b, target))) continue;
 					return b;
 				}
 			}
@@ -1931,6 +1977,7 @@ async function _findLatestBuyMintFromTarget(targetPkStr, opts = {}) {
 					if (b === SOL_MINT) continue;
 					if (isMintBlacklisted(b)) continue;
 					if (!(await isValidPubkeyStr(b))) continue;
+					if (!(await _targetHasTokenBalance(b, target))) continue;
 					return b;
 				}
 			}
@@ -1953,8 +2000,8 @@ async function _syncToTargetOpenMintAfterExit(avoidMint) {
 		const target = String(state.targetWallet || "").trim();
 		if (!target) return false;
 
-		// Best-effort: find the most recent target buy mint from parsed transactions.
-		const b = await _findLatestBuyMintFromTarget(target, { avoidMint, limit: 200 });
+		// Best-effort: find a target mint that is still open/held.
+		const b = await _findLatestOpenBuyMintFromTarget(target, { avoidMint, limit: 300 });
 		if (!b) return false;
 
 		state.activeMint = b;
@@ -2101,25 +2148,36 @@ async function mirrorBuy(mint) {
 	}
 
 	log(`Mirror BUY ${mint.slice(0, 6)}… for ~${buySol.toFixed(4)} SOL`, "ok");
-	const res = await getDex().buyWithConfirm(
-		{ signer: autoKp, mint, solUi: buySol, slippageBps: slip },
-		{ retries: 1, confirmMs: 45_000 },
-	);
-
-	if (res?.ok) {
-		log(`BUY ok: ${res.sig}`, "ok");
-		return { ok: true, sig: res.sig, spentSol: buySol };
+	try {
+		const dex = getDex();
+		const sig = await withTimeout(
+			dex.jupSwapWithKeypair({
+				signer: autoKp,
+				inputMint: SOL_MINT,
+				outputMint: mint,
+				amountUi: buySol,
+				slippageBps: slip,
+			}),
+			75_000,
+			{ label: "follow_buy" },
+		);
+		// Do not block on confirmation here; the pending-state loop will reconcile by balance/status.
+		try { await dex.closeEmptyTokenAtas(autoKp, SOL_MINT, { allowSolMint: true }); } catch {}
+		log(`BUY submitted: ${String(sig || "").slice(0, 12)}…`, "warn");
+		return { ok: false, sig: String(sig || ""), spentSol: buySol };
+	} catch (e) {
+		const msg = String(e?.message || e || "");
+		if (/INSUFFICIENT_LAMPORTS/i.test(msg)) {
+			log(`BUY failed (insufficient SOL): ${msg}`, "error");
+			return { ok: false, sig: "", spentSol: 0 };
+		}
+		if (_isNoRouteLike(msg)) {
+			log(`BUY failed (no route): ${msg}`, "warn");
+			return { ok: false, sig: "", spentSol: 0, blocked: true, reason: "no-route" };
+		}
+		log(`BUY error: ${msg}`, "warn");
+		return { ok: false, sig: "", spentSol: 0 };
 	}
-	if (res?.insufficient) {
-		log(`BUY failed (insufficient SOL): ${res.msg || ""}`, "error");
-		return { ok: false, sig: res?.sig || "", spentSol: 0 };
-	}
-	if (res?.noRoute) {
-		log(`BUY failed (no route): ${res.msg || ""}`, "warn");
-		return { ok: false, sig: res?.sig || "", spentSol: 0 };
-	}
-	log(`BUY submitted but not confirmed yet: ${res?.sig || "(no sig)"}`, "warn");
-	return { ok: false, sig: res?.sig || "", spentSol: buySol };
 }
 
 async function mirrorSell(mint, { noRouteTries = NO_ROUTE_SELL_TRIES, dustOnNoRoute = true } = {}) {
@@ -2153,28 +2211,38 @@ async function mirrorSell(mint, { noRouteTries = NO_ROUTE_SELL_TRIES, dustOnNoRo
 	const decimals = Number.isFinite(Number(bal?.decimals)) ? Number(bal.decimals) : 6;
 
 	const tries = Math.max(1, Number(noRouteTries || NO_ROUTE_SELL_TRIES) | 0);
-	let lastRes = null;
+	let lastErrMsg = "";
 	for (let attempt = 1; attempt <= tries; attempt++) {
 		log(
 			`Mirror SELL ${mint.slice(0, 6)}… amount=${amountUi.toFixed(6)} (try ${attempt}/${tries})`,
 			"ok",
 		);
-		const res = await getDex().sellWithConfirm(
-			{ signer: autoKp, mint, amountUi, slippageBps: slip },
-			{ retries: 1, confirmMs: 30_000 },
-		);
-		lastRes = res;
-
-		if (res?.ok) {
-			log(`SELL ok: ${res.sig}`, "ok");
-			return { ok: true, sig: res.sig };
-		}
-		if (res?.insufficient) {
-			log(`SELL failed (fees/lamports): ${res.msg || ""}`, "error");
-			return { ok: false, sig: res?.sig || "" };
-		}
-		if (_isNoRouteRes(res)) {
-			log(`SELL failed (no route): ${res.msg || ""}`, "warn");
+		try {
+			const dex = getDex();
+			const sig = await withTimeout(
+				dex.jupSwapWithKeypair({
+					signer: autoKp,
+					inputMint: mint,
+					outputMint: SOL_MINT,
+					amountUi,
+					slippageBps: slip,
+				}),
+				75_000,
+				{ label: "follow_sell" },
+			);
+			// Do not block on confirmation; pending-state loop will reconcile by balance/status.
+			try { await dex.closeEmptyTokenAtas(autoKp, SOL_MINT, { allowSolMint: true }); } catch {}
+			log(`SELL submitted: ${String(sig || "").slice(0, 12)}…`, "warn");
+			return { ok: false, sig: String(sig || "") };
+		} catch (e) {
+			const msg = String(e?.message || e || "");
+			lastErrMsg = msg;
+			if (/INSUFFICIENT_LAMPORTS/i.test(msg)) {
+				log(`SELL failed (fees/lamports): ${msg}`, "error");
+				return { ok: false, sig: "" };
+			}
+			if (_isNoRouteLike(msg)) {
+				log(`SELL failed (no route): ${msg}`, "warn");
 			if (attempt < tries) {
 				await delay(500);
 				continue;
@@ -2186,17 +2254,16 @@ async function mirrorSell(mint, { noRouteTries = NO_ROUTE_SELL_TRIES, dustOnNoRo
 					addMintToAutoDustCache({ ownerPubkeyStr: ownerStr, mint, sizeUi: amountUi, decimals });
 					log(`Moved ${mint.slice(0, 6)}… to dust cache after ${tries} no-route try(ies).`, "warn");
 				} catch {}
-				return { ok: true, sig: res?.sig || "", noRoute: true, dusted: true, dust: true, skipped: true, msg: res?.msg || "" };
+				return { ok: true, sig: "", noRoute: true, dusted: true, dust: true, skipped: true, msg };
 			}
 
-			return { ok: false, sig: res?.sig || "", noRoute: true, dusted: false, msg: res?.msg || "" };
+			return { ok: false, sig: "", noRoute: true, dusted: false, msg };
 		}
-		log(`SELL submitted but not confirmed yet: ${res?.sig || "(no sig)"}`, "warn");
-		return { ok: false, sig: res?.sig || "" };
+			log(`SELL error: ${msg}`, "warn");
+			return { ok: false, sig: "" };
+		}
 	}
-
-	const fallbackSig = String(lastRes?.sig || "");
-	return { ok: false, sig: fallbackSig };
+	return { ok: false, sig: "", msg: lastErrMsg };
 }
 
 async function pollOnce() {
@@ -2233,6 +2300,10 @@ async function pollOnce() {
 					log(`Target BUY-next ignored (dust): ${evt.mint.slice(0, 6)}…`, "warn");
 					continue;
 				}
+				if (!(await _targetHasTokenBalance(evt.mint, target))) {
+					log(`Target BUY-next ignored (not holding): ${evt.mint.slice(0, 6)}…`, "help");
+					continue;
+				}
 				_queueNextMint(evt.mint, evt.sig);
 				continue;
 			}
@@ -2248,6 +2319,10 @@ async function pollOnce() {
 				}
 				if (isMintInAutoDustCache(evt.mint)) {
 					log(`Target BUY ignored (dust): ${evt.mint.slice(0, 6)}…`, "warn");
+					continue;
+				}
+				if (!(await _targetHasTokenBalance(evt.mint, target))) {
+					log(`Target BUY ignored (not holding): ${evt.mint.slice(0, 6)}…`, "help");
 					continue;
 				}
 				state.activeMint = evt.mint;
