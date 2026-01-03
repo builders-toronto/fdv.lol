@@ -684,6 +684,23 @@ function log(msg, type = "info") {
 	} catch {}
 }
 
+// Throttled logs to keep the UI responsive and readable.
+const _logThrottle = new Map();
+function logEvery(key, minMs, msg, type = "help") {
+	try {
+		const k = String(key || "");
+		if (!k) return false;
+		const now = Date.now();
+		const prev = Number(_logThrottle.get(k) || 0);
+		if (now - prev < Math.max(0, Number(minMs || 0))) return false;
+		_logThrottle.set(k, now);
+		log(msg, type);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function _isNodeLike() {
 	try {
 		return typeof process !== "undefined" && !!process?.versions?.node;
@@ -1449,7 +1466,12 @@ async function _checkPendingBuy() {
 			_kickPollSoon(250);
 			return false;
 		}
-		log("Pending BUY: waiting for confirm/balance…", "help");
+		logEvery(
+			`pending-buy-wait:${String(state.activeMint || "").slice(0, 8)}`,
+			5000,
+			"Pending BUY: waiting for confirm/balance…",
+			"help",
+		);
 		return false;
 	} catch {
 		return false;
@@ -1502,6 +1524,12 @@ async function _checkPendingSell() {
 				saveState();
 				updateUI();
 			}
+			logEvery(
+				`pending-sell-wait:${String(state.activeMint || "").slice(0, 8)}`,
+				5000,
+				"Pending SELL: waiting for confirm/balance…",
+				"help",
+			);
 			return false;
 		}
 		log("Pending SELL confirmed.", "ok");
@@ -1579,6 +1607,12 @@ async function _maybeTakeProfit() {
 		const outSol = outLamports / 1e9;
 
 		const targetSol = entrySol * (1 + TAKE_PROFIT_BPS / 10_000);
+		logEvery(
+			`tp-check:${String(state.activeMint || "").slice(0, 8)}`,
+			8000,
+			`TP check ${String(state.activeMint || "").slice(0, 6)}…: estOut≈${outSol.toFixed(4)} SOL target≈${targetSol.toFixed(4)} SOL`,
+			"help",
+		);
 		if (outSol + 1e-12 < targetSol) return false;
 
 		const soldMint = String(state.activeMint || "");
@@ -2556,6 +2590,13 @@ async function pollOnce() {
 			return;
 		}
 
+		logEvery(
+			"follow-heartbeat",
+			15_000,
+			`Poll: active=${state.activeMint ? state.activeMint.slice(0, 6) + "…" : "(none)"} pending=${state.pendingAction || "none"}`,
+			"help",
+		);
+
 		// pending confirm checks (no re-buy / re-sell spam)
 		if (state.pendingAction) {
 			await _checkPendingBuy();
@@ -2570,11 +2611,25 @@ async function pollOnce() {
 		} catch {}
 
 		const sigs = await fetchNewSignatures(target);
+		if (!sigs.length) {
+			logEvery(
+				"no-new-sigs",
+				20_000,
+				`No new target txs. Watching ${state.activeMint ? state.activeMint.slice(0, 6) + "…" : "(no mint)"}.`,
+				"help",
+			);
+		} else {
+			log(`New target txs: ${sigs.length}. Processing…`, "help");
+		}
 		for (const sig of sigs) {
 			const evt = await classifyTargetSwap(sig, target);
 			if (!evt) continue;
 
 			if (evt.type === "buy-next") {
+				log(
+					`Target BUY-next detected: ${evt.mint.slice(0, 6)}… (queue)`,
+					"help",
+				);
 				if (isMintBlacklisted(evt.mint)) {
 					log(`Target BUY-next ignored (blacklisted): ${evt.mint.slice(0, 6)}…`, "warn");
 					continue;
@@ -2728,6 +2783,12 @@ async function pollOnce() {
 			if (mint && mint !== SOL_MINT) {
 				const hasPos = await _autoHasTokenBalance(mint);
 				if (!hasPos) {
+					logEvery(
+						`staged:${mint.slice(0, 8)}`,
+						15_000,
+						`Staged: watching ${mint.slice(0, 6)}… (no auto balance yet).`,
+						"help",
+					);
 					// If we can't enter (e.g., soft-rug blacklist or long non-entry), rotate to other target buys.
 					const stagedAge = Date.now() - Number(state.pendingSince || 0);
 					if (isMintBlacklisted(mint) || stagedAge > 60_000) {
@@ -2736,6 +2797,15 @@ async function pollOnce() {
 					}
 
 					const gap = Date.now() - Number(state.lastActionAttempt || 0);
+					if (gap <= 6000) {
+						const leftMs = Math.max(0, 6000 - gap);
+						logEvery(
+							`staged-retry-wait:${mint.slice(0, 8)}`,
+							15_000,
+							`Staged: next entry retry in ~${Math.ceil(leftMs / 1000)}s (${mint.slice(0, 6)}…)`,
+							"help",
+						);
+					}
 					if (gap > 6000) {
 						state.lastActionAttempt = Date.now();
 						saveState();
@@ -2758,6 +2828,13 @@ async function pollOnce() {
 							}
 						}
 					}
+				} else {
+					logEvery(
+						`holding:${mint.slice(0, 8)}`,
+						20_000,
+						`Holding ${mint.slice(0, 6)}…; watching target sells + TP/rug/recycle checks.`,
+						"help",
+					);
 				}
 			}
 		}

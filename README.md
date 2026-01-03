@@ -213,4 +213,4 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
 
-ollow: resume after sell + eliminate dust cache hot-loop reads
+follow: add throttled state logs for monitoring and heartbeat
