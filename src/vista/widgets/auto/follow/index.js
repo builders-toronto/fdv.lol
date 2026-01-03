@@ -23,7 +23,7 @@ import { rpcWait, rpcBackoffLeft, markRpcStress } from "../lib/rpcThrottle.js";
 import { createDustCacheStore } from "../lib/stores/dustCacheStore.js";
 import { setBotRunning } from "../lib/autoLed.js";
 import { loadSplToken } from "../../../../core/solana/splToken.js";
-import { getRugSignalForMint } from "../../../meme/metrics/kpi/pumping.js";
+import { focusMint, getRugSignalForMint } from "../../../meme/metrics/kpi/pumping.js";
 import { importFromUrlWithFallback } from "../../../../utils/netImport.js";
 
 let _web3Promise;
@@ -796,7 +796,14 @@ async function __fdvCli_startFollow(cfg = {}) {
 		const { PublicKey } = await loadWeb3();
 		const conn = await getConn();
 		const pk = new PublicKey(target);
-		const recent = await conn.getSignaturesForAddress(pk, { limit: 25 }, "confirmed");
+		const recent = await withTimeout(
+			conn.getSignaturesForAddress(pk, { limit: 25 }, "confirmed"),
+			12_000,
+			{ label: "getSigs" },
+		).catch((e) => {
+			markRpcStress?.(e, 1500);
+			return [];
+		});
 		const list = Array.isArray(recent) ? recent : [];
 		const newest = String(list?.[0]?.signature || "");
 		state.lastSig = newest || "";
@@ -867,7 +874,38 @@ async function __fdvCli_startFollow(cfg = {}) {
 			state.entryAt = Date.now();
 			saveState();
 		}
-		if (!r?.ok) {
+		if (r?.blocked || !String(r?.sig || "")) {
+			const why = String(r?.reason || "");
+			if (_shouldKeepTrackingAfterBlockedBuy(why)) {
+				log(
+					`Startup BUY not entered yet (${why}). Keeping watch on ${String(state.activeMint || "").slice(0, 6)}…`,
+					"warn",
+				);
+				state.pendingAction = "";
+				state.pendingSig = "";
+				state.pendingAttempts = 0;
+				state.pendingLastTryAt = 0;
+				state.pendingSince = Date.now();
+				state.lastActionAttempt = Date.now();
+				saveState();
+				updateUI();
+				_kickPollSoon(250);
+			} else {
+				log(
+					`Startup BUY not submitted (${String(why).slice(0, 80) || "blocked/failed"}). Clearing and continuing.`,
+					"warn",
+				);
+				_clearActivePositionState();
+				state.pendingAction = "";
+				state.pendingSig = "";
+				state.pendingAttempts = 0;
+				state.pendingLastTryAt = 0;
+				state.pendingSince = 0;
+				saveState();
+				updateUI();
+				_kickPollSoon(250);
+			}
+		} else if (!r?.ok) {
 			state.pendingAction = "buy";
 			state.pendingSig = String(r?.sig || "");
 			state.pendingSince = Date.now();
@@ -1146,7 +1184,24 @@ async function _startQueuedMintIfAny() {
 			saveState();
 		}
 		if (r?.blocked) {
-			log(`Queued BUY blocked (${String(r?.reason || "").slice(0, 80)}). Clearing and continuing.`, "warn");
+			const why = String(r?.reason || "");
+			if (_shouldKeepTrackingAfterBlockedBuy(why)) {
+				log(
+					`Queued BUY not entered yet (${why}). Keeping watch on ${String(state.activeMint || "").slice(0, 6)}…`,
+					"warn",
+				);
+				state.pendingAction = "";
+				state.pendingSig = "";
+				state.pendingAttempts = 0;
+				state.pendingLastTryAt = 0;
+				state.pendingSince = Date.now();
+				state.lastActionAttempt = Date.now();
+				saveState();
+				updateUI();
+				_kickPollSoon(250);
+				return false;
+			}
+			log(`Queued BUY blocked (${String(why).slice(0, 80)}). Clearing and continuing.`, "warn");
 			_clearActivePositionState();
 			state.pendingAction = "";
 			state.pendingSig = "";
@@ -1159,8 +1214,22 @@ async function _startQueuedMintIfAny() {
 			return false;
 		}
 		if (!r?.ok) {
+			const sig = String(r?.sig || "");
+			if (!sig) {
+				log("Queued BUY not submitted (no signature). Clearing and continuing.", "warn");
+				_clearActivePositionState();
+				state.pendingAction = "";
+				state.pendingSig = "";
+				state.pendingAttempts = 0;
+				state.pendingLastTryAt = 0;
+				state.pendingSince = 0;
+				saveState();
+				updateUI();
+				_kickPollSoon(250);
+				return false;
+			}
 			state.pendingAction = "buy";
-			state.pendingSig = String(r?.sig || "");
+			state.pendingSig = sig;
 			state.pendingAttempts = 0;
 			state.pendingLastTryAt = Date.now();
 			state.pendingSince = Date.now();
@@ -1207,6 +1276,11 @@ function _isNoRouteLike(v) {
 	return /ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|NO_ROUTES|BELOW_MIN_NOTIONAL|0x1788|0x1789/i.test(String(v || ""));
 }
 
+function _shouldKeepTrackingAfterBlockedBuy(reason) {
+	const r = String(reason || "");
+	return r === "not-green" || r === "no-green-data";
+}
+
 async function _targetHasTokenBalance(mintStr, targetOwnerStr = "") {
 	try {
 		const mint = String(mintStr || "").trim();
@@ -1219,6 +1293,33 @@ async function _targetHasTokenBalance(mintStr, targetOwnerStr = "") {
 		return Number(bal?.sizeUi || 0) > 0;
 	} catch {
 		return false;
+	}
+}
+
+async function _getGreenSignalForMint(mintStr) {
+	try {
+		const mint = String(mintStr || "").trim();
+		if (!mint || mint === SOL_MINT) return { ok: false, green: false };
+		if (!(await isValidPubkeyStr(mint))) return { ok: false, green: false };
+
+		const foc = await withTimeout(
+			focusMint(mint, { refresh: true, ttlMs: 2500 }),
+			10_000,
+			{ label: "green" },
+		);
+		const row = foc?.row || null;
+		const chg5m = Number(row?.chg5m);
+		const chg1h = Number(row?.chg1h);
+		const badge = String(foc?.badge || row?.vol24 || "");
+		const score = Number(foc?.pumpScore ?? foc?.score ?? NaN);
+
+		const has5m = Number.isFinite(chg5m);
+		const has1h = Number.isFinite(chg1h);
+		const green = (has5m && chg5m > 0) || ((!has5m || chg5m === 0) && has1h && chg1h > 0);
+		return { ok: true, green, chg5m, chg1h, badge, score };
+	} catch (e) {
+		markRpcStress?.(e, 1500);
+		return { ok: false, green: false };
 	}
 }
 
@@ -1263,7 +1364,11 @@ async function _checkPendingBuy() {
 
 		const ownerStr = autoKp.publicKey.toBase58();
 		// Balance is authoritative: if tokens arrived, consider the buy successful even if the sig is hard to confirm.
-		const bal0 = await getTokenBalanceUiByMint(ownerStr, state.activeMint);
+		const bal0 = await withTimeout(
+			getTokenBalanceUiByMint(ownerStr, state.activeMint),
+			10_000,
+			{ label: "autoBal" },
+		).catch(() => ({ sizeUi: 0, decimals: 0 }));
 		if (Number(bal0?.sizeUi || 0) > 0) {
 			log(`Pending BUY resolved by balance: ${Number(bal0.sizeUi).toFixed(6)}`, "ok");
 			state.pendingAction = "";
@@ -1301,7 +1406,19 @@ async function _checkPendingBuy() {
 			updateUI();
 			log(`Pending BUY still not confirmed; retrying (attempt ${state.pendingAttempts}/${PENDING_MAX_ATTEMPTS})…`, "help");
 			const r = await mirrorBuy(state.activeMint);
-			if (r?.sig) {
+			if (r?.blocked || !String(r?.sig || "")) {
+				log(`Pending BUY retry not submitted (${String(r?.reason || "").slice(0, 80) || "blocked/failed"}). Clearing.`, "warn");
+				state.pendingAction = "";
+				state.pendingSig = "";
+				state.pendingAttempts = 0;
+				state.pendingLastTryAt = 0;
+				state.pendingSince = 0;
+				_clearActivePositionState();
+				saveState();
+				updateUI();
+				await _startQueuedMintIfAny();
+				_kickPollSoon(250);
+			} else if (r?.sig) {
 				state.pendingSig = String(r.sig);
 				state.pendingSince = Date.now();
 				saveState();
@@ -1338,7 +1455,11 @@ async function _checkPendingSell() {
 		const autoKp = await getAutoKeypair();
 		if (autoKp) {
 			const ownerStr = autoKp.publicKey.toBase58();
-			const bal0 = await getTokenBalanceUiByMint(ownerStr, state.activeMint);
+			const bal0 = await withTimeout(
+				getTokenBalanceUiByMint(ownerStr, state.activeMint),
+				10_000,
+				{ label: "autoBal" },
+			).catch(() => ({ sizeUi: 0, decimals: 0 }));
 			if (!(Number(bal0?.sizeUi || 0) > 0)) {
 				log("Pending SELL resolved by balance (now empty).", "ok");
 				state.pendingAction = "";
@@ -1414,14 +1535,25 @@ async function _maybeTakeProfit() {
 			return true;
 		}
 
-		const bal = await getTokenBalanceUiByMint(ownerStr, state.activeMint);
+		const bal = await withTimeout(
+			getTokenBalanceUiByMint(ownerStr, state.activeMint),
+			12_000,
+			{ label: "autoBal" },
+		).catch(() => ({ sizeUi: 0, decimals: 0, sizeRaw: "" }));
 		const amountUi = Number(bal?.sizeUi || 0);
 		if (!(amountUi > 0)) return false;
 
 		const rawStr = String(bal?.sizeRaw || "");
 		if (!rawStr) return false;
 
-		const q = await getDex().quoteGeneric(state.activeMint, SOL_MINT, rawStr, 50);
+		const q = await withTimeout(
+			getDex().quoteGeneric(state.activeMint, SOL_MINT, rawStr, 50),
+			15_000,
+			{ label: "quote" },
+		).catch((e) => {
+			markRpcStress?.(e, 1500);
+			return null;
+		});
 		const outLamports = Number(q?.outAmount || 0);
 		if (!(outLamports > 0)) return false;
 		const outSol = outLamports / 1e9;
@@ -1584,7 +1716,11 @@ async function _maybeRecycleExit() {
 		const autoKp = await getAutoKeypair();
 		if (autoKp) {
 			const ownerStr = autoKp.publicKey.toBase58();
-			const bal = await getTokenBalanceUiByMint(ownerStr, mint);
+			const bal = await withTimeout(
+				getTokenBalanceUiByMint(ownerStr, mint),
+				10_000,
+				{ label: "autoBal" },
+			).catch(() => ({ sizeUi: 0 }));
 			if (!(Number(bal?.sizeUi || 0) > 0)) {
 				log(`Recycle: position already empty for ${mint.slice(0, 6)}…; clearing.`, "help");
 				const soldMint = mint;
@@ -1707,10 +1843,14 @@ function _pickLargestDelta(mintToDelta, predicate) {
 async function extractBuySellForTarget(sig, targetOwnerStr) {
 	try {
 		const conn = await getConn();
-		const tx = await conn.getTransaction(sig, {
-			commitment: "confirmed",
-			maxSupportedTransactionVersion: 0,
-		});
+		const tx = await withTimeout(
+			conn.getTransaction(sig, {
+				commitment: "confirmed",
+				maxSupportedTransactionVersion: 0,
+			}),
+			18_000,
+			{ label: "getTx" },
+		);
 		if (!tx || tx?.meta?.err) return null;
 
 		const pre = _sumTokenBalances(tx?.meta?.preTokenBalances, targetOwnerStr);
@@ -1767,7 +1907,14 @@ async function fetchNewSignatures(targetPkStr) {
 	const { PublicKey } = await loadWeb3();
 	const conn = await getConn();
 	const pk = new PublicKey(targetPkStr);
-	const sigs = await conn.getSignaturesForAddress(pk, { limit: 25 }, "confirmed");
+	const sigs = await withTimeout(
+		conn.getSignaturesForAddress(pk, { limit: 25 }, "confirmed"),
+		12_000,
+		{ label: "getSigs" },
+	).catch((e) => {
+		markRpcStress?.(e, 1500);
+		return [];
+	});
 	const list = Array.isArray(sigs) ? sigs : [];
 	if (!list.length) return [];
 
@@ -1804,7 +1951,11 @@ async function _syncLastSigToNewest(targetPkStr) {
 		const { PublicKey } = await loadWeb3();
 		const conn = await getConn();
 		const pk = new PublicKey(target);
-		const recent = await conn.getSignaturesForAddress(pk, { limit: 1 }, "confirmed");
+		const recent = await withTimeout(
+			conn.getSignaturesForAddress(pk, { limit: 1 }, "confirmed"),
+			12_000,
+			{ label: "getSigs" },
+		);
 		const list = Array.isArray(recent) ? recent : [];
 		const newest = String(list?.[0]?.signature || "");
 		if (!newest) return false;
@@ -1862,7 +2013,11 @@ async function _findLatestOpenBuyMintFromTarget(targetPkStr, opts = {}) {
 		for (let page = 0; page < maxPages && scanned < maxSignatures; page++) {
 			let sigs;
 			try {
-				sigs = await conn.getSignaturesForAddress(pk, { limit: pageSize, before }, "confirmed");
+				sigs = await withTimeout(
+					conn.getSignaturesForAddress(pk, { limit: pageSize, before }, "confirmed"),
+					15_000,
+					{ label: "getSigs" },
+				);
 			} catch (e) {
 				markRpcStress?.(e, 1500);
 				return "";
@@ -1880,10 +2035,14 @@ async function _findLatestOpenBuyMintFromTarget(targetPkStr, opts = {}) {
 
 				let parsed;
 				try {
-					parsed = await conn.getParsedTransactions(chunk, {
-						commitment: "confirmed",
-						maxSupportedTransactionVersion: 0,
-					});
+					parsed = await withTimeout(
+						conn.getParsedTransactions(chunk, {
+							commitment: "confirmed",
+							maxSupportedTransactionVersion: 0,
+						}),
+						22_000,
+						{ label: "getParsedTxs" },
+					);
 				} catch (e) {
 					markRpcStress?.(e, 1500);
 					parsed = null;
@@ -1940,7 +2099,11 @@ async function _findLatestBuyMintFromTarget(targetPkStr, opts = {}) {
 		for (let page = 0; page < maxPages && scanned < maxSignatures; page++) {
 			let sigs;
 			try {
-				sigs = await conn.getSignaturesForAddress(pk, { limit: pageSize, before }, "confirmed");
+				sigs = await withTimeout(
+					conn.getSignaturesForAddress(pk, { limit: pageSize, before }, "confirmed"),
+					15_000,
+					{ label: "getSigs" },
+				);
 			} catch (e) {
 				markRpcStress?.(e, 1500);
 				return "";
@@ -1958,10 +2121,14 @@ async function _findLatestBuyMintFromTarget(targetPkStr, opts = {}) {
 
 				let parsed;
 				try {
-					parsed = await conn.getParsedTransactions(chunk, {
-						commitment: "confirmed",
-						maxSupportedTransactionVersion: 0,
-					});
+					parsed = await withTimeout(
+						conn.getParsedTransactions(chunk, {
+							commitment: "confirmed",
+							maxSupportedTransactionVersion: 0,
+						}),
+						22_000,
+						{ label: "getParsedTxs" },
+					);
 				} catch (e) {
 					markRpcStress?.(e, 1500);
 					parsed = null;
@@ -2059,7 +2226,11 @@ async function _autoHasTokenBalance(mintStr) {
 		const autoKp = await getAutoKeypair();
 		if (!autoKp) return false;
 		const ownerStr = autoKp.publicKey.toBase58();
-		const bal = await getTokenBalanceUiByMint(ownerStr, mint);
+		const bal = await withTimeout(
+			getTokenBalanceUiByMint(ownerStr, mint),
+			10_000,
+			{ label: "autoBal" },
+		).catch(() => ({ sizeUi: 0 }));
 		return Number(bal?.sizeUi || 0) > 0;
 	} catch {
 		return false;
@@ -2080,6 +2251,24 @@ async function mirrorBuy(mint) {
 	if (isMintBlacklisted(mint)) {
 		log(`BUY blocked: mint is blacklisted (${String(mint || "").slice(0, 6)}…)`, "warn");
 		return { ok: false, sig: "", spentSol: 0, blocked: true, reason: "blacklisted" };
+	}
+
+	// Momentum sanity: only buy coins that are currently "in the green".
+	{
+		const g = await _getGreenSignalForMint(mint);
+		if (!g?.ok) {
+			log(`BUY blocked: unable to verify green for ${String(mint || "").slice(0, 6)}…`, "warn");
+			return { ok: false, sig: "", spentSol: 0, blocked: true, reason: "no-green-data" };
+		}
+		if (!g.green) {
+			const chg5m = Number.isFinite(g.chg5m) ? g.chg5m : 0;
+			const chg1h = Number.isFinite(g.chg1h) ? g.chg1h : 0;
+			log(
+				`BUY blocked: not green (chg5m=${chg5m.toFixed(2)}% chg1h=${chg1h.toFixed(2)}% badge=${String(g.badge || "").slice(0, 16)})`,
+				"warn",
+			);
+			return { ok: false, sig: "", spentSol: 0, blocked: true, reason: "not-green" };
+		}
 	}
 
 	const slip = getDynamicSlippageBps("buy");
@@ -2197,7 +2386,11 @@ async function mirrorSell(mint, { noRouteTries = NO_ROUTE_SELL_TRIES, dustOnNoRo
 		return /COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|Could not find any route|Below min notional/i.test(msg);
 	};
 	const ownerStr = autoKp.publicKey.toBase58();
-	const bal = await getTokenBalanceUiByMint(ownerStr, mint);
+	const bal = await withTimeout(
+		getTokenBalanceUiByMint(ownerStr, mint),
+		12_000,
+		{ label: "autoBal" },
+	).catch(() => ({ sizeUi: 0, decimals: 0, sizeRaw: "" }));
 	const amountUi = Number(bal?.sizeUi || 0);
 	if (!(amountUi > 0)) {
 		log(`No balance to sell for ${mint.slice(0, 6)}… (already empty).`, "warn");
@@ -2284,8 +2477,13 @@ async function pollOnce() {
 			await _checkPendingSell();
 		}
 
-		// Process target txs first (e.g., sell signals) so we don't get stuck
-		// doing take-profit quoting while missing a target exit.
+		let isStaged = false;
+		try {
+			if (state.activeMint && !state.pendingAction) {
+				isStaged = !(await _autoHasTokenBalance(state.activeMint));
+			}
+		} catch {}
+
 		const sigs = await fetchNewSignatures(target);
 		for (const sig of sigs) {
 			const evt = await classifyTargetSwap(sig, target);
@@ -2310,8 +2508,18 @@ async function pollOnce() {
 
 			if (evt.type === "buy") {
 				if (state.activeMint) {
-					log(`Ignoring BUY ${evt.mint.slice(0, 6)}… (already following ${state.activeMint.slice(0, 6)}…)`, "help");
-					continue;
+					if (!isStaged) {
+						log(`Ignoring BUY ${evt.mint.slice(0, 6)}… (already following ${state.activeMint.slice(0, 6)}…)`, "help");
+						continue;
+					}
+					if (evt.mint === state.activeMint) {
+						// Same mint; keep staged and let the retry loop handle entry.
+						continue;
+					}
+					log(
+						`New target BUY ${evt.mint.slice(0, 6)}… while staged on ${state.activeMint.slice(0, 6)}… Switching staged mint.`,
+						"help",
+					);
 				}
 				if (isMintBlacklisted(evt.mint)) {
 					log(`Target BUY ignored (blacklisted): ${evt.mint.slice(0, 6)}…`, "warn");
@@ -2345,7 +2553,24 @@ async function pollOnce() {
 					saveState();
 				}
 				if (r?.blocked) {
-					log(`Target BUY blocked (${String(r?.reason || "").slice(0, 80)}). Clearing and continuing.`, "warn");
+					const why = String(r?.reason || "");
+					if (_shouldKeepTrackingAfterBlockedBuy(why)) {
+						log(
+							`Target BUY not entered yet (${why}). Keeping watch on ${evt.mint.slice(0, 6)}…`,
+							"warn",
+						);
+						state.pendingAction = "";
+						state.pendingSig = "";
+						state.pendingAttempts = 0;
+						state.pendingLastTryAt = 0;
+						state.pendingSince = Date.now();
+						state.lastActionAttempt = Date.now();
+						saveState();
+						updateUI();
+						_kickPollSoon(250);
+						continue;
+					}
+					log(`Target BUY blocked (${String(why).slice(0, 80)}). Clearing and continuing.`, "warn");
 					_clearActivePositionState();
 					state.pendingAction = "";
 					state.pendingSig = "";
@@ -2359,11 +2584,27 @@ async function pollOnce() {
 					continue;
 				}
 				if (!r?.ok) {
+					const sig = String(r?.sig || "");
+					if (!sig) {
+						log("Target BUY not submitted (no signature). Clearing and continuing.", "warn");
+						_clearActivePositionState();
+						state.pendingAction = "";
+						state.pendingSig = "";
+						state.pendingAttempts = 0;
+						state.pendingLastTryAt = 0;
+						state.pendingSince = 0;
+						saveState();
+						updateUI();
+						await _startQueuedMintIfAny();
+						_kickPollSoon(250);
+						continue;
+					}
 					state.pendingAction = "buy";
-					state.pendingSig = String(r?.sig || "");
+					state.pendingSig = sig;
 					state.pendingAttempts = 0;
 					state.pendingLastTryAt = Date.now();
 					state.pendingSince = Date.now();
+					state.lastActionAttempt = Date.now();
 					saveState();
 					updateUI();
 				}
@@ -2393,6 +2634,38 @@ async function pollOnce() {
 				updateUI();
 				if (r?.ok === true || r?.noRoute || r?.dust) {
 					await _startQueuedMintIfAny();
+				}
+			}
+		}
+
+		if (state.activeMint && !state.pendingAction) {
+			const mint = String(state.activeMint || "").trim();
+			if (mint && mint !== SOL_MINT) {
+				const hasPos = await _autoHasTokenBalance(mint);
+				if (!hasPos) {
+					const gap = Date.now() - Number(state.lastActionAttempt || 0);
+					if (gap > 6000) {
+						state.lastActionAttempt = Date.now();
+						saveState();
+						const r = await mirrorBuy(mint);
+						if (Number(r?.spentSol || 0) > 0) {
+							state.entrySol = Number(r.spentSol);
+							state.entryAt = Date.now();
+							saveState();
+						}
+						if (!r?.blocked && !r?.ok) {
+							const sig = String(r?.sig || "");
+							if (sig) {
+								state.pendingAction = "buy";
+								state.pendingSig = sig;
+								state.pendingAttempts = 0;
+								state.pendingLastTryAt = Date.now();
+								state.pendingSince = Date.now();
+								saveState();
+								updateUI();
+							}
+						}
+					}
 				}
 			}
 		}
@@ -2476,7 +2749,14 @@ async function startFollowBot() {
 		const { PublicKey } = await loadWeb3();
 		const conn = await getConn();
 		const pk = new PublicKey(target);
-		const recent = await conn.getSignaturesForAddress(pk, { limit: 25 }, "confirmed");
+		const recent = await withTimeout(
+			conn.getSignaturesForAddress(pk, { limit: 25 }, "confirmed"),
+			12_000,
+			{ label: "getSigs" },
+		).catch((e) => {
+			markRpcStress?.(e, 1500);
+			return [];
+		});
 		const list = Array.isArray(recent) ? recent : [];
 		const newest = String(list?.[0]?.signature || "");
 		state.lastSig = newest || "";
@@ -2544,7 +2824,38 @@ async function startFollowBot() {
 			state.entryAt = Date.now();
 			saveState();
 		}
-		if (!r?.ok) {
+		if (r?.blocked || !String(r?.sig || "")) {
+			const why = String(r?.reason || "");
+			if (_shouldKeepTrackingAfterBlockedBuy(why)) {
+				log(
+					`Startup BUY not entered yet (${why}). Keeping watch on ${String(state.activeMint || "").slice(0, 6)}…`,
+					"warn",
+				);
+				state.pendingAction = "";
+				state.pendingSig = "";
+				state.pendingAttempts = 0;
+				state.pendingLastTryAt = 0;
+				state.pendingSince = Date.now();
+				state.lastActionAttempt = Date.now();
+				saveState();
+				updateUI();
+				_kickPollSoon(250);
+			} else {
+				log(
+					`Startup BUY not submitted (${String(why).slice(0, 80) || "blocked/failed"}). Clearing and continuing.`,
+					"warn",
+				);
+				_clearActivePositionState();
+				state.pendingAction = "";
+				state.pendingSig = "";
+				state.pendingAttempts = 0;
+				state.pendingLastTryAt = 0;
+				state.pendingSince = 0;
+				saveState();
+				updateUI();
+				_kickPollSoon(250);
+			}
+		} else if (!r?.ok) {
 			state.pendingAction = "buy";
 			state.pendingSig = String(r?.sig || "");
 			state.pendingSince = Date.now();
@@ -2651,7 +2962,11 @@ export function initFollowWidget(container = document.body) {
 					const autoKp = await getAutoKeypair();
 					if (!autoKp) return false;
 					const ownerStr = autoKp.publicKey.toBase58();
-					const bal = await getTokenBalanceUiByMint(ownerStr, String(mint || ""));
+					const bal = await withTimeout(
+						getTokenBalanceUiByMint(ownerStr, String(mint || "")),
+						10_000,
+						{ label: "autoBal" },
+					).catch(() => ({ sizeUi: 0, decimals: 0, sizeRaw: "" }));
 					return addMintToAutoDustCache({
 						ownerPubkeyStr: ownerStr,
 						mint: String(mint || "").trim(),
