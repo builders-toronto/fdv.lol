@@ -1095,7 +1095,17 @@ function saveState() {
 	});
 }
 
-const TAKE_PROFIT_BPS = 1000; // +10%
+const TAKE_PROFIT_BPS = 1000; // +1%
+
+const TAKE_PROFIT_CHECK_MIN_MS = 8000;
+let _lastTakeProfitCheckAt = 0;
+
+const RUG_CHECK_MIN_MS = 2500;
+let _lastRugCheckAt = 0;
+let _rugSoftLogAt = null;
+
+const STAGED_ROTATE_MIN_MS = 20_000;
+let _lastStagedRotateAt = 0;
 
 const RECYCLE_HOLD_MAX_MIN = 1500; // 25 hours
 
@@ -1513,6 +1523,11 @@ async function _maybeTakeProfit() {
 		if (!state.activeMint) return false;
 		if (state.pendingAction) return false;
 		if (!state.entryMint || state.entryMint !== state.activeMint) return false;
+
+		const nowTs = Date.now();
+		if (nowTs - _lastTakeProfitCheckAt < TAKE_PROFIT_CHECK_MIN_MS) return false;
+		_lastTakeProfitCheckAt = nowTs;
+
 		const entrySol = Number(state.entrySol || 0);
 		if (!(entrySol > 0)) return false;
 
@@ -1548,7 +1563,7 @@ async function _maybeTakeProfit() {
 
 		const q = await withTimeout(
 			getDex().quoteGeneric(state.activeMint, SOL_MINT, rawStr, 50),
-			15_000,
+			9_000,
 			{ label: "quote" },
 		).catch((e) => {
 			markRpcStress?.(e, 1500);
@@ -1606,6 +1621,10 @@ async function _maybeRugExit() {
 		if (!state.activeMint) return false;
 		if (state.pendingAction) return false;
 
+		const nowTs = Date.now();
+		if (nowTs - _lastRugCheckAt < RUG_CHECK_MIN_MS) return false;
+		_lastRugCheckAt = nowTs;
+
 		const mint = String(state.activeMint || "").trim();
 		if (!mint) return false;
 
@@ -1637,10 +1656,20 @@ async function _maybeRugExit() {
 
 		if (!(sev >= thr)) {
 			setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS);
-			log(
-				`Rug soft-flag for ${mint.slice(0, 6)}… sev=${sev.toFixed(2)} < ${thr.toFixed(2)} — staged blacklist, no forced sell.`,
-				"warn",
-			);
+			try {
+				if (!_rugSoftLogAt) _rugSoftLogAt = new Map();
+				const last = Number(_rugSoftLogAt.get(mint) || 0);
+				if (nowTs - last > 15_000) {
+					_rugSoftLogAt.set(mint, nowTs);
+					log(
+						`Rug soft-flag for ${mint.slice(0, 6)}… sev=${sev.toFixed(2)} < ${thr.toFixed(2)} — staged blacklist, no forced sell.`,
+						"warn",
+					);
+				}
+			} catch {}
+
+			// If we haven't actually entered yet, don't tunnel on a now-blacklisted staged mint.
+			try { await _maybeRotateStagedMint("rug-soft"); } catch {}
 			return false;
 		}
 
@@ -2237,6 +2266,57 @@ async function _autoHasTokenBalance(mintStr) {
 	}
 }
 
+async function _maybeRotateStagedMint(reason = "") {
+	try {
+		if (!state.enabled) return false;
+		if (!state.activeMint) return false;
+		if (state.pendingAction) return false;
+		const target = String(state.targetWallet || "").trim();
+		if (!target) return false;
+
+		const nowTs = Date.now();
+		if (nowTs - _lastStagedRotateAt < STAGED_ROTATE_MIN_MS) return false;
+
+		const cur = String(state.activeMint || "").trim();
+		if (!cur) return false;
+
+		const hasPos = await _autoHasTokenBalance(cur);
+		if (hasPos) return false;
+
+		_lastStagedRotateAt = nowTs;
+		const next = await _findLatestOpenBuyMintFromTarget(target, {
+			avoidMint: cur,
+			maxSignatures: 800,
+			pageSize: 250,
+			maxPages: 4,
+		});
+		if (!next || next === cur) return false;
+		if (isMintInAutoDustCache(next)) return false;
+		if (isMintBlacklisted(next)) return false;
+
+		log(
+			`Staged mint ${cur.slice(0, 6)}…${reason ? ` (${String(reason).slice(0, 32)})` : ""} → switching to ${next.slice(0, 6)}…`,
+			"help",
+		);
+		state.activeMint = next;
+		state.entryMint = next;
+		state.entrySol = 0;
+		state.entryAt = Date.now();
+		state.pendingSince = Date.now();
+		state.lastActionAttempt = 0;
+		state.pendingAction = "";
+		state.pendingSig = "";
+		state.pendingAttempts = 0;
+		state.pendingLastTryAt = 0;
+		saveState();
+		updateUI();
+		_kickPollSoon(250);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 const DYN_SLIP_MIN_BPS = 50;
 const DYN_SLIP_MAX_BPS = 2500;
 
@@ -2643,6 +2723,13 @@ async function pollOnce() {
 			if (mint && mint !== SOL_MINT) {
 				const hasPos = await _autoHasTokenBalance(mint);
 				if (!hasPos) {
+					// If we can't enter (e.g., soft-rug blacklist or long non-entry), rotate to other target buys.
+					const stagedAge = Date.now() - Number(state.pendingSince || 0);
+					if (isMintBlacklisted(mint) || stagedAge > 60_000) {
+						const rotated = await _maybeRotateStagedMint(isMintBlacklisted(mint) ? "blacklisted" : "stalled");
+						if (rotated) return;
+					}
+
 					const gap = Date.now() - Number(state.lastActionAttempt || 0);
 					if (gap > 6000) {
 						state.lastActionAttempt = Date.now();
