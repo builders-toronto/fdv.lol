@@ -150,11 +150,20 @@ export function createExecuteSellDecisionPolicy({
             }
           } else {
             const reason = (ctx.decision && ctx.decision.reason) ? ctx.decision.reason : "done";
-            const estFullSol = ctx.curSol > 0 ? ctx.curSol : await quoteOutSol(mint, sellUi2, pos.decimals).catch(()=>0);
-            log(`Sold ${sellUi2.toFixed(6)} ${mint.slice(0,4)}… -> ~${estFullSol.toFixed(6)} SOL (${reason})`);
+            const estFullSolGross = ctx.curSol > 0 ? ctx.curSol : await quoteOutSol(mint, sellUi2, pos.decimals).catch(()=>0);
+            const estFullSolNet = (Number.isFinite(ctx.curSolNet) && ctx.curSolNet > 0) ? ctx.curSolNet : estFullSolGross;
+            let reclaimedSol = 0;
+            try {
+              const closed = await closeEmptyTokenAtas(kp, mint);
+              reclaimedSol = Number(closed?.reclaimedLamportsEst || 0) / 1e9;
+            } catch {}
+            const estTotalSol = estFullSolNet + reclaimedSol;
+            log(
+              `Sold ${sellUi2.toFixed(6)} ${mint.slice(0,4)}… -> ~${estTotalSol.toFixed(6)} SOL (${reason})` +
+              (reclaimedSol > 0 ? ` (+rent≈${reclaimedSol.toFixed(6)} SOL)` : "")
+            );
             const costSold = Number(pos.costSol || 0);
-            await addRealizedPnl(estFullSol, costSold, "Full sell PnL");
-            try { await closeEmptyTokenAtas(kp, mint); } catch {}
+            await addRealizedPnl(estTotalSol, costSold, "Full sell PnL");
             delete state.positions[mint];
             removeFromPosCache(kp.publicKey.toBase58(), mint);
             try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
@@ -277,11 +286,20 @@ export function createExecuteSellDecisionPolicy({
           }
         } else {
           const reason = (ctx.decision && ctx.decision.reason) ? ctx.decision.reason : "done";
-          const estFullSol = ctx.curSol > 0 ? ctx.curSol : await quoteOutSol(mint, sellUi, pos.decimals).catch(()=>0);
-          log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ~${estFullSol.toFixed(6)} SOL (${reason})`);
+          const estFullSolGross = ctx.curSol > 0 ? ctx.curSol : await quoteOutSol(mint, sellUi, pos.decimals).catch(()=>0);
+          const estFullSolNet = (Number.isFinite(ctx.curSolNet) && ctx.curSolNet > 0) ? ctx.curSolNet : estFullSolGross;
+          let reclaimedSol = 0;
+          try {
+            const closed = await closeEmptyTokenAtas(kp, mint);
+            reclaimedSol = Number(closed?.reclaimedLamportsEst || 0) / 1e9;
+          } catch {}
+          const estTotalSol = estFullSolNet + reclaimedSol;
+          log(
+            `Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… -> ~${estTotalSol.toFixed(6)} SOL (${reason})` +
+            (reclaimedSol > 0 ? ` (+rent≈${reclaimedSol.toFixed(6)} SOL)` : "")
+          );
           const costSold = Number(pos.costSol || 0);
-          await addRealizedPnl(estFullSol, costSold, "Full sell PnL");
-          try { await closeEmptyTokenAtas(kp, mint); } catch {}
+          await addRealizedPnl(estTotalSol, costSold, "Full sell PnL");
           delete state.positions[mint];
           removeFromPosCache(kp.publicKey.toBase58(), mint);
           save();
