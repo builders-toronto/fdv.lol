@@ -25,60 +25,6 @@ function emitChange() {
   try { document.dispatchEvent(new CustomEvent(EVT.CHANGE)); } catch {}
 }
 
-function ensureStyles() {
-  if (document.getElementById("fdvLibraryCss")) return;
-  const css = `
-    .fdv-lib-btn {
-      display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px;margin-bottom: 15px;
-      height: 36px; padding: 0 10px; border-radius: 10px;
-      background: transparent; border: none; font-weight: 700;
-      cursor: pointer; transition: filter .15s ease, border-color .15s ease, background .15s ease;
-    }
-    .fdv-lib-btn:hover { filter: brightness(1.06); }
-    .fdv-lib-heart { display:inline-block; font-size:16px; line-height:1; }
-    .fdv-lib-count {
-      min-width:20px; height:20px; padding:0 6px; display:inline-flex; align-items:center; justify-content:center;
-      border-radius:999px; font-size:12px; font-weight:800; background: rgba(26,255,213,.10);
-      border:1px solid rgba(26,255,213,.20); color: var(--text);
-    }
-    /* Modal */
-    .fdv-lib-backdrop { position: fixed; inset: 0; z-index: 9998; display:none; background: rgba(0,0,0,.45); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
-    .fdv-lib-backdrop.show { display:block; }
-    .fdv-lib-modal { position: fixed; z-index: 9999; inset: 8% 50% auto 50%; transform: translate(-50%, 0); width: min(960px, 94vw);
-      max-height: 80vh; overflow: hidden; border-radius: 14px; background: linear-gradient(180deg, rgba(15,22,37,.96), rgba(15,22,37,.90));
-      border: 1px solid rgba(122,222,255,.16); box-shadow: 0 24px 64px rgba(0,0,0,.55), inset 0 0 0 1px rgba(26,255,213,.05);
-      color: var(--text); display: grid; grid-template-rows: auto 1fr auto; }
-    .fdv-lib-header { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px; border-bottom:1px solid rgba(122,222,255,.10); }
-    .fdv-lib-title { font-size:16px; font-weight:800; }
-    .fdv-lib-close { background:none; border:none; color:var(--text); font-size:22px; line-height:1; cursor:pointer; }
-    .fdv-lib-tabs { display:flex; gap:6px; padding:10px 12px; }
-    .fdv-lib-tab { padding:8px 12px; border-radius:10px; cursor:pointer; border:1px solid rgba(122,222,255,.12); background: rgba(255,255,255,.05); font-weight:700; }
-    .fdv-lib-tab[aria-selected="true"] { border-color: rgba(26,255,213,.40); box-shadow: inset 0 0 0 1px rgba(26,255,213,.16); }
-    .fdv-lib-body { padding:10px 12px 14px; overflow:auto; }
-    .fdv-lib-footer { display:flex; justify-content:flex-end; gap:8px; padding:10px 12px; border-top:1px solid rgba(122,222,255,.10); background: linear-gradient(180deg, rgba(0,0,0,.00), rgba(0,0,0,.10)); }
-    /* Grid */
-    .fdv-lib-grid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:10px; }
-    @media (max-width: 900px){ .fdv-lib-grid { grid-template-columns: repeat(2, 1fr); } }
-    @media (max-width: 560px){ .fdv-lib-grid { grid-template-columns: 1fr; } }
-    .fdv-lib-card { display:flex; gap:10px; align-items:flex-start; padding:10px; border-radius:12px; background: linear-gradient(180deg, rgba(14,16,27,.95), rgba(0,0,0,.80)); border:1px solid rgba(122,222,255,.12); }
-    .fdv-lib-logo { width:36px; height:36px; border-radius:10px; object-fit:cover; background:#0b111d; border:1px solid rgba(122,222,255,.20); }
-    .fdv-lib-main { min-width:0; flex:1; display:flex; flex-direction:column; gap:6px; }
-    .fdv-lib-line1 { display:flex; align-items:center; gap:8px; min-width:0; }
-    .fdv-lib-sym { font-weight:800; }
-    .fdv-lib-name { color:var(--muted); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .fdv-lib-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-    .fdv-pill { display:inline-flex; align-items:center; gap:6px; padding:3px 8px; border-radius:999px; background: rgba(148,163,184,.10); border:1px solid rgba(122,222,255,.14); font-size:12px; }
-    .fdv-pill.link { cursor:pointer; background: rgba(123,241,255,.06); border-color: rgba(122,222,255,.22); color: var(--muted); }
-    .fdv-lib-table { width:100%; border-collapse:collapse; }
-    .fdv-lib-table th, .fdv-lib-table td { padding:8px; text-align:left; border-bottom:1px solid rgba(122,222,255,.10); overflow:scroll; }
-    .fdv-up { color:#19c37d; } .fdv-down { color:#ff6f6f; }
-  `;
-  const st = document.createElement("style");
-  st.id = "fdvLibraryCss";
-  st.textContent = css;
-  document.head.appendChild(st);
-}
-
 function lockScroll(on) {
   try {
     const b = document.body;
@@ -232,7 +178,35 @@ async function renderModalPanels(modal) {
       </div>
     `;
     favEl.querySelectorAll("[data-lib-remove]").forEach(btn => {
-      btn.addEventListener("click", () => toggleFavorite(btn.getAttribute("data-lib-remove"), { force: false }));
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const mint = btn.getAttribute("data-lib-remove");
+        const card = btn.closest(".fdv-lib-card");
+
+        if (card && card.dataset.fdvlExiting === "1") return;
+        if (card) {
+          card.dataset.fdvlExiting = "1";
+          card.classList.add("fdv-lib-exit");
+
+          const removeNow = () => {
+            try { card.remove(); } catch {}
+
+            try {
+              const remaining = favEl.querySelectorAll(".fdv-lib-card").length;
+              if (!remaining) {
+                favEl.innerHTML = `<div style="opacity:.8;padding:10px;">No favorites yet. Tap the heart on a token card to add it.</div>`;
+              }
+            } catch {}
+          };
+
+          const t = setTimeout(removeNow, 220);
+          card.addEventListener("animationend", () => { clearTimeout(t); removeNow(); }, { once: true });
+        }
+
+        toggleFavorite(mint, { force: false });
+      });
     });
   }
 
@@ -323,7 +297,6 @@ async function fetchFavCount(mint) {
 }
 
 export function initLibrary() {
-  ensureStyles();
   if (!window.__fdvLibWired) {
     window.__fdvLibWired = true;
     document.addEventListener(EVT.CHANGE, () => {
@@ -349,7 +322,6 @@ export function getFavorites() {
 }
 
 export function openLibraryModal() {
-  ensureStyles();
   ensureModal();
 }
 
@@ -366,7 +338,6 @@ export function sendFavoriteButtonHTML({ mint, symbol = "", name = "", imageUrl 
 }
 
 export function createSendFavoriteButton({ mint, symbol = "", name = "", imageUrl = "", className = "fdv-lib-btn" } = {}) {
-  ensureStyles();
   const sel = `[data-fav-send][data-mint="${CSS.escape(mint)}"],[data-fav-btn][data-mint="${CSS.escape(mint)}"]`;
   const existing = document.querySelector(sel);
   if (existing) {
@@ -453,7 +424,6 @@ export function ensureSendFavoriteButton(container, opts) {
 }
 
 export function createOpenLibraryButton({ label = "Favorites", className = "fdv-lib-btn" } = {}) {
-  ensureStyles();
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = className;
@@ -464,7 +434,6 @@ export function createOpenLibraryButton({ label = "Favorites", className = "fdv-
 }
 
 export function bindFavoriteButtons(root = document) {
-  ensureStyles();
   // de-dup count hydration per mint
   const mints = new Set();
   root.querySelectorAll("[data-fav-send],[data-fav-btn]").forEach((btn) => {

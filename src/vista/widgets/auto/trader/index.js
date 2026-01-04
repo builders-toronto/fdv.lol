@@ -6877,25 +6877,29 @@ export function initTraderWidget(container = document.body) {
         </select>
       </label>
     </div>
-    <div style="display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--fdv-border);padding-bottom:8px;margin-bottom:8px; position:relative;">
-      <button class="btn" data-auto-gen>Generate</button>
-      <button class="btn" data-auto-copy style="display:none;">Address</button>
-      <button class="btn" data-auto-snapshot title="Download latest sell snapshot">Snapshot</button>
-      <button class="btn" data-auto-unwind>Return</button>
-      <button class="btn" data-auto-wallet>Wallet</button>
-      <div data-auto-wallet-menu
-           style="display:none; position:absolute; top:38px; left:0; z-index:999; min-width:520px; max-width:92vw;
-                  background:var(--fdv-bg,#111); color:var(--fdv-fg,#fff); border:1px solid var(--fdv-border,#333);
-                  border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,.5); padding:10px;">
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
-          <strong>Wallet Holdings</strong>
-          <button data-auto-dump style="background:#7f1d1d;color:#fff;border:1px solid #a11;padding:6px 10px;border-radius:6px;">Dump Wallet</button>
+        <div class="fdv-tool-row">
+      <button class="btn tool-btn" data-auto-gen>Generate</button>
+      <button class="btn tool-btn" data-auto-copy style="display:none;">Address</button>
+      <button class="btn tool-btn" data-auto-snapshot title="Download latest sell snapshot">Snapshot</button>
+      <button class="btn tool-btn" data-auto-unwind>Return</button>
+      <button class="btn tool-btn" data-auto-wallet>Wallet</button>
+      <div data-auto-wallet-menu class="fdv-modal-backdrop">
+        <div class="fdv-modal fdv-wallet-modal" data-auto-wallet-modal role="dialog" aria-modal="true" aria-label="Auto Wallet">
+          <div class="fdv-modal-header">
+            <strong>Wallet Holdings</strong>
+            <button class="fdv-close" data-auto-wallet-close aria-label="Close">×</button>
+          </div>
+          <div class="fdv-modal-body fdv-wallet-modal-body">
+            <div class="fdv-wallet-actions">
+              <button data-auto-dump style="background:#7f1d1d;color:#fff;border:1px solid #a11;padding:6px 10px;border-radius:6px;">Dump Wallet</button>
+            </div>
+            <div data-auto-wallet-sol class="fdv-wallet-sol">SOL: …</div>
+            <div data-auto-wallet-list class="fdv-wallet-list">
+              <div style="opacity:0.7;">Loading…</div>
+            </div>
+            <div data-auto-wallet-totals class="fdv-wallet-totals">Total: …</div>
+          </div>
         </div>
-        <div data-auto-wallet-sol style="font-size:12px; opacity:0.9; margin-bottom:6px;">SOL: …</div>
-        <div data-auto-wallet-list style="display:flex; flex-direction:column; gap:6px; max-height:40vh; overflow:auto;">
-          <div style="opacity:0.7;">Loading…</div>
-        </div>
-        <div data-auto-wallet-totals style="display: flex;flex-direction: row;justify-content: space-between;margin-top:8px; font-weight:600;">Total: …</div>
       </div>
     </div>
     <details class="fdv-advanced" data-auto-adv style="margin:8px 0;">
@@ -7100,6 +7104,7 @@ export function initTraderWidget(container = document.body) {
 
   const walletBtn      = wrap.querySelector("[data-auto-wallet]");
   const walletMenuEl   = wrap.querySelector("[data-auto-wallet-menu]");
+  const walletModalEl  = walletMenuEl?.querySelector?.("[data-auto-wallet-modal]") || null;
   const walletListEl   = wrap.querySelector("[data-auto-wallet-list]");
   const walletTotalsEl = wrap.querySelector("[data-auto-wallet-totals]");
   const walletSolEl    = wrap.querySelector("[data-auto-wallet-sol]");
@@ -7405,24 +7410,30 @@ export function initTraderWidget(container = document.body) {
   let walletOpen = false;
   function closeWalletMenu() {
     walletOpen = false;
-    walletMenuEl.style.display = "none";
+    try { walletMenuEl.classList.remove("show"); } catch {}
+    try { if (walletModalEl) walletModalEl.style.display = "none"; } catch {}
   }
   walletBtn.addEventListener("click", async (e) => {
     e.preventDefault(); e.stopPropagation();
     walletOpen = !walletOpen;
     if (walletOpen) {
       await renderWalletMenu();
-      walletMenuEl.style.display = "block";
+      try { walletMenuEl.classList.add("show"); } catch {}
+      try { if (walletModalEl) walletModalEl.style.display = "flex"; } catch {}
     } else {
       closeWalletMenu();
     }
   });
 
-  document.addEventListener("click", (e) => {
+  // Close modal when clicking the backdrop or the close button
+  walletMenuEl.addEventListener("click", (e) => {
     if (!walletOpen) return;
     const t = e.target;
-    if (t === walletBtn || walletMenuEl.contains(t)) return;
-    closeWalletMenu();
+    if (t === walletMenuEl || (t && t.closest && t.closest("[data-auto-wallet-close]"))) {
+      e.preventDefault();
+      e.stopPropagation();
+      closeWalletMenu();
+    }
   });
 
   dumpBtn.addEventListener("click", async (e) => {
