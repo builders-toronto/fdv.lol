@@ -1511,6 +1511,10 @@ export function createDex(deps = {}) {
 
 			if (!ixs.length) return false;
 
+			let rentLamports = 2_039_280;
+			try { rentLamports = await conn.getMinimumBalanceForRentExemption(165); } catch {}
+			const reclaimedLamportsEst = Math.max(0, (ixs.length | 0)) * Math.max(0, Math.floor(Number(rentLamports || 0)));
+
 			const tx = new Transaction();
 			for (const ix of ixs) tx.add(ix);
 			tx.feePayer = ownerPk;
@@ -1518,7 +1522,7 @@ export function createDex(deps = {}) {
 			tx.sign(signer);
 			const sig = await conn.sendRawTransaction(tx.serialize(), { preflightCommitment: "processed", maxRetries: 2 });
 			log(`Closed empty ATAs for ${mint.slice(0, 4)}…: ${sig}`);
-			return true;
+			return { ok: true, sig, closedCount: (ixs.length | 0), reclaimedLamportsEst };
 		} catch {
 			return false;
 		}

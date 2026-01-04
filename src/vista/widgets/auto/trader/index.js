@@ -647,8 +647,8 @@ let state = {
   lifetimeMins: 60,         
   endAt: 0,                 
   buyPct: 0.2,              
-  minBuySol: 0.06,
-  maxBuySol: 0.12,       
+  minBuySol: 0.12,
+  maxBuySol: 0.24,       
   rpcUrl: "",    
   oldWallets: [],         
 
@@ -691,7 +691,8 @@ let state = {
   warmingMinProfitPct: 2,
   warmingDecayPctPerMin: 0.45,      
   warmingDecayDelaySecs: 20,         
-  warmingMinProfitFloorPct: 0,   
+  warmingMinProfitFloorPct: 1.0,
+  warmingProfitFloorLossBypassPct: -25,
   warmingAutoReleaseSecs: 45,
   warmingUptickMinAccel: 1.001,        
   warmingUptickMinPre: 0.35,         
@@ -965,8 +966,8 @@ const CONFIG_SCHEMA = {
   budgetUi:                 { type: "number",  def: 0.5,  min: 0, max: 1 },
   minSecsBetween:           { type: "number",  def: 90,   min: 0, max: 3600 },
   buyPct:                   { type: "number",  def: 0.2,  min: 0.01, max: 0.5 },
-  minBuySol:                { type: "number",  def: 0.06, min: 0.01, max: 1 },
-  maxBuySol:                { type: "number",  def: 0.12, min: 0.06, max: 5 },
+  minBuySol:                { type: "number",  def: 0.12, min: 0.01, max: 1 },
+  maxBuySol:                { type: "number",  def: 0.24, min: 0.06, max: 5 },
   slippageBps:              { type: "number",  def: 200,  min: 50, max: 2000 },
   coolDownSecsAfterBuy:     { type: "number",  def: 3,    min: 0, max: 120 },
   pendingGraceMs:           { type: "number",  def: 120_000, min: 10_000, max: 600_000 },
@@ -976,7 +977,8 @@ const CONFIG_SCHEMA = {
   warmingMinProfitPct:      { type: "number",  def: 2,    min: 0,  max: 50 },
   warmingDecayPctPerMin:    { type: "number",  def: 0.45, min: 0, max: 5 },
   warmingDecayDelaySecs:    { type: "number",  def: 20,   min: 0, max: 600 },
-  warmingMinProfitFloorPct: { type: "number",  def: 0,    min: 0,  max: 50 },
+  warmingMinProfitFloorPct: { type: "number",  def: 1.0,  min: 0,  max: 50 },
+  warmingProfitFloorLossBypassPct: { type: "number", def: -25, min: -99, max: 0 },
   warmingAutoReleaseSecs:   { type: "number",  def: 45,   min: 0, max: 600 },
   warmingUptickMinAccel:    { type: "number",  def: 1.001 },
   warmingUptickMinPre:      { type: "number",  def: 0.35 },
@@ -1057,11 +1059,26 @@ function normalizeState(raw = {}) {
     out[k] = coerceByType(raw[k], s);
   }
 
+  // Migration: if the user never changed legacy defaults, promote them to safer defaults.
+  try {
+    const legacyCfg = !Number.isFinite(Number(raw?._cfgVersion));
+    if (legacyCfg) {
+      const rawMinBuy = Number(raw?.minBuySol);
+      const rawMaxBuy = Number(raw?.maxBuySol);
+      if (rawMinBuy === 0.06) out.minBuySol = 0.12;
+      if (rawMaxBuy === 0.12) out.maxBuySol = 0.24;
+
+      const rawFloor = Number(raw?.warmingMinProfitFloorPct);
+      if (rawFloor === 0) out.warmingMinProfitFloorPct = 1.0;
+    }
+  } catch {}
+
 
 
   out.tickMs = Math.max(1200, Math.min(5000, coerceNumber(out.tickMs, 2000)));
   out.slippageBps = Math.min(250, Math.max(150, coerceNumber(out.slippageBps, 200)));
-  out.minBuySol = Math.max(UI_LIMITS.MIN_BUY_SOL_MIN, coerceNumber(out.minBuySol, 0.06));
+  out.minBuySol = Math.max(UI_LIMITS.MIN_BUY_SOL_MIN, coerceNumber(out.minBuySol, 0.12));
+  out.maxBuySol = Math.max(out.minBuySol, coerceNumber(out.maxBuySol, 0.24));
   out.coolDownSecsAfterBuy = Math.max(0, Math.min(12, coerceNumber(out.coolDownSecsAfterBuy, 5)));
   out.pendingGraceMs = Math.max(120_000, coerceNumber(out.pendingGraceMs, 120_000));
   out.fricSnapEpsSol = coerceNumber(out.fricSnapEpsSol, 0.0020, { min: 0, max: 0.05 });
@@ -1435,7 +1452,8 @@ function optimisticSeedBuy(ownerStr, mint, estUi, decimals, buySol, sig = "") {
     enqueuePendingCredit({
       owner: ownerStr,
       mint,
-      addCostSol: Number(buySol || 0),
+      // Cost already applied optimistically; pending credit should only reconcile size.
+      addCostSol: 0,
       decimalsHint: pos.decimals,
       basePos: pos,
       sig: sig || ""
@@ -4852,8 +4870,12 @@ function profitFloorGatePolicy(ctx) {
     if (ctx.forceExpire) return;
 
     const floor = Math.max(0, Number(state.warmingMinProfitFloorPct ?? 0));
+    const lossBypass = Math.min(0, Number(state.warmingProfitFloorLossBypassPct ?? -25));
     const pnl = Number.isFinite(ctx.pnlNetPct) ? Number(ctx.pnlNetPct) : Number(ctx.pnlPct);
     if (!Number.isFinite(pnl)) return;
+
+    // Allow severe losses to exit (avoid getting trapped) even if profit-floor is enabled.
+    if (pnl <= lossBypass) return;
 
     if (pnl < floor) {
       log(
@@ -5865,6 +5887,9 @@ async function tick() {
       } catch {}
 
       const buySol = buyLamports / 1e9;
+      // True-ish net accounting: include one-time ATA rent (wSOL + out ATA if needed)
+      // and a conservative buy-side tx fee estimate into cost basis.
+      const buyCostSol = buySol + (Math.max(0, reqRent) + Math.max(0, EDGE_TX_FEE_ESTIMATE_LAMPORTS)) / 1e9;
 
       let entryEdgeExclPct = NaN;
       let entryEdgeCostPct = 0;
@@ -6016,7 +6041,7 @@ async function tick() {
         try {
           const seed = getBuySeed(ownerStr, mint);
           if (seed && Number(seed.sizeUi || 0) > 0) {
-            optimisticSeedBuy(ownerStr, mint, Number(seed.sizeUi), Number(seed.decimals), buySol, res.sig || "");
+            optimisticSeedBuy(ownerStr, mint, Number(seed.sizeUi), Number(seed.decimals), buyCostSol, res.sig || "");
             clearBuySeed(ownerStr, mint);
             log(`Buy unconfirmed for ${mint.slice(0,4)}… seeded pending credit watch.`);
             } else {
@@ -6025,7 +6050,7 @@ async function tick() {
               enqueuePendingCredit({
                 owner: ownerStr,
                 mint,
-                addCostSol: buySol,
+                addCostSol: buyCostSol,
                 decimalsHint: basePos.decimals,
                 basePos: { ...basePos, awaitingSizeSync: true },
                 sig: res.sig
@@ -6043,7 +6068,7 @@ async function tick() {
       try {
         const seed = getBuySeed(ownerStr, mint);
         if (seed && Number(seed.sizeUi || 0) > 0) {
-          optimisticSeedBuy(ownerStr, mint, Number(seed.sizeUi), Number(seed.decimals), buySol, res.sig || "");
+          optimisticSeedBuy(ownerStr, mint, Number(seed.sizeUi), Number(seed.decimals), buyCostSol, res.sig || "");
           clearBuySeed(ownerStr, mint);
         }
       } catch {}
@@ -6099,8 +6124,8 @@ async function tick() {
           ...basePos,
           sizeUi: got.sizeUi,
           decimals: got.decimals,
-          costSol: Number(basePos.costSol || 0) + buySol,
-          hwmSol: Math.max(Number(basePos.hwmSol || 0), buySol),
+          costSol: Number(basePos.costSol || 0) + buyCostSol,
+          hwmSol: Math.max(Number(basePos.hwmSol || 0), buyCostSol),
           lastBuyAt: now(),
           lastSeenAt: now(),
           awaitingSizeSync: false,
@@ -6163,8 +6188,9 @@ async function tick() {
 
         const pos = {
           ...basePos,
-          costSol: Number(basePos.costSol || 0) + buySol,
-          hwmSol: Math.max(Number(basePos.hwmSol || 0), buySol),
+          // Defer cost augmentation until the token credit reconciles (avoid double-counting).
+          costSol: Number(basePos.costSol || 0),
+          hwmSol: Number(basePos.hwmSol || 0),
           lastBuyAt: now(),
           awaitingSizeSync: true,
           allowRebuy: false,
@@ -6195,7 +6221,7 @@ async function tick() {
         enqueuePendingCredit({
           owner: kp.publicKey.toBase58(),
           mint,
-          addCostSol: buySol,
+          addCostSol: buyCostSol,
           decimalsHint: basePos.decimals,
           basePos: pos,
           sig: res.sig
@@ -7672,7 +7698,7 @@ export function initTraderWidget(container = document.body) {
     };
 
     state.warmingMinProfitPct       = clamp(n(warmMinPEl?.value),      0, 50, 2);
-    state.warmingMinProfitFloorPct  = clamp(n(warmFloorEl?.value),     0, 50, 0);
+    state.warmingMinProfitFloorPct  = clamp(n(warmFloorEl?.value),     0, 50, 1.0);
     state.warmingDecayDelaySecs     = clamp(n(warmDelayEl?.value),       0, 600, 15);
     state.warmingAutoReleaseSecs    = clamp(n(warmReleaseEl?.value),     0, 600, 45);
     state.warmingMaxLossPct         = clamp(n(warmMaxLossEl?.value),     1,  50, 6);
