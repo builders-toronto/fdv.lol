@@ -3,14 +3,13 @@ import {
   streamFeeds,
   fetchTokenInfoMulti,
   collectInstantSolana,          
+  collectNewLaunchSolana,
 } from '../data/feeds.js';
 import { scoreAndRecommend } from '../core/calculate.js';
 import { elMetaBase, elTimeDerived } from '../vista/meme/page.js'; 
 import { readCache } from '../core/tools.js';
 import { enrichMissingInfo } from '../data/dexscreener.js';
 import { loadAds, pickAd } from '../ads/load.js';
-
-//TODO: refactor prototype 3
 
 let _globalStreamThrottle = { active: false, reason: '', until: 0, created: 0 };
 let _globalThrottleTimer = null;
@@ -158,8 +157,16 @@ class TokenStore {
   constructor() {
     this.byMint = new Map();
     this.sources = new Map();
+    this._rev = 0;
+    this._arrayCache = null;
+    this._arrayCacheRev = -1;
   }
   size() { return this.byMint.size; }
+
+  _touch() {
+    this._rev++;
+    this._arrayCacheRev = -1;
+  }
 
   _ensure(mint) {
     let t = this.byMint.get(mint);
@@ -167,6 +174,8 @@ class TokenStore {
       t = {
         mint, symbol: '', name: '', logoURI: '',
         priceUsd: null, liquidityUsd: null, fdv: null, marketCap: null,
+        pairCreatedAt: null,
+        ageMs: null,
         change: { m5: null, h1: null, h6: null, h24: null }, // keep null until known
         volume: { h24: null },
         txns:   { m5: null, h1: null, h6: null, h24: null },
@@ -188,8 +197,11 @@ class TokenStore {
   // Merge from search hit
   mergeSearchHit(h) {
     if (!h?.mint) return false;
+    const existed = this.byMint.has(h.mint);
     const t = this._ensure(h.mint);
     let changed = false;
+
+    if (!existed) changed = true;
 
     if (h.symbol && h.symbol !== t.symbol) { t.symbol = h.symbol; changed = true; }
     if (h.name && h.name !== t.name) { t.name = h.name; changed = true; }
@@ -209,6 +221,20 @@ class TokenStore {
     // DEX + pair URL
     if (h.dexId && h.dexId !== t.dex) { t.dex = h.dexId; changed = true; }
     if (h.url && h.url !== t.pairUrl) { t.pairUrl = h.url; changed = true; }
+
+    // Launch age (from pairs): keep the freshest observed pairCreatedAt
+    const createdAt = Number(h?.pairCreatedAt);
+    if (Number.isFinite(createdAt) && createdAt > 0) {
+      if (!Number.isFinite(Number(t.pairCreatedAt)) || createdAt > Number(t.pairCreatedAt)) {
+        t.pairCreatedAt = createdAt;
+        changed = true;
+      }
+      const derivedAgeMs = Math.max(0, Date.now() - createdAt);
+      if (!Number.isFinite(Number(t.ageMs)) || derivedAgeMs < Number(t.ageMs)) {
+        t.ageMs = derivedAgeMs;
+        changed = true;
+      }
+    }
 
     // Price changes → both object and chips
     const m5  = Number.isFinite(+h.change5m)  ? +h.change5m  : null;
@@ -235,72 +261,153 @@ class TokenStore {
     if (Number(t.priceUsd) > 0 && Number(t.liquidityUsd) > 0 && Number(t.volume?.h24) > 0 && Number(t.txns?.h24) > 0) {
       t._hydrated = true;
     }
+
+    if (changed) this._touch();
     return changed;
   }
 
   // Merge from deep DS-shape
   mergeDeepInfo(info) {
     if (!info?.mint) return false;
+    const existed = this.byMint.has(info.mint);
     const t = this._ensure(info.mint);
     const srcs = this.sources.get(info.mint);
 
+    let changed = !existed;
+
     // identity
-    if (info.symbol) t.symbol = info.symbol;
-    if (info.name) t.name = info.name;
-    if (info.imageUrl) t.logoURI = info.imageUrl;
+    if (info.symbol && info.symbol !== t.symbol) { t.symbol = info.symbol; changed = true; }
+    if (info.name && info.name !== t.name) { t.name = info.name; changed = true; }
+    if (info.imageUrl && info.imageUrl !== t.logoURI) { t.logoURI = info.imageUrl; changed = true; }
 
     // price / liquidity / caps
-    if (info.priceUsd    != null) t.priceUsd    = num(info.priceUsd, null);
-    if (info.priceNative != null) t.priceNative = num(info.priceNative, null);
+    if (info.priceUsd != null) {
+      const v = num(info.priceUsd, null);
+      if (v !== t.priceUsd) { t.priceUsd = v; changed = true; }
+    }
+    if (info.priceNative != null) {
+      const v = num(info.priceNative, null);
+      if (v !== t.priceNative) { t.priceNative = v; changed = true; }
+    }
 
-    if (info.liquidityUsd   != null) t.liquidityUsd   = num(info.liquidityUsd, null);
-    if (info.liquidityBase  != null) t.liquidityBase  = num(info.liquidityBase, null);
-    if (info.liquidityQuote != null) t.liquidityQuote = num(info.liquidityQuote, null);
+    if (info.liquidityUsd != null) {
+      const v = num(info.liquidityUsd, null);
+      if (v !== t.liquidityUsd) { t.liquidityUsd = v; changed = true; }
+    }
+    if (info.liquidityBase != null) {
+      const v = num(info.liquidityBase, null);
+      if (v !== t.liquidityBase) { t.liquidityBase = v; changed = true; }
+    }
+    if (info.liquidityQuote != null) {
+      const v = num(info.liquidityQuote, null);
+      if (v !== t.liquidityQuote) { t.liquidityQuote = v; changed = true; }
+    }
 
-    if (info.fdv       != null) t.fdv = num(info.fdv, null);
-    if (info.marketCap != null) t.marketCap = num(info.marketCap, null);
+    if (info.fdv != null) {
+      const v = num(info.fdv, null);
+      if (v !== t.fdv) { t.fdv = v; changed = true; }
+    }
+    if (info.marketCap != null) {
+      const v = num(info.marketCap, null);
+      if (v !== t.marketCap) { t.marketCap = v; changed = true; }
+    }
 
     // change buckets
     const c5  = info.change5m, c1 = info.change1h, c6 = info.change6h, c24 = info.change24h;
-    t.change = { m5: num(c5,0), h1: num(c1,0), h6: num(c6,0), h24: num(c24,0) };
-    t._chg = [t.change.m5, t.change.h1, t.change.h6, t.change.h24];
+    {
+      const next = { m5: num(c5,0), h1: num(c1,0), h6: num(c6,0), h24: num(c24,0) };
+      if (
+        next.m5 !== t.change?.m5 ||
+        next.h1 !== t.change?.h1 ||
+        next.h6 !== t.change?.h6 ||
+        next.h24 !== t.change?.h24
+      ) {
+        t.change = next;
+        t._chg = [t.change.m5, t.change.h1, t.change.h6, t.change.h24];
+        changed = true;
+      }
+    }
 
     // volumes (UI shape)
     const v24 = num(info.v24hTotal, null);
-    if (v24 != null) t.volume.h24 = v24;
+    if (v24 != null && v24 !== t.volume?.h24) { t.volume.h24 = v24; changed = true; }
 
     // txns (sum to counts)
     const tx24 = info.tx24h || { buys: null, sells: null };
     const tx6  = info.tx6h  || { buys: null, sells: null };
     const tx1  = info.tx1h  || { buys: null, sells: null };
     const tx5  = info.tx5m  || { buys: null, sells: null };
-    t.txns = {
+    const nextTxns = {
       m5:  tx5.buys  == null || tx5.sells  == null ? null : (tx5.buys  + tx5.sells)  | 0,
       h1:  tx1.buys  == null || tx1.sells  == null ? null : (tx1.buys  + tx1.sells)  | 0,
       h6:  tx6.buys  == null || tx6.sells  == null ? null : (tx6.buys  + tx6.sells)  | 0,
       h24: tx24.buys == null || tx24.sells == null ? null : (tx24.buys + tx24.sells) | 0,
     };
+    if (
+      nextTxns.m5 !== t.txns?.m5 ||
+      nextTxns.h1 !== t.txns?.h1 ||
+      nextTxns.h6 !== t.txns?.h6 ||
+      nextTxns.h24 !== t.txns?.h24
+    ) {
+      t.txns = nextTxns;
+      changed = true;
+    }
 
     // routing headline
-    if (info.headlineDex) t.dex = info.headlineDex;
-    if (info.headlineUrl) t.pairUrl = info.headlineUrl;
+    if (info.headlineDex && info.headlineDex !== t.dex) { t.dex = info.headlineDex; changed = true; }
+    if (info.headlineUrl && info.headlineUrl !== t.pairUrl) { t.pairUrl = info.headlineUrl; changed = true; }
 
     // meta
-    if (Array.isArray(info.websites)) t.website = info.websites[0]?.url || info.websites[0] || t.website || null;
-    if (Array.isArray(info.socials))  t.socials = info.socials;
-    if (Array.isArray(info.pairs))    t.pairs = info.pairs;
+    if (Array.isArray(info.websites)) {
+      const v = info.websites[0]?.url || info.websites[0] || t.website || null;
+      if (v !== t.website) { t.website = v; changed = true; }
+    }
+    if (Array.isArray(info.socials)) {
+      const next = info.socials;
+      const prev = t.socials;
+      if (prev !== next && JSON.stringify(prev || []) !== JSON.stringify(next || [])) {
+        t.socials = next;
+        changed = true;
+      }
+    }
+    if (Array.isArray(info.pairs) && t.pairs !== info.pairs) { t.pairs = info.pairs; changed = true; }
 
-    if (info.ageMs          != null) t.ageMs = num(info.ageMs, null);
-    if (info.boostsActive   != null) t.boostsActive = num(info.boostsActive, 0);
+    if (info.pairCreatedAt != null) {
+      const v = num(info.pairCreatedAt, null);
+      if (v !== t.pairCreatedAt) { t.pairCreatedAt = v; changed = true; }
+    }
+    if (info.ageMs != null) {
+      const v = num(info.ageMs, null);
+      if (v !== t.ageMs) { t.ageMs = v; changed = true; }
+    }
+    if (info.boostsActive != null) {
+      const v = num(info.boostsActive, 0);
+      if (v !== t.boostsActive) { t.boostsActive = v; changed = true; }
+    }
 
     // derived
-    if (info.liqToFdvPct    != null) t.liqToFdvPct = num(info.liqToFdvPct, null);
-    if (info.volToLiq24h    != null) t.volToLiq24h = num(info.volToLiq24h, null);
-    if (info.buySell24h     != null) t.buySell24h  = num(info.buySell24h,  null);
+    if (info.liqToFdvPct != null) {
+      const v = num(info.liqToFdvPct, null);
+      if (v !== t.liqToFdvPct) { t.liqToFdvPct = v; changed = true; }
+    }
+    if (info.volToLiq24h != null) {
+      const v = num(info.volToLiq24h, null);
+      if (v !== t.volToLiq24h) { t.volToLiq24h = v; changed = true; }
+    }
+    if (info.buySell24h != null) {
+      const v = num(info.buySell24h, null);
+      if (v !== t.buySell24h) { t.buySell24h = v; changed = true; }
+    }
 
     // rpc extras
-    if (info.decimals != null) t.decimals = num(info.decimals, null);
-    if (info.supply   != null) t.supply   = num(info.supply,   null);
+    if (info.decimals != null) {
+      const v = num(info.decimals, null);
+      if (v !== t.decimals) { t.decimals = v; changed = true; }
+    }
+    if (info.supply != null) {
+      const v = num(info.supply, null);
+      if (v !== t.supply) { t.supply = v; changed = true; }
+    }
 
     // provenance
     if (info._source) srcs.add(info._source);
@@ -312,12 +419,15 @@ class TokenStore {
       Number.isFinite(num(t.txns.h24, NaN));
     if (coreReady) t._hydrated = true;
 
+    if (changed) this._touch();
+
     return true;
   }
 
 
   toArray() {
-    return [...this.byMint.values()].map(t => ({
+    if (this._arrayCache && this._arrayCacheRev === this._rev) return this._arrayCache;
+    const arr = [...this.byMint.values()].map(t => ({
       ...t,
       priceUsd:      t.priceUsd == null ? null : num(t.priceUsd, null),
       liquidityUsd:  t.liquidityUsd == null ? null : num(t.liquidityUsd, null),
@@ -338,6 +448,9 @@ class TokenStore {
       _chg: [ num(t._chg[0],0), num(t._chg[1],0), num(t._chg[2],0), num(t._chg[3],0) ],
       _norm: t._norm || { nAct: 0, nLiq: 0, nMom: 0, nVol: 0 },
     }));
+    this._arrayCache = arr;
+    this._arrayCacheRev = this._rev;
+    return arr;
   }
 
 
@@ -371,6 +484,7 @@ class TokenStore {
         }
       }
       if (pruned > 0) {
+        this._touch();
         try { safeText(elMetaBase, `Pruned ${pruned} tokens • store=${this.byMint.size}`); } catch {}
       }
       return pruned > 0;
@@ -393,6 +507,7 @@ function isMeasured(t) {
   return hasRequiredStats(t) && Number.isFinite(t?.score);
 }
 function filterMeasured(arr = []) {
+  if (!Array.isArray(arr)) return [];
   return arr.filter(isMeasured);
 }
 
@@ -463,6 +578,15 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
   const store = new TokenStore();
   const marquee = new MarqueeStore({ maxPerBucket: 64 });
 
+  // Throttle for "new launches" pulls (pairs-by-quote can be large; keep light)
+  let _lastNewLaunchFetchTs = 0;
+  const shouldFetchNewLaunches = (minEveryMs = 45_000) => {
+    const nowTs = Date.now();
+    if ((nowTs - _lastNewLaunchFetchTs) < minEveryMs) return false;
+    _lastNewLaunchFetchTs = nowTs;
+    return true;
+  };
+
   // Periodic pruning
   const pruneTimer = setInterval(() => {
     try { store.prune({ max: 1800, keep: 1200, maxAgeMs: 6 * 60 * 60 * 1000 }); } catch {}
@@ -478,6 +602,76 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
     touch();
     try { onUpdate({ items: measured, ad: CURRENT_AD, marquee: marquee.payload() }); } catch {}
   };
+
+  // Keep scoring/payload bounded for speed.
+  const SCORE_POOL_MAX = 600;
+  const ENRICH_TOP_N = 220;
+  const MIN_RECOMPUTE_MS = 2500;
+  let _lastRecomputeTs = 0;
+  let _recomputeTimer = null;
+
+  function pickScorePool(eligible = []) {
+    if (eligible.length <= SCORE_POOL_MAX) return eligible;
+
+    const byFast = eligible.slice().sort((a, b) => fastScore(b) - fastScore(a));
+    const topFast = byFast.slice(0, Math.max(1, SCORE_POOL_MAX - 120));
+
+    const byAge = eligible.slice().sort((a, b) => {
+      const aa = a.ageMs ?? (Date.now() - (a._arrivedAt || 0));
+      const bb = b.ageMs ?? (Date.now() - (b._arrivedAt || 0));
+      return aa - bb;
+    });
+    const topNew = byAge.slice(0, 120);
+
+    const out = new Map();
+    for (const it of topFast) out.set(it.mint, it);
+    for (const it of topNew) {
+      if (out.size >= SCORE_POOL_MAX) break;
+      out.set(it.mint, it);
+    }
+    return [...out.values()];
+  }
+
+  async function recomputeAndEmit() {
+    if (ac.signal.aborted) return;
+
+    const all = store.toArray();
+    const eligible = all.filter(hasRequiredStats);
+    if (!eligible.length) return;
+
+    const pool = pickScorePool(eligible);
+    let scored = scoreAndRecommend(pool);
+    scored.sort((a,b) => (b.score || 0) - (a.score || 0) ||
+                         (b._arrivedAt || 0) - (a._arrivedAt || 0) ||
+                         String(a.mint).localeCompare(String(b.mint)));
+
+    // Enrich only what might actually render.
+    try { await enrichMissingInfo(scored.slice(0, ENRICH_TOP_N)); } catch {}
+
+    const measured = filterMeasured(scored);
+    if (!measured.length) return;
+
+    lastScored = scored;
+    feedMarqueeFromGrid({ useScore: true, feedNew: true });
+    pushUpdate(measured);
+    safeText(elMetaBase, `Updated`);
+    touch();
+  }
+
+  function scheduleRecomputeSoon() {
+    if (ac.signal.aborted) return;
+    if (_recomputeTimer) return;
+
+    const now = Date.now();
+    const wait = Math.max(0, (_lastRecomputeTs + MIN_RECOMPUTE_MS) - now);
+    const delay = Math.max(80, wait);
+    _recomputeTimer = setTimeout(async () => {
+      _recomputeTimer = null;
+      _lastRecomputeTs = Date.now();
+      await recomputeAndEmit();
+    }, delay);
+    onAbort(() => { try { clearTimeout(_recomputeTimer); } catch {} _recomputeTimer = null; });
+  }
 
   function feedMarqueeFromGrid({ useScore = false, feedNew = false, trendingCount = 40, newCount = 24 } = {}) {
     const grid = sortedGrid({ useScore, store });
@@ -534,7 +728,16 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
   (async function primeInstant() {
     try {
       if (ac.signal.aborted) return;
-      const hits = await collectInstantSolana({ signal: ac.signal, maxBoostedTokens: 40 });
+
+      const [instant, newPairs] = await Promise.all([
+        collectInstantSolana({ signal: ac.signal, maxBoostedTokens: 40 }).catch(() => []),
+        collectNewLaunchSolana({ signal: ac.signal, maxAgeMs: 2 * 60 * 60 * 1000, minLiqUsd: 800, limit: 120 }).catch(() => []),
+      ]);
+
+      const hits = []
+        .concat(Array.isArray(instant) ? instant : [])
+        .concat(Array.isArray(newPairs) ? newPairs : []);
+
       if (!hits?.length || ac.signal.aborted) return;
 
       let changed = false;
@@ -543,7 +746,8 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
       let items = store.toArray().filter(hasRequiredStats);
       if (!items.length) return;
 
-      let scored = scoreAndRecommend(items);
+      const pool = pickScorePool(items);
+      let scored = scoreAndRecommend(pool);
       scored.sort((a,b) => (b.score || 0) - (a.score || 0) ||
                            (b._arrivedAt || 0) - (a._arrivedAt || 0) ||
                            String(a.mint).localeCompare(String(b.mint)));
@@ -602,22 +806,10 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
       await p;
     } catch {}
 
-    items = store.toArray();
-    items = await enrichMissingInfo(items);
-    items = items.filter(hasRequiredStats);
-    let scored = scoreAndRecommend(items);
-
-    scored.sort((a,b) => (b.score || 0) - (a.score || 0) ||
-                         (b._arrivedAt || 0) - (a._arrivedAt || 0) ||
-                         String(a.mint).localeCompare(String(b.mint)));
-
-    lastScored = scored;
-
-    feedMarqueeFromGrid({ useScore: true, feedNew: true });
+    await recomputeAndEmit();
 
     const measured = filterMeasured(lastScored);
     if (measured.length) {
-      pushUpdate(measured);
       safeText(elTimeDerived, `Generated`);
       firstResolved = true;
       resolveFirst({ items: measured, marquee: marquee.payload(), ad: CURRENT_AD });
@@ -673,25 +865,16 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
             if (store.size() >= FIRST_TARGET) resolveFirstNow();
           } else {
             schedulePostFirstRecompute(async () => {
-              const newcomers = batch.slice(0, 6);
+              const newcomers = batch.slice(0, 4);
               await Promise.all(newcomers.map(r =>
                 fetchTokenInfoMulti(r.mint, { signal: ac.signal })
                   .then(info => store.mergeDeepInfo(info))
                   .catch(() => {})
               ));
 
-              let items = store.toArray();
-              items = await enrichMissingInfo(items);
-              items = items.filter(hasRequiredStats);
-              let scored = scoreAndRecommend(items);
-              scored.sort((a,b) => (b.score || 0) - (a.score || 0) ||
-                                   (b._arrivedAt || 0) - (a._arrivedAt || 0) ||
-                                   String(a.mint).localeCompare(String(b.mint)));
-
-              lastScored = scored;
-              feedMarqueeFromGrid({ useScore: true, feedNew: true });
-              pushUpdate(lastScored);
-              safeText(elMetaBase, `Updated: ${store.size()} tokens • Marquee: ${marquee.trending.length + marquee.new.length}`);
+              // Avoid full-store recompute per batch; debounce instead.
+              scheduleRecomputeSoon();
+              safeText(elMetaBase, `Queued update… ${store.size()} tokens`);
             });
           }
 
@@ -730,34 +913,34 @@ export async function pipeline({ force = false, stream = true, timeboxMs = 8_000
       if (_busy || ac.signal.aborted) return;
       _busy = true;
       try {
+        // Opportunistically pull very recent launches so the grid doesn't miss them.
+        if (shouldFetchNewLaunches(45_000)) {
+          try {
+            const launches = await collectNewLaunchSolana({ signal: ac.signal, maxAgeMs: 90 * 60 * 1000, minLiqUsd: 1000, limit: 90 });
+            let changed = false;
+            for (const h of launches || []) changed = store.mergeSearchHit(h) || changed;
+            if (changed) {
+              const items = store.toArray();
+              feedMarqueeFromGrid({ useScore: true, feedNew: true });
+              pushUpdate(items);
+              touch();
+            }
+          } catch {}
+        }
+
         let items = store.toArray();
         items.sort((a,b) =>
           (b.liquidityUsd||0) - (a.liquidityUsd||0) ||
           fastScore(b) - fastScore(a)
         );
-        const top = items.slice(0, Math.min(32, items.length));
+        const top = items.slice(0, Math.min(28, items.length));
         await Promise.all(top.map(t =>
            fetchTokenInfoMulti(t.mint, { signal: ac.signal })
              .then(info => store.mergeDeepInfo(info))
              .catch(() => {})
         ));
 
-        items = store.toArray();
-        items = await enrichMissingInfo(items);
-        items = items.filter(hasRequiredStats);
-        let scored = scoreAndRecommend(items);
-        scored.sort((a,b) => (b.score || 0) - (a.score || 0) ||
-                           (b._arrivedAt || 0) - (a._arrivedAt || 0) ||
-                           String(a.mint).localeCompare(String(b.mint)));
-
-        lastScored = scored;
-
-        const measured = filterMeasured(scored);
-        if (measured.length) {
-          pushUpdate(measured);
-          safeText(elMetaBase, `Updated`);
-          touch();
-        }
+        await recomputeAndEmit();
       } catch {}
       _busy = false;
     }, 8_000);

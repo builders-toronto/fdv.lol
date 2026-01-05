@@ -692,7 +692,7 @@ let state = {
   warmingDecayPctPerMin: 0.45,      
   warmingDecayDelaySecs: 20,         
   warmingMinProfitFloorPct: 1.0,
-  warmingProfitFloorLossBypassPct: -25,
+  warmingProfitFloorLossBypassPct: -60,
   warmingAutoReleaseSecs: 45,
   warmingUptickMinAccel: 1.001,        
   warmingUptickMinPre: 0.35,         
@@ -978,7 +978,7 @@ const CONFIG_SCHEMA = {
   warmingDecayPctPerMin:    { type: "number",  def: 0.45, min: 0, max: 5 },
   warmingDecayDelaySecs:    { type: "number",  def: 20,   min: 0, max: 600 },
   warmingMinProfitFloorPct: { type: "number",  def: 1.0,  min: 0,  max: 50 },
-  warmingProfitFloorLossBypassPct: { type: "number", def: -25, min: -99, max: 0 },
+  warmingProfitFloorLossBypassPct: { type: "number", def: -60, min: -99, max: 0 },
   warmingAutoReleaseSecs:   { type: "number",  def: 45,   min: 0, max: 600 },
   warmingUptickMinAccel:    { type: "number",  def: 1.001 },
   warmingUptickMinPre:      { type: "number",  def: 0.35 },
@@ -4870,7 +4870,7 @@ function profitFloorGatePolicy(ctx) {
     if (ctx.forceExpire) return;
 
     const floor = Math.max(0, Number(state.warmingMinProfitFloorPct ?? 0));
-    const lossBypass = Math.min(0, Number(state.warmingProfitFloorLossBypassPct ?? -25));
+    const lossBypass = Math.min(0, Number(state.warmingProfitFloorLossBypassPct ?? -60));
     const pnl = Number.isFinite(ctx.pnlNetPct) ? Number(ctx.pnlNetPct) : Number(ctx.pnlPct);
     if (!Number.isFinite(pnl)) return;
 
@@ -5171,7 +5171,7 @@ async function evalAndMaybeSellPositions() {
         });
 
         log(`Running pipeline for: ${mint.slice(0,4)}… (size ${Number(pos.sizeUi||0).toFixed(6)})`);
-        log(`CTX: ${JSON.stringify({
+        log(`CTX:init: ${JSON.stringify({
           leaderMode: ctx.leaderMode,
           ageMs: ctx.ageMs,
           inSellGuard: ctx.inSellGuard,

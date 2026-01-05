@@ -641,6 +641,7 @@ function normalizePairsToHits(pairs, { sourceTag = 'ds-quote', quoteMints = [MIN
       url: p?.url || '',
       chainId: (p?.chainId || '').toLowerCase(),
       pairAddress: p?.pairAddress || '',
+      pairCreatedAt: Number.isFinite(Number(p?.pairCreatedAt)) ? Number(p.pairCreatedAt) : null,
       change5m: chg5,
       change1h: chg1,
       change6h: chg6,
@@ -649,6 +650,48 @@ function normalizePairsToHits(pairs, { sourceTag = 'ds-quote', quoteMints = [MIN
     });
   }
   return hits;
+}
+
+export async function collectNewLaunchSolana({
+  signal,
+  quoteMints = [MINT_USDC, MINT_SOL],
+  maxAgeMs = 2 * 60 * 60 * 1000, // 2h
+  minLiqUsd = 500,
+  limit = 160,
+} = {}) {
+  const nowTs = Date.now();
+  const minCreatedAt = nowTs - Math.max(0, Number(maxAgeMs || 0));
+
+  const bag = new Map();
+
+  try {
+    const results = await Promise.allSettled(
+      quoteMints.map((q) => dsPairsByToken(q, { signal }))
+    );
+
+    for (const r of results) {
+      const pairs = r.status === 'fulfilled' ? (r.value || []) : [];
+      const hits = normalizePairsToHits(pairs, { sourceTag: 'ds-newpairs', quoteMints });
+      for (const h of hits) {
+        const createdAt = Number(h?.pairCreatedAt || 0);
+        const liqUsd = Number(h?.bestLiq || 0);
+        if (!createdAt || createdAt < minCreatedAt) continue;
+        if (minLiqUsd > 0 && liqUsd < minLiqUsd) continue;
+        const prev = bag.get(h.mint);
+        bag.set(h.mint, prev ? dedupeMerge(prev, h) : h);
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  const out = [...bag.values()];
+  out.sort((a, b) =>
+    (Number(b?.pairCreatedAt || 0) - Number(a?.pairCreatedAt || 0)) ||
+    (asNum(b.bestLiq) || 0) - (asNum(a.bestLiq) || 0) ||
+    String(a.mint).localeCompare(String(b.mint))
+  );
+  return out.slice(0, limit);
 }
 
 export async function collectInstantSolana({

@@ -224,15 +224,28 @@ export function createDex(deps = {}) {
 		const isQuote = isGet && /\/quote(\?|$)/.test(path);
 
 		const nowTs = Date.now();
-		const minGapMs = isQuote ? 450 : 150;
-		if (!window._fdvJupLastCall) window._fdvJupLastCall = 0;
+		let minGapMs = isQuote ? 1200 : 200;
+		try {
+			const q = Number(window._fdvJupQuoteMinGapMs);
+			const a = Number(window._fdvJupMinGapMs);
+			if (isQuote && Number.isFinite(q) && q > 0) minGapMs = q;
+			if (!isQuote && Number.isFinite(a) && a > 0) minGapMs = a;
+		} catch {}
+		minGapMs = Math.max(isQuote ? 450 : 120, Number(minGapMs || 0) | 0);
+
+		if (typeof rpcWait === "function") {
+			await rpcWait(isQuote ? "jup-quote" : "jup", minGapMs);
+		} else {
+			if (!window._fdvJupLastCall) window._fdvJupLastCall = 0;
+			const waitMs = Math.max(0, window._fdvJupLastCall + minGapMs - nowTs) + (isQuote ? Math.floor(Math.random() * 200) : 0);
+			if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+			window._fdvJupLastCall = Date.now();
+		}
+
 		const stressLeft = Math.max(0, (window._fdvJupStressUntil || 0) - nowTs);
-		const waitMs =
-			Math.max(0, window._fdvJupLastCall + minGapMs - nowTs) +
-			(isQuote ? Math.floor(Math.random() * 200) : 0) +
-			Math.min(2000, stressLeft);
-		if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
-		window._fdvJupLastCall = Date.now();
+		if (stressLeft > 0) {
+			await new Promise((r) => setTimeout(r, Math.min(3000, stressLeft) + (isQuote ? Math.floor(Math.random() * 120) : 0)));
+		}
 
 		if (isGet) {
 			if (!window._fdvJupInflight) window._fdvJupInflight = new Map();
@@ -304,6 +317,7 @@ export function createDex(deps = {}) {
 							const backoff = 600 * Math.pow(2, attempt) + Math.floor(Math.random() * 200);
 							log(`JUP 400(rate-limit): backing off ${backoff}ms`);
 							window._fdvJupStressUntil = Date.now() + 20_000;
+							try { markRpcStress?.(new Error("JUP 400(rate-limit)"), 2500); } catch {}
 							await new Promise((r) => setTimeout(r, backoff));
 							continue;
 						}
@@ -314,6 +328,7 @@ export function createDex(deps = {}) {
 				const backoff = 600 * Math.pow(2, attempt) + Math.floor(Math.random() * 250);
 				log(`JUP 429: backing off ${backoff}ms`);
 				window._fdvJupStressUntil = Date.now() + 20_000;
+				try { markRpcStress?.(new Error("JUP 429"), 3000); } catch {}
 				await new Promise((r) => setTimeout(r, backoff));
 			}
 			return lastRes;
