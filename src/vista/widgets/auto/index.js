@@ -120,7 +120,7 @@ export function initAutoWidget(container = document.body) {
 
     <div class="fdv-bot-footer" style="display:flex;justify-content:space-between;margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
       <a href="https://t.me/fdvlolgroup" target="_blank" data-auto-help-tg>t.me/fdvlolgroup</a>
-      <span>Version: 0.0.5.6</span>
+      <span>Version: 0.0.5.7</span>
     </div>
   `;
 
@@ -162,7 +162,57 @@ export function initAutoWidget(container = document.body) {
     try { return JSON.parse(str); } catch { return null; }
   }
 
-  function _openHoldForMint(mint, { config, tokenHydrate, start } = {}) {
+  function _scrollToHoldPanel() {
+    try {
+      const holdEl = body.querySelector('#hold-container') || body.querySelector('[data-main-tab-panel="hold"]') || wrap;
+
+      const findScrollParent = (el) => {
+        try {
+          let p = el?.parentElement;
+          while (p && p !== document.body) {
+            const cs = getComputedStyle(p);
+            const oy = String(cs.overflowY || '');
+            if ((oy.includes('auto') || oy.includes('scroll') || oy.includes('overlay')) && (p.scrollHeight > p.clientHeight + 2)) {
+              return p;
+            }
+            p = p.parentElement;
+          }
+        } catch {}
+        return document.getElementById('app') || document.scrollingElement || document.documentElement;
+      };
+
+      const scrollOnce = () => {
+        try { holdEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+
+        try {
+          const scroller = findScrollParent(holdEl);
+          const r = holdEl.getBoundingClientRect();
+
+          const isDoc = scroller === document.documentElement || scroller === document.body || scroller === document.scrollingElement;
+          const sr = isDoc ? { top: 0, height: window.innerHeight } : scroller.getBoundingClientRect();
+
+          const currentTop = isDoc
+            ? Number(window.pageYOffset || document.documentElement.scrollTop || 0)
+            : Number(scroller.scrollTop || 0);
+
+          const targetTop = currentTop + (r.top - sr.top) - (sr.height / 2 - r.height / 2);
+          const nextTop = Math.max(0, targetTop);
+
+          if (isDoc) {
+            window.scrollTo({ top: nextTop, behavior: 'smooth' });
+          } else {
+            scroller.scrollTo({ top: nextTop, behavior: 'smooth' });
+          }
+        } catch {}
+      };
+
+      requestAnimationFrame(scrollOnce);
+      setTimeout(scrollOnce, 120);
+      setTimeout(scrollOnce, 260);
+    } catch {}
+  }
+
+  function _openHoldForMint(mint, { config, tokenHydrate, start, logLoaded, createNew } = {}) {
     const m = String(mint || '').trim();
     if (!m) return false;
 
@@ -175,6 +225,8 @@ export function initAutoWidget(container = document.body) {
 
     try { activateMainTab('hold'); } catch {}
 
+    try { _scrollToHoldPanel(); } catch {}
+
     try {
       const api = (holdApi && typeof holdApi.openForMint === 'function')
         ? holdApi
@@ -183,16 +235,15 @@ export function initAutoWidget(container = document.body) {
           : null;
 
       if (api) {
-        api.openForMint({ mint: m, config, tokenHydrate, start: !!start });
+        api.openForMint({ mint: m, config, tokenHydrate, start: !!start, logLoaded: !!logLoaded, createNew: !!createNew });
         return true;
       }
     } catch {}
 
-    // Fallback: global hook if present.
     try {
       const fn = window.__fdvHoldOpenForMint;
       if (typeof fn === 'function') {
-        fn(m, { config, tokenHydrate, start: !!start });
+        fn(m, { config, tokenHydrate, start: !!start, logLoaded: !!logLoaded, createNew: !!createNew });
         return true;
       }
     } catch {}
@@ -200,7 +251,6 @@ export function initAutoWidget(container = document.body) {
     return false;
   }
 
-  // If another page requested opening Hold, do it once on load.
   try {
     const raw = localStorage.getItem('fdv_hold_open_request_v1');
     if (raw) {
@@ -213,21 +263,36 @@ export function initAutoWidget(container = document.body) {
     }
   } catch {}
 
-  // Global click handler for token cards.
   try {
     document.addEventListener('click', (e) => {
       const el = e?.target?.closest?.('[data-hold-btn]');
       if (!el) return;
       e.preventDefault();
+      try {
+        if (el.tagName === 'BUTTON') {
+          const prev = el.textContent;
+          if (!el.dataset._holdPrevText) el.dataset._holdPrevText = prev;
+          el.setAttribute('aria-busy', 'true');
+          el.disabled = true;
+          el.textContent = 'Opening…';
+          window.setTimeout(() => {
+            try {
+              el.removeAttribute('aria-busy');
+              el.disabled = false;
+              el.textContent = el.dataset._holdPrevText || prev;
+            } catch {}
+          }, 900);
+        }
+      } catch {}
 
       const card = el.closest('.card');
       const mint = el.dataset.mint || card?.dataset?.mint;
       const tokenHydrate = _parseJsonAttr(card?.dataset?.tokenHydrate) || null;
-      _openHoldForMint(mint, { tokenHydrate });
+
+      _openHoldForMint(mint, { tokenHydrate, logLoaded: true, createNew: true });
     });
   } catch {}
 
-  // Programmatic open hook: window.dispatchEvent(new CustomEvent('fdv:hold:open', { detail: { mint, config, tokenHydrate, start } }))
   try {
     window.addEventListener('fdv:hold:open', (evt) => {
       const d = evt?.detail || {};

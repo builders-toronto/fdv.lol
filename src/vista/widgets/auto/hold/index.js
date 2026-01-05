@@ -1337,9 +1337,63 @@ export function initHoldWidget(container = document.body) {
 		} catch {}
 	}
 
-	function openForMint({ mint, config, tokenHydrate, start } = {}) {
+	function openForMint({ mint, config, tokenHydrate, start, logLoaded, createNew } = {}) {
 		const m = String(mint || tokenHydrate?.mint || "").trim();
 		if (!m) return null;
+
+		// Card Hold button behavior: always open a fresh instance.
+		if (createNew) {
+			try {
+				if (bots.size >= HOLD_MAX_TABS) {
+					const activeBot = bots.get(activeId) || Array.from(bots.values())[0] || null;
+					try {
+						activeBot?.log(
+							`Hold: no instances available (max ${HOLD_MAX_TABS}). Stop/delete a tab to open ${_shortMint(m)}.`,
+							"warn",
+							true,
+						);
+					} catch {}
+					return null;
+				}
+			} catch {}
+
+			const next = {
+				...DEFAULTS,
+				...(typeof config === "object" && config ? config : {}),
+				mint: m,
+				enabled: false,
+			};
+
+			const createdId = addBot({ state: next });
+			if (!createdId) {
+				const activeBot = bots.get(activeId) || Array.from(bots.values())[0] || null;
+				try {
+					activeBot?.log(
+						`Hold: no instances available (max ${HOLD_MAX_TABS}). Stop/delete a tab to open ${_shortMint(m)}.`,
+						"warn",
+						true,
+					);
+				} catch {}
+				return null;
+			}
+
+			const target = bots.get(createdId) || null;
+			try {
+				setActive(createdId);
+				persistAll();
+				refreshAddBtn();
+				recomputeRunningLed();
+			} catch {}
+
+			try {
+				if (logLoaded) target?.log(`Mint loaded: ${_shortMint(m)}`, "help", true);
+			} catch {}
+
+			if (start && target && !target.isRunning()) {
+				try { void target.start({ resume: false }); } catch {}
+			}
+			return createdId;
+		}
 
 		// Prefer an existing tab already targeting this mint.
 		let target = null;
@@ -1369,6 +1423,10 @@ export function initHoldWidget(container = document.body) {
 				persistAll();
 				refreshAddBtn();
 				recomputeRunningLed();
+			} catch {}
+
+			try {
+				if (logLoaded) target.log(`Mint loaded: ${_shortMint(m)}`, "help", true);
 			} catch {}
 
 			if (start && !target.isRunning()) {
@@ -1424,6 +1482,10 @@ export function initHoldWidget(container = document.body) {
 			persistAll();
 			refreshAddBtn();
 			recomputeRunningLed();
+		} catch {}
+
+		try {
+			if (logLoaded) target.log(`Mint loaded: ${_shortMint(m)}`, "help", true);
 		} catch {}
 
 		if (start) {

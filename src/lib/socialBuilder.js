@@ -87,8 +87,9 @@ export function iconFor(platform){
     case 'website':
       return svg(`<circle ${stroke} cx="12" cy="12" r="10"/><path ${stroke} d="M2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20"/>`);
     case 'search':
-      // Improved: pure stroke, centered, larger lens, angled handle; scales with font size
       return svg(`<circle ${stroke} cx="11" cy="11" r="6.2"/><path ${stroke} d="m16.8 16.8 4.2 4.2"/>`);
+    case 'solscan':
+      return svg(`<rect ${stroke} x="4" y="3.5" width="12" height="16" rx="2"/><path ${stroke} d="M8 8h4"/><path ${stroke} d="M8 12h6"/><circle ${stroke} cx="17.2" cy="16.8" r="3.2"/><path ${stroke} d="m19.6 19.2 2.4 2.4"/>`);
     default:
       return svg(`<path ${stroke} d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z"/><path ${stroke} d="M3.6 9h16.8M3.6 15h16.8M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/>`);
   }
