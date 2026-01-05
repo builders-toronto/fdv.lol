@@ -2,10 +2,164 @@ import { createSendFavoriteButton } from '../../widgets/library/index.js';
 import { sparklineSVG } from '../render/sparkline.js';
 import { pctChipsHTML } from '../render/chips.js';
 import { EXPLORER, FALLBACK_LOGO, JUP_SWAP, shortAddr } from '../../../config/env.js';
-import { buildSocialLinksHtml } from '../../../lib/socialBuilder.js';
+import { buildSocialLinksHtml, iconFor } from '../../../lib/socialBuilder.js';
 import { fmtUsd, normalizeWebsite } from '../../../core/tools.js';
 import { normalizeTokenLogo } from '../../../core/ipfs.js';
 import { formatPriceParts, toDecimalString } from '../../../lib/formatPrice.js'; 
+
+const __FDV_FLOAT_INIT = '__fdvCardFloatInit';
+const __FDV_FLOAT_STATE = '__fdvCardFloatState';
+const __FDV_COPY_MINT_INIT = '__fdvCopyMintInit';
+
+function _flashMintCopyLabel(mintEl) {
+  if (!mintEl) return;
+
+  const prev = mintEl.textContent;
+  if (!prev) return;
+
+  try {
+    mintEl.dataset._fdvPrevText = prev;
+  } catch {}
+
+  mintEl.textContent = 'Copied!';
+
+  window.setTimeout(() => {
+    try {
+      if (!mintEl.isConnected) return;
+
+      const restore = mintEl.dataset?.mintShort || mintEl.dataset?._fdvPrevText || prev;
+      if (mintEl.textContent === 'Copied!') mintEl.textContent = restore;
+      try { delete mintEl.dataset._fdvPrevText; } catch {}
+    } catch {}
+  }, 750);
+}
+
+function _getFloatState() {
+  try { return window[__FDV_FLOAT_STATE] || null; } catch { return null; }
+}
+
+function _setFloatState(st) {
+  try { window[__FDV_FLOAT_STATE] = st || null; } catch {}
+}
+
+function _endFloatFreeze() {
+  const st = _getFloatState();
+  if (!st) return;
+
+  try { st.card?.removeEventListener?.('pointerleave', st.onLeave); } catch {}
+
+  try {
+    if (st.placeholder && st.card) {
+      st.placeholder.replaceWith(st.card);
+    }
+  } catch {}
+
+  try {
+    const el = st.card;
+    if (el) {
+      el.classList.remove('is-floating');
+      el.style.position = '';
+      el.style.left = '';
+      el.style.top = '';
+      el.style.width = '';
+      el.style.height = '';
+      el.style.zIndex = '';
+      el.style.margin = '';
+      el.style.transform = '';
+      el.style.transition = '';
+      el.style.willChange = '';
+      el.style.pointerEvents = '';
+    }
+  } catch {}
+
+  try { st.placeholder?.remove?.(); } catch {}
+  _setFloatState(null);
+}
+
+function _startFloatFreeze(cardEl) {
+  if (!cardEl) return;
+
+  const existing = _getFloatState();
+  if (existing?.card === cardEl) return;
+  if (existing) _endFloatFreeze();
+
+  const rect = cardEl.getBoundingClientRect();
+  if (!(rect.width > 0 && rect.height > 0)) return;
+
+  const placeholder = cardEl.cloneNode(true);
+  try {
+    placeholder.setAttribute('aria-hidden', 'true');
+    placeholder.dataset.fdvPlaceholder = '1';
+    placeholder.style.visibility = 'hidden';
+    placeholder.style.pointerEvents = 'none';
+    placeholder.style.userSelect = 'none';
+  } catch {}
+
+  // Swap into the grid to preserve layout.
+  try { cardEl.replaceWith(placeholder); } catch { return; }
+
+  // Float the real card above the app.
+  try {
+    document.body.appendChild(cardEl);
+    cardEl.classList.add('is-floating');
+    cardEl.style.position = 'fixed';
+    cardEl.style.left = `${rect.left}px`;
+    cardEl.style.top = `${rect.top}px`;
+    cardEl.style.width = `${rect.width}px`;
+    cardEl.style.height = `${rect.height}px`;
+    cardEl.style.zIndex = '9999';
+    cardEl.style.margin = '0';
+    cardEl.style.willChange = 'transform';
+    cardEl.style.transition = 'transform 120ms ease-out';
+    cardEl.style.transform = 'translateY(-2px) scale(1.03)';
+    cardEl.style.pointerEvents = 'auto';
+  } catch {
+    try { placeholder.replaceWith(cardEl); } catch {}
+    try { placeholder.remove(); } catch {}
+    return;
+  }
+
+  const onLeave = () => _endFloatFreeze();
+  try { cardEl.addEventListener('pointerleave', onLeave, { passive: true }); } catch {}
+
+  _setFloatState({ card: cardEl, placeholder, onLeave });
+}
+
+try {
+  if (typeof window !== 'undefined' && !window[__FDV_FLOAT_INIT]) {
+    window[__FDV_FLOAT_INIT] = true;
+
+    document.addEventListener('pointerover', (e) => {
+      // Only do this for real mouse hover.
+      if (e && 'pointerType' in e && e.pointerType && e.pointerType !== 'mouse') return;
+      const card = e?.target?.closest?.('.card[data-key]');
+      if (!card) return;
+      _startFloatFreeze(card);
+    }, { passive: true });
+
+    // Safety: if focus is lost / user alt-tabs, restore.
+    window.addEventListener('blur', () => _endFloatFreeze(), { passive: true });
+  }
+} catch {}
+
+try {
+  if (typeof window !== 'undefined' && !window[__FDV_COPY_MINT_INIT]) {
+    window[__FDV_COPY_MINT_INIT] = true;
+
+    document.addEventListener('click', (e) => {
+      const t = e?.target;
+      if (!t) return;
+
+      // Don't hijack normal link/button clicks.
+      if (t.closest?.('a,button,input,textarea,select,label')) return;
+
+      const mintEl = t.closest?.('[data-copy-mint]');
+      if (!mintEl) return;
+
+      _flashMintCopyLabel(mintEl);
+    });
+  }
+} catch {}
 
 function escAttr(v) {
   const s = String(v ?? '');
@@ -134,7 +288,7 @@ export function coinCard(it) {
   const holdBtn = `
     <button
       type="button"
-      class="btn"
+      class="btn holdCoin"
       data-hold-btn
       data-mint="${escAttr(it.mint)}"
       title="Open Hold bot for this mint"
@@ -162,7 +316,19 @@ export function coinCard(it) {
     </div>
     <div class="rec ${escAttr(it.recommendation || '')}" data-rec-text>${escAttr(it.recommendation || '')}</div>
   </div>
-  <div class="addr"><a class="t-explorer" href="${escAttr(EXPLORER(it.mint))}" target="_blank" rel="noopener">Mint: ${escAttr(shortAddr(it.mint))}</a></div>
+  <div class="addr" style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+    <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+      <span
+        class="t-mint t-explorer"
+        data-copy-mint
+        data-mint="${escAttr(it.mint)}"
+        data-mint-short="${escAttr(shortAddr(it.mint))}"
+        style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer;"
+        title="Click to copy mint"
+      >${escAttr(shortAddr(it.mint))}</span>
+    </div>
+    <a class="t-profile" href="https://fdv.lol/token/${escAttr(it.mint)}" target="_blank" rel="noopener">Profile</a>
+  </div>
 
   <div class="metrics">
     <div class="kv"><div class="k">Price</div><div class="v v-price">${it.priceUsd != null ? priceHTML(+it.priceUsd) : '—'}</div></div>
@@ -170,17 +336,17 @@ export function coinCard(it) {
     <div class="kv"><div class="k">24h Volume</div><div class="v v-vol24">${fmtUsd(it.volume?.h24)}</div></div>
     <div class="kv"><div class="k">Liquidity</div><div class="v v-liq">${fmtUsd(it.liquidityUsd)}</div></div>
     <div class="kv"><div class="k">FDV</div><div class="v v-fdv">${it.fdv ? fmtUsd(it.fdv) : '—'}</div></div>
-    <div class="kv"><div class="k">Pair</div><div class="v v-pair">${it.pairUrl ? `<a class="t-pair" href="${escAttr(it.pairUrl)}" target="_blank" rel="noopener">DexScreener</a>` : '—'}</div></div>
+    <div class="kv"><div class="k">Pair</div><div class="v v-pair">${it.pairUrl ? `<a class="t-pair" href="${escAttr(it.pairUrl)}" target="_blank" rel="noopener">Dexscreener</a>` : '—'}</div></div>
   </div>
 
   ${micro}
 
   <div class="actions actionButtons">
-    ${socialsHtml ? `<div class="actions" data-socials>${socialsHtml}</div>` : ''}
+    ${socialsHtml ? `<div class="actions" data-socials>${socialsHtml}<a class="social-link iconbtn t-explorer" href="${escAttr(EXPLORER(it.mint))}" target="_blank" rel="noopener noreferrer" aria-label="Solscan" title="Solscan" data-tooltip="Solscan">${iconFor('solscan')}</a></div>` : ''}
+    
     <div class="btnWrapper">
       ${holdBtn}
       ${swapBtn}
-      <a class="btn" href="https://fdv.lol/token/${escAttr(it.mint)}" target="_blank" rel="noopener">Profile</a>
     </div>
   </div>
 </article>`;
@@ -340,7 +506,7 @@ export function updateCardDOM(el, it) {
     const link = pairWrap.querySelector('.t-pair');
     if (it.pairUrl) {
       if (!link) {
-        pairWrap.innerHTML = `<a class="t-pair" href="${it.pairUrl}" target="_blank" rel="noopener">DexScreener</a>`;
+        pairWrap.innerHTML = `<a class="t-pair" href="${it.pairUrl}" target="_blank" rel="noopener">Dexscreener</a>`;
       } else if (link.getAttribute('href') !== it.pairUrl) {
         link.setAttribute('href', it.pairUrl);
       }
