@@ -121,7 +121,7 @@ export function coinCard(it) {
   const swapBtn = `
     <button
       type="button"
-      class="btn swapCoin"
+      class="btn"
       data-swap-btn
       data-mint="${escAttr(it.mint)}"
       data-relay="${escAttr(relay)}"
@@ -130,6 +130,15 @@ export function coinCard(it) {
       data-pair-url="${escAttr(pairUrl)}"
       data-swap-opts='${escAttr(JSON.stringify(swapOpts))}'
     >Chart</button>`;
+
+  const holdBtn = `
+    <button
+      type="button"
+      class="btn"
+      data-hold-btn
+      data-mint="${escAttr(it.mint)}"
+      title="Open Hold bot for this mint"
+    >Hold</button>`;
 
   return `
 <article
@@ -169,14 +178,14 @@ export function coinCard(it) {
   <div class="actions actionButtons">
     ${socialsHtml ? `<div class="actions" data-socials>${socialsHtml}</div>` : ''}
     <div class="btnWrapper">
+      ${holdBtn}
       ${swapBtn}
-      <a class="btn" href="https://fdv.lol/token/${escAttr(it.mint)}" target="_blank" rel="noopener" style="padding: 8px;">Profile</a>
+      <a class="btn" href="https://fdv.lol/token/${escAttr(it.mint)}" target="_blank" rel="noopener">Profile</a>
     </div>
   </div>
 </article>`;
 }
 
-// ---- Filters / Helpers ----
 export function isDisplayReady(t) {
   return t &&
     Number.isFinite(Number(t.priceUsd)) &&

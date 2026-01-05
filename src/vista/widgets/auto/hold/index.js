@@ -29,7 +29,6 @@ const UPTICK_MIN_DROP_PCT = 0.25; // fewer tokens for same SOL => price uptick
 const UPTICK_PROBE_MIN_INTERVAL_MS = 2500;
 const HOLD_EXIT_QUOTE_MIN_INTERVAL_MS = 6000;
 
-// Rug detection: only act on EXTREME rug severity.
 const HOLD_RUG_EXTREME_SEV = Math.max(1, Number(RUG_FORCE_SELL_SEVERITY ?? 0.7));
 
 const { loadWeb3, loadBs58 } = createSolanaDepsLoader({
@@ -446,8 +445,6 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			if (t - lastRecon < 2500) return;
 			p.lastReconAt = t;
 
-			// Direct credit probe (fast path). We treat an on-chain credit as the
-			// source of truth for entering a hold cycle.
 			const lastProbe = Number(p.lastCreditProbeAt || 0);
 			if (t - lastProbe >= 5500) {
 				p.lastCreditProbeAt = t;
@@ -1339,4 +1336,106 @@ export function initHoldWidget(container = document.body) {
 			}
 		} catch {}
 	}
+
+	function openForMint({ mint, config, tokenHydrate, start } = {}) {
+		const m = String(mint || tokenHydrate?.mint || "").trim();
+		if (!m) return null;
+
+		// Prefer an existing tab already targeting this mint.
+		let target = null;
+		try {
+			for (const b of bots.values()) {
+				try {
+					const st = b.getState();
+					if (String(st?.mint || "").trim() === m) {
+						target = b;
+						break;
+					}
+				} catch {}
+			}
+		} catch {}
+
+		// If we already have a tab for this mint, just activate it (and optionally apply config).
+		if (target) {
+			try {
+				if (config && typeof config === "object") {
+					const cur = target.getState();
+					target.setState({ ...cur, ...config, mint: m });
+				}
+			} catch {}
+
+			try {
+				setActive(target.id);
+				persistAll();
+				refreshAddBtn();
+				recomputeRunningLed();
+			} catch {}
+
+			if (start && !target.isRunning()) {
+				try { void target.start({ resume: false }); } catch {}
+			}
+			return target.id;
+		}
+
+		// No exact match: prefer reusing an idle tab.
+		try {
+			for (const b of bots.values()) {
+				if (!b.isRunning()) {
+					target = b;
+					break;
+				}
+			}
+		} catch {}
+
+		// Otherwise create a new tab if possible.
+		if (!target) {
+			if (bots.size >= HOLD_MAX_TABS) {
+				try { alert(`Hold: max ${HOLD_MAX_TABS} tabs. Stop/delete a tab to open a new mint.`); } catch {}
+				return null;
+			}
+			const createdId = addBot({ state: DEFAULTS });
+			if (createdId) target = bots.get(createdId) || null;
+		}
+
+		if (!target) {
+			try { alert(`Hold: no available tab (max ${HOLD_MAX_TABS}). Stop/delete a tab and try again.`); } catch {}
+			return null;
+		}
+
+		// Safety: never overwrite a running bot with a different mint.
+		if (target.isRunning()) {
+			try { alert("Hold: stop this tab before reusing it for a new mint."); } catch {}
+			return null;
+		}
+
+		const next = {
+			...DEFAULTS,
+			...(typeof config === "object" && config ? config : {}),
+			mint: m,
+			enabled: false,
+		};
+
+		try {
+			target.setState(next);
+		} catch {}
+
+		try {
+			setActive(target.id);
+			persistAll();
+			refreshAddBtn();
+			recomputeRunningLed();
+		} catch {}
+
+		if (start) {
+			try { void target.start({ resume: false }); } catch {}
+		}
+
+		return target.id;
+	}
+
+	// Expose minimal integration API.
+	const api = { openForMint };
+	try { window.__fdvHoldOpenForMint = (mintArg, opts) => openForMint({ mint: mintArg, ...(opts || {}) }); } catch {}
+	try { window._fdvHoldWidgetApi = api; } catch {}
+	return api;
 }

@@ -1,7 +1,6 @@
 import { createSendFavoriteButton, createOpenLibraryButton } from "../../widgets/library/index.js";
 import { wireNavigation, wireCopy } from "../render/interactions.js";
 import { FALLBACK_LOGO } from "../../../config/env.js";
-import { createSwapButton } from "../../widgets/swap/index.js";
 import { buildSocialLinksHtml } from "../../../lib/socialBuilder.js";
 
 export function initHero({ token, scored, mint, onBack }) {
@@ -69,7 +68,7 @@ export function initHero({ token, scored, mint, onBack }) {
     }
   }
 
-  // Swap button
+  // Hold button (replaces Swap): jumps back home and opens Hold bot prefilled
   try {
     const hydrate = {
       mint,
@@ -85,18 +84,41 @@ export function initHero({ token, scored, mint, onBack }) {
       headlineUrl: token.headlineUrl,
       headlineDex: token.headlineDex,
     };
-    let swapBtn = document.getElementById("btnSwapAction");
-    if (!swapBtn) {
-      swapBtn = createSwapButton({ mint, label: "Swap", className: "btn btn--primary btn-ghost" });
-      swapBtn.id = "btnSwapAction";
-      swapBtn.setAttribute("data-open-swap", "");
-      const actions = elApp.querySelector(".profile__navigation .actions");
-      if (actions) actions.prepend(swapBtn);
-    } else {
-      swapBtn.setAttribute("data-open-swap", "");
-    }
-    swapBtn.dataset.tokenHydrate = JSON.stringify(hydrate);
-    if (token.headlineUrl) swapBtn.dataset.pairUrl = token.headlineUrl; else swapBtn.removeAttribute("data-pair-url");
+
+  // Remove any old swap button if present.
+  try {
+    const old = document.getElementById("btnSwapAction");
+    old?.remove?.();
+  } catch {}
+
+  let holdBtn = document.getElementById("btnHoldAction");
+  if (!holdBtn) {
+    holdBtn = document.createElement("button");
+    holdBtn.type = "button";
+    holdBtn.id = "btnHoldAction";
+    holdBtn.className = "btn btn--primary btn-ghost";
+    holdBtn.textContent = "Hold";
+    const actions = elApp.querySelector(".profile__navigation .actions");
+    if (actions) actions.prepend(holdBtn);
+  }
+
+  // Store open request for the home page to consume.
+  holdBtn.dataset.mint = mint;
+  holdBtn.dataset.tokenHydrate = JSON.stringify(hydrate);
+
+  holdBtn.onclick = (e) => {
+    e?.preventDefault?.();
+    try {
+      localStorage.setItem(
+        "fdv_hold_open_request_v1",
+        JSON.stringify({ mint, tokenHydrate: hydrate, start: false }),
+      );
+    } catch {}
+    try {
+      // Ensure Auto panel is visible after navigation.
+      location.href = "/?automate=1";
+    } catch {}
+  };
   } catch {}
 
   // Shill promote button
