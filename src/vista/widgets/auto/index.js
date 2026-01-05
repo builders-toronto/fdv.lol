@@ -134,7 +134,8 @@ export function initAutoWidget(container = document.body) {
   initVolumeWidget(body.querySelector('#volume-container'));
   initFollowWidget(body.querySelector('#follow-container'));
   initSniperWidget(body.querySelector('#sniper-container'));
-  initHoldWidget(body.querySelector('#hold-container'));
+  const holdApi = initHoldWidget(body.querySelector('#hold-container'));
+  try { window._fdvHoldWidgetApi = holdApi || null; } catch {}
 
   const mainTabBtns = wrap.querySelectorAll('[data-main-tab]');
   const mainTabPanels = wrap.querySelectorAll('[data-main-tab-panel]');
@@ -155,6 +156,84 @@ export function initAutoWidget(container = document.body) {
     }),
   );
   activateMainTab('auto');
+
+  function _parseJsonAttr(str) {
+    if (!str) return null;
+    try { return JSON.parse(str); } catch { return null; }
+  }
+
+  function _openHoldForMint(mint, { config, tokenHydrate, start } = {}) {
+    const m = String(mint || '').trim();
+    if (!m) return false;
+
+    try {
+      wrap.open = true;
+      const st = getAutoTraderState();
+      st.collapsed = false;
+      saveAutoTraderState();
+    } catch {}
+
+    try { activateMainTab('hold'); } catch {}
+
+    try {
+      const api = (holdApi && typeof holdApi.openForMint === 'function')
+        ? holdApi
+        : (window._fdvHoldWidgetApi && typeof window._fdvHoldWidgetApi.openForMint === 'function')
+          ? window._fdvHoldWidgetApi
+          : null;
+
+      if (api) {
+        api.openForMint({ mint: m, config, tokenHydrate, start: !!start });
+        return true;
+      }
+    } catch {}
+
+    // Fallback: global hook if present.
+    try {
+      const fn = window.__fdvHoldOpenForMint;
+      if (typeof fn === 'function') {
+        fn(m, { config, tokenHydrate, start: !!start });
+        return true;
+      }
+    } catch {}
+
+    return false;
+  }
+
+  // If another page requested opening Hold, do it once on load.
+  try {
+    const raw = localStorage.getItem('fdv_hold_open_request_v1');
+    if (raw) {
+      localStorage.removeItem('fdv_hold_open_request_v1');
+      const req = _parseJsonAttr(raw) || {};
+      const rmint = String(req.mint || '').trim();
+      if (rmint) {
+        _openHoldForMint(rmint, { config: req.config, tokenHydrate: req.tokenHydrate, start: !!req.start });
+      }
+    }
+  } catch {}
+
+  // Global click handler for token cards.
+  try {
+    document.addEventListener('click', (e) => {
+      const el = e?.target?.closest?.('[data-hold-btn]');
+      if (!el) return;
+      e.preventDefault();
+
+      const card = el.closest('.card');
+      const mint = el.dataset.mint || card?.dataset?.mint;
+      const tokenHydrate = _parseJsonAttr(card?.dataset?.tokenHydrate) || null;
+      _openHoldForMint(mint, { tokenHydrate });
+    });
+  } catch {}
+
+  // Programmatic open hook: window.dispatchEvent(new CustomEvent('fdv:hold:open', { detail: { mint, config, tokenHydrate, start } }))
+  try {
+    window.addEventListener('fdv:hold:open', (evt) => {
+      const d = evt?.detail || {};
+      _openHoldForMint(d.mint, { config: d.config, tokenHydrate: d.tokenHydrate, start: d.start });
+    });
+  } catch {}
 
   const openPumpKpi = () => {
     let opened = false;
