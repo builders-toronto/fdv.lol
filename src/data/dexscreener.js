@@ -237,6 +237,7 @@ export async function fetchTokenInfo(mint, { priority = false, signal, ttlMs } =
     tx1h: tx("h1"),
     tx6h: tx("h6"),
     tx24h: tx("h24"),
+    pairCreatedAt: Number.isFinite(earliest) ? earliest : null,
     ageMs: Number.isFinite(earliest) ? (Date.now() - earliest) : null,
 
     headlineDex: best?.dexId,

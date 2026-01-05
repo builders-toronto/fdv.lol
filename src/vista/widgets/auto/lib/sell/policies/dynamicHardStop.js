@@ -30,6 +30,15 @@ export function createDynamicHardStopPolicy({ log, getState, DYN_HS, computeFina
         intensity: Number(gate?.intensity || 1)
       });
 
+      // Avoid stopping out on small red moves very early in the trade.
+      // This dramatically reduces early -6% exits unless the position is flagged as a rug.
+      const earlySecs = Math.max(0, Number(DYN_HS?.earlySecs ?? 180));
+      const earlyMinStopPct = Math.max(0, Number(DYN_HS?.earlyMinStopPct ?? 12));
+      if (!ctx.forceRug && earlySecs > 0 && earlyMinStopPct > 0 && ctx.ageSec < earlySecs) {
+        if (Number.isFinite(ctx.dynStopPct)) ctx.dynStopPct = Math.max(ctx.dynStopPct, earlyMinStopPct);
+        else ctx.dynStopPct = earlyMinStopPct;
+      }
+
       // Never stop out earlier than the configured stop-loss.
       // Otherwise the "hard stop" undercuts SL and causes surprising early exits.
       const slFloorPct = Math.max(0, Number(ctx.pos.slPct ?? state.stopLossPct ?? 0));

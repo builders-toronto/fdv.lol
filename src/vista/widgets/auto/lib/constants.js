@@ -82,6 +82,8 @@ export const DYN_HS = Object.freeze({
   min: 3.2,
   max: 6.0,
   remorseSecs: 22,
+  earlySecs: 180,
+  earlyMinStopPct: 12,
 });
 
 // Lightweight shared config for Auto's dex/Jupiter logic.

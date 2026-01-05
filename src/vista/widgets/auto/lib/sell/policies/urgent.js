@@ -46,8 +46,13 @@ export function createUrgentSellPolicy({
 
     // Urgent exits must survive downstream
     ctx.isFastExit = true;
-    ctx.forceObserverDrop = true;
-    ctx.rugSev = Number(urgent.sev || 1);
+    ctx.forceObserverDrop = !isRugUrg;
+    if (isRugUrg) {
+      ctx.forceRug = true;
+      ctx.rugSev = Number(urgent.sev || 1);
+    } else {
+      ctx.rugSev = Number(ctx.rugSev || 0);
+    }
     ctx.decision = {
       action: "sell_all",
       reason: `URGENT:${String(urgent.reason || "unknown")}`,

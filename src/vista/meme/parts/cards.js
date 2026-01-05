@@ -190,6 +190,11 @@ export function isDisplayReady(t) {
 export function sortItems(items, sortKey) {
   const arr = [...items];
   arr.sort((a, b) => {
+    if (sortKey === 'launches') {
+      const aa = Number.isFinite(Number(a?.ageMs)) ? Number(a.ageMs) : Number.POSITIVE_INFINITY;
+      const bb = Number.isFinite(Number(b?.ageMs)) ? Number(b.ageMs) : Number.POSITIVE_INFINITY;
+      return (aa - bb) || ((b.score || 0) - (a.score || 0));
+    }
     if (sortKey === 'volume')    return (b.volume?.h24 || 0)  - (a.volume?.h24 || 0);
     if (sortKey === 'liquidity') return (b.liquidityUsd || 0) - (a.liquidityUsd || 0);
     if (sortKey === 'change24')  return (b.change?.h24 || 0)  - (a.change?.h24 || 0);
