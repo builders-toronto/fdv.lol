@@ -253,33 +253,49 @@ function renderAddon(addon) {
 
     const sparkHtml = `<div class="micro" data-micro data-key="${mintKey}">${sparklineSVG(seriesForDraw, { w: 72, h: 20 })}</div>`;
 
+    const holdBtnHtml = row?.mint
+      ? `
+        <button
+          type="button"
+          class="btn holdCoin pill"
+          data-hold-btn
+          data-mint="${row.mint}"
+          title="Open Hold bot for this mint"
+          style="padding:6px 10px; font-size:12px; border-radius:10px;"
+        >Buy</button>
+      `
+      : '';
+
     return `
       <li class="addon-item">
-        <a href="https://fdv.lol/token/${row.mint}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:12px;">
+        <a href="https://fdv.lol/token/${row.mint}" target="_blank" rel="noopener">
           <div class="addon-avatar">
             <div class="addon-rank r${i+1}">${i+1}</div>
             <img class="addon-logo" src="${logo}" data-sym="${sym}" alt="" loading="lazy" decoding="async">
           </div>
 
-          <div class="addon-main" style="min-width:0;flex:1 1 auto;">
-            <div class="addon-line1" style="display:flex;align-items:center;gap:8px;min-width:0;">
-              <div class="addon-sym" style="font-weight:700;">${sym || '—'}</div>
-              <div class="addon-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${name || ''}</div>
+          <div class="addon-main">
+            <div class="addon-line1">
+              <div class="addon-sym">${sym || '—'}</div>
+              <div class="addon-name">${name || ''}</div>
             </div>
-            <div class="addon-line2" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;opacity:.95;">
+            <div class="addon-line2">
               <span class="pill"><span class="k">Price</span><b>${price}</b></span>
               <span class="pill"><span class="k">24h</span><b class="${chCls}">${chTxt}</b></span>
               <span class="pill"><span class="k">Liq</span><b>${liq}</b></span>
               <span class="pill"><span class="k">Vol</span><b>${vol}</b></span>
               ${metricHtml}
+              ${holdBtnHtml}
             </div>
             <div class="mint-data">
               <code style="font-size:7px;">${row.mint}</code>
             </div>
           </div>
 
-          <div class="addon-right" style="margin-left:auto;flex:0 0 110px;display:flex;align-items:center;justify-content:flex-end;">
-            ${sparkHtml}
+          <div class="addon-right">
+            <div style="display:flex; align-items:center; justify-content:flex-end; gap:8px;">
+              ${sparkHtml}
+            </div>
           </div>
         </a>
       </li>

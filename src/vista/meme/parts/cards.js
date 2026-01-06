@@ -432,17 +432,19 @@ export function coinCard(it) {
     >Hold</button>`;
 
   return `
-<article
-  class="card"
-  data-hay="${escAttr((it.symbol||'')+' '+(it.name||'')+' '+it.mint)}"
-  data-mint="${escAttr(it.mint)}"
-  data-relay="${escAttr(relay)}"
-  data-priority="${priority ? '1' : '0'}"
-  data-timeout-ms="${escAttr(timeoutMs)}"
-  data-pair-url="${escAttr(pairUrl)}"
-  data-token-hydrate='${escAttr(JSON.stringify(tokenHydrate))}'
-  data-swap-opts='${escAttr(JSON.stringify(swapOpts))}'
->
+  <div class="card-rank" aria-hidden="true"></div>
+  <article
+    class="card"
+    data-hay="${escAttr((it.symbol||'')+' '+(it.name||'')+' '+it.mint)}"
+    data-mint="${escAttr(it.mint)}"
+    data-relay="${escAttr(relay)}"
+    data-priority="${priority ? '1' : '0'}"
+    data-timeout-ms="${escAttr(timeoutMs)}"
+    data-pair-url="${escAttr(pairUrl)}"
+    data-token-hydrate='${escAttr(JSON.stringify(tokenHydrate))}'
+    data-swap-opts='${escAttr(JSON.stringify(swapOpts))}'
+  >
+
   <div class="top">
     <div class="logo"><img data-logo src="${escAttr(logo)}" alt=""></div>
     <div style="flex:1">

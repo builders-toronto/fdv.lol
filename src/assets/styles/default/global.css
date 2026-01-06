@@ -339,7 +339,7 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
   display:inline-flex; align-items:center; gap:8px;
   cursor:pointer; height:36px; padding:0 12px; border-radius:10px;
   border:1px solid var(--fdv-border, var(--border-2, rgba(255,255,255,.14)));
-  background: linear-gradient(90deg, rgba(0,0,0,.15), rgba(11,156,173,.15));
+  background: transparent
   color: var(--text);
   font-weight:600;
   transition: border-color .15s ease, filter .15s ease, background .15s ease;
@@ -365,9 +365,9 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
   width:100%;
   /* background: linear-gradient(180deg, rgba(15,22,37,.96), rgba(15,22,37,.88)); */
   color:inherit;
-  border:1px solid rgba(122,222,255,.12);
+  /* border:1px solid rgba(122,222,255,.12);
   border-radius:12px;
-  box-shadow: 0 16px 40px rgba(0,0,0,.45), inset 0 0 0 1px rgba(26,255,213,.05);
+  box-shadow: 0 16px 40px rgba(0,0,0,.45), inset 0 0 0 1px rgba(26,255,213,.05); */
   padding:8px;
   max-height: 60vh;
   overflow:auto;
@@ -385,24 +385,34 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
 
 .addon-list { display:grid; gap:6px; margin:0; padding:0; list-style:none; }
 
-/* Item layout — anchor wraps content; make it a flex row */
-.addon-item { background: black; border-radius:12px; overflow:hidden; }
-.addon-item > a {
-  display:flex; align-items:flex-start; gap:12px;
-  width:100%;
-  padding:10px;
-  text-decoration:none;
-  color: inherit;
-  background: linear-gradient(180deg, rgba(14,16,27,.95), rgba(0,0,0,.80));
+/* Item layout — card-like, vertical on mobile; horizontal on desktop */
+.addon-item {
+  border-radius:12px;
+  overflow:hidden;
+}
+.addon-item > .quick-spinner-wrap {
+  background: var(--card, linear-gradient(180deg, rgba(14,16,27,.95), rgba(0,0,0,.80)));
   border:1px solid rgba(122,222,255,.12);
   border-radius:12px;
+  box-shadow: 0 0px 1px rgba(0, 0, 0, 0.18), 0 8px 22px rgba(0, 0, 0, 0.28);
+}
+.addon-item > a {
+  display:flex;
+  flex-direction: column;
+  width:100%;
+  text-decoration:none;
+  color: inherit;
+  background: var(--card, linear-gradient(180deg, rgba(14,16,27,.95), rgba(0,0,0,.80)));
+  border:1px solid rgba(122,222,255,.12);
+  border-radius:12px;
+  box-shadow: 0 0px 1px rgba(0, 0, 0, 0.18), 0 8px 22px rgba(0, 0, 0, 0.28);
   transition: transform .12s ease, filter .12s ease, border-color .12s ease, background .12s ease;
   -webkit-tap-highlight-color: transparent;
 }
 .addon-item > a:hover {
   filter: brightness(1.04);
   border-color: rgba(26,255,213,.28);
-  background: linear-gradient(180deg, rgba(14,16,27,.98), rgba(0,0,0,.86));
+  background: var(--card, linear-gradient(180deg, rgba(14,16,27,.98), rgba(0,0,0,.86)));
 }
 .addon-item > a:focus-visible {
   outline: none;
@@ -412,13 +422,26 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
   border-color: rgba(26,255,213,.45);
 }
 
-/* Avatar + rank */
-.addon-avatar { position: relative; width: 36px; height: 36px; flex: 0 0 auto; }
-.addon-logo { width:36px; height:36px; border-radius:10px; object-fit:cover; background: #0b111d; display:block; border:1px solid rgba(122,222,255,.20); }
+/* Featured image (token logo) + rank */
+.addon-avatar {
+  position: relative;
+  width: 100%;
+  height: 160px;
+  flex: 0 0 auto;
+}
+.addon-logo {
+  width:100%;
+  height:100%;
+  border-radius: 12px 12px 0 0;
+  object-fit: cover;
+  background: #0b111d;
+  display:block;
+  border: none;
+}
 .addon-rank {
   width:20px; height:20px; border-radius:6px;
   display:flex; align-items:center; justify-content:center;
-  font-size:11px; font-weight:800; color:#0b0b0c; position:absolute; top:-6px; left:-6px; z-index:1;
+  font-size:11px; font-weight:800; color:#0b0b0c; position:absolute; top:10px; left:10px; z-index:1;
   box-shadow: 0 6px 14px rgba(0,0,0,.35);
 }
 .addon-rank.r1 { background: linear-gradient(135deg,#ffd776,#ffc24a); }
@@ -426,7 +449,7 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
 .addon-rank.r3 { background: linear-gradient(135deg,#ffd9c1,#ffb08c); }
 
 /* Main text */
-.addon-main { min-width:0; display:flex; flex-direction:column; gap:6px; }
+.addon-main { min-width:0; display:flex; flex-direction:column; gap:8px; padding:12px 12px 10px; }
 .addon-line1 { display:flex; align-items:center; gap:8px; min-width:0; }
 .addon-sym { font-weight:800; font-size: .98rem; letter-spacing:.2px; }
 .addon-name { opacity:.9; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color: var(--muted); }
@@ -434,6 +457,66 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
 .addon-line2 {
   display:flex; align-items:center; gap:8px; flex-wrap:wrap;
   font-size:12px; opacity:.96;
+}
+
+.addon-right {
+  margin-top: 6px;
+  padding: 0 12px 12px;
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+}
+
+/* Non-desktop: make the logo a small corner thumbnail (bottom-right) */
+@media (max-width: 768px) {
+  .addon-item > a { position: relative; }
+
+  .addon-avatar {
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    width: 56px;
+    height: 56px;
+    pointer-events: none;
+  }
+  .addon-logo {
+    border-radius: 14px;
+    border: 1px solid rgba(122,222,255,.20);
+  }
+  .addon-rank {
+    top: -6px;
+    left: -6px;
+  }
+
+  /* reserve space so spark/buttons don't sit under the thumbnail */
+  .addon-main,
+  .addon-right {
+    padding-right: 86px;
+  }
+}
+
+@media only screen and (min-width: 769px) {
+  .addon-item > a {
+    flex-direction: row;
+    align-items: stretch;
+  }
+  .addon-avatar {
+    width: 180px;
+    height: 140px;
+  }
+  .addon-logo {
+    border-radius: 12px 0 0 12px;
+  }
+  .addon-main {
+    padding: 12px;
+    flex: 1 1 auto;
+  }
+  .addon-right {
+    margin-top: 0;
+    padding: 12px 12px 12px 0;
+    flex: 0 0 auto;
+    align-items: center;
+  }
 }
 
 @media (max-width: 1024px) {
@@ -447,10 +530,6 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
 }
 
 @media (max-width: 480px) {
-  .addon-list .addon-item > a {
-    gap: 10px;
-    flex-wrap: wrap;
-  }
   .addon-right {
     order: 3;               
     flex: 1 1 100%;
@@ -485,16 +564,15 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
 .addon-line2 a.pill:hover { filter: brightness(1.12); border-color: rgba(26,255,213,.35); }
 
 @media (max-width: 720px){
-  .addon-item > a { gap:10px; padding:9px; }
-  .addon-avatar { width: 32px; height: 32px; }
-  .addon-logo { width:32px; height:32px; border-radius:8px; }
-  .addon-rank { width:16px; height:16px; font-size:10px; top:-5px; left:-5px; }
+  .addon-main { padding:10px 10px 8px; }
+  /* .addon-avatar { height: 140px; } */
+  .addon-rank { width:16px; height:16px; font-size:10px; top:8px; left:8px; }
   .addon-sym { font-size: .95rem; }
   .addon-line2 { gap:6px; }
   .pill { padding:2px 7px; }
 }
 @media (max-width: 420px){
-  .addon-item > a { padding:8px; }
+  .addon-main { padding:8px 8px 6px; }
   .addon-line2 { font-size:11px; }
   .pill { padding:2px 6px; }
   .addon-name { display:none; } /* keep it ultra-compact on tiny screens */
@@ -603,6 +681,7 @@ input[type="checkbox"]:disabled{
 
 .cards{
   display:grid; gap:16px;
+  margin-top: 23px;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
 }
 
@@ -634,6 +713,117 @@ input[type="checkbox"]:disabled{
   filter: blur(16px);
   opacity: .28;
   animation: leaderPulse 2.4s ease-in-out infinite;
+}
+
+.card-rank{
+  position:absolute;
+  top:-8px;
+  left:-5px;
+  width:34px;
+  height:34px;
+  display:none;
+  place-items:center;
+  border-radius:12px;
+  z-index:2;
+  pointer-events:none;
+  background: rgba(11,15,20,.8);
+  border:1px solid rgba(122,222,255,.18);
+  box-shadow: 0 6px 18px rgba(0,0,0,.35);
+}
+.cards .card:nth-child(-n+3) .card-rank{ display:grid; }
+
+.card-rank::before{
+  content:"";
+  font-weight: 900;
+  font-size: 18px;
+  line-height: 1;
+  letter-spacing: .2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cards .card:nth-child(1) .card-rank{
+  border-color: color-mix(in srgb, var(--watch) 45%, rgba(122,222,255,.18));
+  box-shadow: 0 10px 22px rgba(0,0,0,.45);
+}
+.cards .card:nth-child(1) .card-rank::before{
+  content:"1";
+  color: transparent;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--watch) 92%, white) 0%,
+    var(--watch) 18%,
+    var(--shill) 55%,
+    var(--avoid) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  background-size: 100% 180%;
+  background-position: 0% 0%;
+  filter:
+    drop-shadow(0 0 6px color-mix(in srgb, var(--watch) 55%, transparent))
+    drop-shadow(0 0 12px color-mix(in srgb, var(--shill) 45%, transparent));
+  animation: fdv-rank-flame 1.25s ease-in-out infinite;
+}
+.cards .card:nth-child(1) .card-rank::after{
+  content:"";
+  position:absolute;
+  inset:-8px;
+  border-radius:14px;
+  /* background:
+    radial-gradient(60% 75% at 50% 20%, color-mix(in srgb, var(--watch) 38%, transparent), transparent 65%),
+    radial-gradient(70% 85% at 50% 80%, color-mix(in srgb, var(--shill) 30%, transparent), transparent 70%);
+  filter: blur(10px);
+  opacity: .55; */
+  /* animation: fdv-rank-flicker 1.05s ease-in-out infinite; */
+  pointer-events:none;
+}
+
+@keyframes fdv-rank-flame{
+  0%,100%{ background-position: 0% 0%; transform: translateY(0) skewX(0deg); }
+  45%{ background-position: 0% 55%; transform: translateY(-1px) skewX(-2deg); }
+  70%{ background-position: 0% 25%; transform: translateY(0) skewX(2deg); }
+}
+@keyframes fdv-rank-flicker{
+  0%,100%{ opacity: .45; transform: translateY(1px) scale(1); }
+  35%{ opacity: .70; transform: translateY(-1px) scale(1.02); }
+  70%{ opacity: .52; transform: translateY(0) scale(1.01); }
+}
+
+/* #2: silver */
+.cards .card:nth-child(2) .card-rank::before{
+  content:"2";
+  color: transparent;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--text) 92%, white) 0%,
+    var(--text) 35%,
+    color-mix(in srgb, var(--text) 45%, var(--muted)) 100%
+  );
+  -webkit-background-clip:text;
+  background-clip:text;
+  filter: drop-shadow(0 0 10px rgba(255,255,255,.08));
+}
+
+/* #3: bronze */
+.cards .card:nth-child(3) .card-rank::before{
+  content:"3";
+  color: transparent;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--watch) 35%, var(--shill)) 0%,
+    var(--shill) 55%,
+    color-mix(in srgb, var(--shill) 55%, var(--avoid)) 100%
+  );
+  -webkit-background-clip:text;
+  background-clip:text;
+  filter: drop-shadow(0 0 10px rgba(0,0,0,.25));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cards .card:nth-child(1) .card-rank::before,
+  .cards .card:nth-child(1) .card-rank::after{
+    animation: none;
+  }
 }
 
 @keyframes leaderPulse {
@@ -732,11 +922,10 @@ input[type="checkbox"]:disabled{
   animation: spin .6s linear infinite;
 }
 
-/* Hold button: cooler + more responsive using existing theme vars */
 .holdCoin{
   font-weight:800;
   border-color: color-mix(in oklab, var(--accent2) 45%, rgba(122,222,255,.28));
-  background: color-mix(in oklab, var(--accent) 10%, transparent);
+  background: transparent;
   transition: transform .14s ease, box-shadow .14s ease, filter .14s ease, background .14s ease;
 }
 .holdCoin:hover{ transform: translateY(-1px); box-shadow: var(--shadow-1) }
@@ -1692,16 +1881,16 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
       transparent 60%
     ),
     var(--bg); */
-  border: 1px solid var(--edge);
-  border-radius: 16px;
+  border-bottom: 1px solid var(--edge);
+  /* border-radius: 16px; */
   padding: clamp(12px, 2vw, 20px);
   margin: 14px auto;
   color: var(--fdv-text);
   width: 100%;
   max-width: 1200px;
-  box-shadow:
+  /* box-shadow:
     0 10px 24px rgba(0, 0, 0, .25),
-    0 0 0 1px color-mix(in srgb, var(--neon, var(--fdv-primary)) 8%, transparent) inset;
+    0 0 0 1px color-mix(in srgb, var(--neon, var(--fdv-primary)) 8%, transparent) inset; */
 }
 
 .fdv-auto-head{

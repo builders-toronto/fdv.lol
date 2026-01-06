@@ -2,6 +2,7 @@
 import { initFollowWidget } from './follow/index.js';
 import { initSniperWidget } from './sniper/index.js';
 import { initHoldWidget } from './hold/index.js';
+import { maybeShowAutoTraderFirstRunHelp } from './help/index.js';
 import {
   initTraderWidget,
   getAutoTraderState,
@@ -90,7 +91,8 @@ export function initAutoWidget(container = document.body) {
   body.className = 'fdv-auto-body';
   body.innerHTML = `
     <div class="fdv-auto-head"></div>
-    <div class="fdv-tabs" style="display:flex; gap:8px; margin:8px 0; overflow: scroll;">
+    <div data-auto-firsthelp-slot></div>
+    <div class="fdv-tabs" style="display:flex; margin-bottom: 25px; gap:8px; margin:8px 0; overflow: scroll;">
       <button class="fdv-tab-btn active" data-main-tab="auto">Auto</button>
       <button class="fdv-tab-btn" data-main-tab="follow">Follow</button>
       <button class="fdv-tab-btn" data-main-tab="sniper">Sentry</button>
@@ -136,6 +138,18 @@ export function initAutoWidget(container = document.body) {
   initSniperWidget(body.querySelector('#sniper-container'));
   const holdApi = initHoldWidget(body.querySelector('#hold-container'));
   try { window._fdvHoldWidgetApi = holdApi || null; } catch {}
+
+  const firstHelpSlot = body.querySelector('[data-auto-firsthelp-slot]');
+  const maybeShowFirstRunHelpInline = () => {
+    try {
+      if (!wrap.open) return;
+      if (!firstHelpSlot) return;
+      maybeShowAutoTraderFirstRunHelp(firstHelpSlot);
+    } catch {}
+  };
+
+  // Show first-run help when the user opens the Auto panel.
+  try { if (wrap.open) setTimeout(maybeShowFirstRunHelpInline, 0); } catch {}
 
   const mainTabBtns = wrap.querySelectorAll('[data-main-tab]');
   const mainTabPanels = wrap.querySelectorAll('[data-main-tab-panel]');
@@ -347,6 +361,7 @@ export function initAutoWidget(container = document.body) {
       st.collapsed = !wrap.open;
       saveAutoTraderState();
     } catch {}
+    if (wrap.open) maybeShowFirstRunHelpInline();
     openPumpKpi();
   });
 }

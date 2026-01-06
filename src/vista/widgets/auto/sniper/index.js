@@ -1450,16 +1450,6 @@ function _getDex() {
 
 		confirmSig,
 		unwrapWsolIfAny,
-		waitForTokenDebit,
-		waitForTokenCredit: async (owner, mint, { timeoutMs = 8000, pollMs = 300 } = {}) => {
-			const start = now();
-			while (now() - start < timeoutMs) {
-				const b = await getTokenBalanceUiByMint(owner, mint);
-				if (Number(b.sizeUi || 0) > 0) return true;
-				await new Promise((r) => setTimeout(r, pollMs));
-			}
-			return false;
-		},
 
 		putBuySeed: buySeedStore.putBuySeed,
 		getBuySeed: buySeedStore.getBuySeed,
@@ -1988,10 +1978,10 @@ const executeSellDecisionPolicy = createExecuteSellDecisionPolicy({
 		try { return await _getDex().closeEmptyTokenAtas(kp, mint); } catch { return false; }
 	},
 	quoteOutSol,
-	getAtaBalanceUi: async (owner, mint, _dec) => getTokenBalanceUiByMint(owner, mint),
+	getAtaBalanceUi: async (owner, mint, dec, commitment) => _getDex().getAtaBalanceUi(owner, mint, dec, commitment),
 	minSellNotionalSol,
 	executeSwapWithConfirm: async (...args) => _getDex().executeSwapWithConfirm(...args),
-	waitForTokenDebit,
+	waitForTokenDebit: async (owner, mint, prev, opts) => _getDex().waitForTokenDebit(owner, mint, prev, opts),
 	addRealizedPnl,
 	maybeStealthRotate: async () => {},
 	clearRouteDustFails: () => {},

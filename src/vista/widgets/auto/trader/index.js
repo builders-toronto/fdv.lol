@@ -250,9 +250,6 @@ function _getDex() {
     minSellNotionalSol,
     safeGetDecimalsFast,
 
-    ataExists,
-    getOwnerAtas,
-    getAtaBalanceUi,
     _getMultipleAccountsInfoBatched,
     _readSplAmountFromRaw,
 
@@ -275,8 +272,6 @@ function _getDex() {
 
     confirmSig,
     unwrapWsolIfAny,
-    waitForTokenCredit,
-    waitForTokenDebit,
 
     getComputeBudgetConfig,
     buildComputeBudgetIxs,
@@ -1685,81 +1680,11 @@ const _confirmSigImpl = createConfirmSig({
 });
 
 async function waitForTokenDebit(ownerPubkeyStr, mintStr, prevSizeUi, { timeoutMs = 20000, pollMs = 350 } = {}) {
-  const start = now();
-  const prev = Number(prevSizeUi || 0);
-  while (now() - start < timeoutMs) {
-    try {
-      const b = await getAtaBalanceUi(ownerPubkeyStr, mintStr, undefined);
-      const cur = Number(b.sizeUi || 0);
-      if (cur <= 1e-9 || cur < prev * 0.90) {
-        return { debited: true, remainUi: cur, decimals: Number.isFinite(b.decimals) ? b.decimals : undefined };
-      }
-      if (cur < prev - 1e-9) { // any reduction
-        return { debited: true, remainUi: cur, decimals: Number.isFinite(b.decimals) ? b.decimals : undefined };
-      }
-    } catch {}
-    await new Promise(r => setTimeout(r, pollMs));
-  }
-  try {
-    await reconcileFromOwnerScan(ownerPubkeyStr);
-  } catch {}
-  try {
-    const b = await getAtaBalanceUi(ownerPubkeyStr, mintStr, undefined);
-    return { debited: Number(b.sizeUi || 0) <= 1e-9, remainUi: Number(b.sizeUi || 0), decimals: Number.isFinite(b.decimals) ? b.decimals : undefined };
-  } catch {
-    return { debited: true, remainUi: 0, decimals: undefined };
-  }
+	return await _getDex().waitForTokenDebit(ownerPubkeyStr, mintStr, prevSizeUi, { timeoutMs, pollMs });
 }
 
 async function waitForTokenCredit(ownerPubkeyStr, mintStr, { timeoutMs = 8000, pollMs = 300 } = {}) {
-  const conn = await getConn();
-  const start = now();
-
-  let decimals = 6;
-  try { decimals = await getMintDecimals(mintStr); } catch {}
-
-  let atas = [];
-  try { atas = await getOwnerAtas(ownerPubkeyStr, mintStr); } catch {}
-  while (now() - start < timeoutMs) {
-    if (Array.isArray(atas) && atas.length) {
-      for (const { ata } of atas) {
-        try {
-          const res = await conn.getTokenAccountBalance(ata, "confirmed");
-          if (res?.value) {
-            const ui = Number(res.value.uiAmount || 0);
-            const dec = Number.isFinite(res.value.decimals) ? res.value.decimals : undefined;
-            if (ui > 0) return { sizeUi: ui, decimals: Number.isFinite(dec) ? dec : decimals };
-          }
-        } catch (e) { _markRpcStress(e, 1500); }
-      }
-    }
-    // Fallback owner scans (confirmed) if plan allows
-    try {
-      const { PublicKey } = await loadWeb3();
-      const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = await loadSplToken();
-      const ownerPk = new PublicKey(ownerPubkeyStr);
-      const tryScan = async (pid) => {
-        if (!pid) return null;
-        const resp = await conn.getParsedTokenAccountsByOwner(ownerPk, { programId: pid }, "confirmed");
-        for (const it of resp?.value || []) {
-          const info = it?.account?.data?.parsed?.info;
-          if (String(info?.mint || "") !== mintStr) continue;
-          const ta = info?.tokenAmount;
-          const ui = Number(ta?.uiAmount || 0);
-          const dec = Number(ta?.decimals);
-          if (ui > 0) return { sizeUi: ui, decimals: Number.isFinite(dec) ? dec : decimals };
-        }
-        return null;
-      };
-      const hit1 = await tryScan(TOKEN_PROGRAM_ID);
-      const hit2 = hit1 || await tryScan(TOKEN_2022_PROGRAM_ID);
-      if (hit2 && Number(hit2.sizeUi || 0) > 0) return hit2;
-    } catch (e) { _markRpcStress(e, 2000); }
-    const left = rpcBackoffLeft();
-    await new Promise(r => setTimeout(r, left > 0 ? left : pollMs));
-    try { if (!atas || !atas.length) atas = await getOwnerAtas(ownerPubkeyStr, mintStr); } catch {}
-  }
-  return { sizeUi: 0, decimals };
+	return await _getDex().waitForTokenCredit(ownerPubkeyStr, mintStr, { timeoutMs, pollMs });
 }
 
 // async function getFeeAta(mintStr) {
@@ -4139,30 +4064,7 @@ async function getOwnerAtas(ownerPubkeyStr, mintStr) {
 }
 
 async function getAtaBalanceUi(ownerPubkeyStr, mintStr, decimalsHint, commitment = "confirmed") {
-  const conn = await getConn();
-  await rpcWait("ata-balance", 450);
-  const atas = await getOwnerAtas(ownerPubkeyStr, mintStr);
-  let best = null;
-  for (const { ata } of atas) {
-    const res = await conn.getTokenAccountBalance(ata, commitment).catch(e => { _markRpcStress(e, 1500); return null; });
-    if (res?.value) {
-      const sizeUi = Number(res.value.uiAmount || 0);
-      const decimals = Number.isFinite(res.value.decimals) ? res.value.decimals : (await getMintDecimals(mintStr));
-      if (sizeUi > 0) {
-        updatePosCache(ownerPubkeyStr, mintStr, sizeUi, decimals);
-        return { sizeUi, decimals, exists: true };
-      }
-      best = { sizeUi: 0, decimals: Number.isFinite(res.value.decimals) ? res.value.decimals : (await getMintDecimals(mintStr)), exists: true };
-    }
-  }
-  let existsAny = false;
-  for (const { ata } of atas) {
-    const ai = await conn.getAccountInfo(ata, commitment).catch(e => { _markRpcStress(e, 1500); return null; });
-    existsAny = existsAny || !!ai;
-  }
-  const decimals = Number.isFinite(decimalsHint) ? decimalsHint : (await getMintDecimals(mintStr));
-  if (best) return best;
-  return { sizeUi: 0, decimals, exists: existsAny };
+	return await _getDex().getAtaBalanceUi(ownerPubkeyStr, mintStr, decimalsHint, commitment);
 }
 
 export async function closeEmptyTokenAtas(signer, mint) {
@@ -6855,7 +6757,7 @@ export function initTraderWidget(container = document.body) {
     <div class="fdv-auto-head"></div>
     <div data-main-tab-panel="auto" class="tab-panel active">
     <div class="fdv-grid">
-      <label><a href="https://chainstack.com/" target="_blank">RPC (CORS)</a> <input data-auto-rpc placeholder="https://your-provider.example/solana?api-key=..."/></label>
+      <label><a href="https://quicknode.com/signup?via=lf" target="_blank">RPC (CORS)</a> <input data-auto-rpc placeholder="https://your-provider.example/solana?api-key=..."/></label>
       <label>RPC Headers (JSON) <input data-auto-rpch placeholder='{"Authorization":"Bearer ..."}'/></label>
       <label>Auto Wallet <input data-auto-dep readonly placeholder="Generate to get address"/></label>
       <label>Deposit Balance <input data-auto-bal readonly/></label>

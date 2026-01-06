@@ -355,17 +355,11 @@ const RETURN_SOL_MIN_LEFTOVER_LAMPORTS = 100_000; // 0.0001 SOL
 async function getTokenBalanceUiByMint(ownerPkOrStr, mintStr) {
   try {
     if (!mintStr || mintStr === SOL_MINT) return 0;
-    const { PublicKey } = await loadWeb3();
-    const conn = await getConn();
-    const ownerPk = typeof ownerPkOrStr === 'string' ? new PublicKey(ownerPkOrStr) : ownerPkOrStr;
-    const mintPk = new PublicKey(mintStr);
-    const res = await conn.getParsedTokenAccountsByOwner(ownerPk, { mint: mintPk }, 'confirmed');
-    let sum = 0;
-    for (const it of res?.value || []) {
-      const uiAmt = Number(it?.account?.data?.parsed?.info?.tokenAmount?.uiAmount);
-      if (Number.isFinite(uiAmt)) sum += uiAmt;
-    }
-    return sum;
+    const ownerStr = typeof ownerPkOrStr === 'string' ? ownerPkOrStr : ownerPkOrStr?.toBase58?.();
+    if (!ownerStr) return 0;
+    const b = await getDex().getAtaBalanceUi(ownerStr, mintStr, undefined, 'confirmed');
+    const ui = Number(b?.sizeUi || 0);
+    return Number.isFinite(ui) ? ui : 0;
   } catch {
     return 0;
   }
