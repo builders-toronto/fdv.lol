@@ -213,4 +213,4 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
 
-feat(profile,auto): add Hold CTA from profile to prefill Hold bot on home
+Hold widget: clear cost basis after exit; draggable hover-frozen cards
