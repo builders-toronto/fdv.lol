@@ -468,8 +468,13 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				p.lastCreditProbeAt = t;
 				const got = await dex.waitForTokenCredit(ownerStr, mint, { timeoutMs: 1800, pollMs: 250 });
 				if (Number(got?.sizeUi || 0) > 0) {
+					const alreadyApplied = !!p.costApplied;
+					const addCostSol = alreadyApplied ? 0 : Number(p.addCostSol || 0);
+					// Important: credit checks can race (this reconcile runs in background while the main tick is also awaiting
+					// a credit). Mark cost as applied before upserting to avoid double-counting the cost basis.
+					if (!alreadyApplied) p.costApplied = true;
 					_setCycleFromCredit({ mint, ownerStr, costSol: Number(p.addCostSol || 0), sizeUi: got.sizeUi, decimals: got.decimals });
-					_upsertAutoPosFromCredit({ mint, sizeUi: got.sizeUi, decimals: got.decimals, addCostSol: Number(p.addCostSol || 0) });
+					_upsertAutoPosFromCredit({ mint, sizeUi: got.sizeUi, decimals: got.decimals, addCostSol });
 				}
 			}
 		} catch {}
@@ -723,7 +728,14 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 						const got = await dex.waitForTokenCredit(ownerStr, mint, { timeoutMs: 1200, pollMs: 300 });
 						if (Number(got?.sizeUi || 0) > 0) {
 							_setCycleFromCredit({ mint, ownerStr, costSol: buySol, sizeUi: got.sizeUi, decimals: got.decimals });
-							_upsertAutoPosFromCredit({ mint, sizeUi: got.sizeUi, decimals: got.decimals, addCostSol: buySol });
+							let addCostSol = buySol;
+							try {
+								if (_pendingEntry && _pendingEntry.mint === mint) {
+									if (_pendingEntry.costApplied) addCostSol = 0;
+									else _pendingEntry.costApplied = true;
+								}
+							} catch {}
+							_upsertAutoPosFromCredit({ mint, sizeUi: got.sizeUi, decimals: got.decimals, addCostSol });
 							log(
 								`Buy credited for ${_shortMint(mint)}: size≈${Number(got.sizeUi).toFixed(6)} (dec=${Number(got.decimals || 0) || 6}).`,
 								"ok",

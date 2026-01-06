@@ -96,12 +96,24 @@ elRelax.addEventListener('change', () => showHome({ force: true }));
 
 
 function ensureAdSlots() {
+  const cardsEl = elCards || document.querySelector('.cards');
+  const host = cardsEl?.parentElement || document.body;
+
   if (!_elCardAdSlot) {
-    const host = elCards?.parentElement || document.body;
     _elCardAdSlot = document.createElement('div');
     _elCardAdSlot.id = 'cardAdSlot';
     _elCardAdSlot.className = 'ad-slot ad-slot-cards';
-    host.insertBefore(_elCardAdSlot, elCards || host.firstChild);
+  }
+
+  // Always render after the cards grid (bottom of container)
+  if (cardsEl && cardsEl.parentElement) {
+    const parent = cardsEl.parentElement;
+    const desiredNext = cardsEl.nextSibling;
+    if (_elCardAdSlot.parentElement !== parent || desiredNext !== _elCardAdSlot) {
+      parent.insertBefore(_elCardAdSlot, desiredNext);
+    }
+  } else if (host && _elCardAdSlot.parentElement !== host) {
+    host.appendChild(_elCardAdSlot);
   }
 
   // if (!_elMarqueeAdSlot) {

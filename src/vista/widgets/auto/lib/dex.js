@@ -120,6 +120,285 @@ export function createDex(deps = {}) {
 		}
 	}
 
+	function _rpcLeft() {
+		try { return (typeof rpcBackoffLeft === "function") ? Math.max(0, Number(rpcBackoffLeft() || 0)) : 0; } catch { return 0; }
+	}
+
+	function _sleep(ms) {
+		return new Promise((r) => setTimeout(r, Math.max(0, Number(ms || 0) | 0)));
+	}
+
+	async function _getOwnerAtaInternal(ownerPubkeyStr, mintStr, programIdOverride) {
+		try {
+			if (!ownerPubkeyStr || !mintStr) return null;
+			if (typeof loadWeb3 !== "function" || typeof loadSplToken !== "function") return null;
+			const { PublicKey } = await loadWeb3();
+			const { getAssociatedTokenAddress, TOKEN_PROGRAM_ID } = await loadSplToken();
+			const owner = new PublicKey(String(ownerPubkeyStr).trim());
+			const mint = new PublicKey(String(mintStr).trim());
+			const pid = programIdOverride || TOKEN_PROGRAM_ID;
+			const ataAny = await getAssociatedTokenAddress(mint, owner, true, pid);
+			const ataStr = typeof ataAny === "string"
+				? ataAny
+				: (ataAny?.toBase58 ? ataAny.toBase58() : (ataAny?.toString ? ataAny.toString() : ""));
+			if (!ataStr) return null;
+			return new PublicKey(ataStr);
+		} catch {
+			return null;
+		}
+	}
+
+	async function getOwnerAtasInternal(ownerPubkeyStr, mintStr) {
+		try {
+			if (typeof getOwnerAtas === "function") {
+				const r = await getOwnerAtas(ownerPubkeyStr, mintStr);
+				if (Array.isArray(r) && r.length) return r;
+			}
+		} catch {}
+		try {
+			if (typeof loadSplToken !== "function") return [];
+			const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = await loadSplToken();
+			const out = [];
+			const ata1 = await _getOwnerAtaInternal(ownerPubkeyStr, mintStr, TOKEN_PROGRAM_ID);
+			if (ata1) out.push({ programId: TOKEN_PROGRAM_ID, ata: ata1 });
+			if (TOKEN_2022_PROGRAM_ID) {
+				const ata2 = await _getOwnerAtaInternal(ownerPubkeyStr, mintStr, TOKEN_2022_PROGRAM_ID);
+				if (ata2) out.push({ programId: TOKEN_2022_PROGRAM_ID, ata: ata2 });
+			}
+			return out;
+		} catch {
+			return [];
+		}
+	}
+
+	async function ataExistsInternal(ownerPubkeyStr, mintStr, commitment = "processed") {
+		try {
+			if (typeof ataExists === "function") return await ataExists(ownerPubkeyStr, mintStr);
+		} catch {}
+		try {
+			const conn = (typeof getConn === "function") ? await getConn() : null;
+			if (!conn) return false;
+			const atas = await getOwnerAtasInternal(ownerPubkeyStr, mintStr);
+			for (const { ata } of atas) {
+				try {
+					const ai = await conn.getAccountInfo(ata, commitment);
+					if (ai) return true;
+				} catch (e) {
+					markRpcStress?.(e, 1500);
+				}
+			}
+			return false;
+		} catch {
+			return false;
+		}
+	}
+
+	async function _scanOwnerForMintBalance(ownerPubkeyStr, mintStr, commitment = "confirmed") {
+		try {
+			if (!ownerPubkeyStr || !mintStr) return null;
+			if (typeof getConn !== "function" || typeof loadWeb3 !== "function" || typeof loadSplToken !== "function") return null;
+			const conn = await getConn();
+			const { PublicKey } = await loadWeb3();
+			const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = await loadSplToken();
+			const ownerPk = new PublicKey(String(ownerPubkeyStr).trim());
+
+			const scan = async (pid) => {
+				if (!pid) return { ok: false, found: false, sumUi: 0, decimals: undefined };
+				const resp = await conn.getParsedTokenAccountsByOwner(ownerPk, { programId: pid }, commitment);
+				let found = false;
+				let sumUi = 0;
+				let sumRaw = 0n;
+				let decimals;
+				for (const it of resp?.value || []) {
+					const info = it?.account?.data?.parsed?.info;
+					if (String(info?.mint || "") !== String(mintStr)) continue;
+					found = true;
+					const ta = info?.tokenAmount;
+					const ui = Number(ta?.uiAmount || 0);
+					const dec = Number(ta?.decimals);
+					try {
+						const rawStr = String(ta?.amount || "");
+						if (rawStr && /^\d+$/.test(rawStr)) sumRaw += BigInt(rawStr);
+					} catch {}
+					sumUi += Number.isFinite(ui) ? ui : 0;
+					if (Number.isFinite(dec)) decimals = dec;
+				}
+				return { ok: true, found, sumUi, sumRaw, decimals };
+			};
+
+			const a = await scan(TOKEN_PROGRAM_ID);
+			const b = a.ok && a.found ? a : await scan(TOKEN_2022_PROGRAM_ID);
+			if (!b.ok) return null;
+			return {
+				sizeUi: Math.max(0, Number(b.sumUi || 0)),
+				sizeRaw: (typeof b.sumRaw === "bigint") ? b.sumRaw.toString() : "",
+				decimals: b.decimals,
+				exists: !!b.found,
+				sampleOk: true,
+			};
+		} catch (e) {
+			markRpcStress?.(e, 2000);
+			return null;
+		}
+	}
+
+	async function getAtaBalanceUiInternal(ownerPubkeyStr, mintStr, decimalsHint, commitment = "confirmed") {
+		let sampleOk = false;
+		try {
+			if (!ownerPubkeyStr || !mintStr) {
+				const dec0 = Number.isFinite(decimalsHint) ? decimalsHint : 6;
+				return { sizeUi: 0, decimals: dec0, exists: undefined, sampleOk: false };
+			}
+			const conn = (typeof getConn === "function") ? await getConn() : null;
+			if (!conn) {
+				const dec0 = Number.isFinite(decimalsHint) ? decimalsHint : 6;
+				return { sizeUi: 0, decimals: dec0, exists: undefined, sampleOk: false };
+			}
+
+			try { await rpcWait?.("ata-balance", 450); } catch {}
+			const atas = await getOwnerAtasInternal(ownerPubkeyStr, mintStr);
+			let best = null;
+
+			for (const { ata } of atas) {
+				let res;
+				try {
+					res = await conn.getTokenAccountBalance(ata, commitment);
+					sampleOk = true;
+				} catch (e) {
+					markRpcStress?.(e, 1500);
+					res = undefined;
+				}
+				if (res?.value) {
+					const sizeUi = Number(res.value.uiAmount || 0);
+					const sizeRaw = String(res.value.amount || "");
+					const decimals = Number.isFinite(res.value.decimals)
+						? res.value.decimals
+						: (Number.isFinite(decimalsHint) ? decimalsHint : await getMintDecimals(mintStr).catch(() => 6));
+					if (sizeUi > 0) {
+						try { updatePosCache?.(ownerPubkeyStr, mintStr, sizeUi, decimals); } catch {}
+						return { sizeUi, sizeRaw, decimals, exists: true, sampleOk: true };
+					}
+					best = { sizeUi: 0, sizeRaw: sizeRaw || "0", decimals, exists: true, sampleOk: true };
+				}
+			}
+
+			if (best && best.sampleOk) return best;
+
+			// Fallback: owner scan catches non-ATA token accounts and gives a reliable existence signal.
+			const scan = await _scanOwnerForMintBalance(ownerPubkeyStr, mintStr, commitment);
+			if (scan && scan.sampleOk) {
+				const decimals = Number.isFinite(scan.decimals)
+					? scan.decimals
+					: (Number.isFinite(decimalsHint) ? decimalsHint : await getMintDecimals(mintStr).catch(() => 6));
+				if (scan.sizeUi > 0) {
+					try { updatePosCache?.(ownerPubkeyStr, mintStr, scan.sizeUi, decimals); } catch {}
+				}
+				return {
+					sizeUi: Math.max(0, Number(scan.sizeUi || 0)),
+					sizeRaw: String(scan.sizeRaw || ""),
+					decimals,
+					exists: scan.exists,
+					sampleOk: true,
+				};
+			}
+
+			// Best-effort existence check via accountInfo on derived ATAs.
+			let existsAny = false;
+			let existsUnknown = false;
+			for (const { ata } of atas) {
+				let ai;
+				try {
+					ai = await conn.getAccountInfo(ata, commitment);
+					sampleOk = true;
+				} catch (e) {
+					markRpcStress?.(e, 1500);
+					ai = undefined;
+				}
+				if (ai === undefined) existsUnknown = true;
+				else existsAny = existsAny || !!ai;
+			}
+			const decimals = Number.isFinite(decimalsHint) ? decimalsHint : await getMintDecimals(mintStr).catch(() => 6);
+			return { sizeUi: 0, sizeRaw: "0", decimals, exists: existsUnknown ? undefined : existsAny, sampleOk };
+		} catch {
+			const decimals = Number.isFinite(decimalsHint) ? decimalsHint : 6;
+			return { sizeUi: 0, sizeRaw: "0", decimals, exists: undefined, sampleOk: false };
+		}
+	}
+
+	async function waitForTokenDebitInternal(ownerPubkeyStr, mintStr, prevSizeUi, { timeoutMs = 20000, pollMs = 350 } = {}) {
+		const start = now();
+		const prev = Number(prevSizeUi || 0);
+		let effPollMs = Math.max(150, Number(pollMs || 350) | 0);
+		let consecutiveUnknown = 0;
+
+		while (now() - start < timeoutMs) {
+			try {
+				const b = await getAtaBalanceUiInternal(ownerPubkeyStr, mintStr, undefined);
+				const cur = Math.max(0, Number(b?.sizeUi || 0));
+				const decimals = Number.isFinite(b?.decimals) ? b.decimals : undefined;
+				const sampleOk = !!b?.sampleOk;
+				const exists = b?.exists;
+
+				if (sampleOk) {
+					consecutiveUnknown = 0;
+					effPollMs = Math.max(150, Number(pollMs || 350) | 0);
+					if (cur + 1e-9 < prev) return { debited: true, remainUi: cur, decimals };
+					if (cur <= 1e-9 && (exists === false || exists === true)) return { debited: true, remainUi: cur, decimals };
+				} else {
+					consecutiveUnknown++;
+					effPollMs = Math.min(5000, Math.floor(effPollMs * 1.6) + 25);
+				}
+			} catch {
+				consecutiveUnknown++;
+				effPollMs = Math.min(5000, Math.floor(effPollMs * 1.6) + 25);
+			}
+
+			const extra = Math.min(1500, consecutiveUnknown * 40);
+			await _sleep(Math.max(effPollMs, _rpcLeft()) + extra);
+		}
+
+		try { if (_rpcLeft() > 0) await _sleep(_rpcLeft()); } catch {}
+		try {
+			const b = await getAtaBalanceUiInternal(ownerPubkeyStr, mintStr, undefined);
+			const cur = Math.max(0, Number(b?.sizeUi || 0));
+			const decimals = Number.isFinite(b?.decimals) ? b.decimals : undefined;
+			if (b?.sampleOk) return { debited: cur <= 1e-9 || cur + 1e-9 < prev, remainUi: cur, decimals };
+			return { debited: false, remainUi: prev, decimals };
+		} catch {
+			return { debited: false, remainUi: prev, decimals: undefined };
+		}
+	}
+
+	async function waitForTokenCreditInternal(ownerPubkeyStr, mintStr, { timeoutMs = 8000, pollMs = 300 } = {}) {
+		const start = now();
+		let effPollMs = Math.max(150, Number(pollMs || 300) | 0);
+		let consecutiveUnknown = 0;
+		let decimals = 6;
+		try { decimals = await getMintDecimals(mintStr); } catch {}
+
+		while (now() - start < timeoutMs) {
+			try {
+				const b = await getAtaBalanceUiInternal(ownerPubkeyStr, mintStr, decimals);
+				const cur = Math.max(0, Number(b?.sizeUi || 0));
+				const dec = Number.isFinite(b?.decimals) ? b.decimals : decimals;
+				if (b?.sampleOk) {
+					consecutiveUnknown = 0;
+					effPollMs = Math.max(150, Number(pollMs || 300) | 0);
+					if (cur > 0) return { sizeUi: cur, decimals: dec };
+				} else {
+					consecutiveUnknown++;
+					effPollMs = Math.min(5000, Math.floor(effPollMs * 1.6) + 25);
+				}
+			} catch {
+				consecutiveUnknown++;
+				effPollMs = Math.min(5000, Math.floor(effPollMs * 1.6) + 25);
+			}
+			const extra = Math.min(1500, consecutiveUnknown * 40);
+			await _sleep(Math.max(effPollMs, _rpcLeft()) + extra);
+		}
+		return { sizeUi: 0, decimals };
+	}
+
 	function withTimeout(promise, ms, { label = "op" } = {}) {
 		const timeoutMs = Math.max(1, Number(ms || 0));
 		let t = null;
@@ -462,7 +741,7 @@ export function createDex(deps = {}) {
 		let _decHint = await getMintDecimals(inputMint).catch(() => 6);
 		if (isSell) {
 			try {
-				const b0 = await getAtaBalanceUi?.(userPub, inputMint, _decHint);
+				const b0 = await getAtaBalanceUiInternal(userPub, inputMint, _decHint);
 				_preSplitUi = Number(b0?.sizeUi || 0);
 				if (Number.isFinite(b0?.decimals)) _decHint = b0.decimals;
 			} catch {}
@@ -496,7 +775,7 @@ export function createDex(deps = {}) {
 				let remainUi = 0,
 					d = _decHint;
 				try {
-					const b1 = await getAtaBalanceUi?.(userPub, inputMint, d);
+					const b1 = await getAtaBalanceUiInternal(userPub, inputMint, d);
 					remainUi = Number(b1?.sizeUi || 0);
 					if (Number.isFinite(b1?.decimals)) d = b1.decimals;
 				} catch {}
@@ -1217,10 +1496,10 @@ export function createDex(deps = {}) {
 								if (r?.ok) {
 									const sig1 = r.sig;
 									try { await safeConfirmSig(sig1, { commitment: "confirmed", timeoutMs: 12000 }); } catch {}
-									try { await waitForTokenCredit?.(userPub, USDC, { timeoutMs: 12000, pollMs: 300 }); } catch {}
+											try { await waitForTokenCreditInternal(userPub, USDC, { timeoutMs: 12000, pollMs: 300 }); } catch {}
 									let usdcUi = 0;
 									try {
-										const b = await getAtaBalanceUi?.(userPub, USDC, 6);
+												const b = await getAtaBalanceUiInternal(userPub, USDC, 6);
 										usdcUi = Number(b?.sizeUi || 0);
 									} catch {}
 									if (usdcUi > 0) {
@@ -1696,8 +1975,8 @@ export function createDex(deps = {}) {
 		let balanceUi = null;
 		try {
 			const owner = signer?.publicKey?.toBase58?.();
-			if (owner && mint && typeof getAtaBalanceUi === "function") {
-				const b = await getAtaBalanceUi(owner, mint);
+			if (owner && mint) {
+				const b = await getAtaBalanceUiInternal(owner, mint);
 				balanceUi = Number(b?.sizeUi || 0);
 				if (!Number.isFinite(balanceUi)) balanceUi = 0;
 				if (!Number.isFinite(effAmountUi)) effAmountUi = 0;
@@ -1749,16 +2028,11 @@ export function createDex(deps = {}) {
 		syncPositionsFromChain: async (ownerPubkeyStr) => {
 			try { return await syncPositionsFromChain?.(ownerPubkeyStr); } catch { return null; }
 		},
-		waitForTokenCredit: async (ownerPubkeyStr, mintStr, opts) => {
-			try { return await waitForTokenCredit?.(ownerPubkeyStr, mintStr, opts); } catch { return { sizeUi: 0, decimals: 6 }; }
-		},
-		waitForTokenDebit: async (ownerPubkeyStr, mintStr, prevSizeUi, opts) => {
-			try {
-				return await waitForTokenDebit?.(ownerPubkeyStr, mintStr, prevSizeUi, opts);
-			} catch {
-				return { debited: false, remainUi: Number(prevSizeUi || 0) || 0, decimals: undefined };
-			}
-		},
+		getOwnerAtas: getOwnerAtasInternal,
+		ataExists: ataExistsInternal,
+		getAtaBalanceUi: getAtaBalanceUiInternal,
+		waitForTokenCredit: waitForTokenCreditInternal,
+		waitForTokenDebit: waitForTokenDebitInternal,
 
 		getJupBase,
 		getMintDecimals,

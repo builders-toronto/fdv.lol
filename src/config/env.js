@@ -1,4 +1,4 @@
-export const developer = false;
+export const developer = true;
 
 
 

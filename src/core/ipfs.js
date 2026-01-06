@@ -16,10 +16,11 @@ const SILENCE_STORM_THRESHOLD = 6;
 let __ipfsErrTimes = [];
 
 function _isDevHost() {
-  try {
-    const h = (location && location.hostname) || '';
-    return /^(localhost|127\.0\.0\.1|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(h);
-  } catch { return false; }
+  return false;
+  // try {
+  //   const h = (location && location.hostname) || '';
+  //   return /^(localhost|127\.0\.0\.1|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(h);
+  // } catch { return false; }
 }
 
 function shouldSilenceIpfs() {

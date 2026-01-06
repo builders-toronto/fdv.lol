@@ -355,36 +355,23 @@ function getCfg() {
 
 async function getTokenBalanceUiByMint(ownerPkOrStr, mintStr) {
 	try {
-		if (!ownerPkOrStr || !mintStr || mintStr === SOL_MINT) return { sizeUi: 0, decimals: 0 };
-		const { PublicKey } = await loadWeb3();
-		const conn = await getConn();
-		const owner = typeof ownerPkOrStr === "string" ? new PublicKey(ownerPkOrStr) : ownerPkOrStr;
-		const mint = new PublicKey(mintStr);
-
-		const res = await conn.getParsedTokenAccountsByOwner(owner, { mint }, "confirmed");
-		const v = res?.value || [];
-		let totalUi = 0;
-		let totalRaw = 0n;
-		let decimals = null;
-		for (const it of v) {
-			const amt = it?.account?.data?.parsed?.info?.tokenAmount;
-			const ui = Number(amt?.uiAmount);
-			if (Number.isFinite(ui)) totalUi += ui;
+		if (!ownerPkOrStr || !mintStr || mintStr === SOL_MINT) return { sizeUi: 0, decimals: 0, sizeRaw: "0" };
+		const ownerStr = typeof ownerPkOrStr === "string" ? ownerPkOrStr : ownerPkOrStr?.toBase58?.();
+		if (!ownerStr) return { sizeUi: 0, decimals: 0, sizeRaw: "0" };
+		const b = await getDex().getAtaBalanceUi(ownerStr, mintStr, undefined, "confirmed");
+		const sizeUi = Number(b?.sizeUi || 0);
+		const decimals = Number.isFinite(b?.decimals) ? b.decimals : await safeGetDecimalsFast(mintStr);
+		let sizeRaw = String(b?.sizeRaw || "");
+		if (!sizeRaw) {
+			// Best-effort derive raw from ui+decimals if RPC only provided ui.
 			try {
-				const rawStr = String(amt?.amount || "");
-				if (rawStr) totalRaw += BigInt(rawStr);
-			} catch {}
-			const d = Number(amt?.decimals);
-			if (Number.isFinite(d)) decimals = d;
+				const rawNum = Math.floor(Math.max(0, Number(sizeUi || 0)) * Math.pow(10, Math.max(0, Number(decimals || 0))));
+				sizeRaw = String(Math.max(0, rawNum));
+			} catch { sizeRaw = "0"; }
 		}
-		if (!Number.isFinite(totalUi)) totalUi = 0;
-		return {
-			sizeUi: totalUi,
-			decimals: Number.isFinite(decimals) ? decimals : await safeGetDecimalsFast(mintStr),
-			sizeRaw: totalRaw.toString(),
-		};
+		return { sizeUi: Number.isFinite(sizeUi) ? sizeUi : 0, decimals, sizeRaw };
 	} catch {
-		return { sizeUi: 0, decimals: 0 };
+		return { sizeUi: 0, decimals: 0, sizeRaw: "0" };
 	}
 }
 
