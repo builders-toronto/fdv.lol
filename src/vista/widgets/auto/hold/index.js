@@ -13,12 +13,15 @@ const HOLD_MAX_TABS = 3;
 
 const MAX_LOG_ENTRIES = 120;
 
+const HOLD_RUG_DEFAULT_SEV_THRESHOLD = clamp(safeNum(RUG_FORCE_SELL_SEVERITY, 1), 1, 4);
+
 const DEFAULTS = Object.freeze({
 	enabled: false,
 	mint: "",
 	pollMs: 1500,
 	buyPct: 25,
 	profitPct: 5,
+	rugSevThreshold: HOLD_RUG_DEFAULT_SEV_THRESHOLD,
 	repeatBuy: false,
 	uptickEnabled: true,
 });
@@ -28,8 +31,6 @@ const UPTICK_MIN_DROP_PCT = 0.25; // fewer tokens for same SOL => price uptick
 
 const UPTICK_PROBE_MIN_INTERVAL_MS = 2500;
 const HOLD_EXIT_QUOTE_MIN_INTERVAL_MS = 6000;
-
-const HOLD_RUG_EXTREME_SEV = Math.max(1, Number(RUG_FORCE_SELL_SEVERITY ?? 0.7));
 
 const HOLD_FAST_SWAPS = true;
 const HOLD_BUY_CONFIRM_MS = 6000;
@@ -107,6 +108,7 @@ function _coerceState(obj) {
 		pollMs: clamp(safeNum(parsed.pollMs, DEFAULTS.pollMs), 250, 60_000),
 		buyPct: clamp(safeNum(parsed.buyPct, DEFAULTS.buyPct), 10, 70),
 		profitPct: clamp(safeNum(parsed.profitPct, DEFAULTS.profitPct), 0.1, 500),
+		rugSevThreshold: clamp(safeNum(parsed.rugSevThreshold, DEFAULTS.rugSevThreshold), 1, 4),
 		repeatBuy: !!parsed.repeatBuy,
 		uptickEnabled: !!parsed.uptickEnabled,
 		mint: String(parsed.mint || "").trim(),
@@ -351,6 +353,9 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 	let profitEl;
 	let repeatEl;
 	let uptickEl;
+	let rugSevEl;
+	let rugSevLabelEl;
+	let _persistDebounceTimer = null;
 
 	let _timer = null;
 	let _tickInFlight = false;
@@ -485,10 +490,43 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		state.pollMs = clamp(safeNum(pollEl?.value, state.pollMs), 250, 60_000);
 		state.buyPct = clamp(safeNum(buyPctEl?.value, state.buyPct), 10, 70);
 		state.profitPct = clamp(safeNum(profitEl?.value, state.profitPct), 0.1, 500);
+		state.rugSevThreshold = clamp(safeNum(rugSevEl?.value, state.rugSevThreshold), 1, 4);
 		state.repeatBuy = !!repeatEl?.checked;
 		state.uptickEnabled = !!uptickEl?.checked;
 		_emitLabelChanged();
 		_persist();
+	}
+
+	function _rugTier(sev) {
+		const v = clamp(safeNum(sev, HOLD_RUG_DEFAULT_SEV_THRESHOLD), 1, 4);
+		if (v < 1.5) return { label: "Low", colorVar: "--good" };
+		if (v < 2.5) return { label: "Medium", colorVar: "--watch" };
+		if (v < 3.5) return { label: "High", colorVar: "--fdv-warn" };
+		return { label: "Extreme", colorVar: "--avoid" };
+	}
+
+	function _updateRugUi() {
+		try {
+			if (!rugSevEl) return;
+			const sev = clamp(safeNum(rugSevEl.value, state.rugSevThreshold), 1, 4);
+			const tier = _rugTier(sev);
+			if (rugSevLabelEl) {
+				rugSevLabelEl.textContent = `sev ≥ ${sev.toFixed(2)} (${tier.label})`;
+				rugSevLabelEl.style.color = `var(${tier.colorVar})`;
+			}
+		} catch {}
+	}
+
+	function _debouncedPersist(ms = 200) {
+		try {
+			if (_persistDebounceTimer) clearTimeout(_persistDebounceTimer);
+			_persistDebounceTimer = setTimeout(() => {
+				_persistDebounceTimer = null;
+				_persist();
+			}, Math.max(0, Number(ms || 0)));
+		} catch {
+			_persist();
+		}
 	}
 
 	function updateUI() {
@@ -497,11 +535,13 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			if (pollEl) pollEl.value = String(state.pollMs || DEFAULTS.pollMs);
 			if (buyPctEl) buyPctEl.value = String(state.buyPct || DEFAULTS.buyPct);
 			if (profitEl) profitEl.value = String(state.profitPct || DEFAULTS.profitPct);
+			if (rugSevEl) rugSevEl.value = String(clamp(safeNum(state.rugSevThreshold, DEFAULTS.rugSevThreshold), 1, 4));
 			if (repeatEl) repeatEl.checked = !!state.repeatBuy;
 			if (uptickEl) uptickEl.checked = !!state.uptickEnabled;
 			if (startBtn) startBtn.disabled = !!state.enabled;
 			if (stopBtn) stopBtn.disabled = !state.enabled;
 			if (chartBtn) chartBtn.disabled = !String(state.mint || "").trim();
+			_updateRugUi();
 		} catch {}
 	}
 
@@ -551,11 +591,12 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			}
 
 			const pos = _getPosForMint(mint);
-			if (rugSig?.rugged && rugSev >= HOLD_RUG_EXTREME_SEV) {
+			const rugThr = clamp(safeNum(state.rugSevThreshold, HOLD_RUG_DEFAULT_SEV_THRESHOLD), 1, 4);
+			if (rugSig?.rugged && rugSev >= rugThr) {
 				if (pos || _hasActiveCycleForMint(mint)) {
 					traceOnce(
 						`hold:${botId}:rug:liquidate:${mint}`,
-						`EXTREME rug signal for ${_shortMint(mint)} sev=${rugSev.toFixed(2)} (thr=${HOLD_RUG_EXTREME_SEV.toFixed(2)}). Emergency liquidate…`,
+						`EXTREME rug signal for ${_shortMint(mint)} sev=${rugSev.toFixed(2)} (thr=${rugThr.toFixed(2)}). Emergency liquidate…`,
 						8000,
 						"warn",
 					);
@@ -570,7 +611,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				}
 				traceOnce(
 					`hold:${botId}:rug:blockBuy:${mint}`,
-					`EXTREME rug signal for ${_shortMint(mint)} sev=${rugSev.toFixed(2)} (thr=${HOLD_RUG_EXTREME_SEV.toFixed(2)}). Blocking buys.`,
+					`EXTREME rug signal for ${_shortMint(mint)} sev=${rugSev.toFixed(2)} (thr=${rugThr.toFixed(2)}). Blocking buys.`,
 					9000,
 					"warn",
 				);
@@ -953,7 +994,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		_emitAnyRunning();
 		updateUI();
 		log(
-			`Hold started. mint=${state.mint ? state.mint.slice(0, 6) + "…" : ""} poll=${state.pollMs}ms buyPct=${Number(state.buyPct || DEFAULTS.buyPct).toFixed(0)}% profit=${Number(state.profitPct || DEFAULTS.profitPct).toFixed(2)}% uptick=${state.uptickEnabled ? "on" : "off"} repeat=${state.repeatBuy ? "on" : "off"}`,
+			`Hold started. mint=${state.mint ? state.mint.slice(0, 6) + "…" : ""} poll=${state.pollMs}ms buyPct=${Number(state.buyPct || DEFAULTS.buyPct).toFixed(0)}% profit=${Number(state.profitPct || DEFAULTS.profitPct).toFixed(2)}% rugSev≥${Number(state.rugSevThreshold || DEFAULTS.rugSevThreshold).toFixed(2)} uptick=${state.uptickEnabled ? "on" : "off"} repeat=${state.repeatBuy ? "on" : "off"}`,
 			"ok",
 			true,
 		);
@@ -1090,6 +1131,18 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 					<label>Profit % to sell <input data-hold-profit type="number" min="0.1" max="500" step="0.1"></label>
 				</div>
 
+				<div class="fdv-hold-rug">
+					<div class="fdv-hold-rug-row">
+						<div class="fdv-hold-rug-title">Rug severity</div>
+						<div class="fdv-hold-rug-value" data-hold-rug-label></div>
+					</div>
+					<div class="fdv-hold-rug-slider">
+						<div class="fdv-hold-rug-end" style="color:var(--good)">Low</div>
+						<input class="fdv-range fdv-range-rug" data-hold-rug-sev type="range" min="1" max="4" step="0.05" />
+						<div class="fdv-hold-rug-end" style="color:var(--avoid)">Extreme</div>
+					</div>
+				</div>
+
 				<div class="fdv-log" data-hold-log></div>
 				<div class="fdv-actions" style="margin-top:6px;">
 					<div class="fdv-actions-left" style="display:flex; flex-direction:row; gap:4px; align-items:center;">
@@ -1111,6 +1164,8 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		profitEl = root.querySelector("[data-hold-profit]");
 		repeatEl = root.querySelector("[data-hold-repeat]");
 		uptickEl = root.querySelector("[data-hold-uptick]");
+		rugSevEl = root.querySelector("[data-hold-rug-sev]");
+		rugSevLabelEl = root.querySelector("[data-hold-rug-label]");
 		logEl = root.querySelector("[data-hold-log]");
 		startBtn = root.querySelector("[data-hold-start]");
 		stopBtn = root.querySelector("[data-hold-stop]");
@@ -1130,6 +1185,15 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		profitEl?.addEventListener("change", onChange);
 		repeatEl?.addEventListener("change", onChange);
 		uptickEl?.addEventListener("change", onChange);
+		rugSevEl?.addEventListener("change", onChange);
+		rugSevEl?.addEventListener("input", () => {
+			try {
+				state.rugSevThreshold = clamp(safeNum(rugSevEl?.value, state.rugSevThreshold), 1, 4);
+				_updateRugUi();
+				_debouncedPersist(180);
+				if (state.enabled) startLoop();
+			} catch {}
+		});
 
 		startBtn?.addEventListener("click", async () => {
 			await start();

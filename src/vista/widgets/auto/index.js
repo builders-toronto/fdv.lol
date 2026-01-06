@@ -92,7 +92,7 @@ export function initAutoWidget(container = document.body) {
   body.innerHTML = `
     <div class="fdv-auto-head"></div>
     <div data-auto-firsthelp-slot></div>
-    <div class="fdv-tabs" style="display:flex; margin-bottom: 25px; gap:8px; margin:8px 0; overflow: scroll;">
+    <div class="fdv-tabs" style="display:flex; margin-bottom: 25px; gap:8px; overflow: scroll;">
       <button class="fdv-tab-btn active" data-main-tab="auto">Auto</button>
       <button class="fdv-tab-btn" data-main-tab="follow">Follow</button>
       <button class="fdv-tab-btn" data-main-tab="sniper">Sentry</button>
