@@ -1,10 +1,11 @@
 import { FALLBACK_LOGO } from "../config/env.js";
 
+// Keep ipfs.io last: it is frequently rate-limited or DNS-blocked for some users.
 const IPFS_GATEWAYS = [
-  'https://ipfs.io/ipfs/',
-  'https://cloudflare-ipfs.com/ipfs/',
   'https://cf-ipfs.com/ipfs/',
+  'https://cloudflare-ipfs.com/ipfs/',
   'https://gateway.pinata.cloud/ipfs/',
+  'https://ipfs.io/ipfs/',
 ];
 
 const _failCounts = new Map();
@@ -165,6 +166,154 @@ export function normalizeTokenLogo(raw, sym = '') {
     return u;
   } catch {
     return fallbackLogo(sym);
+  }
+}
+
+const _imgObjectUrls = new WeakMap();
+const _cidGatewayHint = new Map();
+let _preferredGatewayIndex = 0;
+const DEFAULT_FETCH_TIMEOUT_MS = 3500;
+
+function _gatewayOrderForCid(cid) {
+  const n = IPFS_GATEWAYS.length || 1;
+  const start = _cidGatewayHint.has(cid)
+    ? (_cidGatewayHint.get(cid) % n)
+    : (_preferredGatewayIndex % n);
+  const order = [];
+  for (let i = 0; i < n; i++) order.push((start + i) % n);
+  return order;
+}
+
+async function _fetchBlobWithTimeout(url, timeoutMs) {
+  const ms = Number.isFinite(timeoutMs) ? timeoutMs : DEFAULT_FETCH_TIMEOUT_MS;
+  const ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  const timer = setTimeout(() => { try { ctl?.abort?.(); } catch {} }, ms);
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      mode: 'cors',
+      redirect: 'follow',
+      cache: 'force-cache',
+      signal: ctl?.signal,
+    });
+    if (!res || !res.ok) throw new Error(`HTTP_${res?.status || 0}`);
+    // A lot of gateways omit/lie about content-type; only hard-block obvious non-images.
+    const ct = (res.headers && res.headers.get && res.headers.get('content-type')) || '';
+    if (ct && !/^image\//i.test(ct) && !/octet-stream/i.test(ct)) {
+      // Still allow SVG served as text.
+      if (!/svg/i.test(ct)) throw new Error('NOT_IMAGE');
+    }
+    return await res.blob();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function getTokenLogoPlaceholder(raw, sym = '') {
+  try {
+    if (!raw || shouldSilenceIpfs()) return fallbackLogo(sym);
+    const cid = extractCid(raw);
+    if (cid) return fallbackLogo(sym);
+    return raw;
+  } catch {
+    return fallbackLogo(sym);
+  }
+}
+
+export function queueTokenLogoLoad(imgEl, raw, sym = '', opts = {}) {
+  if (!imgEl) return;
+  try {
+    const desiredRaw = String(raw || '');
+    const desiredSym = String(sym || '');
+
+    // Track desired raw on element to prevent thrash.
+    try {
+      if (desiredRaw) imgEl.setAttribute('data-logo-raw', desiredRaw);
+      else imgEl.removeAttribute('data-logo-raw');
+    } catch {}
+
+    if (desiredSym && !imgEl.getAttribute('data-sym')) {
+      try { imgEl.setAttribute('data-sym', desiredSym); } catch {}
+    }
+
+    // Non-IPFS URL: just assign directly.
+    const cid = extractCid(desiredRaw);
+    if (!cid) {
+      if (!desiredRaw) {
+        const fb = fallbackLogo(desiredSym);
+        if (imgEl.getAttribute('src') !== fb) imgEl.setAttribute('src', fb);
+        return;
+      }
+      if (imgEl.getAttribute('src') !== desiredRaw) imgEl.setAttribute('src', desiredRaw);
+      return;
+    }
+
+    if (shouldSilenceIpfs() || isLogoBlocked(desiredRaw)) {
+      const fb = fallbackLogo(desiredSym);
+      if (imgEl.getAttribute('src') !== fb) imgEl.setAttribute('src', fb);
+      return;
+    }
+
+    if (typeof window === 'undefined' || typeof fetch === 'undefined' || typeof URL === 'undefined') {
+      // In non-browser contexts fall back to gateway URL.
+      const u = normalizeTokenLogo(desiredRaw, desiredSym);
+      if (imgEl.getAttribute('src') !== u) imgEl.setAttribute('src', u);
+      return;
+    }
+
+    // Put a safe placeholder in place so we don't trigger browser network errors.
+    const currentSrc = imgEl.getAttribute('src') || '';
+    if (!currentSrc || extractCid(currentSrc)) {
+      const fb = fallbackLogo(desiredSym);
+      if (currentSrc !== fb) imgEl.setAttribute('src', fb);
+    }
+
+    // Cancel/ignore prior loads for this element.
+    const reqId = (imgEl.__fdvLogoReqId = (imgEl.__fdvLogoReqId || 0) + 1);
+    const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : DEFAULT_FETCH_TIMEOUT_MS;
+
+    (async () => {
+      const order = _gatewayOrderForCid(cid);
+      for (const gwIndex of order) {
+        const url = buildGatewayUrl(cid, gwIndex);
+        try {
+          const blob = await _fetchBlobWithTimeout(url, timeoutMs);
+          if (imgEl.__fdvLogoReqId !== reqId) return;
+          if (!blob || !blob.size) throw new Error('EMPTY');
+
+          // Update gateway preference/hints on success.
+          _preferredGatewayIndex = gwIndex;
+          _cidGatewayHint.set(cid, gwIndex);
+
+          // Replace prior object URL.
+          const prevObjUrl = _imgObjectUrls.get(imgEl);
+          if (prevObjUrl) {
+            try { URL.revokeObjectURL(prevObjUrl); } catch {}
+          }
+
+          const objUrl = URL.createObjectURL(blob);
+          _imgObjectUrls.set(imgEl, objUrl);
+
+          // Assign the blob URL (this won't emit network errors).
+          imgEl.setAttribute('src', objUrl);
+          return;
+        } catch {
+          try { markGatewayFailure(url); } catch {}
+          continue;
+        }
+      }
+
+      // Everything failed: block CID and show fallback.
+      if (imgEl.__fdvLogoReqId !== reqId) return;
+      try { _blocked.add(cid); } catch {}
+      const fb = fallbackLogo(desiredSym);
+      if (imgEl.getAttribute('src') !== fb) imgEl.setAttribute('src', fb);
+    })();
+  } catch {
+    try {
+      const fb = fallbackLogo(sym);
+      if (imgEl.getAttribute('src') !== fb) imgEl.setAttribute('src', fb);
+    } catch {}
   }
 }
 

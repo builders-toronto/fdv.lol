@@ -213,4 +213,4 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
 
-v0.2.2: restyle
+ipfs: quiet-load token logos to stop console error storms

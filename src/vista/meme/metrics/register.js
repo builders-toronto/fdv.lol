@@ -1,4 +1,4 @@
-import { normalizeTokenLogo } from '../../../core/ipfs.js';
+import { getTokenLogoPlaceholder, queueTokenLogoLoad } from '../../../core/ipfs.js';
 import { sparklineSVG } from '../render/sparkline.js';
 
 const REGISTRY = [];
@@ -224,8 +224,9 @@ function renderAddon(addon) {
   }
 
   ui.listEl.innerHTML = items.map((row, i) => {
-    const logo = normalizeTokenLogo(row.imageUrl || row.logoURI || '', row.symbol || '');
+    const rawLogo = row.imageUrl || row.logoURI || '';
     const sym = row.symbol || '';
+    const logo = getTokenLogoPlaceholder(rawLogo, sym);
     const name = row.name || '';
     const price = fmtPrice(row.priceUsd);
     const { txt: chTxt, cls: chCls } = pct(row.chg24);
@@ -271,7 +272,7 @@ function renderAddon(addon) {
         <a href="https://fdv.lol/token/${row.mint}" target="_blank" rel="noopener">
           <div class="addon-avatar">
             <div class="addon-rank r${i+1}">${i+1}</div>
-            <img class="addon-logo" src="${logo}" data-sym="${sym}" alt="" loading="lazy" decoding="async">
+            <img class="addon-logo" src="${logo}" data-logo-raw="${rawLogo}" data-sym="${sym}" alt="" loading="lazy" decoding="async">
           </div>
 
           <div class="addon-main">
@@ -301,6 +302,15 @@ function renderAddon(addon) {
       </li>
     `;
   }).join('');
+
+  try {
+    const imgs = ui.listEl.querySelectorAll('img[data-logo-raw]');
+    imgs.forEach((img) => {
+      const raw = img.getAttribute('data-logo-raw') || '';
+      const sym = img.getAttribute('data-sym') || '';
+      queueTokenLogoLoad(img, raw, sym);
+    });
+  } catch {}
 }
 
 export function registerAddon(addon) {
