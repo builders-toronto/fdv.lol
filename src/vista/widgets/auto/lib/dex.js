@@ -1389,7 +1389,10 @@ export function createDex(deps = {}) {
 	}
 
 	async function executeSwapWithConfirm(opts, { retries = 2, confirmMs = 15000 } = {}) {
-		const totalAttemptMs = Math.max(30_000, Number(confirmMs || 0) + 55_000);
+		const fastConfirm = !!opts?.fastConfirm;
+		const totalAttemptMs = fastConfirm
+			? Math.max(18_000, Number(confirmMs || 0) + 5_000)
+			: Math.max(30_000, Number(confirmMs || 0) + 55_000);
 		let slip = Math.max(150, Number(opts.slippageBps ?? getState().slippageBps ?? 150) | 0);
 		const isBuy = (opts?.inputMint === SOL_MINT && opts?.outputMint && opts.outputMint !== SOL_MINT);
 		const minConfirmMs = isBuy ? 32_000 : 15_000;
@@ -1408,6 +1411,10 @@ export function createDex(deps = {}) {
 						{ label: "swapAttempt" },
 					);
 					lastSig = sig;
+
+					if (fastConfirm) {
+						return { ok: false, sig, slip, fast: true };
+					}
 
 					if (isBuy) {
 						try {
@@ -1669,10 +1676,10 @@ export function createDex(deps = {}) {
 
 	async function buyWithConfirm(
 		{ signer, mint, solUi, slippageBps },
-		{ retries = 1, confirmMs = 45_000, closeWsolAta = true } = {},
+		{ retries = 1, confirmMs = 45_000, closeWsolAta = true, fastConfirm = false } = {},
 	) {
 		const res = await executeSwapWithConfirm(
-			{ signer, inputMint: SOL_MINT, outputMint: mint, amountUi: solUi, slippageBps },
+			{ signer, inputMint: SOL_MINT, outputMint: mint, amountUi: solUi, slippageBps, fastConfirm: !!fastConfirm },
 			{ retries, confirmMs },
 		);
 		if (res?.ok && closeWsolAta) {
@@ -1683,7 +1690,7 @@ export function createDex(deps = {}) {
 
 	async function sellWithConfirm(
 		{ signer, mint, amountUi, slippageBps },
-		{ retries = 1, confirmMs = 30_000, closeTokenAta = true, closeWsolAta = true } = {},
+		{ retries = 1, confirmMs = 30_000, closeTokenAta = true, closeWsolAta = true, fastConfirm = false } = {},
 	) {
 		let effAmountUi = Number(amountUi || 0);
 		let balanceUi = null;
@@ -1720,7 +1727,7 @@ export function createDex(deps = {}) {
 		let res;
 		try {
 			res = await executeSwapWithConfirm(
-				{ signer, inputMint: mint, outputMint: SOL_MINT, amountUi: effAmountUi, slippageBps },
+				{ signer, inputMint: mint, outputMint: SOL_MINT, amountUi: effAmountUi, slippageBps, fastConfirm: !!fastConfirm },
 				{ retries, confirmMs },
 			);
 			if (res?.ok && closeTokenAta) {
@@ -1744,6 +1751,13 @@ export function createDex(deps = {}) {
 		},
 		waitForTokenCredit: async (ownerPubkeyStr, mintStr, opts) => {
 			try { return await waitForTokenCredit?.(ownerPubkeyStr, mintStr, opts); } catch { return { sizeUi: 0, decimals: 6 }; }
+		},
+		waitForTokenDebit: async (ownerPubkeyStr, mintStr, prevSizeUi, opts) => {
+			try {
+				return await waitForTokenDebit?.(ownerPubkeyStr, mintStr, prevSizeUi, opts);
+			} catch {
+				return { debited: false, remainUi: Number(prevSizeUi || 0) || 0, decimals: undefined };
+			}
 		},
 
 		getJupBase,

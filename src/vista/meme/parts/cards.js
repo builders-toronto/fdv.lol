@@ -47,6 +47,13 @@ function _endFloatFreeze() {
   if (!st) return;
 
   try { st.card?.removeEventListener?.('pointerleave', st.onLeave); } catch {}
+  try { st.card?.removeEventListener?.('pointerdown', st.onDown); } catch {}
+  try { st.card?.removeEventListener?.('pointermove', st.onMove); } catch {}
+  try { st.card?.removeEventListener?.('pointerup', st.onUp); } catch {}
+  try { st.card?.removeEventListener?.('pointercancel', st.onUp); } catch {}
+  try {
+    if (st.pointerId != null && st.card?.releasePointerCapture) st.card.releasePointerCapture(st.pointerId);
+  } catch {}
 
   try {
     if (st.placeholder && st.card) {
@@ -69,6 +76,7 @@ function _endFloatFreeze() {
       el.style.transition = '';
       el.style.willChange = '';
       el.style.pointerEvents = '';
+      el.style.cursor = '';
     }
   } catch {}
 
@@ -119,10 +127,139 @@ function _startFloatFreeze(cardEl) {
     return;
   }
 
-  const onLeave = () => _endFloatFreeze();
-  try { cardEl.addEventListener('pointerleave', onLeave, { passive: true }); } catch {}
+  const st = {
+    card: cardEl,
+    placeholder,
+    onLeave: null,
+    onDown: null,
+    onMove: null,
+    onUp: null,
+    pointerId: null,
+    dragging: false,
+    dragStarted: false,
+    startX: 0,
+    startY: 0,
+    startLeft: 0,
+    startTop: 0,
+    lastX: 0,
+    lastY: 0,
+    moved: 0,
+    suppressClick: false,
+  };
 
-  _setFloatState({ card: cardEl, placeholder, onLeave });
+  // Allow click-and-hold drag while floating.
+  st.onDown = (e) => {
+    try {
+      // Mouse only (matches hover intent) + left button.
+      if (e && 'pointerType' in e && e.pointerType && e.pointerType !== 'mouse') return;
+      if (e && 'button' in e && e.button !== 0) return;
+
+      // Don't hijack interactions inside the card.
+      const t = e?.target;
+      if (t && t.closest?.('a,button,input,textarea,select,label')) return;
+
+      const el = st.card;
+      if (!el) return;
+
+      st.pointerId = e.pointerId;
+      st.dragging = true;
+      st.dragStarted = false;
+      st.moved = 0;
+      st.suppressClick = false;
+
+      const left = Number.parseFloat(el.style.left || '0') || 0;
+      const top = Number.parseFloat(el.style.top || '0') || 0;
+      st.startLeft = left;
+      st.startTop = top;
+      st.startX = Number(e.clientX || 0);
+      st.startY = Number(e.clientY || 0);
+      st.lastX = st.startX;
+      st.lastY = st.startY;
+
+      try { el.setPointerCapture?.(e.pointerId); } catch {}
+      try { el.style.cursor = 'grabbing'; } catch {}
+
+      // Prevent text selection while dragging.
+      try { e.preventDefault?.(); } catch {}
+    } catch {}
+  };
+
+  st.onMove = (e) => {
+    try {
+      if (!st.dragging) return;
+      if (st.pointerId != null && e.pointerId !== st.pointerId) return;
+
+      const el = st.card;
+      if (!el) return;
+
+      const x = Number(e.clientX || 0);
+      const y = Number(e.clientY || 0);
+      const dx = x - st.startX;
+      const dy = y - st.startY;
+      st.lastX = x;
+      st.lastY = y;
+
+      const dist = Math.hypot(dx, dy);
+      st.moved = Math.max(st.moved || 0, dist);
+      if (!st.dragStarted && dist >= 3) {
+        st.dragStarted = true;
+        st.suppressClick = true;
+        try { el.style.transition = 'none'; } catch {}
+        try { el.style.transform = 'none'; } catch {}
+        try { el.style.willChange = 'left, top'; } catch {}
+      }
+
+      if (st.dragStarted) {
+        el.style.left = `${st.startLeft + dx}px`;
+        el.style.top = `${st.startTop + dy}px`;
+      }
+    } catch {}
+  };
+
+  st.onUp = (e) => {
+    try {
+      if (!st.dragging) return;
+      if (st.pointerId != null && e && e.pointerId !== st.pointerId) return;
+
+      const el = st.card;
+      st.dragging = false;
+
+      try {
+        if (el?.releasePointerCapture && st.pointerId != null) el.releasePointerCapture(st.pointerId);
+      } catch {}
+      st.pointerId = null;
+
+      try { if (el) el.style.cursor = 'grab'; } catch {}
+    } catch {}
+  };
+
+  // If the user dragged, swallow the click that follows pointerup.
+  const onClickCapture = (e) => {
+    try {
+      if (!st.suppressClick) return;
+      st.suppressClick = false;
+      e.preventDefault?.();
+      e.stopPropagation?.();
+    } catch {}
+  };
+
+  st.onLeave = () => {
+    try {
+      // Don't auto-close while actively dragging.
+      if (st.dragging) return;
+    } catch {}
+    _endFloatFreeze();
+  };
+
+  try { cardEl.style.cursor = 'grab'; } catch {}
+  try { cardEl.addEventListener('pointerleave', st.onLeave, { passive: true }); } catch {}
+  try { cardEl.addEventListener('pointerdown', st.onDown); } catch {}
+  try { cardEl.addEventListener('pointermove', st.onMove); } catch {}
+  try { cardEl.addEventListener('pointerup', st.onUp); } catch {}
+  try { cardEl.addEventListener('pointercancel', st.onUp); } catch {}
+  try { cardEl.addEventListener('click', onClickCapture, true); } catch {}
+
+  _setFloatState(st);
 }
 
 try {

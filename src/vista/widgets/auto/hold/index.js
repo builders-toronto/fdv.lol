@@ -31,6 +31,12 @@ const HOLD_EXIT_QUOTE_MIN_INTERVAL_MS = 6000;
 
 const HOLD_RUG_EXTREME_SEV = Math.max(1, Number(RUG_FORCE_SELL_SEVERITY ?? 0.7));
 
+const HOLD_FAST_SWAPS = true;
+const HOLD_BUY_CONFIRM_MS = 6000;
+const HOLD_SELL_CONFIRM_MS = 6000;
+const HOLD_EXIT_DEBIT_TIMEOUT_MS = 12_000;
+const HOLD_EXIT_DEBIT_POLL_MS = 300;
+
 const { loadWeb3, loadBs58 } = createSolanaDepsLoader({
 	cacheKeyPrefix: "fdv:hold",
 	web3Version: "1.95.4",
@@ -321,6 +327,16 @@ function _upsertAutoPosFromCredit({ mint, sizeUi, decimals, addCostSol = 0 } = {
 		return false;
 	}
 }
+
+function _clearAutoPosForMint(mint) {
+	try {
+		const m = String(mint || "").trim();
+		if (!m) return;
+		const st = getAutoTraderState();
+		if (!st?.positions || typeof st.positions !== "object") return;
+		delete st.positions[m];
+	} catch {}
+}
 function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChanged, onLabelChanged } = {}) {
 	const botId = String(id || "").trim() || _newBotId();
 	let state = _coerceState(initialState || {});
@@ -328,6 +344,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 	let logEl;
 	let startBtn;
 	let stopBtn;
+	let chartBtn;
 	let mintEl;
 	let pollEl;
 	let buyPctEl;
@@ -343,6 +360,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 	let _lastExitQuote = null; // { mint, sizeUi, decimals, solUi, at }
 	let _rugStopPending = false;
 	let _pendingEntry = null; // { mint, sig, at, until, ownerStr, addCostSol, lastReconAt, lastCreditProbeAt }
+	let _pendingExit = null; // { mint, sig, at, ownerStr, prevSizeUi }
 	let _cycle = null; // { mint, ownerStr, costSol, sizeUi, decimals, enteredAt, lastSeenAt }
 
 	const _traceLast = new Map();
@@ -478,7 +496,14 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			if (uptickEl) uptickEl.checked = !!state.uptickEnabled;
 			if (startBtn) startBtn.disabled = !!state.enabled;
 			if (stopBtn) stopBtn.disabled = !state.enabled;
+			if (chartBtn) chartBtn.disabled = !String(state.mint || "").trim();
 		} catch {}
+	}
+
+	function _dexscreenerUrlForMint(mint) {
+		const m = String(mint || "").trim();
+		if (!m) return "";
+		return `https://dexscreener.com/solana/${encodeURIComponent(m)}`;
 	}
 
 	async function tickOnce(runId) {
@@ -492,6 +517,22 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				log("Missing mint.", "warn");
 				return;
 			}
+
+			// If a sell was already sent (fast mode), do not re-submit; wait for debit.
+			try {
+				const pe = _pendingExit;
+				if (pe && pe.mint === mint) {
+					const age = now() - Number(pe.at || 0);
+					const left = Math.max(0, HOLD_EXIT_DEBIT_TIMEOUT_MS - age);
+					traceOnce(
+						`hold:${botId}:awaitDebit:${mint}`,
+						`Sell sent; awaiting debit for ${_shortMint(mint)}… (${Math.ceil(left / 1000)}s window)`,
+						2500,
+						"help",
+					);
+					return;
+				}
+			} catch {}
 
 			// EXTREME rug detection: block buys and force liquidation if already holding.
 			let rugSig = null;
@@ -632,11 +673,16 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				log(`Buying ${_shortMint(mint)}…`, "info");
 				const res = await dex.buyWithConfirm(
 					{ signer: kp, mint, solUi: buySol, slippageBps: slip },
-					{ retries: 2, confirmMs: 32000 },
+					{ retries: 0, confirmMs: HOLD_BUY_CONFIRM_MS, fastConfirm: HOLD_FAST_SWAPS, closeWsolAta: false },
 				);
 				const ownerStr = (() => {
 					try { return kp.publicKey.toBase58(); } catch { return ""; }
 				})();
+				try {
+					if (res?.sig) {
+						log(`Buy sent (${String(res.sig).slice(0, 8)}…); awaiting token credit…`, "help");
+					}
+				} catch {}
 				try {
 					if (res?.sig) {
 						const autoSt = getAutoTraderState();
@@ -657,12 +703,13 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 							3000,
 							"help",
 						);
+						try { void _tryReconcilePendingEntry(_pendingEntry); } catch {}
 					}
 				} catch {}
 				if (res?.ok) {
 					log(`Buy sent/confirmed (${res.sig || "no-sig"}).`, "ok");
 				} else {
-					log(`Buy not confirmed (${res?.sig || "no-sig"}); will keep watching.`, "warn");
+					log(`Buy not confirmed yet (${res?.sig || "no-sig"}); will keep watching.`, "help");
 				}
 
 				try {
@@ -673,7 +720,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 							2500,
 							"help",
 						);
-						const got = await dex.waitForTokenCredit(ownerStr, mint, { timeoutMs: 8000, pollMs: 300 });
+						const got = await dex.waitForTokenCredit(ownerStr, mint, { timeoutMs: 1200, pollMs: 300 });
 						if (Number(got?.sizeUi || 0) > 0) {
 							_setCycleFromCredit({ mint, ownerStr, costSol: buySol, sizeUi: got.sizeUi, decimals: got.decimals });
 							_upsertAutoPosFromCredit({ mint, sizeUi: got.sizeUi, decimals: got.decimals, addCostSol: buySol });
@@ -782,15 +829,22 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			const st = getAutoTraderState();
 			const slip = Math.max(50, Math.min(2000, Number(st?.slippageBps || 250) | 0));
 			log(`Profit target hit (${pnlPct.toFixed(2)}% ≥ ${Number(state.profitPct).toFixed(2)}%). Selling…`, "ok");
+			const ownerStr = (() => {
+				try { return kp.publicKey.toBase58(); } catch { return ""; }
+			})();
+			const prevSizeUi = Number(pos?.sizeUi || active?.sizeUi || 0);
 			const res = await dex.sellWithConfirm(
 				{ signer: kp, mint, amountUi: 0, slippageBps: slip },
-				{ retries: 1, confirmMs: 30_000 },
+				{ retries: 0, confirmMs: HOLD_SELL_CONFIRM_MS, fastConfirm: HOLD_FAST_SWAPS, closeTokenAta: false, closeWsolAta: false },
 			);
+
 			if (res?.ok) {
 				log(`Sell confirmed (${res.sig || "no-sig"}).`, "ok");
 				_lastProbe = null;
 				_lastExitQuote = null;
 				_pendingEntry = null;
+				_pendingExit = null;
+				_clearAutoPosForMint(mint);
 				_clearCycle();
 				if (!state.repeatBuy) {
 					await stop({ liquidate: false });
@@ -799,6 +853,67 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				log("Repeat enabled; waiting for next entry.", "help");
 				return;
 			}
+
+			if (res?.noBalance) {
+				log(`Sell skipped: no on-chain balance to sell for ${_shortMint(mint)}.`, "warn");
+				_lastProbe = null;
+				_lastExitQuote = null;
+				_pendingEntry = null;
+				_pendingExit = null;
+				_clearAutoPosForMint(mint);
+				_clearCycle();
+				if (!state.repeatBuy) {
+					await stop({ liquidate: false });
+					return;
+				}
+				return;
+			}
+
+			if (res?.sig) {
+				log(`Sell sent (${String(res.sig).slice(0, 8)}…); awaiting debit…`, "help");
+				_pendingExit = { mint, sig: res.sig, at: now(), ownerStr, prevSizeUi };
+				void (async () => {
+					try {
+						if (!ownerStr) return;
+						const deb = await dex.waitForTokenDebit(ownerStr, mint, prevSizeUi, {
+							timeoutMs: HOLD_EXIT_DEBIT_TIMEOUT_MS,
+							pollMs: HOLD_EXIT_DEBIT_POLL_MS,
+						});
+						if (deb?.debited) {
+							log(`Sell debited (remain≈${Number(deb.remainUi || 0).toFixed(6)}).`, "ok");
+							_lastProbe = null;
+							_lastExitQuote = null;
+							_pendingEntry = null;
+							_pendingExit = null;
+							_clearAutoPosForMint(mint);
+							_clearCycle();
+							if (!state.repeatBuy) {
+								await stop({ liquidate: false });
+								return;
+							}
+							log("Repeat enabled; waiting for next entry.", "help");
+							return;
+						}
+						// If we timed out without seeing debit, allow retries.
+						try {
+							if (_pendingExit && _pendingExit.sig === res.sig) {
+								log(`Sell debit not detected yet for ${_shortMint(mint)}; will retry if still holding.`, "warn");
+								_pendingExit = null;
+							}
+						} catch {}
+					} catch (e) {
+						traceOnce(
+							`hold:${botId}:debitWatchErr:${mint}`,
+							`Debit watch failed for ${_shortMint(mint)}; will retry if still holding. (${String(e?.message || e || "debit error")})`,
+							6000,
+							"warn",
+						);
+						try { _pendingExit = null; } catch {}
+					}
+				})();
+				return;
+			}
+
 			log(`Sell not confirmed (${res?.sig || "no-sig"}); will keep watching.`, "warn");
 		} catch (e) {
 			log(String(e?.message || e || "Tick error"), "err");
@@ -821,6 +936,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		state.enabled = true;
 		_acceptLogs = true;
 		_lastProbe = null;
+		_pendingExit = null;
 		_persist();
 		_emitAnyRunning();
 		updateUI();
@@ -867,12 +983,16 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				try {
 					const p = _pendingEntry;
 					if (p && p.mint === mint && p.ownerStr) {
-						const got = await dex.waitForTokenCredit(p.ownerStr, mint, { timeoutMs: 2500, pollMs: 250 });
-						if (Number(got?.sizeUi || 0) > 0) {
-							_setCycleFromCredit({ mint, ownerStr: p.ownerStr, costSol: Number(p.addCostSol || 0), sizeUi: got.sizeUi, decimals: got.decimals });
-							_upsertAutoPosFromCredit({ mint, sizeUi: got.sizeUi, decimals: got.decimals, addCostSol: Number(p.addCostSol || 0) });
-							log(`Stop-liquidation: position credited size≈${Number(got.sizeUi).toFixed(6)}; proceeding to sell.`, "help", true);
-						}
+						void (async () => {
+							try {
+								const got = await dex.waitForTokenCredit(p.ownerStr, mint, { timeoutMs: 20_000, pollMs: 300 });
+								if (Number(got?.sizeUi || 0) > 0) {
+									_setCycleFromCredit({ mint, ownerStr: p.ownerStr, costSol: Number(p.addCostSol || 0), sizeUi: got.sizeUi, decimals: got.decimals });
+									_upsertAutoPosFromCredit({ mint, sizeUi: got.sizeUi, decimals: got.decimals, addCostSol: Number(p.addCostSol || 0) });
+									log(`Stop-liquidation: position credited size≈${Number(got.sizeUi).toFixed(6)}; selling ASAP…`, "help", true);
+								}
+							} catch {}
+						})();
 					}
 				} catch {}
 
@@ -967,6 +1087,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 					<div class="fdv-actions-right">
 						<button data-hold-start>Start</button>
 						<button data-hold-stop>Stop</button>
+						<button data-hold-chart title="Open Dexscreener chart">Chart</button>
 					</div>
 				</div>
 			</div>
@@ -981,6 +1102,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		logEl = root.querySelector("[data-hold-log]");
 		startBtn = root.querySelector("[data-hold-start]");
 		stopBtn = root.querySelector("[data-hold-stop]");
+		chartBtn = root.querySelector("[data-hold-chart]");
 
 		updateUI();
 
@@ -1002,6 +1124,16 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		});
 		stopBtn?.addEventListener("click", async () => {
 			await stop();
+		});
+		chartBtn?.addEventListener("click", () => {
+			try {
+				// Prefer the live input value so user can click Chart before change/blur.
+				const m = String(mintEl?.value || state.mint || "").trim();
+				if (!m) return;
+				const url = _dexscreenerUrlForMint(m);
+				if (!url) return;
+				window.open(url, "_blank", "noopener,noreferrer");
+			} catch {}
 		});
 	}
 
