@@ -26,10 +26,28 @@ export function sparklineSVG(changes, { w = 120, h = 52 } = {}) {
   const strokeColor = goodTrend ? "var(--buy,#1aff7a)" : "var(--fdv-primary,#00c2a8)";
   const midY = y(0);
 
+  const reducedMotion = (() => {
+    try {
+      return typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    } catch { return false; }
+  })();
+
+  // Animated flare that travels along the line.
+  // Uses only numeric params (stable output) and no SVG ids (avoids collisions).
+  const dash = Math.max(10, Math.round(w * 0.14));
+  const gap = Math.max(80, Math.round(w * 2.2));
+  const sweep = dash + gap;
+  const flare = (reducedMotion || !goodTrend) ? '' : `
+  <path d="${d}" stroke="rgba(123,215,255,.85)" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"
+        opacity=".65" stroke-dasharray="${dash} ${gap}" stroke-dashoffset="0">
+    <animate attributeName="stroke-dashoffset" values="0;-${sweep}" dur="1.35s" repeatCount="indefinite" />
+  </path>`;
+
   return `
 <svg class="spark" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" preserveAspectRatio="none" aria-hidden="true">
   <path d="M0 ${midY} H ${w}" stroke="rgba(123,215,255,.25)" stroke-width="1" fill="none"/>
   <path d="${d}" stroke="${strokeColor}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  ${flare}
 </svg>`;
 }
 
@@ -80,6 +98,18 @@ export function mountSparkline(container, { w = 120, h = 32 } = {}) {
     const vals = (changes || []).map(v => (Number.isFinite(v) ? v : 0));
     const { d, midY, strokeColor } = _computePathData(vals, w, h);
 
+    const goodTrend = (vals[vals.length - 1] ?? 0) > (vals[0] ?? 0);
+
+    const reducedMotion = (() => {
+      try {
+        return typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      } catch { return false; }
+    })();
+
+    const dash = Math.max(10, Math.round(w * 0.14));
+    const gap = Math.max(80, Math.round(w * 2.2));
+    const sweep = dash + gap;
+
     const frame = _elNS('g');
     frame.setAttribute('transform', `translate(${w},0)`); // start off-screen right
 
@@ -97,8 +127,30 @@ export function mountSparkline(container, { w = 120, h = 32 } = {}) {
     path.setAttribute('stroke-linecap', 'round');
     path.setAttribute('stroke-linejoin', 'round');
 
+
     frame.appendChild(base);
     frame.appendChild(path);
+    if (goodTrend) {
+      const flare = _elNS('path');
+      flare.setAttribute('d', d);
+      flare.setAttribute('stroke', 'rgba(123,215,255,.85)');
+      flare.setAttribute('stroke-width', '4');
+      flare.setAttribute('fill', 'none');
+      flare.setAttribute('stroke-linecap', 'round');
+      flare.setAttribute('stroke-linejoin', 'round');
+      flare.setAttribute('opacity', '.65');
+      flare.setAttribute('stroke-dasharray', `${dash} ${gap}`);
+      flare.setAttribute('stroke-dashoffset', '0');
+      if (!reducedMotion) {
+        const anim = _elNS('animate');
+        anim.setAttribute('attributeName', 'stroke-dashoffset');
+        anim.setAttribute('values', `0;-${sweep}`);
+        anim.setAttribute('dur', '1.35s');
+        anim.setAttribute('repeatCount', 'indefinite');
+        flare.appendChild(anim);
+      }
+      frame.appendChild(flare);
+    }
     scroller.appendChild(frame);
 
     const prev = scroller.children[0];

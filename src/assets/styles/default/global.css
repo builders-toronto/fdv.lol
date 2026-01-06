@@ -1584,6 +1584,95 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 .fdv-help{ font-size:.8rem; color:#9aa6b2; margin-top:6px }
 .fdv-row{ display:grid; grid-template-columns: 1fr 1fr; gap:12px }
 
+/* Range sliders (widgets) */
+.fdv-range{
+  width: 100%;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+}
+
+.fdv-range:focus{ outline: none; }
+
+.fdv-range::-webkit-slider-runnable-track{
+  height: 8px;
+  border-radius: 999px;
+  border: 1px solid var(--fdv-border);
+  background: var(--fdv-bg);
+}
+
+.fdv-range::-webkit-slider-thumb{
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--fdv-surface);
+  border: 1px solid var(--fdv-border);
+  margin-top: -5px;
+}
+
+.fdv-range::-moz-range-track{
+  height: 8px;
+  border-radius: 999px;
+  border: 1px solid var(--fdv-border);
+  background: var(--fdv-bg);
+}
+
+.fdv-range::-moz-range-thumb{
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--fdv-surface);
+  border: 1px solid var(--fdv-border);
+}
+
+.fdv-range-rug::-webkit-slider-runnable-track{
+  background: linear-gradient(90deg, var(--good), var(--watch), var(--avoid));
+}
+
+.fdv-range-rug::-moz-range-track{
+  background: linear-gradient(90deg, var(--good), var(--watch), var(--avoid));
+}
+
+.fdv-hold-rug{
+  margin: 20px;
+  /* border: 1px solid var(--fdv-border);
+  background: var(--fdv-bg); */
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.fdv-hold-rug-row{
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.fdv-hold-rug-title{
+  font-size: 12px;
+  color: var(--fdv-muted);
+}
+
+.fdv-hold-rug-value{
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  color: var(--fdv-muted);
+}
+
+.fdv-hold-rug-slider{
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.fdv-hold-rug-end{
+  font-size: 12px;
+  opacity: .95;
+}
+
 .fdv-input-amount{ justify-content:space-between }
 .fdv-quick{ display:flex; gap:6px }
 .fdv-quickbtn{ appearance:none; border:1px solid var(--fdv-border); background:#0b0f17;
