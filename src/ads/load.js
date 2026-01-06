@@ -5,6 +5,14 @@ import { normalizeSocial, iconFor } from "../lib/socialBuilder.js";
 export function initAdBanners(root = document){
   const cards = [...root.querySelectorAll('.adcard[data-interactive]')];
   for (const card of cards) {
+    card.addEventListener('click', (e) => {
+      const close = e.target.closest('[data-ad-close]');
+      if (!close) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      try { card.remove(); } catch { try { card.parentNode && card.parentNode.removeChild(card); } catch {} }
+    }, true);
+
     card.addEventListener('pointermove', (e) => {
       const r = card.getBoundingClientRect();
       const x = ((e.clientX - r.left) / Math.max(r.width, 1)) * 100;
@@ -126,9 +134,9 @@ export function adCard(ad){
   const icons = renderAdIcons(ad.socials || []);
 
   const buyUrl = AD_JUP_URL(ad.mint);
-  // <div class="adtag" title="Sponsored">SPONSORED</div>
   return `
-  <section class="adcard" role="complementary" aria-label="Sponsored" data-compact="1">
+  <section class="adcard" role="complementary" aria-label="Sponsored" data-compact="1" data-interactive="1">
+    <button class="adclose" type="button" aria-label="Remove ad" title="Remove" data-ad-close>&times;</button>
     <div class="adrow">
       <div class="adlogo"><img src="${logo}" alt=""></div>
 

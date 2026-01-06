@@ -1086,6 +1086,37 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 .adcard:hover{ border-color: rgba(26,255,213,.35); box-shadow: 0 12px 28px rgba(26,255,213,.10), inset 0 0 0 1px rgba(26,255,213,.08) }
 .adcard:hover::before{ opacity: .65 }
 
+.adclose{
+  position:absolute;
+  top:-12px;
+  right:-12px;
+  width:30px;
+  height:30px;
+  border-radius:999px;
+  display:grid;
+  place-items:center;
+  background: transparent;
+  border:none;
+  color: var(--text);
+  opacity: .9;
+  cursor:pointer;
+  user-select:none;
+  -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 10px 24px rgba(0,0,0,.28), inset 0 0 0 1px rgba(26,255,213,.06);
+  transition: transform .12s ease, filter .12s ease, border-color .12s ease, background .12s ease, opacity .12s ease;
+  z-index: 2;
+}
+.adclose:hover{ filter:brightness(1.08); border-color: rgba(26,255,213,.55); opacity: 1; }
+.adclose:active{ transform: translateY(1px) }
+.adclose:focus-visible{
+  outline:none;
+  box-shadow:
+    0 0 0 3px rgba(26,255,213,.14),
+    0 10px 24px rgba(0,0,0,.28),
+    inset 0 0 0 1px rgba(26,255,213,.24);
+  border-color: rgba(26,255,213,.45);
+}
+
 @media (prefers-reduced-motion: reduce){
   .adcard, .adcard::before { transition: none }
 }
