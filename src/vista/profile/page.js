@@ -3,7 +3,7 @@ import { fetchTokenInfo, fetchTokenInfoLive } from "../../data/dexscreener.js";
 import { scoreAndRecommendOne } from "../../core/calculate.js";
 import sanitizeToken from "./sanitizeToken.js";
 import renderShell from "./render/shell.js";
-import { loadAds, pickAd, adCard } from "../../ads/load.js";
+import { loadAds, pickAd, adCard, initAdBanners } from "../../ads/load.js";
 
 import { widgets, registerCoreWidgets, prewarmDefaults } from "../widgets/loader.js";
 
@@ -120,6 +120,7 @@ export async function renderProfileView(input, { onBack } = {}) {
     if (adSlot && !adSlot.__filled) {
       adSlot.innerHTML = adHtml;
       adSlot.__filled = true;
+      try { initAdBanners(adSlot); } catch {}
     }
   }).catch(() => {});
 
