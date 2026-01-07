@@ -1,10 +1,8 @@
 import { FALLBACK_LOGO } from "../config/env.js";
 
-// Keep ipfs.io last: it is frequently rate-limited or DNS-blocked for some users.
 const IPFS_GATEWAYS = [
-  'https://cf-ipfs.com/ipfs/',
-  'https://cloudflare-ipfs.com/ipfs/',
-  'https://gateway.pinata.cloud/ipfs/',
+  'https://w3s.link/ipfs/',
+  'https://dweb.link/ipfs/',
   'https://ipfs.io/ipfs/',
 ];
 
@@ -17,11 +15,12 @@ const SILENCE_STORM_THRESHOLD = 6;
 let __ipfsErrTimes = [];
 
 function _isDevHost() {
-  return false;
-  // try {
-  //   const h = (location && location.hostname) || '';
-  //   return /^(localhost|127\.0\.0\.1|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(h);
-  // } catch { return false; }
+  try {
+    const h = (typeof location !== 'undefined' && location && location.hostname) ? location.hostname : '';
+    return /^(localhost|127\.0\.0\.1|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(h);
+  } catch {
+    return false;
+  }
 }
 
 function shouldSilenceIpfs() {
@@ -174,6 +173,188 @@ const _cidGatewayHint = new Map();
 let _preferredGatewayIndex = 0;
 const DEFAULT_FETCH_TIMEOUT_MS = 3500;
 
+const LOGO_CACHE_NAME = 'fdv-logo-v1';
+const LOGO_CACHE_PATH = '/_fdv_logo_cache/v1/';
+const COMPRESS_MAX_DIM = 128;
+const COMPRESS_MIN_BYTES = 12 * 1024; // only bother when it meaningfully helps
+const COMPRESS_MIN_SAVINGS_BYTES = 2048;
+const COMPRESS_WEBP_QUALITY = 0.72;
+
+function _canUseCacheStorage() {
+  try {
+    return typeof window !== 'undefined' && typeof caches !== 'undefined' && !!caches?.open;
+  } catch {
+    return false;
+  }
+}
+
+function _cacheKeyUrlForCid(cid) {
+  try {
+    const origin = (typeof location !== 'undefined' && location.origin) ? location.origin : 'https://fdv.local';
+    return origin + LOGO_CACHE_PATH + encodeURIComponent(cid) + '.img';
+  } catch {
+    return 'https://fdv.local' + LOGO_CACHE_PATH + encodeURIComponent(cid) + '.img';
+  }
+}
+
+async function _openLogoCache() {
+  if (!_canUseCacheStorage()) return null;
+  try {
+    return await caches.open(LOGO_CACHE_NAME);
+  } catch {
+    return null;
+  }
+}
+
+async function _cacheGetLogoBlob(cid) {
+  try {
+    const cache = await _openLogoCache();
+    if (!cache) return null;
+    const keyUrl = _cacheKeyUrlForCid(cid);
+    const res = await cache.match(keyUrl);
+    if (!res || !res.ok) return null;
+    const blob = await res.blob();
+    return blob && blob.size ? blob : null;
+  } catch {
+    return null;
+  }
+}
+
+async function _cachePutLogoBlob(cid, blob) {
+  try {
+    const cache = await _openLogoCache();
+    if (!cache) return false;
+    if (!blob || !blob.size) return false;
+    const keyUrl = _cacheKeyUrlForCid(cid);
+    const headers = new Headers();
+    try {
+      const ct = blob.type || 'application/octet-stream';
+      headers.set('content-type', ct);
+    } catch {}
+    try { headers.set('cache-control', 'public, max-age=31536000, immutable'); } catch {}
+    const res = new Response(blob, { status: 200, headers });
+    await cache.put(keyUrl, res);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function _scheduleIdle(fn) {
+  try {
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(() => { try { fn(); } catch {} }, { timeout: 1500 });
+      return;
+    }
+  } catch {}
+  setTimeout(() => { try { fn(); } catch {} }, 0);
+}
+
+function _isCompressibleImage(blob) {
+  try {
+    const t = (blob?.type || '').toLowerCase();
+    if (!t) return true; // many gateways lie; we'll try and bail if decode fails
+    if (t.includes('svg')) return false;
+    if (t.includes('gif')) return false;
+    if (t.includes('webp')) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function _canvasToWebpBlob(canvas, quality) {
+  try {
+    if (canvas && typeof canvas.convertToBlob === 'function') {
+      return await canvas.convertToBlob({ type: 'image/webp', quality });
+    }
+  } catch {}
+
+  return await new Promise((resolve) => {
+    try {
+      if (!canvas || typeof canvas.toBlob !== 'function') return resolve(null);
+      canvas.toBlob((b) => resolve(b || null), 'image/webp', quality);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function _compressLogoBlobIfUseful(blob) {
+  try {
+    if (!blob || !blob.size) return null;
+    if (blob.size < COMPRESS_MIN_BYTES) return null;
+    if (!_isCompressibleImage(blob)) return null;
+
+    if (typeof createImageBitmap !== 'function') return null;
+
+    const bmp = await createImageBitmap(blob).catch(() => null);
+    if (!bmp) return null;
+
+    const w = bmp.width || 0;
+    const h = bmp.height || 0;
+    if (!w || !h) {
+      try { bmp.close?.(); } catch {}
+      return null;
+    }
+
+    const scale = Math.min(1, COMPRESS_MAX_DIM / Math.max(w, h));
+    const tw = Math.max(1, Math.round(w * scale));
+    const th = Math.max(1, Math.round(h * scale));
+
+    let canvas;
+    if (typeof OffscreenCanvas !== 'undefined') canvas = new OffscreenCanvas(tw, th);
+    else if (typeof document !== 'undefined') {
+      canvas = document.createElement('canvas');
+      canvas.width = tw;
+      canvas.height = th;
+    } else {
+      try { bmp.close?.(); } catch {}
+      return null;
+    }
+
+    const ctx = canvas.getContext('2d', { alpha: true });
+    if (!ctx) {
+      try { bmp.close?.(); } catch {}
+      return null;
+    }
+
+    ctx.clearRect(0, 0, tw, th);
+    ctx.drawImage(bmp, 0, 0, tw, th);
+    try { bmp.close?.(); } catch {}
+
+    const webp = await _canvasToWebpBlob(canvas, COMPRESS_WEBP_QUALITY);
+    if (!webp || !webp.size) return null;
+    if (webp.size >= blob.size - COMPRESS_MIN_SAVINGS_BYTES) return null;
+
+    return webp;
+  } catch {
+    return null;
+  }
+}
+
+const _compressJobsByCid = new Map();
+function _maybeScheduleCompressionAndOverwriteCache(cid, originalBlob) {
+  try {
+    if (!cid || !originalBlob || !originalBlob.size) return;
+    if (_compressJobsByCid.has(cid)) return;
+    if (originalBlob.size < COMPRESS_MIN_BYTES) return;
+    _compressJobsByCid.set(cid, true);
+
+    _scheduleIdle(async () => {
+      try {
+        const compressed = await _compressLogoBlobIfUseful(originalBlob);
+        if (compressed && compressed.size) {
+          await _cachePutLogoBlob(cid, compressed);
+        }
+      } catch {
+      } finally {
+        _compressJobsByCid.delete(cid);
+      }
+    });
+  } catch {}
+}
+
 function _gatewayOrderForCid(cid) {
   const n = IPFS_GATEWAYS.length || 1;
   const start = _cidGatewayHint.has(cid)
@@ -273,6 +454,23 @@ export function queueTokenLogoLoad(imgEl, raw, sym = '', opts = {}) {
     const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : DEFAULT_FETCH_TIMEOUT_MS;
 
     (async () => {
+      // Cache hit: avoid any gateway fetch.
+      try {
+        const cached = await _cacheGetLogoBlob(cid);
+        if (cached && cached.size) {
+          if (imgEl.__fdvLogoReqId !== reqId) return;
+
+          const prevObjUrl = _imgObjectUrls.get(imgEl);
+          if (prevObjUrl) {
+            try { URL.revokeObjectURL(prevObjUrl); } catch {}
+          }
+          const objUrl = URL.createObjectURL(cached);
+          _imgObjectUrls.set(imgEl, objUrl);
+          imgEl.setAttribute('src', objUrl);
+          return;
+        }
+      } catch {}
+
       const order = _gatewayOrderForCid(cid);
       for (const gwIndex of order) {
         const url = buildGatewayUrl(cid, gwIndex);
@@ -296,6 +494,13 @@ export function queueTokenLogoLoad(imgEl, raw, sym = '', opts = {}) {
 
           // Assign the blob URL (this won't emit network errors).
           imgEl.setAttribute('src', objUrl);
+
+          // Persist in CacheStorage for future loads, and optionally overwrite
+          // with a compressed WebP later (scheduled at idle to avoid UI jank).
+          try {
+            await _cachePutLogoBlob(cid, blob);
+            _maybeScheduleCompressionAndOverwriteCache(cid, blob);
+          } catch {}
           return;
         } catch {
           try { markGatewayFailure(url); } catch {}

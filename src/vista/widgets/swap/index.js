@@ -1,3 +1,4 @@
+import { getTokenLogoPlaceholder, queueTokenLogoLoad } from "../../../core/ipfs.js";
 import { FDV_FEE_RECEIVER, FDV_TURNSTILE_BASE } from "../../../config/env.js";
 import { fetchTokenInfo } from "../../../data/dexscreener.js";
 import { throttleGlobalStream, releaseGlobalStreamThrottle, isGlobalStreamThrottled } from "../../../engine/pipeline.js";
@@ -1079,8 +1080,15 @@ function _applyTokenHydrate(h) {
   };
 
   if (m.logo) {
-    if (t.imageUrl) m.logo.src = t.imageUrl;
-    else { m.logo.removeAttribute("src"); m.logo.style.background = "#222"; }
+    const raw = t.imageUrl || "";
+    const sym = t.symbol || t.name || "";
+    try {
+      if (sym) m.logo.setAttribute('data-sym', sym);
+      if (raw) m.logo.setAttribute('data-logo-raw', raw);
+    } catch {}
+    m.logo.src = getTokenLogoPlaceholder(raw, sym) || "";
+    queueTokenLogoLoad(m.logo, raw, sym);
+    if (!raw) { m.logo.style.background = "#222"; }
   }
   if (m.header) {
     const bg = t.headerUrl || "";
@@ -1152,8 +1160,15 @@ async function _loadTokenProfile(mint, opts = {}) {
     _state.token = t;
 
     if (mount.logo) {
-      if (t.imageUrl) mount.logo.src = t.imageUrl;
-      else { mount.logo.removeAttribute("src"); mount.logo.style.background = "#222"; }
+      const raw = t.imageUrl || "";
+      const sym = t.symbol || t.name || "";
+      try {
+        if (sym) mount.logo.setAttribute('data-sym', sym);
+        if (raw) mount.logo.setAttribute('data-logo-raw', raw);
+      } catch {}
+      mount.logo.src = getTokenLogoPlaceholder(raw, sym) || "";
+      queueTokenLogoLoad(mount.logo, raw, sym);
+      if (!raw) { mount.logo.style.background = "#222"; }
     }
     if (mount.header) {
       const bg = t.headerUrl || "";

@@ -2194,12 +2194,224 @@ export async function getAutoKeypair() {
   } catch { return null; }
 }
 
-async function ensureAutoWallet() {
-  if (state.autoWalletPub && state.autoWalletSecret) return state.autoWalletPub;
+async function _generateAutoWalletKeypair() {
   const { Keypair, bs58 } = await loadDeps();
   const kp = Keypair.generate();
-  state.autoWalletPub = kp.publicKey.toBase58();
-  state.autoWalletSecret = bs58.default.encode(kp.secretKey);
+  return {
+    kp,
+    publicKey: kp.publicKey.toBase58(),
+    secretKey: bs58.default.encode(kp.secretKey),
+  };
+}
+
+function _migrateOwnerCaches(oldOwner, newOwner) {
+  try {
+    if (!oldOwner || !newOwner || oldOwner === newOwner) return;
+    const oldPos = cacheToList(oldOwner) || [];
+    for (const it of oldPos) {
+      try {
+        updatePosCache(newOwner, it.mint, it.sizeUi, it.decimals);
+      } catch {}
+    }
+    for (const it of oldPos) {
+      try { removeFromPosCache(oldOwner, it.mint); } catch {}
+    }
+
+    const oldDust = dustCacheToList(oldOwner) || [];
+    for (const it of oldDust) {
+      try {
+        addToDustCache(newOwner, it.mint, it.sizeUi, it.decimals);
+      } catch {}
+    }
+    for (const it of oldDust) {
+      try { removeFromDustCache(oldOwner, it.mint); } catch {}
+    }
+  } catch {}
+}
+
+async function _sendSignedTx(conn, tx, signers, { commitment = "processed", confirmCommitment = "confirmed", confirmTimeoutMs = 25_000 } = {}) {
+  tx.recentBlockhash = (await conn.getLatestBlockhash(commitment)).blockhash;
+  tx.sign(...(signers || []));
+  const sig = await conn.sendRawTransaction(tx.serialize(), { preflightCommitment: commitment, maxRetries: 2 });
+  try { await confirmSig(sig, { commitment: confirmCommitment, timeoutMs: confirmTimeoutMs }); } catch {}
+  return sig;
+}
+
+async function _migrateWalletFunds({ fromSigner, toSigner }) {
+  const { PublicKey, SystemProgram, Transaction } = await loadWeb3();
+  const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, createTransferCheckedInstruction } = await loadSplToken();
+  const conn = await getConn();
+
+  const fromPk = fromSigner.publicKey instanceof PublicKey ? fromSigner.publicKey : new PublicKey(fromSigner.publicKey.toBase58());
+  const toPk = toSigner.publicKey instanceof PublicKey ? toSigner.publicKey : new PublicKey(toSigner.publicKey.toBase58());
+  const fromOwner = fromPk.toBase58();
+  const toOwner = toPk.toBase58();
+
+  // Unwrap any WSOL first so SOL can be moved cleanly.
+  try { await unwrapWsolIfAny(fromSigner); } catch {}
+
+  // Seed the destination so it can be the fee payer for follow-on txs.
+  try {
+    const fromLamports = await conn.getBalance(fromPk, "processed").catch(() => 0);
+    const seed = Math.min(
+      Number(fromLamports || 0),
+      Math.max(
+        0,
+        (EDGE_TX_FEE_ESTIMATE_LAMPORTS * 6) + (TX_FEE_BUFFER_LAMPORTS * 2)
+      )
+    );
+    if (seed > 0 && (fromLamports - seed) > EDGE_TX_FEE_ESTIMATE_LAMPORTS) {
+      const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: fromPk, toPubkey: toPk, lamports: Math.floor(seed) }));
+      tx.feePayer = fromPk;
+      const sig = await _sendSignedTx(conn, tx, [fromSigner], { confirmTimeoutMs: 20_000 });
+      log(`Wallet rotate: fee seed sent (${(seed / 1e9).toFixed(6)} SOL) :: ${sig}`);
+    }
+  } catch (e) {
+    log(`Wallet rotate: fee seed skipped (${e?.message || e})`, "warn");
+  }
+
+  let toLamportsNow = 0;
+  try { toLamportsNow = await conn.getBalance(toPk, "processed").catch(() => 0); } catch {}
+  const toCanPayFees = () => Number(toLamportsNow || 0) > Math.max(EDGE_TX_FEE_ESTIMATE_LAMPORTS * 3, TX_FEE_BUFFER_LAMPORTS);
+
+  async function listTokenAccounts(programId) {
+    try {
+      const res = await conn.getParsedTokenAccountsByOwner(fromPk, { programId }, "confirmed");
+      const items = res?.value || [];
+      return items.map((v) => {
+        try {
+          const pkStr = v?.pubkey?.toBase58 ? v.pubkey.toBase58() : String(v?.pubkey || "");
+          const info = v?.account?.data?.parsed?.info || {};
+          const mint = String(info?.mint || "");
+          const t = info?.tokenAmount || {};
+          const amountRaw = BigInt(String(t?.amount || "0"));
+          const decimals = Number(t?.decimals ?? 0);
+          const hasDelegate = !!info?.delegate;
+          const delegatedRaw = BigInt(String(info?.delegatedAmount?.amount || "0"));
+          return {
+            pubkeyStr: pkStr,
+            mint,
+            amountRaw,
+            decimals,
+            programId,
+            hasDelegate,
+            delegatedRaw,
+          };
+        } catch {
+          return null;
+        }
+      }).filter(Boolean);
+    } catch (e) {
+      _markRpcStress(e, 1500);
+      return [];
+    }
+  }
+
+  const progs = [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].filter(Boolean);
+  const tokenAccts = [];
+  for (const pid of progs) {
+    const list = await listTokenAccounts(pid);
+    for (const it of list) {
+      if (!it?.mint) continue;
+      if (it.amountRaw <= 0n) continue;
+      tokenAccts.push(it);
+    }
+  }
+
+  // Transfer all SPL balances into destination ATAs.
+  for (const it of tokenAccts) {
+    const mintStr = it.mint;
+    try {
+      const mintPk = new PublicKey(mintStr);
+      const srcPk = new PublicKey(it.pubkeyStr);
+      const dstAtaAny = await getAssociatedTokenAddress(mintPk, toPk, true, it.programId);
+      const dstAta = typeof dstAtaAny === "string" ? new PublicKey(dstAtaAny) : dstAtaAny;
+
+      const useToAsFeePayer = toCanPayFees();
+      const feePayerPk = useToAsFeePayer ? toPk : fromPk;
+
+      const ixs = [];
+      // Create destination ATA if missing.
+      try {
+        const ai = await conn.getAccountInfo(dstAta, "processed").catch(() => null);
+        if (!ai) {
+          if (typeof createAssociatedTokenAccountInstruction === "function") {
+            ixs.push(createAssociatedTokenAccountInstruction(feePayerPk, dstAta, toPk, mintPk, it.programId));
+          }
+        }
+      } catch {}
+
+      // Safety: if there's an active delegate, transfer can still work, but closing later could be messy.
+      if (it.hasDelegate && it.delegatedRaw > 0n) {
+        log(`Wallet rotate: delegated token account detected; transferring anyway (${mintStr.slice(0, 4)}…)`, "warn");
+      }
+
+      if (typeof createTransferCheckedInstruction !== "function") {
+        throw new Error("spl-token transfer helper missing");
+      }
+      ixs.push(createTransferCheckedInstruction(srcPk, mintPk, dstAta, fromPk, it.amountRaw, it.decimals, [], it.programId));
+
+      const tx = new Transaction();
+      for (const ix of ixs) tx.add(ix);
+
+      tx.feePayer = feePayerPk;
+      const sig = await _sendSignedTx(
+        conn,
+        tx,
+        useToAsFeePayer ? [toSigner, fromSigner] : [fromSigner],
+        { confirmTimeoutMs: 30_000 }
+      );
+      log(`Wallet rotate: moved ${mintStr.slice(0, 4)}… (${it.amountRaw.toString()} raw) :: ${sig}`);
+
+      // Refresh cached destination balance after each mint so we can switch fee payer once it’s funded.
+      if (!useToAsFeePayer) {
+        try { toLamportsNow = await conn.getBalance(toPk, "processed").catch(() => toLamportsNow); } catch {}
+      }
+    } catch (e) {
+      log(`Wallet rotate: token move failed (${String(mintStr || "").slice(0, 6)}…): ${e?.message || e}`, "warn");
+    }
+  }
+
+  // Drain remaining SOL (fee paid by destination wallet).
+  try {
+    await rpcWait("wallet-rotate-sol", 250);
+    const fromLamportsNow = await conn.getBalance(fromPk, "processed").catch(() => 0);
+    const total = Math.max(0, Math.floor(Number(fromLamportsNow || 0)));
+    if (total > 0) {
+      const canTo = toCanPayFees();
+      const keep = Math.max(EDGE_TX_FEE_ESTIMATE_LAMPORTS * 2, TX_FEE_BUFFER_LAMPORTS);
+      const lamportsToSend = canTo ? total : Math.max(0, total - keep);
+      if (lamportsToSend > 0) {
+        const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: fromPk, toPubkey: toPk, lamports: lamportsToSend }));
+        tx.feePayer = canTo ? toPk : fromPk;
+        const sig = await _sendSignedTx(conn, tx, canTo ? [toSigner, fromSigner] : [fromSigner], { confirmTimeoutMs: 25_000 });
+        log(`Wallet rotate: drained SOL ${(lamportsToSend / 1e9).toFixed(6)} :: ${sig}`);
+      }
+    }
+  } catch (e) {
+    log(`Wallet rotate: SOL drain failed: ${e?.message || e}`, "warn");
+  }
+
+  // Best-effort: keep derived caches consistent for future sync.
+  try {
+    // If any positions are tracked in state, keep the cache aligned for the new owner.
+    for (const mint of Object.keys(state.positions || {})) {
+      if (!mint || mint === SOL_MINT) continue;
+      const pos = state.positions[mint];
+      const sz = Number(pos?.sizeUi || 0);
+      const dec = Number.isFinite(pos?.decimals) ? pos.decimals : 6;
+      if (sz > 0) updatePosCache(toOwner, mint, sz, dec);
+    }
+  } catch {}
+
+  return { ok: true, fromOwner, toOwner };
+}
+
+async function ensureAutoWallet() {
+  if (state.autoWalletPub && state.autoWalletSecret) return state.autoWalletPub;
+  const gen = await _generateAutoWalletKeypair();
+  state.autoWalletPub = gen.publicKey;
+  state.autoWalletSecret = gen.secretKey;
   save();
   return state.autoWalletPub;
 }
@@ -7421,8 +7633,6 @@ export function initTraderWidget(container = document.body) {
       log(`Dynamic hold: ${state.dynamicHoldEnabled ? "ON" : "OFF"}`);
     });
 
-    // Automation: when dynamic hold is ON, observer can change maxHoldSecs.
-    // Keep the slider synced so the UI reflects the current auto-tuned value.
     try {
       if (window._fdvDynHoldUiTimer) clearInterval(window._fdvDynHoldUiTimer);
     } catch {}
@@ -7462,10 +7672,72 @@ export function initTraderWidget(container = document.body) {
   rpchEl.addEventListener("change", () => setRpcHeaders(rpchEl.value));
 
   wrap.querySelector("[data-auto-gen]").addEventListener("click", async () => {
-    await ensureAutoWallet();
-    depAddrEl.value = state.autoWalletPub;
-    log("New auto wallet generated. Send SOL to begin: " + state.autoWalletPub);
-    save();
+    try {
+      if (state.enabled) {
+        log("Stop the bot before generating/rotating the auto wallet.", "warn");
+        return;
+      }
+
+      if (!window._fdvAutoWalletRotateInflight) window._fdvAutoWalletRotateInflight = false;
+      if (window._fdvAutoWalletRotateInflight) {
+        log("Wallet generation already in progress…", "warn");
+        return;
+      }
+      window._fdvAutoWalletRotateInflight = true;
+
+      const hadWallet = !!(state.autoWalletPub && state.autoWalletSecret);
+
+      if (!hadWallet) {
+        await ensureAutoWallet();
+        depAddrEl.value = state.autoWalletPub;
+        log("New auto wallet generated. Send SOL to begin: " + state.autoWalletPub);
+        logObj("Auto wallet", { publicKey: state.autoWalletPub, secretKey: state.autoWalletSecret });
+        save();
+        return;
+      }
+
+      const oldPub = state.autoWalletPub;
+      const oldSecret = state.autoWalletSecret;
+      const oldKp = await getAutoKeypair();
+      if (!oldKp) {
+        log("Current auto wallet secret key is invalid; cannot rotate.", "err");
+        return;
+      }
+
+      const gen = await _generateAutoWalletKeypair();
+      log(`Rotating auto wallet (bot must be stopped)…`);
+      log(`From: ${oldPub}`);
+      log(`To:   ${gen.publicKey}`);
+
+      const res = await _migrateWalletFunds({ fromSigner: oldKp, toSigner: gen.kp });
+      if (!res?.ok) {
+        log("Wallet rotate failed; keeping existing wallet.", "err");
+        return;
+      }
+
+      // Migrate caches so sync logic doesn't prune positions on the next tick.
+      _migrateOwnerCaches(oldPub, gen.publicKey);
+
+      // Archive the old wallet in state.
+      try {
+        if (!Array.isArray(state.oldWallets)) state.oldWallets = [];
+        state.oldWallets.unshift({ publicKey: oldPub, secretKey: oldSecret, rotatedAt: Date.now() });
+        // Keep the archive bounded.
+        if (state.oldWallets.length > 25) state.oldWallets.length = 25;
+      } catch {}
+
+      state.autoWalletPub = gen.publicKey;
+      state.autoWalletSecret = gen.secretKey;
+      save();
+
+      depAddrEl.value = state.autoWalletPub;
+      log("Wallet rotation complete. New auto wallet is ready.");
+      logObj("Auto wallet (NEW)", { publicKey: state.autoWalletPub, secretKey: state.autoWalletSecret });
+    } catch (e) {
+      log(`Generate/rotate failed: ${e?.message || e}`, "err");
+    } finally {
+      try { window._fdvAutoWalletRotateInflight = false; } catch {}
+    }
   });
   wrap.querySelector("[data-auto-copy]").addEventListener("click", async () => {
     if (!state.autoWalletPub) await ensureAutoWallet();
