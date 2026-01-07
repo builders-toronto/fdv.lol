@@ -339,7 +339,7 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
   display:inline-flex; align-items:center; gap:8px;
   cursor:pointer; height:36px; padding:0 12px; border-radius:10px;
   border:1px solid var(--fdv-border, var(--border-2, rgba(255,255,255,.14)));
-  background: transparent
+  background: transparent;
   color: var(--text);
   font-weight:600;
   transition: border-color .15s ease, filter .15s ease, background .15s ease;
@@ -397,6 +397,7 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
   box-shadow: 0 0px 1px rgba(0, 0, 0, 0.18), 0 8px 22px rgba(0, 0, 0, 0.28);
 }
 .addon-item > a {
+  position: relative;
   display:flex;
   flex-direction: column;
   width:100%;
@@ -409,6 +410,31 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
   transition: transform .12s ease, filter .12s ease, border-color .12s ease, background .12s ease;
   -webkit-tap-highlight-color: transparent;
 }
+
+.addon-hold-wrap{
+  position:absolute;
+  top:6px;
+  right:6px;
+  z-index:3;
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  transition: transform .14s ease, opacity .14s ease, filter .14s ease;
+  opacity:.96;
+}
+.addon-item > a:hover .addon-hold-wrap{ opacity:1; transform: translateY(-1px); filter: brightness(1.04); }
+
+.addon-hold-btn{
+  height:24px;
+  font-size:11px;
+  line-height: 22px;
+  border-radius: 0 !important;
+  border: none !important;
+  background: rgba(123,241,255,.06);
+}
+
+.addon-hold-btn.holdCoin:hover{ transform: translateY(-1px) scale(1.02); }
+.addon-hold-btn.holdCoin:active{ transform: translateY(0) scale(.99); }
 .addon-item > a:hover {
   filter: brightness(1.04);
   border-color: rgba(26,255,213,.28);
@@ -907,7 +933,6 @@ input[type="checkbox"]:disabled{
 .btn.buy{border-color: rgba(26,255,122,.45); box-shadow: inset 0 0 0 1px rgba(26,255,122,.2)}
 .btn.info{opacity:.9}
 
-/* Button busy state (used by Hold click feedback) */
 .btn[aria-busy="true"]{ position:relative; pointer-events:none; filter:saturate(.7) brightness(.95) }
 .btn[aria-busy="true"]::after{
   content:"";

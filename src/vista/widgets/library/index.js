@@ -1,4 +1,5 @@
 import { fetchTokenInfo } from "../../../data/dexscreener.js";
+import { getTokenLogoPlaceholder, queueTokenLogoLoad } from "../../../core/ipfs.js";
 
 const LS_KEY = "fdv_library_v1";
 const EVT = { CHANGE: "library:change" };
@@ -162,7 +163,7 @@ async function renderModalPanels(modal) {
       <div class="fdv-lib-grid">
         ${list.map(it => `
           <div class="fdv-lib-card" data-mint="${it.mint}">
-            <img class="fdv-lib-logo" src="${it.imageUrl || CFG.fallbackLogo || ""}" alt="" onerror="this.style.visibility='hidden'">
+            <img class="fdv-lib-logo" src="${getTokenLogoPlaceholder(it.imageUrl || CFG.fallbackLogo || "", it.symbol || it.name || "")}" data-logo-raw="${it.imageUrl || ""}" data-sym="${it.symbol || it.name || ""}" alt="">
             <div class="fdv-lib-main">
               <div class="fdv-lib-line1">
                 <div class="fdv-lib-sym">${it.symbol || "—"}</div>
@@ -177,6 +178,16 @@ async function renderModalPanels(modal) {
         `).join("")}
       </div>
     `;
+
+    // Load logos via blob fetch + cache (avoids noisy <img> gateway errors)
+    try {
+      favEl.querySelectorAll('img[data-logo-raw]').forEach((img) => {
+        const raw = img.getAttribute('data-logo-raw') || '';
+        const sym = img.getAttribute('data-sym') || '';
+        queueTokenLogoLoad(img, raw, sym);
+      });
+    } catch {}
+
     favEl.querySelectorAll("[data-lib-remove]").forEach(btn => {
       btn.addEventListener("click", (e) => {
         e.preventDefault();
@@ -252,7 +263,7 @@ async function renderModalPanels(modal) {
               <tr>
                 <td>
                   <div style="display:flex;align-items:center;gap:8px;">
-                    <img src="${r.imageUrl||""}" alt="" width="20" height="20" style="border-radius:6px;object-fit:cover;background:#0b111d" onerror="this.style.visibility='hidden'">
+                    <img src="${getTokenLogoPlaceholder(r.imageUrl||"", r.symbol || r.name || "")}" data-logo-raw="${r.imageUrl||""}" data-sym="${r.symbol || r.name || ""}" alt="" width="20" height="20" style="border-radius:6px;object-fit:cover;background:#0b111d">
                     <a href="/token/${encodeURIComponent(r.mint)}">${r.symbol || "—"}</a>
                   </div>
                 </td>
@@ -267,6 +278,14 @@ async function renderModalPanels(modal) {
         </tbody>
       </table>
     `;
+
+    try {
+      cmpEl.querySelectorAll('img[data-logo-raw]').forEach((img) => {
+        const raw = img.getAttribute('data-logo-raw') || '';
+        const sym = img.getAttribute('data-sym') || '';
+        queueTokenLogoLoad(img, raw, sym);
+      });
+    } catch {}
   }
 }
 

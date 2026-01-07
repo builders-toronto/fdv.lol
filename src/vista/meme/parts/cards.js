@@ -4,7 +4,7 @@ import { pctChipsHTML } from '../render/chips.js';
 import { EXPLORER, FALLBACK_LOGO, JUP_SWAP, shortAddr } from '../../../config/env.js';
 import { buildSocialLinksHtml, iconFor } from '../../../lib/socialBuilder.js';
 import { fmtUsd, normalizeWebsite } from '../../../core/tools.js';
-import { normalizeTokenLogo } from '../../../core/ipfs.js';
+import { getTokenLogoPlaceholder, queueTokenLogoLoad } from '../../../core/ipfs.js';
 import { formatPriceParts, toDecimalString } from '../../../lib/formatPrice.js'; 
 
 const __FDV_FLOAT_INIT = '__fdvCardFloatInit';
@@ -343,8 +343,9 @@ export function priceHTML(value) {
 }
 
 export function coinCard(it) {
-  const rawlogo = it.logoURI || FALLBACK_LOGO(it.symbol);
-  const logo = normalizeTokenLogo(rawlogo);
+  const sym = it.symbol || it.name || '';
+  const rawlogo = String(it.logoURI || '');
+  const logo = getTokenLogoPlaceholder(rawlogo, sym) || FALLBACK_LOGO(it.symbol);
   const website = normalizeWebsite(it.website) || EXPLORER(it.mint);
   const buyUrl = JUP_SWAP(it.mint);
 
@@ -359,7 +360,8 @@ export function coinCard(it) {
     mint: it.mint,
     symbol: it.symbol || '',
     name: it.name || '',
-    imageUrl: logo,
+    // Keep raw here; UI elements will load via queueTokenLogoLoad to avoid request errors.
+    imageUrl: rawlogo,
     headlineUrl: pairUrl || null,
     priceUsd: it.priceUsd ?? null,
     liquidityUsd: it.liquidityUsd ?? null,
@@ -420,7 +422,7 @@ export function coinCard(it) {
       data-timeout-ms="${escAttr(timeoutMs)}"
       data-pair-url="${escAttr(pairUrl)}"
       data-swap-opts='${escAttr(JSON.stringify(swapOpts))}'
-    >Chart</button>`;
+    >Chart 📊</button>`;
 
   const holdBtn = `
     <button
@@ -446,7 +448,7 @@ export function coinCard(it) {
   >
 
   <div class="top">
-    <div class="logo"><img data-logo src="${escAttr(logo)}" alt=""></div>
+    <div class="logo"><img data-logo src="${escAttr(logo)}" data-logo-raw="${escAttr(rawlogo)}" data-sym="${escAttr(sym)}" alt=""></div>
     <div style="flex:1">
       <div class="sym">
         <span class="t-symbol" data-symbol>${escAttr(it.symbol || '')}</span>
@@ -588,13 +590,13 @@ export function updateCardDOM(el, it) {
 
   const logo = el.querySelector('[data-logo]');
   if (logo) {
-    const nextSrc = normalizeTokenLogo(it.logoURI || '', it.symbol || it.name || '');
-    if (nextSrc && logo.getAttribute('src') !== nextSrc) {
-      logo.setAttribute('src', nextSrc);
-      if (!logo.getAttribute('data-sym')) {
-        logo.setAttribute('data-sym', it.symbol || it.name || '');
-      }
-    }
+    const raw = String(it.logoURI || '');
+    const sym = String(it.symbol || it.name || '');
+    try {
+      if (sym && !logo.getAttribute('data-sym')) logo.setAttribute('data-sym', sym);
+      if (raw) logo.setAttribute('data-logo-raw', raw);
+    } catch {}
+    queueTokenLogoLoad(logo, raw, sym);
   }
     
   const recEl = el.querySelector('[data-rec-text]');

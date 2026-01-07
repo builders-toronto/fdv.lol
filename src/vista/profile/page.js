@@ -60,14 +60,14 @@ export async function renderProfileView(input, { onBack } = {}) {
   if (!document.querySelector('link[href="/src/styles/profile.css"]')) {
     const style = document.createElement("link");
     style.rel = "stylesheet";
-    style.href = "/src/assets/styles/profile.css";
+    style.href = "/src/assets/styles/profile/profile.css";
     document.head.appendChild(style);
   }
 
   if (!document.querySelector('link[href="/src/assets/styles/shill.css"]')) {
     const style = document.createElement("link");
     style.rel = "stylesheet";
-    style.href = "/src/assets/styles/shill.css";
+    style.href = "/src/assets/styles/shill/shill.css";
     document.head.appendChild(style);
   }
 

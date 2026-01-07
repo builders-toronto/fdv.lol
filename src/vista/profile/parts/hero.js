@@ -2,15 +2,24 @@ import { createSendFavoriteButton, createOpenLibraryButton } from "../../widgets
 import { wireNavigation, wireCopy } from "../render/interactions.js";
 import { FALLBACK_LOGO } from "../../../config/env.js";
 import { buildSocialLinksHtml } from "../../../lib/socialBuilder.js";
+import { getTokenLogoPlaceholder, queueTokenLogoLoad } from "../../../core/ipfs.js";
 
 export function initHero({ token, scored, mint, onBack }) {
   const elApp = document.getElementById("app");
   if (!elApp) return;
 
   // Logo & title
-  const logo = token.imageUrl || FALLBACK_LOGO(token.symbol);
+  const rawLogo = token.imageUrl || "";
+  const sym = token.symbol || token.name || "";
+  const logo = getTokenLogoPlaceholder(rawLogo, sym) || FALLBACK_LOGO(token.symbol);
   const media = elApp.querySelector(".profile__hero .media");
-  if (media) media.innerHTML = `<img class="logo" src="${logo}" alt="">`;
+  if (media) {
+    media.innerHTML = `<img class="logo" src="${logo}" data-logo-raw="${rawLogo}" data-sym="${sym}" alt="">`;
+    try {
+      const img = media.querySelector("img.logo");
+      if (img) queueTokenLogoLoad(img, rawLogo, sym);
+    } catch {}
+  }
   const title = elApp.querySelector(".profile__hero .title");
   if (title) title.textContent = token.symbol || "Token";
 

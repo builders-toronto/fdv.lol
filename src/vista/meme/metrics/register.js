@@ -224,8 +224,8 @@ function renderAddon(addon) {
   }
 
   ui.listEl.innerHTML = items.map((row, i) => {
-    const rawLogo = row.imageUrl || row.logoURI || '';
-    const sym = row.symbol || '';
+    const rawLogo = String(row.imageUrl || row.logoURI || '');
+    const sym = String(row.symbol || row.name || '');
     const logo = getTokenLogoPlaceholder(rawLogo, sym);
     const name = row.name || '';
     const price = fmtPrice(row.priceUsd);
@@ -256,20 +256,22 @@ function renderAddon(addon) {
 
     const holdBtnHtml = row?.mint
       ? `
-        <button
-          type="button"
-          class="btn holdCoin pill"
-          data-hold-btn
-          data-mint="${row.mint}"
-          title="Open Hold bot for this mint"
-          style="padding:6px 10px; font-size:12px; border-radius:10px;"
-        >Buy</button>
+        <div class="addon-hold-wrap">
+          <button
+            type="button"
+            class="btn holdCoin addon-hold-btn"
+            data-hold-btn
+            data-mint="${row.mint}"
+            title="Open Hold bot for this mint"
+          >Hold</button>
+        </div>
       `
       : '';
 
     return `
       <li class="addon-item">
         <a href="https://fdv.lol/token/${row.mint}" target="_blank" rel="noopener">
+          ${holdBtnHtml}
           <div class="addon-avatar">
             <div class="addon-rank r${i+1}">${i+1}</div>
             <img class="addon-logo" src="${logo}" data-logo-raw="${rawLogo}" data-sym="${sym}" alt="" loading="lazy" decoding="async">
@@ -286,7 +288,6 @@ function renderAddon(addon) {
               <span class="pill"><span class="k">Liq</span><b>${liq}</b></span>
               <span class="pill"><span class="k">Vol</span><b>${vol}</b></span>
               ${metricHtml}
-              ${holdBtnHtml}
             </div>
             <div class="mint-data">
               <code style="font-size:7px;">${row.mint}</code>
