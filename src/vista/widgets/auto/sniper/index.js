@@ -69,9 +69,6 @@ import { loadSplToken } from "../../../../core/solana/splToken.js";
 const SNIPER_LS_KEY = "fdv_sniper_bot_v1";
 const AUTO_LS_KEY = "fdv_auto_bot_v1"; 
 
-const PROFIT_TARGET_MIN_PCT = 5;
-const PROFIT_TARGET_MAX_PCT = 15;
-
 const MAX_LOG_ENTRIES = 120;
 
 const MIN_PROFIT_FOR_PLATFORM_FEE_PCT = 1;
@@ -208,6 +205,12 @@ function sentryLogCandidates(key, title, list, everyMs = SENTRY_LOG_EVERY_MS) {
 	} catch {}
 }
 
+// PnL target system (Hold-style): start high, decay down to a floor over time.
+// Default: seek 7% PnL; decays down to 2% at -0.5% per 15 minutes.
+const PNL_TARGET_DEFAULT_START_PCT = 7;
+const PNL_TARGET_DEFAULT_FLOOR_PCT = 2;
+const PNL_TARGET_DEFAULT_DECAY_PCT = 0.5;
+const PNL_TARGET_DEFAULT_DECAY_WINDOW_MIN = 15;
 let state = {
 	enabled: false,
 	mint: "",
@@ -281,7 +284,11 @@ let state = {
 	fastAccelDropFrac: 0.5,
 	fastAlphaZV1Floor: 0.3,
 
-	takeProfitPct: 12, // user-facing: Max Profit % (5-15)
+	// PnL target: required profit % to exit, decays over time since entry.
+	pnlTargetStartPct: PNL_TARGET_DEFAULT_START_PCT,
+	pnlTargetFloorPct: PNL_TARGET_DEFAULT_FLOOR_PCT,
+	pnlTargetDecayPct: PNL_TARGET_DEFAULT_DECAY_PCT,
+	pnlTargetDecayWindowMin: PNL_TARGET_DEFAULT_DECAY_WINDOW_MIN,
 	stopLossPct: 4,
 	trailPct: 6,
 	minProfitToTrailPct: 2,
@@ -580,7 +587,22 @@ function loadState() {
 			state = { ...state, ...obj };
 			if (!state.positions || typeof state.positions !== "object") state.positions = {};
 			state.slippageBps = 250;
-			state.takeProfitPct = clamp(Number(state.takeProfitPct ?? 12), PROFIT_TARGET_MIN_PCT, PROFIT_TARGET_MAX_PCT);
+
+			// Migration: older versions used takeProfitPct/maxProfitPct.
+			// If pnlTargetStartPct isn't present, fall back to the old value.
+			if (!Number.isFinite(Number(state.pnlTargetStartPct))) {
+				const legacy = Number(state.takeProfitPct ?? state.maxProfitPct);
+				state.pnlTargetStartPct = Number.isFinite(legacy) ? legacy : PNL_TARGET_DEFAULT_START_PCT;
+			}
+			state.pnlTargetFloorPct = clamp(Number(state.pnlTargetFloorPct ?? PNL_TARGET_DEFAULT_FLOOR_PCT), 0, 50);
+			state.pnlTargetStartPct = clamp(
+				Number(state.pnlTargetStartPct ?? PNL_TARGET_DEFAULT_START_PCT),
+				Number(state.pnlTargetFloorPct ?? PNL_TARGET_DEFAULT_FLOOR_PCT),
+				50,
+			);
+			state.pnlTargetDecayPct = clamp(Number(state.pnlTargetDecayPct ?? PNL_TARGET_DEFAULT_DECAY_PCT), 0, 50);
+			state.pnlTargetDecayWindowMin = clamp(Number(state.pnlTargetDecayWindowMin ?? PNL_TARGET_DEFAULT_DECAY_WINDOW_MIN), 1, 240);
+
 			state.warmingMinProfitPct = clamp(Number(state.warmingMinProfitPct ?? 2), 0, 50);
 			state.warmingMinProfitFloorPct = clamp(Number(state.warmingMinProfitFloorPct ?? 0), 0, 50);
 		}
@@ -606,12 +628,19 @@ function getDynamicSlippageBps(kind = "buy") {
 	}
 }
 
-function getProfitTargetPct(pos = null) {
+function getProfitTargetPct(pos = null, nowTs = now()) {
 	try {
-		const raw = Number(pos?.tpPct ?? state.takeProfitPct ?? 12);
-		return clamp(raw, PROFIT_TARGET_MIN_PCT, PROFIT_TARGET_MAX_PCT);
+		const start = clamp(Number(state.pnlTargetStartPct ?? PNL_TARGET_DEFAULT_START_PCT), 0, 50);
+		const floor = clamp(Number(state.pnlTargetFloorPct ?? PNL_TARGET_DEFAULT_FLOOR_PCT), 0, start);
+		const decayPct = clamp(Number(state.pnlTargetDecayPct ?? PNL_TARGET_DEFAULT_DECAY_PCT), 0, 50);
+		const windowMin = clamp(Number(state.pnlTargetDecayWindowMin ?? PNL_TARGET_DEFAULT_DECAY_WINDOW_MIN), 1, 240);
+		const windowMs = windowMin * 60_000;
+		const anchor = Number(pos?.lastBuyAt || pos?.acquiredAt || nowTs);
+		const ageMs = Math.max(0, Number(nowTs) - anchor);
+		const dec = (ageMs / Math.max(1, windowMs)) * decayPct;
+		return clamp(start - dec, floor, start);
 	} catch {
-		return 12;
+		return PNL_TARGET_DEFAULT_START_PCT;
 	}
 }
 
@@ -816,7 +845,10 @@ function saveState() {
 				fastTp1SellPct: Number(state.fastTp1SellPct ?? 30),
 				fastTp2Pct: Number(state.fastTp2Pct ?? 20),
 				fastTp2SellPct: Number(state.fastTp2SellPct ?? 30),
-				takeProfitPct: clamp(Number(state.takeProfitPct ?? 12), PROFIT_TARGET_MIN_PCT, PROFIT_TARGET_MAX_PCT),
+				pnlTargetStartPct: Number(state.pnlTargetStartPct ?? PNL_TARGET_DEFAULT_START_PCT),
+				pnlTargetFloorPct: Number(state.pnlTargetFloorPct ?? PNL_TARGET_DEFAULT_FLOOR_PCT),
+				pnlTargetDecayPct: Number(state.pnlTargetDecayPct ?? PNL_TARGET_DEFAULT_DECAY_PCT),
+				pnlTargetDecayWindowMin: Number(state.pnlTargetDecayWindowMin ?? PNL_TARGET_DEFAULT_DECAY_WINDOW_MIN),
 				stopLossPct: Number(state.stopLossPct ?? 4),
 				trailPct: Number(state.trailPct ?? 6),
 				minProfitToTrailPct: Number(state.minProfitToTrailPct ?? 2),
@@ -1669,10 +1701,10 @@ function shouldSell(pos, curSol, nowTs) {
 		if (!(sizeUi > 0) || !(costSol > 0)) return { action: "none", reason: "no-size" };
 		const pnlPct = ((Number(curSol || 0) - costSol) / Math.max(1e-9, costSol)) * 100;
 
-		// TP (user-facing "Max Profit %" target)
-		const tp = getProfitTargetPct(pos);
+		// PnL target (decays over time since entry)
+		const tp = getProfitTargetPct(pos, nowTs);
 		if (Number.isFinite(pnlPct) && pnlPct >= tp) {
-			return { action: "sell_all", reason: `PROFIT_TARGET ${pnlPct.toFixed(2)}%>=${tp}%` };
+			return { action: "sell_all", reason: `PNL_TARGET ${pnlPct.toFixed(2)}%>=${tp.toFixed(2)}%` };
 		}
 
 		// Trailing after arm
@@ -1711,20 +1743,20 @@ function shouldSell(pos, curSol, nowTs) {
 
 function profitTargetHoldPolicy(ctx) {
 	try {
-		const target = getProfitTargetPct(ctx?.pos);
+		const target = getProfitTargetPct(ctx?.pos, Number(ctx?.nowTs || now()));
 		const decision = ctx?.decision;
 		if (!decision || decision.action === "none") return;
 		const pnl = Number.isFinite(ctx?.pnlNetPct) ? Number(ctx.pnlNetPct) : Number(ctx?.pnlPct);
 		if (!Number.isFinite(pnl)) return;
 		if (pnl >= target) return;
 		if (_isHardExitDecision(decision, ctx)) return;
-		ctx.decision = { action: "none", reason: `profit-hold ${pnl.toFixed(2)}%<${target}%` };
+		ctx.decision = { action: "none", reason: `pnl-hold ${pnl.toFixed(2)}%<${target.toFixed(2)}%` };
 	} catch {}
 }
 
 function profitTargetTakePolicy(ctx) {
 	try {
-		const target = getProfitTargetPct(ctx?.pos);
+		const target = getProfitTargetPct(ctx?.pos, Number(ctx?.nowTs || now()));
 		const pnl = Number.isFinite(ctx?.pnlNetPct) ? Number(ctx.pnlNetPct) : Number(ctx?.pnlPct);
 		if (!Number.isFinite(pnl)) return;
 		if (pnl < target) return;
@@ -1733,11 +1765,11 @@ function profitTargetTakePolicy(ctx) {
 			if (_isHardExitDecision(decision, ctx)) return;
 			// Upgrade partial exits to full exit once target is hit.
 			if (decision.action === "sell_partial") {
-				ctx.decision = { action: "sell_all", reason: `PROFIT_TARGET ${pnl.toFixed(2)}%>=${target}%` };
+				ctx.decision = { action: "sell_all", reason: `PNL_TARGET ${pnl.toFixed(2)}%>=${target.toFixed(2)}%` };
 			}
 			return;
 		}
-		ctx.decision = { action: "sell_all", reason: `PROFIT_TARGET ${pnl.toFixed(2)}%>=${target}%` };
+		ctx.decision = { action: "sell_all", reason: `PNL_TARGET ${pnl.toFixed(2)}%>=${target.toFixed(2)}%` };
 	} catch {}
 }
 
@@ -2176,7 +2208,6 @@ async function mirrorBuy(mint, opts = null) {
 			entryMode: entryMode || String(posPrev.entryMode || ""),
 			_momPlummetConsec: 0,
 			entryChg5m: safeNum(getLeaderSeries(mint, 1)?.[0]?.chg5m, NaN),
-			tpPct: getProfitTargetPct(),
 			slPct: Number(state.stopLossPct || 4),
 			trailPct: Number(state.trailPct || 6),
 			minProfitToTrailPct: Number(state.minProfitToTrailPct || 2),
@@ -2430,7 +2461,11 @@ async function startSniper() {
 	state.pollMs = Math.floor(clamp(Number(pollEl?.value || state.pollMs || 1200), 250, 60_000));
 	state.buyPct = Math.floor(clamp(Number(buyPctEl?.value || state.buyPct || 25), 1, 70));
 	state.triggerScoreSlopeMin = clamp(Number(triggerEl?.value || state.triggerScoreSlopeMin || 0.6), 0, 20);
-	state.takeProfitPct = clamp(Number(maxProfitEl?.value || state.takeProfitPct || 12), PROFIT_TARGET_MIN_PCT, PROFIT_TARGET_MAX_PCT);
+	state.pnlTargetStartPct = clamp(Number(maxProfitEl?.value || state.pnlTargetStartPct || PNL_TARGET_DEFAULT_START_PCT), 0, 50);
+	state.pnlTargetFloorPct = clamp(Number(state.pnlTargetFloorPct ?? PNL_TARGET_DEFAULT_FLOOR_PCT), 0, 50);
+	state.pnlTargetStartPct = clamp(Number(state.pnlTargetStartPct ?? PNL_TARGET_DEFAULT_START_PCT), state.pnlTargetFloorPct, 50);
+	state.pnlTargetDecayPct = clamp(Number(state.pnlTargetDecayPct ?? PNL_TARGET_DEFAULT_DECAY_PCT), 0, 50);
+	state.pnlTargetDecayWindowMin = clamp(Number(state.pnlTargetDecayWindowMin ?? PNL_TARGET_DEFAULT_DECAY_WINDOW_MIN), 1, 240);
 	state.slippageBps = getDynamicSlippageBps("buy");
 	state.enabled = true;
 	try { setBotRunning('sniper', true); } catch {}
@@ -2439,7 +2474,7 @@ async function startSniper() {
 	updateUI();
 	if (state.sentryEnabled) startSentryPrefetch();
 	log(
-		`Sniper started. ${state.sentryEnabled ? "(sentry)" : ""} mint=${mint ? mint.slice(0, 6) + "…" : "auto"} poll=${state.pollMs}ms buyPct=${state.buyPct}% maxProfit=${Number(state.takeProfitPct || 12).toFixed(1)}% obs=${state.observeMinSamples}/${Math.round(state.observeWindowMs / 1000)}s minHold=${state.minHoldSecs}s thr=${Number(state.triggerScoreSlopeMin || 0.6).toFixed(2)}`,
+		`Sniper started. ${state.sentryEnabled ? "(sentry)" : ""} mint=${mint ? mint.slice(0, 6) + "…" : "auto"} poll=${state.pollMs}ms buyPct=${state.buyPct}% pnlTarget=${Number(state.pnlTargetStartPct || PNL_TARGET_DEFAULT_START_PCT).toFixed(2)}%→${Number(state.pnlTargetFloorPct || PNL_TARGET_DEFAULT_FLOOR_PCT).toFixed(2)}% (-${Number(state.pnlTargetDecayPct || PNL_TARGET_DEFAULT_DECAY_PCT).toFixed(2)}%/${Number(state.pnlTargetDecayWindowMin || PNL_TARGET_DEFAULT_DECAY_WINDOW_MIN).toFixed(0)}m) obs=${state.observeMinSamples}/${Math.round(state.observeWindowMs / 1000)}s minHold=${state.minHoldSecs}s thr=${Number(state.triggerScoreSlopeMin || 0.6).toFixed(2)}`,
 		"ok",
 		true,
 	);
@@ -2536,8 +2571,14 @@ async function __fdvCli_applySniperConfig(cfg = {}) {
 		if (cfg.pollMs) state.pollMs = Math.floor(clamp(Number(cfg.pollMs), 250, 60_000));
 		if (cfg.buyPct) state.buyPct = Math.floor(clamp(Number(cfg.buyPct), 1, 70));
 		if (cfg.triggerScoreSlopeMin !== undefined) state.triggerScoreSlopeMin = clamp(Number(cfg.triggerScoreSlopeMin), 0, 20);
-		if (cfg.takeProfitPct !== undefined) state.takeProfitPct = clamp(Number(cfg.takeProfitPct), PROFIT_TARGET_MIN_PCT, PROFIT_TARGET_MAX_PCT);
-		if (cfg.maxProfitPct !== undefined) state.takeProfitPct = clamp(Number(cfg.maxProfitPct), PROFIT_TARGET_MIN_PCT, PROFIT_TARGET_MAX_PCT);
+		// Back-compat: treat legacy takeProfitPct/maxProfitPct as pnlTargetStartPct.
+		if (cfg.pnlTargetStartPct !== undefined) state.pnlTargetStartPct = clamp(Number(cfg.pnlTargetStartPct), 0, 50);
+		if (cfg.takeProfitPct !== undefined) state.pnlTargetStartPct = clamp(Number(cfg.takeProfitPct), 0, 50);
+		if (cfg.maxProfitPct !== undefined) state.pnlTargetStartPct = clamp(Number(cfg.maxProfitPct), 0, 50);
+		if (cfg.pnlTargetFloorPct !== undefined) state.pnlTargetFloorPct = clamp(Number(cfg.pnlTargetFloorPct), 0, 50);
+		if (cfg.pnlTargetDecayPct !== undefined) state.pnlTargetDecayPct = clamp(Number(cfg.pnlTargetDecayPct), 0, 50);
+		if (cfg.pnlTargetDecayWindowMin !== undefined) state.pnlTargetDecayWindowMin = clamp(Number(cfg.pnlTargetDecayWindowMin), 1, 240);
+		state.pnlTargetStartPct = clamp(Number(state.pnlTargetStartPct ?? PNL_TARGET_DEFAULT_START_PCT), Number(state.pnlTargetFloorPct ?? PNL_TARGET_DEFAULT_FLOOR_PCT), 50);
 		saveState();
 	} catch {}
 }
@@ -2584,7 +2625,7 @@ export function initSniperWidget(container = document.body) {
 				<label>Poll (ms) <input id="sniper-poll" type="number" min="250" max="60000" step="50"></label>
 				<label>Buy % (1-70%) <input id="sniper-buy-pct" type="number" min="1" max="70" step="1"></label>
 				<label>Trigger score slope (/min) <input id="sniper-trigger" type="number" min="0" max="20" step="0.1"></label>
-				<label>Max Profit % (5-15) <input id="sniper-max-profit" type="number" min="5" max="15" step="0.5"></label>
+				<label>Target start %<input id="sniper-max-profit" type="number" min="2" max="50" step="0.25"></label>
 			</div>
 
 			<div class="fdv-log" id="sniper-log"></div>
@@ -2619,7 +2660,7 @@ export function initSniperWidget(container = document.body) {
 	if (pollEl) pollEl.value = String(state.pollMs || 1200);
 	if (buyPctEl) buyPctEl.value = String(state.buyPct || 25);
 	if (triggerEl) triggerEl.value = String(state.triggerScoreSlopeMin || 0.6);
-	if (maxProfitEl) maxProfitEl.value = String(getProfitTargetPct());
+	if (maxProfitEl) maxProfitEl.value = String(Number(state.pnlTargetStartPct ?? PNL_TARGET_DEFAULT_START_PCT));
 
 	sentryEl?.addEventListener("change", () => {
 		state.sentryEnabled = !!sentryEl.checked;
