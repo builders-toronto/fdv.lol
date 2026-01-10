@@ -864,7 +864,8 @@ input[type="checkbox"]:disabled{
 .card{
   position:relative; 
   z-index:0;
-  background: linear-gradient(180deg, rgb(14 16 27 / 95%), rgb(0 0 0 / 80%));
+  background: black;
+  /* background: linear-gradient(180deg, rgb(14 16 27 / 95%), rgb(0 0 0 / 80%)); */
   /* border: 1px solid var(--edge);
   box-shadow: 0 10px 24px rgba(0, 0, 0, .25), inset 0 0 0 1px rgba(26, 255, 213, .05); */
   will-change: transform, box-shadow;
@@ -2061,64 +2062,65 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
       margin-top: 14px;
 }
 
-@property --fdv-flame-angle {
-  syntax: "<angle>";
-  initial-value: 0deg;
-  inherits: false;
+@keyframes fdvFlameSpin {
+  to { transform: rotate(360deg); }
 }
 
 .fdv-flamebar-frame{
   position: relative;
   border-radius: 20px;
-  padding: 2px;
+  padding: 3px;
   --fdv-flame-alpha: .5;
   --fdv-flame-fill: 0%;
-  --fdv-flame-angle: 0deg;
   isolation: isolate;
   z-index: 0;
+
+  /* Static orange border */
+  background: linear-gradient(
+    90deg,
+    rgba(255, 132, 0, .92),
+    rgba(255, 86, 0, .92)
+  );
 }
 
 .fdv-flamebar-frame::before{
-  content:"";
+  content: none;
   position:absolute;
-  inset: -8px;
+  inset: 0;
   border-radius: inherit;
   pointer-events:none;
-  z-index: -1;
+  z-index: 0;
   opacity: var(--fdv-flame-alpha);
-  background: conic-gradient(
-    from var(--fdv-flame-angle),
-    rgba(0, 0, 0, .0),
-    rgba(255, 76, 0, .85),
-    rgba(255, 186, 0, .90),
-    rgba(255, 45, 114, .70),
-    rgba(255, 186, 0, .90),
-    rgba(255, 76, 0, .85),
-    rgba(0, 0, 0, .0)
+  transform-origin: 50% 50%;
+  will-change: transform;
+
+  /* Animated border layer (visible via frame padding) */
+  background: linear-gradient(
+    90deg,
+    rgba(255, 76, 0, .75),
+    rgba(255, 186, 0, .85),
+    rgba(255, 45, 114, .60)
   );
-  animation: fdvFlameRotate 2.6s linear infinite;
 }
 
 .fdv-flamebar-frame::after{
-  content:"";
+  content: none;
   position:absolute;
   inset: -12px;
   border-radius: inherit;
   pointer-events:none;
-  z-index: -2;
+  z-index: -1;
   opacity: calc(var(--fdv-flame-alpha) * .85);
-  background: conic-gradient(
-    from var(--fdv-flame-angle),
-    rgba(0, 0, 0, .0),
-    rgba(255, 76, 0, .70),
-    rgba(255, 186, 0, .70),
-    rgba(255, 45, 114, .55),
-    rgba(255, 186, 0, .70),
-    rgba(255, 76, 0, .70),
-    rgba(0, 0, 0, .0)
+  transform-origin: 50% 50%;
+  will-change: transform;
+
+  background: linear-gradient(
+    90deg,
+    rgba(255, 76, 0, .55),
+    rgba(255, 186, 0, .60),
+    rgba(255, 45, 114, .42)
   );
-  filter: blur(26px) saturate(1.2);
-  animation: fdvFlameRotate 2.6s linear infinite, fdvFlameFlicker 1.45s ease-in-out infinite;
+
 }
 
 .fdv-flamebar-card{
@@ -2129,13 +2131,33 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
   z-index: 1;
 }
 
-@keyframes fdvFlameRotate {
-  0%   { --fdv-flame-angle: 0deg; }
-  100% { --fdv-flame-angle: 360deg; }
+/* If conic gradients are supported, use them for a nicer flame ring */
+@supports (background: conic-gradient(from 0deg, #000, #fff)){
+  .fdv-flamebar-frame{
+    background: linear-gradient(
+      90deg,
+      rgba(255, 132, 0, .92),
+      rgba(255, 86, 0, .92)
+    );
+  }
+  .fdv-flamebar-frame::before{
+    content: none;
+  }
+  .fdv-flamebar-frame::after{
+    content: none;
+  }
 }
+
 @keyframes fdvFlameFlicker {
-  0%, 100% { opacity: calc(var(--fdv-flame-alpha) * .70); filter: blur(12px) saturate(1.05); }
-  50%      { opacity: calc(var(--fdv-flame-alpha) * .95); filter: blur(15px) saturate(1.25); }
+  0%, 100% { opacity: calc(var(--fdv-flame-alpha) * .65); }
+  50%      { opacity: calc(var(--fdv-flame-alpha) * .92); }
+}
+
+@media (prefers-reduced-motion: reduce){
+  .fdv-flamebar-frame::before,
+  .fdv-flamebar-frame::after{
+    animation: none !important;
+  }
 }
 
 .fdv-flamebar-inner{ position:relative; z-index:1; }
