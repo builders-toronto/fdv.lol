@@ -248,7 +248,6 @@ function renderAddon(addon) {
     } else if (hasHist) {
       seriesForDraw = chgSeries;
     } else {
-      // Better initial: deterministic synthetic spark from chg24/vol/liq
       seriesForDraw = makeSyntheticSpark(row, SPARK_LENGTH);
     }
 
