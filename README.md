@@ -213,4 +213,4 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
 
-Flamebar: add top-PnL leader card + animated flame border
+hold: sell on positive PnL fade under target
