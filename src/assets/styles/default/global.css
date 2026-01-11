@@ -2187,7 +2187,8 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 .fdv-flamebar-cointext{ flex: 1; min-width: 0; }
 .fdv-flamebar-sym{ font-weight: 800; font-size: 1.08rem; line-height: 1.1; }
 .fdv-flamebar-name{ color: var(--muted); font-size: .90rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fdv-flamebar-mint{ color: rgba(157,176,198,.9); font-size: .82rem; margin-top: 2px; }
+.fdv-flamebar-mint{ color: rgba(157,176,198,.9); font-size: .82rem; margin-top: 2px; text-decoration: none; cursor: pointer; display: inline-block; }
+.fdv-flamebar-mint:hover{ color: rgba(184,205,230,.95); text-decoration: underline; }
 
 .fdv-flamebar-hodl{
   font-weight: 950;

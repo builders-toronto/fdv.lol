@@ -5,6 +5,7 @@ import { clamp, safeNum } from "../lib/util.js";
 import { FEE_RESERVE_MIN, FEE_RESERVE_PCT, RUG_FORCE_SELL_SEVERITY, SOL_MINT } from "../lib/constants.js";
 import { dex, getAutoTraderState } from "../trader/index.js";
 import { getRugSignalForMint } from "../../../meme/metrics/kpi/pumping.js";
+import { createPnlFadeExitPolicy, pushPnlFadeSample } from "../lib/sell/policies/pnlFadeExit.js";
 
 const HOLD_SINGLE_LS_KEY = "fdv_hold_bot_v1";
 const HOLD_TABS_LS_KEY = "fdv_hold_tabs_v1";
@@ -375,7 +376,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 	let _pendingEntry = null; // { mint, sig, at, until, ownerStr, addCostSol, lastReconAt, lastCreditProbeAt }
 	let _pendingExit = null; // { mint, sig, at, ownerStr, prevSizeUi }
 	let _cycle = null; // { mint, ownerStr, costSol, sizeUi, decimals, enteredAt, lastSeenAt }
-	let _fade = null; // { mint, startedAt, firstPositiveAt, peakPct, peakAt, samples: [{t,p}] }
+	let _fadePos = null; // { mint, _pnlFade: { ... } }
 
 	const _traceLast = new Map();
 
@@ -453,7 +454,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			const d = Number.isFinite(Number(decimals)) ? Number(decimals) : 6;
 			if (!m || !(c > 0) || !(s > 0)) return false;
 			_cycle = { mint: m, ownerStr: o, costSol: c, sizeUi: s, decimals: d, enteredAt: now(), lastSeenAt: now() };
-			_fade = { mint: m, startedAt: now(), firstPositiveAt: 0, peakPct: null, peakAt: 0, samples: [] };
+			_fadePos = { mint: m };
 			return true;
 		} catch {
 			return false;
@@ -463,85 +464,27 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 	function _clearCycle(reason = "") {
 		try {
 			_cycle = null;
-			_fade = null;
+			_fadePos = null;
 			if (reason) log(String(reason), "help");
 		} catch {}
 	}
 
-	function _pushFadeSample(mint, pnlPct) {
-		if (!HOLD_FADE_EXIT_ENABLED) return;
-		try {
-			const m = String(mint || "").trim();
-			if (!m) return;
-			if (!_fade || _fade.mint !== m) {
-				_fade = { mint: m, startedAt: now(), firstPositiveAt: 0, peakPct: null, peakAt: 0, samples: [] };
-			}
-			const t = now();
-			const p = Number(pnlPct);
-			if (!Number.isFinite(p)) return;
-			if (p > 0 && !_fade.firstPositiveAt) _fade.firstPositiveAt = t;
-			if (_fade.peakPct === null || p > _fade.peakPct) {
-				_fade.peakPct = p;
-				_fade.peakAt = t;
-			}
-			const s = Array.isArray(_fade.samples) ? _fade.samples : [];
-			if (s.length && (t - Number(s[s.length - 1]?.t || 0)) < 650) {
-				s[s.length - 1] = { t, p };
-			} else {
-				s.push({ t, p });
-			}
-			while (s.length > 12) s.shift();
-			_fade.samples = s;
-		} catch {}
-	}
-
-	function _shouldFadeSell({ mint, pnlPct, targetPct, enteredAt } = {}) {
-		if (!HOLD_FADE_EXIT_ENABLED) return { ok: false };
-		try {
-			const m = String(mint || "").trim();
-			const p = Number(pnlPct);
-			const t = Number(targetPct);
-			if (!m || !Number.isFinite(p) || !Number.isFinite(t)) return { ok: false };
-			if (!_fade || _fade.mint !== m) return { ok: false };
-
-			// Only consider fade exits when under the profit target.
-			if (p >= t) return { ok: false };
-
-			const age = now() - Number(enteredAt || _fade.startedAt || 0);
-			if (age < HOLD_FADE_MIN_AGE_MS) return { ok: false };
-
-			const peak = Number(_fade.peakPct);
-			if (!Number.isFinite(peak) || peak < HOLD_FADE_MIN_PEAK_PCT) return { ok: false };
-
-			const samples = Array.isArray(_fade.samples) ? _fade.samples : [];
-			if (samples.length < HOLD_FADE_MIN_SAMPLES) return { ok: false };
-
-			// Require a short downtrend (avoid single-tick noise).
-			let down = 0;
-			for (let i = samples.length - 1; i > 0 && down < HOLD_FADE_DOWNTREND_POINTS; i--) {
-				const a = Number(samples[i]?.p);
-				const b = Number(samples[i - 1]?.p);
-				if (Number.isFinite(a) && Number.isFinite(b) && (a < (b - HOLD_FADE_EPS_PCT))) down++;
-				else break;
-			}
-			if (down < HOLD_FADE_DOWNTREND_POINTS) return { ok: false };
-
-			const dropFromPeak = clamp(t * 0.25, 0.6, 2.5);
-			const dropped = (peak - p);
-			const isStillGreenish = p >= HOLD_FADE_MIN_POSITIVE_NOW_PCT;
-			const crossedBackDown = p <= 0 && peak >= HOLD_FADE_MIN_PEAK_PCT;
-
-			if ((dropped >= dropFromPeak && isStillGreenish) || (dropped >= dropFromPeak && crossedBackDown)) {
-				return {
-					ok: true,
-					reason: `PnL fading: peak=${peak.toFixed(2)}% now=${p.toFixed(2)}% (target=${t.toFixed(2)}%). Selling…`,
-				};
-			}
-			return { ok: false };
-		} catch {
-			return { ok: false };
-		}
-	}
+	const pnlFadeExitPolicy = createPnlFadeExitPolicy({
+		clamp,
+		getState: () => ({
+			pnlFadeExitEnabled: HOLD_FADE_EXIT_ENABLED,
+			pnlFadeMinAgeMs: HOLD_FADE_MIN_AGE_MS,
+			pnlFadeMinPeakPct: HOLD_FADE_MIN_PEAK_PCT,
+			pnlFadeMinPositiveNowPct: HOLD_FADE_MIN_POSITIVE_NOW_PCT,
+			pnlFadeMinSamples: HOLD_FADE_MIN_SAMPLES,
+			pnlFadeDowntrendPoints: HOLD_FADE_DOWNTREND_POINTS,
+			pnlFadeEpsPct: HOLD_FADE_EPS_PCT,
+			// Match Hold's old behavior: compute required drop from target (t*0.25 clamped)
+			// and allow exits even if we cross back to red.
+			pnlFadeDropFromPeakPct: null,
+			pnlFadeAllowCrossDown: true,
+		}),
+	});
 
 	async function _tryReconcilePendingEntry(p) {
 		try {
@@ -949,7 +892,13 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			}
 			const pnlPct = ((estOut - cost) / cost) * 100;
 			const targetPct = Number(state.profitPct || DEFAULTS.profitPct);
-			try { _pushFadeSample(mint, pnlPct); } catch {}
+			try {
+				const m = String(mint || "").trim();
+				if (m) {
+					if (!_fadePos || _fadePos.mint !== m) _fadePos = { mint: m };
+					pushPnlFadeSample(_fadePos, m, pnlPct, now());
+				}
+			} catch {}
 			if (Number.isFinite(pnlPct)) {
 				traceOnce(
 					`hold:${botId}:pnl:${mint}`,
@@ -959,7 +908,33 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				);
 			}
 
-			const fade = _shouldFadeSell({ mint, pnlPct, targetPct, enteredAt: Number(active?.enteredAt || 0) });
+			let fade = { ok: false, reason: "" };
+			try {
+				if (HOLD_FADE_EXIT_ENABLED) {
+					const enteredAt = Number(active?.enteredAt || active?.lastBuyAt || active?.acquiredAt || 0) || now();
+					const ctx = {
+						mint,
+						pos: _fadePos,
+						pnlPct,
+						pnlNetPct: pnlPct,
+						pnlTargetPct: targetPct,
+						ageMs: now() - enteredAt,
+						forceRug: false,
+						inMinHold: false,
+						decision: null,
+					};
+					pnlFadeExitPolicy(ctx);
+					if (ctx?.decision && ctx.decision.action && ctx.decision.action !== "none") {
+						const peak = Number(_fadePos?._pnlFade?.peakPct);
+						fade = {
+							ok: true,
+							reason: Number.isFinite(peak)
+								? `PnL fading: peak=${peak.toFixed(2)}% now=${pnlPct.toFixed(2)}% (target=${targetPct.toFixed(2)}%). Selling…`
+								: `PnL fading under target. Selling…`,
+						};
+					}
+				}
+			} catch {}
 			const hitTarget = pnlPct >= targetPct;
 			if (!hitTarget && !fade?.ok) return;
 
