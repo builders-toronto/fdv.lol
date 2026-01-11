@@ -363,15 +363,28 @@ export function initFlamebar(mountEl, opts = {}) {
     }
   }
 
-  // Optional global hook for “accessible from anywhere”.
   try {
     if (typeof window !== 'undefined') {
       if (!window.__fdvFlamebar) window.__fdvFlamebar = {};
       window.__fdvFlamebar.init = initFlamebar;
+      try {
+        window.__fdvFlamebar.instance = {
+          frame,
+          card,
+          tick,
+          start,
+          stop,
+          destroy,
+          setActive,
+          getLeaderMint: () => leaderMint,
+        };
+        window.__fdvFlamebar.getLeaderMint = () => {
+          try { return window.__fdvFlamebar?.instance?.getLeaderMint?.() || null; } catch { return null; }
+        };
+      } catch {}
     }
   } catch {}
 
-  // Default: start immediately.
   try { setActive(true); } catch {}
 
   return {
