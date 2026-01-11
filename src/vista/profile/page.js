@@ -130,7 +130,7 @@ export async function renderProfileView(input, { onBack } = {}) {
     (async () => {
       try {
         const { mountGiscus } = await import("../widgets/chat/chat.js");
-        mountGiscus({ mint });
+			mountGiscus({ mint, containerId: "chatMount", theme: "dark" });
       } catch {}
     })();
     try { autoStartProfileMetrics({ mint }); } catch {}

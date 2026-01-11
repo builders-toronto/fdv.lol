@@ -87,6 +87,10 @@ const MAX_LOG_ENTRIES = 120;
 
 const MIN_PROFIT_FOR_PLATFORM_FEE_PCT = 1;
 
+// Mirror Hold's default: use the same rug severity threshold as force-sell.
+// If a mint is flagged rugged at/above this threshold, Sniper will not submit buys.
+const SNIPER_RUG_BUY_BLOCK_SEV_THRESHOLD = clamp(safeNum(RUG_FORCE_SELL_SEVERITY, 1), 1, 4);
+
 const MOMENTUM_GUARD_SECS = 45;
 const MOMENTUM_PLUMMET_CONSEC = 2;
 const MOMENTUM_PLUMMET_CHG5M_PCT = -35;
@@ -2395,6 +2399,30 @@ async function mirrorBuy(mint, opts = null) {
 	try {
 		if (opts && typeof opts === "object") entryMode = String(opts.entryMode || "");
 	} catch {}
+
+	try {
+		let rugSig = null;
+		let rugSev = 0;
+		try {
+			rugSig = getRugSignalForMint(mint);
+			rugSev = Number(rugSig?.sev ?? rugSig?.severity ?? 0);
+		} catch {
+			rugSig = null;
+			rugSev = 0;
+		}
+		const thr = SNIPER_RUG_BUY_BLOCK_SEV_THRESHOLD;
+		if (rugSig?.rugged && rugSev >= thr) {
+			traceOnce(
+				`sniper:rug:blockBuy:${mint}`,
+				`EXTREME rug signal for ${_shortMint(mint)} sev=${rugSev.toFixed(2)} (thr=${thr.toFixed(2)}). Blocking buy.`,
+				9000,
+				"warn",
+			);
+			try { setMintBlacklist(mint, MINT_RUG_BLACKLIST_MS); } catch {}
+			return { ok: false, reason: "RUG_BLOCK" };
+		}
+	} catch {}
+
 	if (isMintBlacklisted(mint) || isPumpDropBanned(mint)) {
 		log(`Skipping buy: mint blacklisted/banned ${mint.slice(0, 4)}…`, "warn");
 		return { ok: false };

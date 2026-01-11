@@ -6,6 +6,7 @@ import { FEE_RESERVE_MIN, FEE_RESERVE_PCT, RUG_FORCE_SELL_SEVERITY, SOL_MINT } f
 import { dex, getAutoTraderState } from "../trader/index.js";
 import { getRugSignalForMint } from "../../../meme/metrics/kpi/pumping.js";
 import { createPnlFadeExitPolicy, pushPnlFadeSample } from "../lib/sell/policies/pnlFadeExit.js";
+import { mountGiscus, unmountGiscus } from "../../chat/chat.js";
 
 const HOLD_SINGLE_LS_KEY = "fdv_hold_bot_v1";
 const HOLD_TABS_LS_KEY = "fdv_hold_tabs_v1";
@@ -377,6 +378,14 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 	let _pendingExit = null; // { mint, sig, at, ownerStr, prevSizeUi }
 	let _cycle = null; // { mint, ownerStr, costSol, sizeUi, decimals, enteredAt, lastSeenAt }
 	let _fadePos = null; // { mint, _pnlFade: { ... } }
+	let _chartTipEl = null;
+	let _chartTipHideTimer = null;
+	let _chartTipMint = "";
+	const _dextoolsPairCache = new Map(); // mint -> { pair, at, pendingPromise }
+	const DEXTOOLS_PAIR_CACHE_TTL_MS = 5 * 60 * 1000;
+	let _chatMountId = "";
+	let _chatLastMint = "";
+	let _isActive = false;
 
 	const _traceLast = new Map();
 
@@ -504,8 +513,6 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				if (Number(got?.sizeUi || 0) > 0) {
 					const alreadyApplied = !!p.costApplied;
 					const addCostSol = alreadyApplied ? 0 : Number(p.addCostSol || 0);
-					// Important: credit checks can race (this reconcile runs in background while the main tick is also awaiting
-					// a credit). Mark cost as applied before upserting to avoid double-counting the cost basis.
 					if (!alreadyApplied) p.costApplied = true;
 					_setCycleFromCredit({ mint, ownerStr, costSol: Number(p.addCostSol || 0), sizeUi: got.sizeUi, decimals: got.decimals });
 					_upsertAutoPosFromCredit({ mint, sizeUi: got.sizeUi, decimals: got.decimals, addCostSol });
@@ -578,6 +585,282 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		const m = String(mint || "").trim();
 		if (!m) return "";
 		return `https://dexscreener.com/solana/${encodeURIComponent(m)}`;
+	}
+
+	function _safeDomId(s) {
+		try {
+			return String(s || "")
+				.replace(/[^a-zA-Z0-9_-]+/g, "_")
+				.slice(0, 64);
+		} catch {
+			return "fdv_hold_chat";
+		}
+	}
+
+	function _currentChatMint() {
+		try {
+			return String(_cycle?.mint || mintEl?.value || state.mint || "").trim();
+		} catch {
+			return String(state.mint || "").trim();
+		}
+	}
+
+	function _unmountChat() {
+		try {
+			if (!_chatMountId) return;
+			unmountGiscus({ containerId: _chatMountId });
+		} catch {}
+		_chatLastMint = "";
+	}
+
+	function _syncChat(opts = null) {
+		try {
+			if (!_chatMountId) return;
+			const force = !!opts?.force;
+			const m = _currentChatMint();
+			if (!m) {
+				_chatLastMint = "";
+				try {
+					const el = typeof document !== "undefined" ? document.getElementById(_chatMountId) : null;
+					if (el) el.innerHTML = "";
+				} catch {}
+				return;
+			}
+			if (!force && _chatLastMint === m) return;
+			_chatLastMint = m;
+			mountGiscus({ mint: m, containerId: _chatMountId, theme: "dark", force });
+		} catch {}
+	}
+
+	function onActiveChanged(isActive) {
+		_isActive = !!isActive;
+		if (_isActive) _syncChat({ force: true });
+		else _unmountChat();
+	}
+
+	function _dextoolsWidgetUrlForPair(chainId, pairAddress) {
+		const chain = String(chainId || "").trim() || "solana";
+		const pair = String(pairAddress || "").trim();
+		if (!pair) return "";
+		try {
+			const params = new URLSearchParams({
+				theme: "dark",
+				chartType: "1", // Candle
+				chartResolution: "15",
+				drawingToolbars: "false",
+			});
+			return `https://www.dextools.io/widget-chart/en/${encodeURIComponent(chain)}/pe-light/${encodeURIComponent(pair)}?${params.toString()}`;
+		} catch {
+			return `https://www.dextools.io/widget-chart/en/${encodeURIComponent(chain)}/pe-light/${encodeURIComponent(pair)}?theme=dark&chartType=1&chartResolution=15&drawingToolbars=false`;
+		}
+	}
+
+	async function _resolveDextoolsPairForMint(mint) {
+		try {
+			const m = String(mint || "").trim();
+			if (!m) return { ok: false, reason: "NO_MINT", pair: "" };
+
+			const cached = _dextoolsPairCache.get(m);
+			const t = now();
+			if (cached && typeof cached === "object") {
+				const age = t - Number(cached.at || 0);
+				if (cached.pair && age >= 0 && age <= DEXTOOLS_PAIR_CACHE_TTL_MS) {
+					return { ok: true, pair: String(cached.pair || "") };
+				}
+				if (cached.pendingPromise) {
+					try { return await cached.pendingPromise; } catch {}
+				}
+			}
+
+			const pendingPromise = (async () => {
+				try {
+					// DEXTools widget expects a pool/pair address, not the token mint.
+					// We resolve the most liquid SOL pair via Dexscreener.
+					const url = `https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(m)}`;
+					const res = await fetch(url, { method: "GET" });
+					if (!res.ok) return { ok: false, reason: `HTTP_${res.status}`, pair: "" };
+					const json = await res.json().catch(() => null);
+					const pairs = Array.isArray(json?.pairs) ? json.pairs : [];
+					const solPairs = pairs
+						.filter((p) => String(p?.chainId || "").toLowerCase() === "solana")
+						.filter((p) => {
+							const base = String(p?.baseToken?.address || "");
+							const quote = String(p?.quoteToken?.address || "");
+							// Heuristic: the mint should be either base or quote.
+							return base === m || quote === m;
+						});
+					if (!solPairs.length) return { ok: false, reason: "NO_SOL_PAIRS", pair: "" };
+
+					let best = solPairs[0];
+					let bestLiq = -1;
+					for (const p of solPairs) {
+						const liq = Number(p?.liquidity?.usd || 0);
+						if (Number.isFinite(liq) && liq > bestLiq) {
+							best = p;
+							bestLiq = liq;
+						}
+					}
+					const pair = String(best?.pairAddress || "").trim();
+					if (!pair) return { ok: false, reason: "NO_PAIR_ADDRESS", pair: "" };
+					return { ok: true, pair };
+				} catch {
+					return { ok: false, reason: "FETCH_FAIL", pair: "" };
+				}
+			})();
+
+			_dextoolsPairCache.set(m, { pair: "", at: t, pendingPromise });
+			const r = await pendingPromise;
+			_dextoolsPairCache.set(m, { pair: String(r?.pair || ""), at: now(), pendingPromise: null });
+			return r;
+		} catch {
+			return { ok: false, reason: "ERR", pair: "" };
+		}
+	}
+
+	function _ensureChartTipEl() {
+		try {
+			if (_chartTipEl) return _chartTipEl;
+			if (typeof document === "undefined") return null;
+			const el = document.createElement("div");
+			el.className = "fdv-chart-tooltip";
+			el.dataset.open = "0";
+			el.innerHTML = `
+				<div class="fdv-chart-tooltip__header">
+					<div class="fdv-chart-tooltip__title">DEXTools Candles</div>
+					<div class="fdv-chart-tooltip__mint" data-hold-chart-mint></div>
+					<button class="fdv-chart-tooltip__close" type="button" aria-label="Close">×</button>
+				</div>
+				<iframe
+					class="fdv-chart-tooltip__frame"
+					data-hold-chart-iframe
+					title="DEXTools Trading Chart"
+					loading="lazy"
+					referrerpolicy="no-referrer"
+				></iframe>
+				<div class="fdv-chart-tooltip__hint" data-hold-chart-hint>Hover Chart to load candles.</div>
+			`;
+			try {
+				el.addEventListener("mouseenter", () => {
+					try { if (_chartTipHideTimer) clearTimeout(_chartTipHideTimer); } catch {}
+				});
+				el.addEventListener("mouseleave", () => {
+					_scheduleHideChartTip(160);
+				});
+				el.querySelector(".fdv-chart-tooltip__close")?.addEventListener("click", () => {
+					_hideChartTip();
+				});
+			} catch {}
+			document.body.appendChild(el);
+			_chartTipEl = el;
+			return el;
+		} catch {
+			return null;
+		}
+	}
+
+	function _positionChartTip(anchorEl) {
+		try {
+			if (!_chartTipEl || !_chartTipEl.dataset) return;
+			const a = anchorEl?.getBoundingClientRect?.();
+			if (!a) return;
+			const vw = Math.max(320, window.innerWidth || 0);
+			const vh = Math.max(240, window.innerHeight || 0);
+
+			// Dimensions are set in CSS; measure after we open.
+			const r = _chartTipEl.getBoundingClientRect();
+			const w = Math.max(260, r.width || 740);
+			const h = Math.max(220, r.height || 520);
+
+			const margin = 10;
+			const preferBelow = (a.bottom + margin + h) <= vh;
+			let top = preferBelow ? (a.bottom + margin) : (a.top - margin - h);
+			let left = a.left + (a.width / 2) - (w / 2);
+
+			top = Math.max(margin, Math.min(vh - h - margin, top));
+			left = Math.max(margin, Math.min(vw - w - margin, left));
+
+			_chartTipEl.style.top = `${Math.round(top)}px`;
+			_chartTipEl.style.left = `${Math.round(left)}px`;
+		} catch {}
+	}
+
+	function _showChartTipForMint(mint, anchorEl) {
+		try {
+			const m = String(mint || "").trim();
+			if (!m) return;
+			const el = _ensureChartTipEl();
+			if (!el) return;
+			try { if (_chartTipHideTimer) clearTimeout(_chartTipHideTimer); } catch {}
+			_chartTipMint = m;
+
+			try {
+				const mintLabelEl = el.querySelector("[data-hold-chart-mint]");
+				if (mintLabelEl) mintLabelEl.textContent = m;
+			} catch {}
+			try {
+				const hint = el.querySelector("[data-hold-chart-hint]");
+				if (hint) hint.innerHTML = `Loading DEXTools candles… <span style="opacity:.75">(requires non-localhost)</span>`;
+			} catch {}
+			try {
+				const iframe = el.querySelector("[data-hold-chart-iframe]");
+				if (iframe) iframe.src = "about:blank";
+			} catch {}
+
+			el.dataset.open = "1";
+			_positionChartTip(anchorEl || chartBtn);
+
+			// Resolve the best pool/pair address for this mint, then load the widget.
+			void (async () => {
+				const r = await _resolveDextoolsPairForMint(m);
+				try {
+					if (!_chartTipEl || _chartTipEl.dataset.open !== "1") return;
+					if (_chartTipMint !== m) return;
+				} catch {}
+
+				if (!r?.ok || !r.pair) {
+					try {
+						const hint = _chartTipEl?.querySelector?.("[data-hold-chart-hint]");
+						if (hint) {
+							hint.innerHTML = `No DEXTools pool found for this mint (${String(r?.reason || "no-pair")}). `
+								+ `Try opening Dexscreener (click Chart) or test on a real domain (DEXTools blocks localhost).`;
+						}
+					} catch {}
+					return;
+				}
+
+				const url = _dextoolsWidgetUrlForPair("solana", r.pair);
+				try {
+					const iframe = _chartTipEl?.querySelector?.("[data-hold-chart-iframe]");
+					if (iframe && url && iframe.src !== url) iframe.src = url;
+				} catch {}
+				try {
+					const hint = _chartTipEl?.querySelector?.("[data-hold-chart-hint]");
+					if (hint) hint.innerHTML = `Pool: <code>${String(r.pair).slice(0, 10)}…</code> via Dexscreener · If blank, allow <code>frame-src https://www.dextools.io</code> in CSP.`;
+				} catch {}
+			})();
+		} catch {}
+	}
+
+	function _hideChartTip() {
+		try {
+			if (_chartTipHideTimer) clearTimeout(_chartTipHideTimer);
+		} catch {}
+		_chartTipHideTimer = null;
+		try {
+			if (_chartTipEl) _chartTipEl.dataset.open = "0";
+		} catch {}
+	}
+
+	function _scheduleHideChartTip(ms = 120) {
+		try {
+			if (_chartTipHideTimer) clearTimeout(_chartTipHideTimer);
+			_chartTipHideTimer = setTimeout(() => {
+				_chartTipHideTimer = null;
+				_hideChartTip();
+			}, Math.max(0, Number(ms || 0)));
+		} catch {
+			_hideChartTip();
+		}
 	}
 
 	async function tickOnce(runId) {
@@ -1225,6 +1508,14 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 						<button data-hold-chart title="Open Dexscreener chart">Chart 📊</button>
 					</div>
 				</div>
+
+				<div class="fdv-hold-chat" style="margin-top:12px; padding-top:10px; border-top:1px solid rgba(122,222,255,.14);">
+					<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+						<div style="font-weight:800; letter-spacing:.2px; color:var(--text);">Chat</div>
+						<div style="font-size:12px; color:var(--muted);">Giscus · mint thread</div>
+					</div>
+					<div data-hold-chat></div>
+				</div>
 			</div>
 		`;
 
@@ -1240,12 +1531,21 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		startBtn = root.querySelector("[data-hold-start]");
 		stopBtn = root.querySelector("[data-hold-stop]");
 		chartBtn = root.querySelector("[data-hold-chart]");
+		const chatEl = root.querySelector("[data-hold-chat]");
+		try {
+			if (chatEl) {
+				_chatMountId = _safeDomId(`fdv_hold_chat_${botId}`);
+				chatEl.id = _chatMountId;
+			}
+		} catch {}
 
 		updateUI();
+		// Chat is mounted on tab activation to avoid initializing giscus in hidden panels.
 
 		const onChange = () => {
 			_readUiToState();
 			updateUI();
+			if (_isActive) _syncChat();
 			if (state.enabled) startLoop();
 		};
 
@@ -1281,6 +1581,41 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				window.open(url, "_blank", "noopener,noreferrer");
 			} catch {}
 		});
+
+		// Hover tooltip: show a large DEXTools candlestick iframe for the current mint.
+		try {
+			if (chartBtn) chartBtn.title = "";
+			chartBtn?.addEventListener("mouseenter", () => {
+				try {
+					const m = String(mintEl?.value || state.mint || "").trim();
+					if (!m) return;
+					_showChartTipForMint(m, chartBtn);
+				} catch {}
+			});
+			chartBtn?.addEventListener("mouseleave", () => {
+				_scheduleHideChartTip(140);
+			});
+			chartBtn?.addEventListener("focus", () => {
+				try {
+					const m = String(mintEl?.value || state.mint || "").trim();
+					if (!m) return;
+					_showChartTipForMint(m, chartBtn);
+				} catch {}
+			});
+			chartBtn?.addEventListener("blur", () => {
+				_scheduleHideChartTip(0);
+			});
+			window.addEventListener("scroll", () => {
+				try {
+					if (_chartTipEl?.dataset?.open === "1") _positionChartTip(chartBtn);
+				} catch {}
+			}, { passive: true });
+			window.addEventListener("resize", () => {
+				try {
+					if (_chartTipEl?.dataset?.open === "1") _positionChartTip(chartBtn);
+				} catch {}
+			});
+		} catch {}
 	}
 
 	return {
@@ -1291,6 +1626,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			_updateLabelCache();
 			_persist();
 			updateUI();
+			if (_isActive) _syncChat();
 		},
 		mount,
 		start,
@@ -1298,6 +1634,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		log,
 		isRunning: () => !!state.enabled,
 		tabTitle: () => (state.mint ? _shortMint(state.mint) : "Hold"),
+		onActiveChanged,
 	};
 
 	function _updateLabelCache() {
@@ -1405,6 +1742,7 @@ export function initHoldWidget(container = document.body) {
 		try {
 			if (bot.isRunning()) await bot.stop({ liquidate: true });
 		} catch {}
+		try { bot?.onActiveChanged?.(false); } catch {}
 
 		try { tabBtns.get(id)?.remove(); } catch {}
 		try { tabPanels.get(id)?.remove(); } catch {}
@@ -1440,6 +1778,7 @@ export function initHoldWidget(container = document.body) {
 			if (!panel) continue;
 			const isActive = bid === activeId;
 			panel.style.display = isActive ? "block" : "none";
+			try { bots.get(bid)?.onActiveChanged?.(isActive); } catch {}
 		}
 		persistAll();
 	};

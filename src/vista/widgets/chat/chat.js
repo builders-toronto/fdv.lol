@@ -39,8 +39,11 @@ function injectScript({ mint, containerId = "chatMount" }) {
   mount.appendChild(s);
 }
 //gisqus todo
-function setConfig({ term, theme }) {
-  const frame = document.querySelector("iframe.giscus-frame");
+function setConfig({ term, theme, containerId = "chatMount" }) {
+  const mount = ensureContainer(containerId);
+  if (!mount) return false;
+
+  const frame = mount.querySelector("iframe.giscus-frame");
   if (!frame || !frame.contentWindow) return false;
 
   const msg = { giscus: { setConfig: {} } };
@@ -51,27 +54,74 @@ function setConfig({ term, theme }) {
   return true;
 }
 
-let booted = false;
+const _instances = new Map(); 
+
+export function unmountGiscus(opts) {
+  try {
+    const containerId = typeof opts === "string" ? opts : (opts?.containerId || "chatMount");
+    const key = String(containerId || "chatMount");
+    const mount = ensureContainer(key);
+    if (mount) {
+      mount.querySelectorAll("script[src*='giscus.app'], .giscus, iframe.giscus-frame")
+        .forEach((n) => {
+          try { n.remove(); } catch {}
+        });
+    }
+    try { _instances.delete(key); } catch {}
+  } catch {}
+}
 
 export function mountGiscus(opts) {
-  const { mint, containerId = "chatMount", theme } = opts || {};
+  const { mint, containerId = "chatMount", theme, force = false } = opts || {};
 
   if (!mint) { console.warn("Giscus: missing mint"); return; }
   if (!GISCUS.repo || !GISCUS.repoId || !GISCUS.category || !GISCUS.categoryId) {
     console.warn("Giscus: missing repo/category configuration");
     return;
   }
-  if (!booted) {
-    injectScript({ mint, containerId });
-    booted = true;
+
+  const key = String(containerId || "chatMount");
+  const inst = _instances.get(key) || { booted: false, lastMint: "", lastTheme: "" };
+  _instances.set(key, inst);
+
+  // Avoid churning if already set.
+  if (!force && inst.booted && inst.lastMint === mint && (!theme || inst.lastTheme === theme)) return;
+
+  if (!inst.booted || force) {
+    // Force mode: fully re-inject to avoid "stuck" frames when the container was hidden.
+    if (force) {
+      try {
+        const mount = ensureContainer(key);
+        mount?.querySelectorAll?.("script[src*='giscus.app'], .giscus, iframe.giscus-frame")?.forEach?.((n) => n.remove());
+      } catch {}
+    }
+    injectScript({ mint, containerId: key });
+    inst.booted = true;
+    inst.lastMint = mint;
+    inst.lastTheme = theme || inst.lastTheme;
     return;
   }
-  if (!setConfig({ term: mint, theme })) {
-    injectScript({ mint, containerId });
+
+  if (!setConfig({ term: mint, theme, containerId: key })) {
+    injectScript({ mint, containerId: key });
   }
+  inst.lastMint = mint;
+  inst.lastTheme = theme || inst.lastTheme;
 }
 export function setGiscusTheme(theme = "dark") {
-  if (!setConfig({ theme })) {
-    GISCUS.theme = theme;
-  }
+	try {
+		let any = false;
+		for (const [containerId] of _instances.entries()) {
+			any = true;
+			try { setConfig({ theme, containerId }); } catch {}
+		}
+		if (!any) {
+			// Back-compat: try the default container.
+			if (!setConfig({ theme, containerId: "chatMount" })) {
+				GISCUS.theme = theme;
+			}
+		}
+	} catch {
+		GISCUS.theme = theme;
+	}
 }
