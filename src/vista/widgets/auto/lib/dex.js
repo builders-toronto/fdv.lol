@@ -94,6 +94,58 @@ export function createDex(deps = {}) {
 		return /0x1788|0x1789/i.test(String(v || ""));
 	}
 
+	function _isSharedAccountsNotSupported(code, msg) {
+		try {
+			const c = String(code || "");
+			const m = String(msg || "");
+			const s = (c + " " + m).toLowerCase();
+			return s.includes("not_supported") && s.includes("shared accounts") && s.includes("simple amm");
+		} catch {
+			return false;
+		}
+	}
+
+	function _classifySendFail(msg) {
+		const s = String(msg || "");
+		if (/method not found/i.test(s)) return "RPC_METHOD";
+		if (/blockhash not found|BlockhashNotFound|expired blockhash/i.test(s)) return "BLOCKHASH";
+		if (/node is behind|behind by|slot .* behind|RPC node is behind/i.test(s)) return "NODE_BEHIND";
+		if (/transaction too large|too large:|packet.*too large|MaxTransactionSizeExceeded/i.test(s)) return "TX_TOO_LARGE";
+		if (/unsupported transaction version|Transaction version .* is not supported|UnsupportedVersion/i.test(s)) return "NEED_LEGACY";
+		if (/Versioned messages must be deserialized with VersionedMessage\.deserialize/i.test(s)) return "NEED_LEGACY";
+		if (/failed to fetch|fetch failed|networkerror|network error|enotfound|econnrefused|econnreset|socket hang up|tls/i.test(s)) return "NETWORK";
+		if (/403|401|forbidden|unauthorized/i.test(s)) return "RPC_AUTH";
+		if (/429|rate limit|too many requests|capacity|exceeded|try again later/i.test(s)) return "RPC_LIMIT";
+		if (/timeout|timed out|ETIMEDOUT|ECONNRESET/i.test(s)) return "RPC_TIMEOUT";
+		return "SEND_FAIL";
+	}
+
+	function _noteRpcNoSimulate(reason) {
+		try {
+			if (window._fdvRpcNoSimulate) return;
+			window._fdvRpcNoSimulate = true;
+			_throttledLog(
+				"rpc:noSim",
+				`RPC: simulateTransaction unsupported; disabling simulation fallback (${String(reason || "Method not found").slice(0, 120)})`,
+				25_000,
+				"warn",
+			);
+		} catch {}
+	}
+
+	function _disableSharedAccounts(reason) {
+		try {
+			if (window._fdvJupDisableSharedAccounts) return;
+			window._fdvJupDisableSharedAccounts = true;
+			_throttledLog(
+				"jup:disableShared",
+				`Jupiter: disabling shared accounts (RPC limitation): ${String(reason || "NOT_SUPPORTED").slice(0, 160)}`,
+				20_000,
+				"warn",
+			);
+		} catch {}
+	}
+
 	function _shortErr(v, maxLen = 180) {
 		try {
 			let s = String(v?.message || v || "");
@@ -697,12 +749,21 @@ export function createDex(deps = {}) {
 	async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, slippageBps }) {
 		const state = getState();
 
-		const { PublicKey, VersionedTransaction } = await loadWeb3();
+		const { PublicKey, VersionedTransaction, Transaction } = await loadWeb3();
 		const conn = await getConn();
 		const userPub = signer.publicKey.toBase58();
 		const feeBps = Number((typeof getPlatformFeeBps === "function" ? getPlatformFeeBps() : 0) || 0);
 		let feeAccount = null;
 		let lastErrCode = "";
+		let lastErrMsg = "";
+
+		function noteLastErr(r) {
+			try {
+				if (!r || r.ok) return;
+				if (r.code) lastErrCode = r.code;
+				if (r.msg) lastErrMsg = r.msg;
+			} catch {}
+		}
 
 		try {
 			const okIn = await isValidPubkeyStr?.(inputMint);
@@ -869,6 +930,16 @@ export function createDex(deps = {}) {
 		}
 
 		async function buildAndSend(useSharedAccounts = true, asLegacy = false) {
+			const sharedAllowed = !!useSharedAccounts && !window._fdvJupDisableSharedAccounts;
+			if (!!useSharedAccounts && !sharedAllowed) {
+				_throttledLog(
+					"jup:sharedDisabled",
+					"Jupiter: shared accounts disabled; sending swap without shared accounts.",
+					20_000,
+					"warn",
+				);
+			}
+
 			if (inputMint === SOL_MINT && outputMint !== SOL_MINT) {
 				try {
 					const balL = await withTimeout(
@@ -913,7 +984,7 @@ export function createDex(deps = {}) {
 				userPublicKey: signer.publicKey.toBase58(),
 				wrapAndUnwrapSol: true,
 				dynamicComputeUnitLimit: true,
-				useSharedAccounts: !!useSharedAccounts,
+				useSharedAccounts: !!sharedAllowed,
 				asLegacyTransaction: !!asLegacy,
 				...(feeAccount && feeBps > 0 ? { feeAccount, platformFeeBps: feeBps } : {}),
 			};
@@ -925,7 +996,7 @@ export function createDex(deps = {}) {
 				}
 			} catch {}
 
-			logObj("Swap body", { hasFee: !!feeAccount, feeBps: feeAccount ? feeBps : 0, useSharedAccounts: !!useSharedAccounts, asLegacy: !!asLegacy });
+			logObj("Swap body", { hasFee: !!feeAccount, feeBps: feeAccount ? feeBps : 0, useSharedAccounts: !!sharedAllowed, asLegacy: !!asLegacy });
 
 			const sRes = await jupFetch(`/swap/v1/swap`, {
 				method: "POST",
@@ -947,7 +1018,12 @@ export function createDex(deps = {}) {
 				}
 				try {
 					const j = JSON.parse(errTxt || "{}");
-					return { ok: false, code: j?.errorCode || "", msg: j?.error || `swap ${sRes.status}` };
+					const code = j?.errorCode || "";
+					const msg = j?.error || `swap ${sRes.status}`;
+					if (sharedAllowed && _isSharedAccountsNotSupported(code, msg)) {
+						_disableSharedAccounts(msg);
+					}
+					return { ok: false, code, msg };
 				} catch {
 					return { ok: false, code: "", msg: `swap ${sRes.status}` };
 				}
@@ -959,11 +1035,25 @@ export function createDex(deps = {}) {
 			const raw = atob(swapTransaction);
 			const rawBytes = new Uint8Array(raw.length);
 			for (let i=0; i<raw.length; i++) rawBytes[i] = raw.charCodeAt(i);
-			const vtx = VersionedTransaction.deserialize(rawBytes);
-			vtx.sign([signer]);
+
+			let isVersioned = false;
+			let txObj;
+			try {
+				txObj = VersionedTransaction.deserialize(rawBytes);
+				isVersioned = true;
+			} catch {
+				txObj = Transaction.from(rawBytes);
+				isVersioned = false;
+			}
+			try {
+				if (isVersioned) txObj.sign([signer]);
+				else txObj.sign(signer);
+			} catch (e) {
+				return { ok: false, code: "SIGN_FAIL", msg: e?.message || String(e) };
+			}
 			try {
 				const sig = await withTimeout(
-					conn.sendRawTransaction(vtx.serialize(), { preflightCommitment: "processed", maxRetries: 3 }),
+					conn.sendRawTransaction(txObj.serialize(), { preflightCommitment: "processed", maxRetries: 3 }),
 					rpcTimeoutMs("sendRawTransaction"),
 					{ label: "sendRawTransaction" },
 				);
@@ -978,15 +1068,43 @@ export function createDex(deps = {}) {
 				} catch {}
 				return { ok: true, sig };
 			} catch (e) {
+				markRpcStress?.(e, 2500);
+				const emsg0 = String(e?.message || e || "");
+				const sendCode0 = _classifySendFail(emsg0);
+				if (/simulation failed/i.test(emsg0) && /method not found/i.test(emsg0)) {
+					_noteRpcNoSimulate(emsg0);
+					try {
+						const sig2 = await withTimeout(
+							conn.sendRawTransaction(txObj.serialize(), { skipPreflight: true, preflightCommitment: "processed", maxRetries: 3 }),
+							rpcTimeoutMs("sendRawTransaction"),
+							{ label: "sendRawTransaction_skipPreflight" },
+						);
+						log(`Swap sent (skipPreflight): ${sig2}`);
+						try { log(`Explorer: https://solscan.io/tx/${sig2}`); } catch {}
+						try { if (isSell) setTimeout(() => _reconcileSplitSellRemainder(sig2), 0); } catch {}
+						try {
+							if (inputMint === SOL_MINT || outputMint === SOL_MINT) {
+								setTimeout(() => { unwrapWsolIfAny?.(signer).catch(()=>{}); }, 1200);
+								setTimeout(() => { unwrapWsolIfAny?.(signer).catch(()=>{}); }, 1500);
+							}
+						} catch {}
+						return { ok: true, sig: sig2 };
+					} catch (e2) {
+						markRpcStress?.(e2, 2500);
+					}
+				}
 				_throttledLog(
 					`swapSendFail:${inputMint}->${outputMint}`,
-					`Swap send failed. NO_ROUTES/ROUTER_DUST. export help/wallet.json to recover dust funds. Simulating…`,
+					`Swap send failed (${sendCode0}): ${_shortErr(e)}. Simulating…`,
 					12_000,
 					"warn",
 				);
+				if (window._fdvRpcNoSimulate) {
+					return { ok: false, code: sendCode0, msg: _shortErr(emsg0, 240) };
+				}
 				try {
 					const sim = await withTimeout(
-						conn.simulateTransaction(vtx, { sigVerify: false, replaceRecentBlockhash: true }),
+						conn.simulateTransaction(txObj, { sigVerify: false, replaceRecentBlockhash: true }),
 						rpcTimeoutMs("simulate"),
 						{ label: "simulateTransaction" },
 					);
@@ -994,9 +1112,18 @@ export function createDex(deps = {}) {
 					const txt = (logs || []).join(" ");
 					const hasDustErr = /0x1788|0x1789/i.test(txt);
 					const hasSlipErr = /0x1771/i.test(txt);
-					return { ok: false, code: hasDustErr ? "ROUTER_DUST" : (hasSlipErr ? "SLIPPAGE" : "SEND_FAIL"), msg: e.message || String(e) };
-				} catch {
-					return { ok: false, code: "SEND_FAIL", msg: e.message || String(e) };
+					if (hasDustErr) return { ok: false, code: "ROUTER_DUST", msg: e.message || String(e) };
+					if (hasSlipErr) return { ok: false, code: "SLIPPAGE", msg: e.message || String(e) };
+					const code = _classifySendFail(`${emsg0} ${txt || ""}`);
+					return { ok: false, code, msg: _shortErr(emsg0) || _shortErr(txt) };
+				} catch (simErr) {
+					const smsg = String(simErr?.message || simErr || "");
+					if (/method not found/i.test(smsg)) {
+						_noteRpcNoSimulate(smsg);
+						return { ok: false, code: sendCode0, msg: _shortErr(emsg0, 240) };
+					}
+					const code = _classifySendFail(emsg0);
+					return { ok: false, code, msg: _shortErr(emsg0, 240) };
 				}
 			}
 		}
@@ -1004,12 +1131,13 @@ export function createDex(deps = {}) {
 		async function manualBuildAndSend(useSharedAccounts = true) {
 			const { PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } = await loadWeb3();
 			try {
+				const sharedAllowed = !!useSharedAccounts && !window._fdvJupDisableSharedAccounts;
 				const body = {
 					quoteResponse: quote,
 					userPublicKey: signer.publicKey.toBase58(),
 					wrapAndUnwrapSol: true,
 					dynamicComputeUnitLimit: true,
-					useSharedAccounts: !!useSharedAccounts,
+					useSharedAccounts: !!sharedAllowed,
 					asLegacyTransaction: false,
 					...(feeAccount && feeBps > 0 ? { feeAccount, platformFeeBps: feeBps } : {}),
 				};
@@ -1019,7 +1147,7 @@ export function createDex(deps = {}) {
 						body.computeUnitPriceMicroLamports = Math.floor(Number(cuPriceMicroLamports));
 					}
 				} catch {}
-				log(`Swap-instructions request (manual send) … hasFee=${!!feeAccount}, useSharedAccounts=${!!useSharedAccounts}`);
+				log(`Swap-instructions request (manual send) … hasFee=${!!feeAccount}, useSharedAccounts=${!!sharedAllowed}`);
 
 				const iRes = await jupFetch(`/swap/v1/swap-instructions`, {
 					method: "POST",
@@ -1038,6 +1166,14 @@ export function createDex(deps = {}) {
 						}
 						return { ok: false, code: "NO_ROUTE", msg: `swap-instr 400 ${errTxt.slice(0,120)}` };
 					}
+					try {
+						const j = JSON.parse(errTxt || "{}");
+						const code = j?.errorCode || "";
+						const msg = j?.error || "";
+						if (sharedAllowed && _isSharedAccountsNotSupported(code, msg)) {
+							_disableSharedAccounts(msg);
+						}
+					} catch {}
 					const isNoRoute = /NO_ROUTE|COULD_NOT_FIND_ANY_ROUTE/i.test(errTxt);
 					log(`Swap-instructions error: ${errTxt || iRes.status}`, 'err');
 					return { ok: false, code: isNoRoute ? "NO_ROUTE" : "JUP_DOWN", msg: `swap-instructions ${iRes.status}` };
@@ -1161,7 +1297,39 @@ export function createDex(deps = {}) {
 						return { ok: false, code: _isDustLike(emsg) ? "ROUTER_DUST" : "NO_ROUTE", msg: _shortErr(emsg) };
 					}
 
+					if (/simulation failed/i.test(emsg) && /method not found/i.test(emsg)) {
+						_noteRpcNoSimulate(emsg);
+						try {
+							const sig2 = await withTimeout(
+								conn.sendRawTransaction(vtx.serialize(), {
+									skipPreflight: true,
+									preflightCommitment: "confirmed",
+									maxRetries: 3,
+								}),
+								rpcTimeoutMs("sendRawTransaction"),
+								{ label: "sendRawTransaction_skipPreflight" },
+							);
+							const ok2 = await safeConfirmSig(sig2, { commitment: "confirmed", timeoutMs: 15000 });
+							if (!ok2) return { ok: false, code: "NO_CONFIRM", msg: "not confirmed" };
+							log(`Swap (manual send v1, skipPreflight) sent: ${sig2}`);
+							try { log(`Explorer: https://solscan.io/tx/${sig2}`); } catch {}
+							try { if (isSell) setTimeout(() => _reconcileSplitSellRemainder(sig2), 0); } catch {}
+							try {
+								if (inputMint === SOL_MINT || outputMint === SOL_MINT) {
+									setTimeout(() => { unwrapWsolIfAny?.(signer).catch(()=>{}); }, 1200);
+									setTimeout(() => { unwrapWsolIfAny?.(signer).catch(()=>{}); }, 1500);
+								}
+							} catch {}
+							return { ok: true, sig: sig2 };
+						} catch (e2) {
+							markRpcStress?.(e2, 2500);
+						}
+					}
+
 					log(`Manual send failed: ${_shortErr(e)}. Simulating…`);
+					if (window._fdvRpcNoSimulate) {
+						return { ok: false, code: _classifySendFail(emsg), msg: _shortErr(emsg, 240) };
+					}
 					try {
 						const sim = await conn.simulateTransaction(vtx, { sigVerify: false, replaceRecentBlockhash: true });
 						const logs = sim?.value?.logs || e?.logs || [];
@@ -1170,9 +1338,14 @@ export function createDex(deps = {}) {
 						const hasSlipErr = /0x1771/i.test(txt);
 						if (hasDustErr) return { ok: false, code: "ROUTER_DUST", msg: e.message || String(e) };
 						if (hasSlipErr) return { ok: false, code: "SLIPPAGE", msg: e.message || String(e) };
-						return { ok: false, code: "SEND_FAIL", msg: e.message || String(e) };
-					} catch {
-						return { ok: false, code: "SEND_FAIL", msg: e.message || String(e) };
+						return { ok: false, code: _classifySendFail(`${emsg} ${txt || ""}`), msg: _shortErr(emsg, 240) || _shortErr(txt) };
+					} catch (simErr) {
+						const smsg = String(simErr?.message || simErr || "");
+						if (/method not found/i.test(smsg)) {
+							_noteRpcNoSimulate(smsg);
+							return { ok: false, code: _classifySendFail(emsg), msg: _shortErr(emsg, 240) };
+						}
+						return { ok: false, code: _classifySendFail(emsg), msg: _shortErr(emsg, 240) };
 					}
 				}
 			} catch (e) {
@@ -1333,40 +1506,57 @@ export function createDex(deps = {}) {
 				}
 			}
 
+			const canTryShared = () => !window._fdvJupDisableSharedAccounts;
+
 			const first = await buildAndSend(false);
 			if (first.ok) {
 				await notePendingBuySeed();
 				await seedCacheIfBuy();
 				return first.sig;
 			}
-			if (!first.ok) lastErrCode = first.code || lastErrCode;
+			noteLastErr(first);
 			if (_isRouteDead(first.code) || _isRouteDead(first.msg)) {
 				throw new Error(String(first.code || "NO_ROUTE"));
 			}
 
 			if (first.code === "NOT_SUPPORTED") {
-				log("Retrying with shared accounts …");
-				const second = await buildAndSend(true);
-				if (second.ok) {
-					await notePendingBuySeed();
-					await seedCacheIfBuy();
-					return second.sig;
-				}
-				if (!second.ok) lastErrCode = second.code || lastErrCode;
-				if (_isRouteDead(second.code) || _isRouteDead(second.msg)) {
-					throw new Error(String(second.code || "NO_ROUTE"));
+				// Some free/limited RPCs reject swaps that use shared accounts for Simple AMMs.
+				if (canTryShared() && !_isSharedAccountsNotSupported(first.code, first.msg)) {
+					log("Primary swap NOT_SUPPORTED. Fallback: shared accounts …");
+					const second = await buildAndSend(true);
+					if (second.ok) {
+						await notePendingBuySeed();
+						await seedCacheIfBuy();
+						return second.sig;
+					}
+					noteLastErr(second);
+					if (_isSharedAccountsNotSupported(second.code, second.msg)) {
+						_disableSharedAccounts(second.msg || second.code);
+					}
+					if (_isRouteDead(second.code) || _isRouteDead(second.msg)) {
+						throw new Error(String(second.code || "NO_ROUTE"));
+					}
+				} else {
+					log("Primary swap NOT_SUPPORTED. Skipping shared-accounts fallback.");
 				}
 			} else {
-				log("Primary swap failed. Fallback: shared accounts …");
-				const fallback = await buildAndSend(true);
-				if (fallback.ok) {
-					await notePendingBuySeed();
-					await seedCacheIfBuy();
-					return fallback.sig;
-				}
-				if (!fallback.ok) lastErrCode = fallback.code || lastErrCode;
-				if (_isRouteDead(fallback.code) || _isRouteDead(fallback.msg)) {
-					throw new Error(String(fallback.code || "NO_ROUTE"));
+				if (canTryShared()) {
+					log("Primary swap failed. Fallback: shared accounts …");
+					const fallback = await buildAndSend(true);
+					if (fallback.ok) {
+						await notePendingBuySeed();
+						await seedCacheIfBuy();
+						return fallback.sig;
+					}
+					noteLastErr(fallback);
+					if (_isSharedAccountsNotSupported(fallback.code, fallback.msg)) {
+						_disableSharedAccounts(fallback.msg || fallback.code);
+					}
+					if (_isRouteDead(fallback.code) || _isRouteDead(fallback.msg)) {
+						throw new Error(String(fallback.code || "NO_ROUTE"));
+					}
+				} else {
+					log("Primary swap failed. Skipping shared-accounts fallback (disabled).", "warn");
 				}
 			}
 
@@ -1386,13 +1576,18 @@ export function createDex(deps = {}) {
 							await seedCacheIfBuy();
 							return a.sig;
 						}
-						if (!a.ok) lastErrCode = a.code || lastErrCode;
-						const b = await buildAndSend(true, true);
-						if (b.ok) {
-							await seedCacheIfBuy();
-							return b.sig;
+						noteLastErr(a);
+						if (canTryShared()) {
+							const b = await buildAndSend(true, true);
+							if (b.ok) {
+								await seedCacheIfBuy();
+								return b.sig;
+							}
+							noteLastErr(b);
+							if (_isSharedAccountsNotSupported(b.code, b.msg)) {
+								_disableSharedAccounts(b.msg || b.code);
+							}
 						}
-						if (!b.ok) lastErrCode = b.code || lastErrCode;
 					}
 				} catch {}
 			}
@@ -1402,11 +1597,26 @@ export function createDex(deps = {}) {
 				throw new Error(String(lastErrCode || "NO_ROUTE"));
 			}
 
+			// Some RPCs cannot send/accept v0 transactions reliably; try legacy before manual paths.
+			if (/NEED_LEGACY|UNSUPPORTED_VERSION|TX_TOO_LARGE|BLOCKHASH|NODE_BEHIND|RPC_LIMIT|RPC_TIMEOUT|SEND_FAIL/i.test(String(lastErrCode || ""))) {
+				try {
+					if (/NEED_LEGACY|UNSUPPORTED_VERSION/i.test(String(lastErrCode || ""))) {
+						log("Send failed; retrying as legacy transaction …", "warn");
+						const lx = await buildAndSend(false, true);
+						if (lx.ok) {
+							await notePendingBuySeed();
+							await seedCacheIfBuy();
+							return lx.sig;
+						}
+						noteLastErr(lx);
+					}
+				} catch {}
+			}
+
 			{
-				const manualSeq = [
-					() => manualBuildAndSend(false),
-					() => manualBuildAndSend(true),
-				];
+				const manualSeq = canTryShared()
+					? [() => manualBuildAndSend(false), () => manualBuildAndSend(true)]
+					: [() => manualBuildAndSend(false)];
 				for (const t of manualSeq) {
 					try {
 						const r = await t();
@@ -1415,17 +1625,16 @@ export function createDex(deps = {}) {
 							await seedCacheIfBuy();
 							return r.sig;
 						}
-						if (r && !r.ok) lastErrCode = r.code || lastErrCode;
+						noteLastErr(r);
 					} catch {}
 				}
 			}
 
 			{
 				log("Swap API failed - trying manual build/sign …");
-				const tries = [
-					() => manualBuildAndSend(false),
-					() => manualBuildAndSend(true),
-				];
+				const tries = canTryShared()
+					? [() => manualBuildAndSend(false), () => manualBuildAndSend(true)]
+					: [() => manualBuildAndSend(false)];
 				for (const t of tries) {
 					try {
 						const r = await t();
@@ -1434,7 +1643,7 @@ export function createDex(deps = {}) {
 							await seedCacheIfBuy();
 							return r.sig;
 						}
-						if (r && !r.ok) lastErrCode = r.code || lastErrCode;
+						noteLastErr(r);
 					} catch {}
 				}
 			}
@@ -1663,7 +1872,10 @@ export function createDex(deps = {}) {
 				}
 			}
 
-			throw new Error(lastErrCode || "swap failed");
+			if (lastErrCode && lastErrMsg) throw new Error(`${lastErrCode}: ${_shortErr(lastErrMsg, 240)}`);
+			if (lastErrCode) throw new Error(String(lastErrCode));
+			if (lastErrMsg) throw new Error(_shortErr(lastErrMsg, 240));
+			throw new Error("swap failed");
 		}
 	}
 

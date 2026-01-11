@@ -7045,33 +7045,8 @@ export function initTraderWidget(container = document.body) {
         </select>
       </label>
     </div>
-        <div class="fdv-tool-row">
-      <button class="btn tool-btn" data-auto-gen>Generate</button>
-      <button class="btn tool-btn" data-auto-copy style="display:none;">Address</button>
-      <button class="btn tool-btn" data-auto-snapshot title="Download latest sell snapshot">Snapshot</button>
-      <button class="btn tool-btn" data-auto-unwind>Return</button>
-      <button class="btn tool-btn" data-auto-wallet>Wallet</button>
-      <div data-auto-wallet-menu class="fdv-modal-backdrop">
-        <div class="fdv-modal fdv-wallet-modal" data-auto-wallet-modal role="dialog" aria-modal="true" aria-label="Auto Wallet">
-          <div class="fdv-modal-header">
-            <strong>Wallet Holdings</strong>
-            <button class="fdv-close" data-auto-wallet-close aria-label="Close">×</button>
-          </div>
-          <div class="fdv-modal-body fdv-wallet-modal-body">
-            <div class="fdv-wallet-actions">
-              <button data-auto-dump style="background:#7f1d1d;color:#fff;border:1px solid #a11;padding:6px 10px;border-radius:6px;">Dump Wallet</button>
-            </div>
-            <div data-auto-wallet-sol class="fdv-wallet-sol">SOL: …</div>
-            <div data-auto-wallet-list class="fdv-wallet-list">
-              <div style="opacity:0.7;">Loading…</div>
-            </div>
-            <div data-auto-wallet-totals class="fdv-wallet-totals">Total: …</div>
-          </div>
-        </div>
-      </div>
-    </div>
     <details class="fdv-advanced" data-auto-adv style="margin:8px 0;">
-      <summary style="cursor:pointer; user-select:none;">Advanced</summary>
+      <summary style="cursor:pointer; user-select:none;margin-bottom:25px;">Advanced</summary>
       <div class="fdv-grid" style="margin-top:8px;">
         <label>Warming min profit (%) <input data-auto-warm-minp type="number" step="0.1" min="-50" max="50" placeholder="2"/></label>
         <label>Warming floor (%) <input data-auto-warm-floor type="number" step="0.1" min="-50" max="50" placeholder="-2"/></label>
@@ -7124,6 +7099,31 @@ export function initTraderWidget(container = document.body) {
       </div>
       <div class="fdv-hold-time-slider"></div>
     </details>
+    <div class="fdv-tool-row">
+      <button class="btn tool-btn" data-auto-gen>Generate</button>
+      <button class="btn tool-btn" data-auto-copy style="display:none;">Address</button>
+      <button class="btn tool-btn" data-auto-snapshot title="Download latest sell snapshot">Snapshot</button>
+      <button class="btn tool-btn" data-auto-unwind>Return</button>
+      <button class="btn tool-btn" data-auto-wallet>Wallet</button>
+      <div data-auto-wallet-menu class="fdv-modal-backdrop">
+        <div class="fdv-modal fdv-wallet-modal" data-auto-wallet-modal role="dialog" aria-modal="true" aria-label="Auto Wallet">
+          <div class="fdv-modal-header">
+            <strong>Wallet Holdings</strong>
+            <button class="fdv-close" data-auto-wallet-close aria-label="Close">×</button>
+          </div>
+          <div class="fdv-modal-body fdv-wallet-modal-body">
+            <div class="fdv-wallet-actions">
+              <button data-auto-dump style="background:#7f1d1d;color:#fff;border:1px solid #a11;padding:6px 10px;border-radius:6px;">Dump Wallet</button>
+            </div>
+            <div data-auto-wallet-sol class="fdv-wallet-sol">SOL: …</div>
+            <div data-auto-wallet-list class="fdv-wallet-list">
+              <div style="opacity:0.7;">Loading…</div>
+            </div>
+            <div data-auto-wallet-totals class="fdv-wallet-totals">Total: …</div>
+          </div>
+        </div>
+      </div>
+    </div>
     <div class="fdv-log" data-auto-log>
     <button class="btn" data-auto-log-expand title="Expand log" style="display: none;">Expand</button>
     </div>
