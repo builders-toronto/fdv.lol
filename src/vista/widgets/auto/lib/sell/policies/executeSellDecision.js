@@ -28,7 +28,36 @@ export function createExecuteSellDecisionPolicy({
   return async function executeSellDecisionPolicy(ctx) {
     const state = getState();
 
-    log(`Sell decision: ${ctx.decision && ctx.decision.action !== "none" ? ctx.decision.action : "NO"} (${ctx.decision?.reason || "criteria not met"})`);
+    const actionLabel = ctx?.decision && ctx.decision.action !== "none" ? ctx.decision.action : "NO";
+    const reasonLabel = (() => {
+      try {
+        const rawReason = String(ctx?.decision?.reason || "").trim();
+        if (rawReason) {
+          const m = rawReason.match(/pnl-hold\s+(-?\d+(?:\.\d+)?)%<(-?\d+(?:\.\d+)?)%/i);
+          if (m) {
+            const pnl = Number(m[1]);
+            const target = Number(m[2]);
+            if (Number.isFinite(pnl) && Number.isFinite(target)) {
+              return `PNL not met pnl=${pnl.toFixed(2)}% target=${target.toFixed(2)}%`;
+            }
+            return "PNL not met";
+          }
+          return rawReason;
+        }
+
+        const target = Number(ctx?.pnlTargetPct);
+        if ((ctx?.decision?.action === "none" || !ctx?.decision) && Number.isFinite(target)) {
+          const pnl = Number.isFinite(Number(ctx?.pnlAtDecisionPct))
+            ? Number(ctx.pnlAtDecisionPct)
+            : (Number.isFinite(Number(ctx?.pnlNetPct)) ? Number(ctx.pnlNetPct) : (Number.isFinite(Number(ctx?.pnlPct)) ? Number(ctx.pnlPct) : NaN));
+          if (Number.isFinite(pnl)) return `PNL not met pnl=${pnl.toFixed(2)}% target=${target.toFixed(2)}%`;
+          return `PNL not met target=${target.toFixed(2)}%`;
+        }
+      } catch {}
+      return "criteria not met";
+    })();
+
+    log(`Sell decision: ${actionLabel} (${reasonLabel})`);
     if (!ctx.decision || ctx.decision.action === "none") return { done: false, returned: false };
 
     const { kp, mint, pos } = ctx;

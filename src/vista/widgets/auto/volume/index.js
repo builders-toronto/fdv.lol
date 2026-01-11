@@ -1651,8 +1651,7 @@ function updateUI() {
   if (statusEl) statusEl.textContent = state.softStopRequested ? 'Stopping' : state.enabled ? 'Running' : 'Stopped';
   if (rpcEl) {
       if (currentRpcUrl()) {
-          const shortUrl = currentRpcUrl().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0];
-          rpcEl.textContent = shortUrl;
+          rpcEl.textContent = `RPC online.`;
       } else {
           rpcEl.textContent = `Please Set RPC in Auto Tab`;
       }

@@ -85,6 +85,8 @@ const SENTRY_PREFETCH_MAX_AGE_MS = 1400;
 const SENTRY_LOG_EVERY_MS = 2200;
 const SENTRY_LOG_PREFETCH_EVERY_MS = 1600;
 
+const FLAME_SWITCH_COOLDOWN_MS = 6500;
+
 function _isNodeLike() {
 	return isNodeLike();
 }
@@ -101,6 +103,7 @@ let startBtn;
 let stopBtn;
 let mintEl;
 let sentryEl;
+let flameEl;
 let pollEl;
 let buyPctEl;
 let triggerEl;
@@ -117,6 +120,9 @@ let _sentryTargetMint = "";
 let _sentryLastPick = null;
 let _sentryLastScanAt = 0;
 let _sentryScanInFlight = false;
+
+let _flameStickyUntil = 0;
+let _flameTargetMint = "";
 
 let _sentryPrefetchTimer = null;
 let _sentryPrefetchInFlight = false;
@@ -205,16 +211,15 @@ function sentryLogCandidates(key, title, list, everyMs = SENTRY_LOG_EVERY_MS) {
 	} catch {}
 }
 
-// PnL target system (Hold-style): start high, decay down to a floor over time.
-// Default: seek 7% PnL; decays down to 2% at -0.5% per 15 minutes.
 const PNL_TARGET_DEFAULT_START_PCT = 7;
 const PNL_TARGET_DEFAULT_FLOOR_PCT = 2;
-const PNL_TARGET_DEFAULT_DECAY_PCT = 0.5;
-const PNL_TARGET_DEFAULT_DECAY_WINDOW_MIN = 15;
+const PNL_TARGET_DEFAULT_DECAY_PCT = 1;
+const PNL_TARGET_DEFAULT_DECAY_WINDOW_MIN = 3;
 let state = {
 	enabled: false,
 	mint: "",
 	sentryEnabled: false,
+	flameEnabled: false,
 	pollMs: 1200,
 	buyPct: 25,
 	slippageBps: 250, // internal (dynamic); not user-controlled
@@ -577,6 +582,27 @@ function pickSentryMintFast() {
 	}
 }
 
+function pickFlameMintFast() {
+	try {
+		const t = now();
+		if (_flameTargetMint && t < _flameStickyUntil) return _flameTargetMint;
+
+		let m = "";
+		try {
+			m = String(window?.__fdvFlamebar?.getLeaderMint?.() || "").trim();
+		} catch {
+			m = "";
+		}
+
+		if (!_isMaybeMintStr(m)) return "";
+		_flameTargetMint = m;
+		_flameStickyUntil = t + FLAME_SWITCH_COOLDOWN_MS;
+		return m;
+	} catch {
+		return "";
+	}
+}
+
 function loadState() {
 	try {
 		if (typeof localStorage === "undefined") return;
@@ -585,11 +611,10 @@ function loadState() {
 		const obj = JSON.parse(raw);
 		if (obj && typeof obj === "object") {
 			state = { ...state, ...obj };
+			if (state.sentryEnabled && state.flameEnabled) state.flameEnabled = false;
 			if (!state.positions || typeof state.positions !== "object") state.positions = {};
 			state.slippageBps = 250;
 
-			// Migration: older versions used takeProfitPct/maxProfitPct.
-			// If pnlTargetStartPct isn't present, fall back to the old value.
 			if (!Number.isFinite(Number(state.pnlTargetStartPct))) {
 				const legacy = Number(state.takeProfitPct ?? state.maxProfitPct);
 				state.pnlTargetStartPct = Number.isFinite(legacy) ? legacy : PNL_TARGET_DEFAULT_START_PCT;
@@ -759,6 +784,8 @@ function profitFloorGatePolicy(ctx) {
 		const action = String(decision.action || "");
 		if (!/sell/i.test(action)) return;
 		if (ctx.forceRug) return;
+		if (_isHardExitDecision(decision, ctx)) return;
+		if (_isAlwaysAllowSellDecision(decision, ctx)) return;
 		const reason = String(decision.reason || "");
 		if (/\bmax-hold\b/i.test(reason)) return;
 
@@ -790,6 +817,7 @@ function saveState() {
 				enabled: !!state.enabled,
 				mint: String(state.mint || "").trim(),
 				sentryEnabled: !!state.sentryEnabled,
+				flameEnabled: !!state.flameEnabled,
 				pollMs: Number(state.pollMs || 1200),
 				buyPct: Number(state.buyPct || 25),
 				triggerScoreSlopeMin: Number(state.triggerScoreSlopeMin || 0.6),
@@ -1749,7 +1777,8 @@ function profitTargetHoldPolicy(ctx) {
 		const pnl = Number.isFinite(ctx?.pnlNetPct) ? Number(ctx.pnlNetPct) : Number(ctx?.pnlPct);
 		if (!Number.isFinite(pnl)) return;
 		if (pnl >= target) return;
-		if (_isHardExitDecision(decision, ctx)) return;
+		if (ctx?.forceRug) return;
+		if (/\brug\b/i.test(String(decision?.reason || ""))) return;
 		ctx.decision = { action: "none", reason: `pnl-hold ${pnl.toFixed(2)}%<${target.toFixed(2)}%` };
 	} catch {}
 }
@@ -1834,6 +1863,8 @@ function _mkSellCtx({ kp, mint, pos, nowTs }) {
 		pnlPct: 0,
 		pxNowNet: 0,
 		pnlNetPct: 0,
+		pnlTargetPct: null,
+		pnlAtDecisionPct: null,
 		ageSec: 0,
 		remorseSecs: 0,
 		creditsPending: false,
@@ -1850,6 +1881,15 @@ function _mkSellCtx({ kp, mint, pos, nowTs }) {
 		postWarmGraceActive: false,
 		inWarmingHold: false,
 	};
+}
+
+function annotateProfitTargetPolicy(ctx) {
+	try {
+		const target = getProfitTargetPct(ctx?.pos, Number(ctx?.nowTs || now()));
+		if (Number.isFinite(target)) ctx.pnlTargetPct = target;
+		const pnl = Number.isFinite(ctx?.pnlNetPct) ? Number(ctx.pnlNetPct) : Number(ctx?.pnlPct);
+		if (Number.isFinite(pnl)) ctx.pnlAtDecisionPct = pnl;
+	} catch {}
 }
 
 async function _enrichSellCtx(ctx) {
@@ -2020,27 +2060,52 @@ const executeSellDecisionPolicy = createExecuteSellDecisionPolicy({
 });
 
 async function runSellPipelineForPosition(ctx) {
+	const ifRug = (fn) => async (c) => {
+		try {
+			if (!c || typeof c !== "object") return;
+			if (!c.forceRug) return;
+			return await fn(c);
+		} catch {}
+	};
+	const ifNotRug = (fn) => async (c) => {
+		try {
+			if (!c || typeof c !== "object") return;
+			if (c.forceRug) return;
+			return await fn(c);
+		} catch {}
+	};
+
 	const steps = [
 		(c) => preflightSellPolicy(c),
 		(c) => leaderModePolicy(c),
 		(c) => urgentSellPolicy(c),
 		(c) => rugPumpDropPolicy(c),
-		(c) => earlyFadePolicy(c),
-		(c) => observerPolicy(c),
-		(c) => volatilityGuardPolicy(c),
+
+		// Always compute valuation/PnL, because profit-target decisions depend on it.
 		(c) => quoteAndEdgePolicy(c),
-		(c) => fastExitPolicy(c),
-		(c) => dynamicHardStopPolicy(c),
-		(c) => warmingPolicyHook(c),
-		(c) => profitLockPolicy(c),
-		(c) => observerThreePolicy(c),
-		(c) => fallbackSellPolicy(c),
-		(c) => forceFlagDecisionPolicy(c),
+
+		// Annotate the current profit target for downstream logging/telemetry.
+		(c) => annotateProfitTargetPolicy(c),
+
+		// Default mode: ONLY sell on profit target. Do not run early-exit/risk policies unless rug.
 		(c) => profitTargetHoldPolicy(c),
-		(c) => reboundGatePolicy(c),
 		(c) => profitTargetTakePolicy(c),
-		(c) => momentumLossGuardPolicy(c),
-		(c) => profitFloorGatePolicy(c),
+
+		// Rug mode: enable the protective stack.
+		ifRug((c) => earlyFadePolicy(c)),
+		ifRug((c) => observerPolicy(c)),
+		ifRug((c) => volatilityGuardPolicy(c)),
+		ifRug((c) => fastExitPolicy(c)),
+		ifRug((c) => dynamicHardStopPolicy(c)),
+		ifRug((c) => warmingPolicyHook(c)),
+		ifRug((c) => profitLockPolicy(c)),
+		ifRug((c) => observerThreePolicy(c)),
+		ifRug((c) => fallbackSellPolicy(c)),
+		ifRug((c) => forceFlagDecisionPolicy(c)),
+		ifRug((c) => reboundGatePolicy(c)),
+		ifRug((c) => momentumLossGuardPolicy(c)),
+		ifRug((c) => profitFloorGatePolicy(c)),
+
 		(c) => executeSellDecisionPolicy(c),
 	];
 	for (const fn of steps) {
@@ -2058,11 +2123,12 @@ function updateUI() {
 		const active = hasAnyActivePosition();
 		const holding = !!active.ok;
 		const sentry = !!state.sentryEnabled;
+		const flame = !!state.flameEnabled && !sentry;
 		const target = sentry ? (curMint ? `${curMint.slice(0, 4)}…` : "auto") : (curMint ? `${curMint.slice(0, 4)}…` : "-");
 		// statusEl.textContent = `Target: ${target}`;
 		if (mintEl) {
-			mintEl.disabled = sentry;
-			mintEl.placeholder = sentry ? "Sentry Mode" : "Mint address";
+			mintEl.disabled = sentry || flame;
+			mintEl.placeholder = sentry ? "Sentry Mode" : flame ? "Flame Mode" : "Mint address";
 		}
 	} catch {}
 }
@@ -2263,6 +2329,26 @@ async function tickOnce() {
 			}
 		} catch {}
 
+		try {
+			if (state.flameEnabled && !state.sentryEnabled && typeof document !== "undefined") {
+				const active = hasAnyActivePosition();
+				if (!active.ok && !_inFlight) {
+					const picked = pickFlameMintFast();
+					if (picked && picked !== String(state.mint || "").trim()) {
+						state.mint = picked;
+						if (mintEl) mintEl.value = picked;
+						saveState();
+						traceOnce(
+							"sniper:flame:pick",
+							`Flame target: ${picked.slice(0, 6)}… (from Flamebar leader)`,
+							3500,
+							"help",
+						);
+					}
+				}
+			}
+		} catch {}
+
 		const mint = String(state.mint || "").trim();
 		if (!mint) {
 			updateUI();
@@ -2452,10 +2538,17 @@ async function startSniper() {
 	_acceptLogs = true;
 	_runNonce++;
 	state.sentryEnabled = !!(sentryEl?.checked || state.sentryEnabled);
+	state.flameEnabled = !!(flameEl?.checked || state.flameEnabled);
+	if (state.sentryEnabled && state.flameEnabled) state.flameEnabled = false;
 	const mint = String(mintEl?.value || state.mint || "").trim();
-	if (!mint && !state.sentryEnabled) {
+	if (!mint && !state.sentryEnabled && !state.flameEnabled) {
 		log("Missing mint.", "warn");
 		return;
+	}
+	if (state.flameEnabled) {
+		state.sentryEnabled = false;
+		try { if (sentryEl) sentryEl.checked = false; } catch {}
+		try { stopSentryPrefetch(); } catch {}
 	}
 	state.mint = mint;
 	state.pollMs = Math.floor(clamp(Number(pollEl?.value || state.pollMs || 1200), 250, 60_000));
@@ -2474,7 +2567,7 @@ async function startSniper() {
 	updateUI();
 	if (state.sentryEnabled) startSentryPrefetch();
 	log(
-		`Sniper started. ${state.sentryEnabled ? "(sentry)" : ""} mint=${mint ? mint.slice(0, 6) + "…" : "auto"} poll=${state.pollMs}ms buyPct=${state.buyPct}% pnlTarget=${Number(state.pnlTargetStartPct || PNL_TARGET_DEFAULT_START_PCT).toFixed(2)}%→${Number(state.pnlTargetFloorPct || PNL_TARGET_DEFAULT_FLOOR_PCT).toFixed(2)}% (-${Number(state.pnlTargetDecayPct || PNL_TARGET_DEFAULT_DECAY_PCT).toFixed(2)}%/${Number(state.pnlTargetDecayWindowMin || PNL_TARGET_DEFAULT_DECAY_WINDOW_MIN).toFixed(0)}m) obs=${state.observeMinSamples}/${Math.round(state.observeWindowMs / 1000)}s minHold=${state.minHoldSecs}s thr=${Number(state.triggerScoreSlopeMin || 0.6).toFixed(2)}`,
+		`Sniper started. ${state.sentryEnabled ? "(sentry)" : state.flameEnabled ? "(flame)" : ""} mint=${mint ? mint.slice(0, 6) + "…" : (state.flameEnabled ? "flame" : "auto")} poll=${state.pollMs}ms buyPct=${state.buyPct}% pnlTarget=${Number(state.pnlTargetStartPct || PNL_TARGET_DEFAULT_START_PCT).toFixed(2)}%→${Number(state.pnlTargetFloorPct || PNL_TARGET_DEFAULT_FLOOR_PCT).toFixed(2)}% (-${Number(state.pnlTargetDecayPct || PNL_TARGET_DEFAULT_DECAY_PCT).toFixed(2)}%/${Number(state.pnlTargetDecayWindowMin || PNL_TARGET_DEFAULT_DECAY_WINDOW_MIN).toFixed(0)}m) obs=${state.observeMinSamples}/${Math.round(state.observeWindowMs / 1000)}s minHold=${state.minHoldSecs}s thr=${Number(state.triggerScoreSlopeMin || 0.6).toFixed(2)}`,
 		"ok",
 		true,
 	);
@@ -2568,6 +2661,9 @@ async function __fdvCli_applySniperConfig(cfg = {}) {
 	try {
 		if (!cfg || typeof cfg !== "object") return;
 		if (cfg.mint) state.mint = String(cfg.mint).trim();
+		if (cfg.sentryEnabled !== undefined) state.sentryEnabled = !!cfg.sentryEnabled;
+		if (cfg.flameEnabled !== undefined) state.flameEnabled = !!cfg.flameEnabled;
+		if (state.sentryEnabled && state.flameEnabled) state.flameEnabled = false;
 		if (cfg.pollMs) state.pollMs = Math.floor(clamp(Number(cfg.pollMs), 250, 60_000));
 		if (cfg.buyPct) state.buyPct = Math.floor(clamp(Number(cfg.buyPct), 1, 70));
 		if (cfg.triggerScoreSlopeMin !== undefined) state.triggerScoreSlopeMin = clamp(Number(cfg.triggerScoreSlopeMin), 0, 20);
@@ -2630,8 +2726,9 @@ export function initSniperWidget(container = document.body) {
 
 			<div class="fdv-log" id="sniper-log"></div>
 			<div class="fdv-actions" style="margin-top:6px;">
-				<div class="fdv-actions-left" style="display:flex; flex-direction:column; gap:4px;">
+				<div class="fdv-actions-left" style="display:flex; flex-direction:row; gap:4px;">
 					<label style="display:flex;flex-direction:row;align-items:center;gap:4px;">Sentry<input id="sniper-sentry" type="checkbox"></label>
+					<label style="display:flex;flex-direction:row;align-items:center;gap:4px;">Flame<input id="sniper-flame" type="checkbox"></label>
 				</div>
 				<div class="fdv-actions-right">
 					<button id="fdv-sniper-start">Start</button>
@@ -2646,6 +2743,7 @@ export function initSniperWidget(container = document.body) {
 	// Match Follow's lookup style.
 	mintEl = document.getElementById("sniper-mint");
 	sentryEl = document.getElementById("sniper-sentry");
+	flameEl = document.getElementById("sniper-flame");
 	pollEl = document.getElementById("sniper-poll");
 	buyPctEl = document.getElementById("sniper-buy-pct");
 	triggerEl = document.getElementById("sniper-trigger");
@@ -2657,6 +2755,7 @@ export function initSniperWidget(container = document.body) {
 
 	if (mintEl) mintEl.value = String(state.mint || "");
 	if (sentryEl) sentryEl.checked = !!state.sentryEnabled;
+	if (flameEl) flameEl.checked = !!state.flameEnabled && !state.sentryEnabled;
 	if (pollEl) pollEl.value = String(state.pollMs || 1200);
 	if (buyPctEl) buyPctEl.value = String(state.buyPct || 25);
 	if (triggerEl) triggerEl.value = String(state.triggerScoreSlopeMin || 0.6);
@@ -2664,9 +2763,24 @@ export function initSniperWidget(container = document.body) {
 
 	sentryEl?.addEventListener("change", () => {
 		state.sentryEnabled = !!sentryEl.checked;
+		if (state.sentryEnabled) {
+			state.flameEnabled = false;
+			try { if (flameEl) flameEl.checked = false; } catch {}
+		}
 		saveState();
 		if (state.enabled && state.sentryEnabled) startSentryPrefetch();
 		if (!state.sentryEnabled) stopSentryPrefetch();
+		updateUI();
+	});
+
+	flameEl?.addEventListener("change", () => {
+		state.flameEnabled = !!flameEl.checked;
+		if (state.flameEnabled) {
+			state.sentryEnabled = false;
+			try { if (sentryEl) sentryEl.checked = false; } catch {}
+			try { stopSentryPrefetch(); } catch {}
+		}
+		saveState();
 		updateUI();
 	});
 

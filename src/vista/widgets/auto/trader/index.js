@@ -951,6 +951,9 @@ let _lastConnLogKey = "";
 
 let _lastDepFetchTs = 0;
 
+let _kpiPumpCompareMissLastMint = "";
+let _kpiPumpCompareMissLastAt = 0;
+
 const CONFIG_VERSION = 1;
 
 const CONFIG_SCHEMA = {
@@ -5605,13 +5608,24 @@ async function tick() {
       minVol24,
     });
 
-    // Explicitly score the top pump-leader mint (if present in the KPI snapshot)
-    // and include it in the comparison set before selecting picks.
     let merged = Array.isArray(rows) ? rows.slice() : [];
     try {
-      const pumpTopMint = String((computePumpingLeaders(1) || [])[0]?.mint || "");
-      if (pumpTopMint) {
-        const pumpItem = (kpiSnapshot || []).find(it => kpiGetMint(it) === pumpTopMint) || null;
+      const normMint = (m) => {
+        const s = String(m || "").trim();
+        return s;
+      };
+
+      const snap = Array.isArray(kpiSnapshot) ? kpiSnapshot : [];
+      const snapshotMintSet = new Set(snap.map(it => normMint(kpiGetMint(it))).filter(Boolean));
+
+      const pumpTopMint = normMint(
+        (pumpLeaders || []).find(l => snapshotMintSet.has(normMint(l?.mint)))?.mint
+          || (pumpLeaders || [])[0]?.mint
+          || ""
+      );
+
+      if (pumpTopMint && snapshotMintSet.has(pumpTopMint)) {
+        const pumpItem = snap.find(it => normMint(kpiGetMint(it)) === pumpTopMint) || null;
         if (pumpItem) {
           const liq = Number(kpiGetLiqUsd(pumpItem) || 0);
           const vol = Number(kpiGetVol24(pumpItem) || 0);
@@ -5634,7 +5648,21 @@ async function tick() {
             }
           }
         } else {
-          log(`Pump pick ${pumpTopMint.slice(0,4)}… not found in KPI snapshot; cannot compare - still loading.`);
+          // Defensive: should be rare since we already checked membership via `snapshotMintSet`.
+          const ts = now();
+          if (_kpiPumpCompareMissLastMint !== pumpTopMint || (ts - _kpiPumpCompareMissLastAt) > 15000) {
+            _kpiPumpCompareMissLastMint = pumpTopMint;
+            _kpiPumpCompareMissLastAt = ts;
+            log(`Pump leader ${pumpTopMint.slice(0, 4)}… missing from KPI snapshot; skipping compare.`, "warn");
+          }
+        }
+      } else if (pumpTopMint) {
+        // Leader not present in the current snapshot; don't spam logs.
+        const ts = now();
+        if (_kpiPumpCompareMissLastMint !== pumpTopMint || (ts - _kpiPumpCompareMissLastAt) > 15000) {
+          _kpiPumpCompareMissLastMint = pumpTopMint;
+          _kpiPumpCompareMissLastAt = ts;
+          log(`Pump leader ${pumpTopMint.slice(0, 4)}… not in current KPI snapshot; comparing snapshot-only candidates.`, "info");
         }
       }
     } catch {}
