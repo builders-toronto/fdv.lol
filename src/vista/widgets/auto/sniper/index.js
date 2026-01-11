@@ -64,6 +64,20 @@ import { createForceFlagDecisionPolicy } from "../lib/sell/policies/forceFlagDec
 import { createReboundGatePolicy } from "../lib/sell/policies/reboundGate.js";
 import { createExecuteSellDecisionPolicy } from "../lib/sell/policies/executeSellDecision.js";
 
+import {
+	PNL_TARGET_DEFAULT_UNDERPERF_MULT,
+	PNL_TARGET_DEFAULT_UNDERPERF_PNL_PCT,
+	coercePnlTargetUnderperformTuning,
+	createProfitTargetGetter,
+} from "../lib/pnl/profitTarget.js";
+
+import {
+	PNL_FADE_DEFAULTS,
+	coercePnlFadeState,
+	createPnlFadeExitPolicy,
+	pushPnlFadeSample,
+} from "../lib/sell/policies/pnlFadeExit.js";
+
 import { loadSplToken } from "../../../../core/solana/splToken.js";
 
 const SNIPER_LS_KEY = "fdv_sniper_bot_v1";
@@ -86,6 +100,15 @@ const SENTRY_LOG_EVERY_MS = 2200;
 const SENTRY_LOG_PREFETCH_EVERY_MS = 1600;
 
 const FLAME_SWITCH_COOLDOWN_MS = 6500;
+
+// When holding a position in Flame mode, keep watching the Flamebar leader.
+// Only rotate if the new leader is stable and clearly performing.
+const FLAME_ROTATE_COOLDOWN_MS = 25_000;
+const FLAME_SWITCH_MIN_CONSEC_TICKS = 3;
+const FLAME_SWITCH_SCORE_MARGIN = 1.25;
+const FLAME_SWITCH_EXTRA_SC_SLOPE = 0.25;
+const FLAME_SWITCH_QUEUE_TTL_MS = 30_000;
+const FLAME_SWITCH_SAMPLE_MIN_MS = 1600;
 
 function _isNodeLike() {
 	return isNodeLike();
@@ -124,6 +147,14 @@ let _sentryScanInFlight = false;
 let _flameStickyUntil = 0;
 let _flameTargetMint = "";
 
+let _flameLeaderLast = "";
+let _flameLeaderConsec = 0;
+let _flameWatchSampleAt = 0;
+let _flameRotateCooldownUntil = 0;
+let _flameSwitchCheck = null; // { mint, startedAt, promise }
+let _flameQueuedMint = "";
+let _flameQueuedUntil = 0;
+
 let _sentryPrefetchTimer = null;
 let _sentryPrefetchInFlight = false;
 let _sentryPrefetchAt = 0;
@@ -160,7 +191,8 @@ function logObj(label, obj) {
 		log(`${label}: (unserializable)`);
 	}
 }
-
+					let picked = _takeQueuedFlameMint();
+					if (!picked) picked = pickFlameMintFast();
 function sentryVerbose() {
 	try {
 		return !!(typeof window !== "undefined" && window._fdvSniperSentryVerbose);
@@ -258,6 +290,20 @@ let state = {
 	warmingMinProfitPct: 2,
 	warmingDecayPctPerMin: 0.45,
 	warmingDecayDelaySecs: 20,
+
+	// Profit-target decay: accelerate decay when the current position is underperforming.
+	pnlDecayUnderperformMult: PNL_TARGET_DEFAULT_UNDERPERF_MULT,
+	pnlDecayUnderperformPnlPct: PNL_TARGET_DEFAULT_UNDERPERF_PNL_PCT,
+
+	// Fade-exit (profit protection): sell if green -> fades down.
+	pnlFadeExitEnabled: PNL_FADE_DEFAULTS.enabled,
+	pnlFadeMinAgeMs: PNL_FADE_DEFAULTS.minAgeMs,
+	pnlFadeMinPeakPct: PNL_FADE_DEFAULTS.minPeakPct,
+	pnlFadeMinPositiveNowPct: PNL_FADE_DEFAULTS.minPositiveNowPct,
+	pnlFadeMinSamples: PNL_FADE_DEFAULTS.minSamples,
+	pnlFadeDowntrendPoints: PNL_FADE_DEFAULTS.downtrendPoints,
+	pnlFadeEpsPct: PNL_FADE_DEFAULTS.epsPct,
+	pnlFadeDropFromPeakPct: PNL_FADE_DEFAULTS.dropFromPeakPct,
 	warmingMinProfitFloorPct: 0.0,
 	warmingAutoReleaseSecs: 45,
 	warmingMaxLossPct: 8,
@@ -596,10 +642,126 @@ function pickFlameMintFast() {
 
 		if (!_isMaybeMintStr(m)) return "";
 		_flameTargetMint = m;
-		_flameStickyUntil = t + FLAME_SWITCH_COOLDOWN_MS;
+		// Follow Flamebar leader reasonably quickly when idle (but avoid thrash).
+		const stickMs = (() => {
+			try {
+				const p = Number(state?.pollMs || 1200);
+				return Math.floor(clamp(p * 1.2, 900, FLAME_SWITCH_COOLDOWN_MS));
+			} catch {
+				return FLAME_SWITCH_COOLDOWN_MS;
+			}
+		})();
+		_flameStickyUntil = t + stickMs;
 		return m;
 	} catch {
 		return "";
+	}
+}
+
+function getFlameLeaderMintNow() {
+	try {
+		const m = String(window?.__fdvFlamebar?.getLeaderMint?.() || "").trim();
+		return _isMaybeMintStr(m) ? m : "";
+	} catch {
+		return "";
+	}
+}
+
+function _queueFlameMint(mint, ttlMs = FLAME_SWITCH_QUEUE_TTL_MS) {
+	try {
+		const m = String(mint || "").trim();
+		if (!_isMaybeMintStr(m)) return;
+		_flameQueuedMint = m;
+		_flameQueuedUntil = now() + Math.max(2500, Number(ttlMs || 0));
+	} catch {}
+}
+
+function _takeQueuedFlameMint() {
+	try {
+		if (!_flameQueuedMint) return "";
+		if (now() > Number(_flameQueuedUntil || 0)) {
+			_flameQueuedMint = "";
+			_flameQueuedUntil = 0;
+			return "";
+		}
+		const m = _flameQueuedMint;
+		_flameQueuedMint = "";
+		_flameQueuedUntil = 0;
+		return m;
+	} catch {
+		return "";
+	}
+}
+
+function _getLiveSignalForMint(mint) {
+	try {
+		const m = String(mint || "").trim();
+		const obs = getObservationStatus(m);
+		const series3 = getLeaderSeries(m, 3) || [];
+		const last = series3?.[series3.length - 1] || {};
+		const chgSlope = clamp(slope3pm(series3, "chg5m"), -60, 60);
+		const scSlope = clamp(slope3pm(series3, "pumpScore"), -20, 20);
+		const badgeNorm = normBadge(getRugSignalForMint(m)?.badge);
+		const trig = shouldTriggerBuy(m);
+		const liqUsd = safeNum(last?.liqUsd, 0);
+		const v1h = safeNum(last?.v1h, 0);
+		const chg5m = safeNum(last?.chg5m, 0);
+		const pumpScore = safeNum(last?.pumpScore, 0);
+		// A lightweight combined score; tuned for relative comparisons only.
+		const score =
+			clamp(pumpScore, 0, 10) * 1.0 +
+			clamp(scSlope, -20, 20) * 2.2 +
+			clamp(chgSlope, -60, 60) * 0.35 +
+			clamp(chg5m, -99, 99) * 0.08 +
+			Math.log10(Math.max(1, v1h + 1)) * 0.55 +
+			Math.log10(Math.max(1, liqUsd + 1)) * 0.25;
+
+		return {
+			ok: true,
+			mint: m,
+			obsOk: !!obs?.ok,
+			badgeNorm,
+			trig,
+			chgSlope,
+			scSlope,
+			last: { liqUsd, v1h, chg5m, pumpScore },
+			score,
+		};
+	} catch {
+		return { ok: false, mint: String(mint || "").trim(), score: 0 };
+	}
+}
+
+function _isTrulyPerformingForSwitch(sig) {
+	try {
+		if (!sig?.ok) return false;
+		if (!sig.obsOk) return false;
+		if (!sig.trig) return false;
+		// Extra strictness vs initial buy trigger.
+		const thr = Math.max(0, Number(state.triggerScoreSlopeMin || 0.6));
+		if (!(Number(sig.scSlope || 0) >= (thr + FLAME_SWITCH_EXTRA_SC_SLOPE))) return false;
+		if (!(Number(sig.last?.chg5m || 0) > 0)) return false;
+		if (!(Number(sig.last?.liqUsd || 0) >= 6000)) return false;
+		if (!(Number(sig.last?.v1h || 0) >= 1500)) return false;
+		// Badge should be in a hot state.
+		if (!(sig.badgeNorm === "pumping" || (state.rideWarming && sig.badgeNorm === "warming"))) return false;
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function _shouldRotateToBetterMint({ heldSig, leaderSig } = {}) {
+	try {
+		if (!heldSig?.ok || !leaderSig?.ok) return false;
+		const margin = Number.isFinite(Number(state.flameSwitchScoreMargin))
+			? Number(state.flameSwitchScoreMargin)
+			: FLAME_SWITCH_SCORE_MARGIN;
+
+		// Require a real gap, not a tiny oscillation.
+		return Number(leaderSig.score || 0) >= Number(heldSig.score || 0) + margin;
+	} catch {
+		return false;
 	}
 }
 
@@ -628,6 +790,9 @@ function loadState() {
 			state.pnlTargetDecayPct = clamp(Number(state.pnlTargetDecayPct ?? PNL_TARGET_DEFAULT_DECAY_PCT), 0, 50);
 			state.pnlTargetDecayWindowMin = clamp(Number(state.pnlTargetDecayWindowMin ?? PNL_TARGET_DEFAULT_DECAY_WINDOW_MIN), 1, 240);
 
+			coercePnlTargetUnderperformTuning(state, clamp);
+			coercePnlFadeState(state, clamp);
+
 			state.warmingMinProfitPct = clamp(Number(state.warmingMinProfitPct ?? 2), 0, 50);
 			state.warmingMinProfitFloorPct = clamp(Number(state.warmingMinProfitFloorPct ?? 0), 0, 50);
 		}
@@ -653,21 +818,16 @@ function getDynamicSlippageBps(kind = "buy") {
 	}
 }
 
-function getProfitTargetPct(pos = null, nowTs = now()) {
-	try {
-		const start = clamp(Number(state.pnlTargetStartPct ?? PNL_TARGET_DEFAULT_START_PCT), 0, 50);
-		const floor = clamp(Number(state.pnlTargetFloorPct ?? PNL_TARGET_DEFAULT_FLOOR_PCT), 0, start);
-		const decayPct = clamp(Number(state.pnlTargetDecayPct ?? PNL_TARGET_DEFAULT_DECAY_PCT), 0, 50);
-		const windowMin = clamp(Number(state.pnlTargetDecayWindowMin ?? PNL_TARGET_DEFAULT_DECAY_WINDOW_MIN), 1, 240);
-		const windowMs = windowMin * 60_000;
-		const anchor = Number(pos?.lastBuyAt || pos?.acquiredAt || nowTs);
-		const ageMs = Math.max(0, Number(nowTs) - anchor);
-		const dec = (ageMs / Math.max(1, windowMs)) * decayPct;
-		return clamp(start - dec, floor, start);
-	} catch {
-		return PNL_TARGET_DEFAULT_START_PCT;
-	}
-}
+const getProfitTargetPct = createProfitTargetGetter({
+	getState: () => state,
+	clamp,
+	defaults: {
+		startPct: PNL_TARGET_DEFAULT_START_PCT,
+		floorPct: PNL_TARGET_DEFAULT_FLOOR_PCT,
+		decayPct: PNL_TARGET_DEFAULT_DECAY_PCT,
+		decayWindowMin: PNL_TARGET_DEFAULT_DECAY_WINDOW_MIN,
+	},
+});
 
 function _isHardExitDecision(decision, ctx = null) {
 	try {
@@ -1730,7 +1890,7 @@ function shouldSell(pos, curSol, nowTs) {
 		const pnlPct = ((Number(curSol || 0) - costSol) / Math.max(1e-9, costSol)) * 100;
 
 		// PnL target (decays over time since entry)
-		const tp = getProfitTargetPct(pos, nowTs);
+		const tp = getProfitTargetPct(pos, nowTs, { pnlPct });
 		if (Number.isFinite(pnlPct) && pnlPct >= tp) {
 			return { action: "sell_all", reason: `PNL_TARGET ${pnlPct.toFixed(2)}%>=${tp.toFixed(2)}%` };
 		}
@@ -1771,9 +1931,11 @@ function shouldSell(pos, curSol, nowTs) {
 
 function profitTargetHoldPolicy(ctx) {
 	try {
-		const target = getProfitTargetPct(ctx?.pos, Number(ctx?.nowTs || now()));
+		const target = getProfitTargetPct(ctx?.pos, Number(ctx?.nowTs || now()), ctx);
 		const decision = ctx?.decision;
 		if (!decision || decision.action === "none") return;
+		// Allow explicit strategy exits (e.g. flame leader rotation) to bypass hold logic.
+		if (/\bSWITCH\b/i.test(String(decision?.reason || ""))) return;
 		const pnl = Number.isFinite(ctx?.pnlNetPct) ? Number(ctx.pnlNetPct) : Number(ctx?.pnlPct);
 		if (!Number.isFinite(pnl)) return;
 		if (pnl >= target) return;
@@ -1783,9 +1945,40 @@ function profitTargetHoldPolicy(ctx) {
 	} catch {}
 }
 
+function flameLeaderSwitchExitPolicy(ctx) {
+	try {
+		const pos = ctx?.pos;
+		if (!pos) return;
+		const req = pos._flameSwitch;
+		if (!req || typeof req !== "object") return;
+		const toMint = String(req.toMint || "").trim();
+		const until = Number(req.until || 0);
+		if (!_isMaybeMintStr(toMint) || (until > 0 && now() > until)) {
+			try { delete pos._flameSwitch; } catch {}
+			try { saveState(); } catch {}
+			return;
+		}
+
+		// Do not rotate during min-hold or router guard.
+		if (ctx.inMinHold || ctx.inSellGuard) return;
+
+		// If another hard exit already exists, keep it.
+		if (ctx.decision && ctx.decision.action && ctx.decision.action !== "none") {
+			if (_isHardExitDecision(ctx.decision, ctx)) return;
+		}
+
+		ctx.isFastExit = true;
+		ctx.decision = {
+			action: "sell_all",
+			reason: `SWITCH:flame_leader:${ctx.mint.slice(0, 4)}…→${toMint.slice(0, 4)}…`,
+			hardStop: true,
+		};
+	} catch {}
+}
+
 function profitTargetTakePolicy(ctx) {
 	try {
-		const target = getProfitTargetPct(ctx?.pos, Number(ctx?.nowTs || now()));
+		const target = getProfitTargetPct(ctx?.pos, Number(ctx?.nowTs || now()), ctx);
 		const pnl = Number.isFinite(ctx?.pnlNetPct) ? Number(ctx.pnlNetPct) : Number(ctx?.pnlPct);
 		if (!Number.isFinite(pnl)) return;
 		if (pnl < target) return;
@@ -1885,7 +2078,7 @@ function _mkSellCtx({ kp, mint, pos, nowTs }) {
 
 function annotateProfitTargetPolicy(ctx) {
 	try {
-		const target = getProfitTargetPct(ctx?.pos, Number(ctx?.nowTs || now()));
+		const target = getProfitTargetPct(ctx?.pos, Number(ctx?.nowTs || now()), ctx);
 		if (Number.isFinite(target)) ctx.pnlTargetPct = target;
 		const pnl = Number.isFinite(ctx?.pnlNetPct) ? Number(ctx.pnlNetPct) : Number(ctx?.pnlPct);
 		if (Number.isFinite(pnl)) ctx.pnlAtDecisionPct = pnl;
@@ -1907,6 +2100,11 @@ async function _enrichSellCtx(ctx) {
 		ctx.pxCost = Number(ctx.pos.costSol || 0) > 0 && Number(ctx.pos.sizeUi || 0) > 0 ? Number(ctx.pos.costSol || 0) / Number(ctx.pos.sizeUi || 0) : 0;
 		ctx.pnlPct = ctx.pos.costSol > 0 ? ((curSol - Number(ctx.pos.costSol || 0)) / Math.max(1e-9, Number(ctx.pos.costSol || 0))) * 100 : 0;
 		ctx.pnlNetPct = ctx.pos.costSol > 0 ? ((ctx.curSolNet - Number(ctx.pos.costSol || 0)) / Math.max(1e-9, Number(ctx.pos.costSol || 0))) * 100 : 0;
+		// Track a short PnL history for fade-exit decisions.
+		try {
+			const pnlTrack = Number.isFinite(Number(ctx.pnlNetPct)) ? Number(ctx.pnlNetPct) : Number(ctx.pnlPct);
+			pushPnlFadeSample(ctx.pos, ctx.mint, pnlTrack, Number(ctx.nowTs || now()));
+		} catch {}
 		if (ctx.pxNow > 0) {
 			ctx.pos.hwmPx = Math.max(Number(ctx.pos.hwmPx || 0), ctx.pxNow);
 		}
@@ -1963,6 +2161,12 @@ const earlyFadePolicy = createEarlyFadePolicy({
 	getState: () => state,
 	getLeaderSeries,
 	slope3pm,
+});
+
+const pnlFadeExitPolicy = createPnlFadeExitPolicy({
+	log,
+	clamp,
+	getState: () => state,
 });
 
 const observerPolicy = createObserverPolicy({
@@ -2090,6 +2294,8 @@ async function runSellPipelineForPosition(ctx) {
 		// Default mode: ONLY sell on profit target. Do not run early-exit/risk policies unless rug.
 		(c) => profitTargetHoldPolicy(c),
 		(c) => profitTargetTakePolicy(c),
+		(c) => flameLeaderSwitchExitPolicy(c),
+		(c) => pnlFadeExitPolicy(c),
 
 		// Rug mode: enable the protective stack.
 		ifRug((c) => earlyFadePolicy(c)),
@@ -2389,8 +2595,96 @@ async function tickOnce() {
 		const pos = state.positions?.[mint] || null;
 		let holding = !!(pos && (Number(pos.sizeUi || 0) > 0 || pos.awaitingSizeSync === true));
 
-		// If we're holding only un-quoteable dust and dustExit is disabled, don't let it block the bot.
-		// Move it out of active positions so we can resume observing/buying.
+		try {
+			if (holding && pos && state.flameEnabled && !state.sentryEnabled && typeof document !== "undefined" && !_inFlight) {
+				const t = now();
+				if (t >= Number(_flameRotateCooldownUntil || 0)) {
+					const leader = getFlameLeaderMintNow();
+					if (_isMaybeMintStr(leader) && leader !== mint && !isMintBlacklisted(leader) && !isPumpDropBanned(leader)) {
+						if (leader === _flameLeaderLast) _flameLeaderConsec = Math.min(25, Number(_flameLeaderConsec || 0) + 1);
+						else {
+							_flameLeaderLast = leader;
+							_flameLeaderConsec = 1;
+							_flameSwitchCheck = null;
+							traceOnce(
+								"sniper:flame:leader",
+								`Flame leader seen: ${leader.slice(0, 6)}… (watching while holding ${mint.slice(0, 4)}…)`,
+								3500,
+								"help",
+							);
+						}
+
+						// Sample the leader mint on a light throttle to build a signal series.
+						if (t - Number(_flameWatchSampleAt || 0) >= Math.max(FLAME_SWITCH_SAMPLE_MIN_MS, Math.floor(Number(state.pollMs || 1200) * 0.9))) {
+							_flameWatchSampleAt = t;
+							void snapshotFocus(leader);
+						}
+
+						if (Number(_flameLeaderConsec || 0) >= FLAME_SWITCH_MIN_CONSEC_TICKS) {
+							const heldSig = _getLiveSignalForMint(mint);
+							const leaderSig = _getLiveSignalForMint(leader);
+							const better = _shouldRotateToBetterMint({ heldSig, leaderSig });
+							const performing = _isTrulyPerformingForSwitch(leaderSig);
+							const existing = pos?._flameSwitch;
+							const existingTo = String(existing?.toMint || "").trim();
+							const existingOk = existingTo && existingTo === leader && (Number(existing?.until || 0) <= 0 || t <= Number(existing.until));
+
+							if (!existingOk && better && performing) {
+								if (!_flameSwitchCheck || _flameSwitchCheck.mint !== leader) {
+									const chk = { mint: leader, startedAt: t, done: false, result: null, promise: null };
+									chk.promise = observeMintOnce(leader, { windowMs: 2600, sampleMs: 650, minPasses: 4 })
+										.then((r) => {
+											chk.done = true;
+											chk.result = r;
+											return r;
+										})
+										.catch(() => {
+											chk.done = true;
+											chk.result = { ok: false, passes: 0 };
+											return chk.result;
+										});
+									_flameSwitchCheck = chk;
+									traceOnce(
+										`sniper:flame:switch:check:${leader}`,
+										`Flame switch check: leader ${leader.slice(0, 6)}… looks better; confirming performance…`,
+										3500,
+										"help",
+									);
+								}
+
+								if (_flameSwitchCheck && _flameSwitchCheck.mint === leader && _flameSwitchCheck.done) {
+									const okObs = !!_flameSwitchCheck.result?.ok;
+									if (okObs) {
+										pos._flameSwitch = {
+											toMint: leader,
+											at: t,
+											until: t + FLAME_SWITCH_QUEUE_TTL_MS,
+											heldScore: Number(heldSig?.score || 0),
+											leaderScore: Number(leaderSig?.score || 0),
+										};
+										_queueFlameMint(leader);
+										_flameRotateCooldownUntil = t + FLAME_ROTATE_COOLDOWN_MS;
+										try { saveState(); } catch {}
+										log(
+											`Flame rotate queued: sell ${mint.slice(0, 4)}… → buy ${leader.slice(0, 4)}… (leader confirmed performing)`,
+											"warn",
+										);
+									} else {
+										traceOnce(
+											`sniper:flame:switch:reject:${leader}`,
+											`Flame rotate rejected: leader ${leader.slice(0, 6)}… did not confirm performance`,
+											6000,
+											"help",
+										);
+									}
+									_flameSwitchCheck = null;
+								}
+							}
+						}
+					}
+				}
+			}
+		} catch {}
 		try {
 			if (holding && pos && Number(pos.sizeUi || 0) > 0 && pos.awaitingSizeSync !== true && !state.dustExitEnabled) {
 				const dec = Number.isFinite(pos.decimals) ? pos.decimals : 6;
@@ -2518,6 +2812,43 @@ async function tickOnce() {
 		await runSellPipelineForPosition(ctx);
 		if (!state.enabled || run !== _runNonce) return;
 		try {
+			const p2 = state.positions?.[mint];
+			const localHolding = !!(p2 && (Number(p2.sizeUi || 0) > 0 || p2.awaitingSizeSync === true));
+			if (!localHolding) {
+				const ownerStr = kp.publicKey.toBase58();
+				const b = await getTokenBalanceUiByMint(ownerStr, mint).catch(() => null);
+				const sizeUi = Number(b?.sizeUi || 0);
+				const dec = Number.isFinite(Number(b?.decimals)) ? Number(b.decimals) : 6;
+				if (sizeUi > 0) {
+					let isDust = false;
+					try {
+						const rawNum = Math.floor(sizeUi * Math.pow(10, Number(dec || 6)));
+						const minRaw = minRawForJupQuote(dec);
+						isDust = (rawNum > 0 && rawNum < minRaw);
+					} catch {}
+					if (!isDust) {
+						state.positions = state.positions && typeof state.positions === "object" ? state.positions : {};
+						state.positions[mint] = {
+							...(pos && typeof pos === "object" ? pos : {}),
+							sizeUi,
+							decimals: dec,
+							awaitingSizeSync: false,
+							lastSeenAt: now(),
+							acquiredAt: (pos && (pos.acquiredAt || pos.lastBuyAt)) ? (pos.acquiredAt || pos.lastBuyAt) : now(),
+						};
+						try { posStore.updatePosCache(ownerStr, mint, sizeUi, dec); } catch {}
+						try { saveState(); } catch {}
+						traceOnce(
+							`sniper:recover:${mint}`,
+							`Recovered local position for ${mint.slice(0, 4)}… chainBal=${sizeUi.toFixed(6)} (post-sell)` ,
+							60_000,
+							"warn",
+						);
+					}
+				}
+			}
+		} catch {}
+		try {
 			// post-sell cleanup if empty
 			const p2 = state.positions?.[mint];
 			if (!p2) {
@@ -2581,10 +2912,6 @@ async function startSniper() {
 
 async function liquidateAllPositionsOnStop() {
 	try {
-		const ps = state.positions && typeof state.positions === "object" ? state.positions : {};
-		const entries = Object.entries(ps).filter(([, p]) => p && (Number(p.sizeUi || 0) > 0 || p.awaitingSizeSync === true));
-		if (!entries.length) return { ok: true, sold: 0, reason: "no-positions" };
-
 		const kp = await getAutoKeypair();
 		if (!kp) {
 			log("Stop liquidation skipped: auto wallet missing.", "warn", true);
@@ -2592,15 +2919,66 @@ async function liquidateAllPositionsOnStop() {
 		}
 		const ownerStr = kp.publicKey.toBase58();
 
-		log(`Stop liquidation: attempting to sell ${entries.length} position(s)…`, "warn", true);
-		let soldN = 0;
-		for (const [mint, pos] of entries) {
-			try {
+		// Build a resilient candidate set: state.positions + pos cache + dust cache.
+		const candidates = new Map();
+		try {
+			const ps = state.positions && typeof state.positions === "object" ? state.positions : {};
+			for (const [mint, p] of Object.entries(ps)) {
+				if (!_isMaybeMintStr(mint) || !p) continue;
+				candidates.set(mint, p);
+			}
+		} catch {}
+		try {
+			const list = posStore?.cacheToList ? posStore.cacheToList(ownerStr) : [];
+			for (const it of list || []) {
+				const mint = String(it?.mint || "").trim();
 				if (!_isMaybeMintStr(mint)) continue;
-				// Make sure we have real, current size before selling.
+				if (!candidates.has(mint)) candidates.set(mint, null);
+			}
+		} catch {}
+		try {
+			const list = dustStore?.dustCacheToList ? dustStore.dustCacheToList(ownerStr) : [];
+			for (const it of list || []) {
+				const mint = String(it?.mint || "").trim();
+				if (!_isMaybeMintStr(mint)) continue;
+				if (!candidates.has(mint)) candidates.set(mint, null);
+			}
+		} catch {}
+
+		if (!candidates.size) return { ok: true, sold: 0, reason: "no-positions" };
+
+		log(`Stop liquidation: attempting to sell ${candidates.size} position(s)…`, "warn", true);
+		let soldN = 0;
+		for (const [mint, posMaybe] of candidates.entries()) {
+			try {
+				if (!_isMaybeMintStr(mint) || mint === SOL_MINT) continue;
+				const pos = (posMaybe && typeof posMaybe === "object") ? posMaybe : (state.positions?.[mint] || { sizeUi: 0, costSol: 0, acquiredAt: now(), awaitingSizeSync: true });
+
+				// Refresh size from chain (and restore local state if it was missing).
+				let chain = null;
+				try { chain = await getTokenBalanceUiByMint(ownerStr, mint); } catch {}
+				const chainUi = Number(chain?.sizeUi || 0);
+				const chainDec = Number.isFinite(Number(chain?.decimals)) ? Number(chain.decimals) : Number(pos.decimals || 6);
+				if (!(chainUi > 0)) continue;
+
+				// Restore local tracking so subsequent code paths don't "forget" holdings.
 				try {
-					await verifyRealTokenBalance(ownerStr, mint, pos);
+					state.positions = state.positions && typeof state.positions === "object" ? state.positions : {};
+					if (!state.positions[mint]) state.positions[mint] = pos;
+					state.positions[mint].sizeUi = chainUi;
+					state.positions[mint].decimals = chainDec;
+					state.positions[mint].awaitingSizeSync = false;
+					state.positions[mint].lastSeenAt = now();
+					posStore.updatePosCache(ownerStr, mint, chainUi, chainDec);
 				} catch {}
+
+				// Skip true dust positions that can't be sold.
+				try {
+					const rawNum = Math.floor(chainUi * Math.pow(10, Number(chainDec || 6)));
+					const minRaw = minRawForJupQuote(chainDec);
+					if (rawNum > 0 && rawNum < minRaw) continue;
+				} catch {}
+
 				const p2 = state.positions?.[mint];
 				if (!p2 || !(Number(p2.sizeUi || 0) > 0)) continue;
 

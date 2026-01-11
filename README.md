@@ -213,4 +213,4 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
 
-fix(trader): align pump leader comparison with KPI snapshot; pnl bugs; etc etc
+refactor(auto): share PnL logic + harden Sniper liquidation

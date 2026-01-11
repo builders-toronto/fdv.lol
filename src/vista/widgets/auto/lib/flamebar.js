@@ -113,7 +113,7 @@ function createFlamebarDom({ title, subtitle }) {
         <div class="fdv-flamebar-cointext">
           <div class="fdv-flamebar-sym" data-flamebar-sym></div>
           <div class="fdv-flamebar-name" data-flamebar-name></div>
-          <div class="fdv-flamebar-mint" data-flamebar-mint></div>
+          <a class="fdv-flamebar-mint" data-flamebar-mint data-link href="#" title="Open chart"></a>
         </div>
         <button class="btn holdCoin fdv-flamebar-hodl" data-hold-btn data-mint="" type="button">HODL</button>
       </div>
@@ -239,6 +239,7 @@ export function initFlamebar(mountEl, opts = {}) {
       if (els.meta) els.meta.textContent = 'Waiting for snapshot…';
       if (els.fill) els.fill.style.width = '0%';
       frame.style.setProperty('--fdv-flame-alpha', '0.35');
+      try { if (els.mint) els.mint.setAttribute('href', '#'); } catch {}
       return;
     }
 
@@ -251,7 +252,10 @@ export function initFlamebar(mountEl, opts = {}) {
     const sym = rec.symbol || '—';
     if (els.sym) els.sym.textContent = sym;
     if (els.name) els.name.textContent = rec.name || '';
-    if (els.mint) els.mint.textContent = _shortMint(mint);
+    if (els.mint) {
+      els.mint.textContent = _shortMint(mint);
+      try { els.mint.setAttribute('href', `/token/${encodeURIComponent(mint)}`); } catch {}
+    }
 
     try {
       const rawLogo = rec.image || '';
