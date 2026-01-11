@@ -2,11 +2,22 @@ import { setBotRunning } from "../lib/autoLed.js";
 import { createSolanaDepsLoader } from "../lib/solana/deps.js";
 import { createConnectionGetter } from "../lib/solana/connection.js";
 import { clamp, safeNum } from "../lib/util.js";
-import { FEE_RESERVE_MIN, FEE_RESERVE_PCT, RUG_FORCE_SELL_SEVERITY, SOL_MINT } from "../lib/constants.js";
+import {
+	EDGE_TX_FEE_ESTIMATE_LAMPORTS,
+	FEE_RESERVE_MIN,
+	FEE_RESERVE_PCT,
+	MIN_JUP_SOL_IN,
+	RUG_FORCE_SELL_SEVERITY,
+	SOL_MINT,
+	TX_FEE_BUFFER_LAMPORTS,
+} from "../lib/constants.js";
 import { dex, getAutoTraderState } from "../trader/index.js";
 import { getRugSignalForMint } from "../../../meme/metrics/kpi/pumping.js";
 import { createPnlFadeExitPolicy, pushPnlFadeSample } from "../lib/sell/policies/pnlFadeExit.js";
+import { preflightBuyLiquidity, DEFAULT_BUY_EXIT_CHECK_FRACTION, DEFAULT_BUY_MAX_PRICE_IMPACT_PCT } from "../lib/liquidity.js";
+import { withTimeout } from "../lib/async.js";
 import { mountGiscus, unmountGiscus } from "../../chat/chat.js";
+import { loadSplToken } from "../../../../core/solana/splToken.js";
 
 const HOLD_SINGLE_LS_KEY = "fdv_hold_bot_v1";
 const HOLD_TABS_LS_KEY = "fdv_hold_tabs_v1";
@@ -48,6 +59,11 @@ const HOLD_FADE_MIN_SAMPLES = 5;
 const HOLD_FADE_DOWNTREND_POINTS = 3;
 const HOLD_FADE_EPS_PCT = 0.05;
 
+// Trade execution should match Sniper: long-timeout swaps, liquidity preflight,
+// and dynamic slippage that responds to RPC backoff.
+const DYN_SLIP_MIN_BPS = 50;
+const DYN_SLIP_MAX_BPS = 2500;
+
 const { loadWeb3, loadBs58 } = createSolanaDepsLoader({
 	cacheKeyPrefix: "fdv:hold",
 	web3Version: "1.95.4",
@@ -81,6 +97,105 @@ const getConn = createConnectionGetter({
 	getRpcHeaders: currentRpcHeaders,
 	commitment: "confirmed",
 });
+
+function rpcBackoffLeft() {
+	try {
+		return Math.max(0, Number(window._fdvRpcBackoffUntil || 0) - now());
+	} catch {
+		return 0;
+	}
+}
+
+function markRpcStress(err, backoffMs = 1500) {
+	try {
+		const msg = String(err?.message || err || "");
+		const code = String(err?.code || "");
+		const isRate = /429|rate|Too\s*Many/i.test(msg);
+		const is403 = /403/.test(msg);
+		const isPlan = /-32602|plan|upgrade|limit/i.test(msg) || /plan|upgrade|limit/i.test(code);
+		if (isRate || is403 || isPlan) {
+			const until = now() + Math.max(300, backoffMs | 0);
+			const prev = Number(window._fdvRpcBackoffUntil || 0);
+			window._fdvRpcBackoffUntil = Math.max(prev, until);
+		}
+	} catch {}
+}
+
+function getDynamicSlippageBps(kind = "buy") {
+	try {
+		const base = kind === "sell" ? 300 : 250;
+		let slip = base;
+		try {
+			const backoffMs = Number(rpcBackoffLeft() || 0);
+			if (backoffMs > 0) slip += Math.min(800, Math.floor(backoffMs / 2000) * 100);
+		} catch {}
+		return Math.floor(clamp(slip, DYN_SLIP_MIN_BPS, DYN_SLIP_MAX_BPS));
+	} catch {
+		return 250;
+	}
+}
+
+// === ATA-rent-aware sizing (copied from Sniper’s swap sizing helpers) ===
+async function tokenAccountRentLamports(len = 165) {
+	try {
+		const conn = await getConn();
+		return await conn.getMinimumBalanceForRentExemption(Number(len || 165));
+	} catch {
+		return 0;
+	}
+}
+
+async function _detectTokenProgramIdForMint(mintStr) {
+	try {
+		const { PublicKey } = await loadWeb3();
+		const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = await loadSplToken();
+		const conn = await getConn();
+		const mintPk = new PublicKey(mintStr);
+		const info = await withTimeout(conn.getAccountInfo(mintPk, "processed"), 10_000, { label: "getAccountInfo" }).catch((e) => {
+			markRpcStress?.(e, 1500);
+			return null;
+		});
+		const owner = info?.owner;
+		if (owner && TOKEN_2022_PROGRAM_ID && owner.equals && owner.equals(TOKEN_2022_PROGRAM_ID)) return TOKEN_2022_PROGRAM_ID;
+		if (owner && TOKEN_PROGRAM_ID && owner.equals && owner.equals(TOKEN_PROGRAM_ID)) return TOKEN_PROGRAM_ID;
+		return TOKEN_PROGRAM_ID;
+	} catch {
+		const { TOKEN_PROGRAM_ID } = await loadSplToken();
+		return TOKEN_PROGRAM_ID;
+	}
+}
+
+async function _tokenAccountRentLamportsForMint(mintStr) {
+	try {
+		const { TOKEN_2022_PROGRAM_ID } = await loadSplToken();
+		const pid = await _detectTokenProgramIdForMint(mintStr);
+		const bytes = (pid && TOKEN_2022_PROGRAM_ID && pid.equals && pid.equals(TOKEN_2022_PROGRAM_ID)) ? 250 : 165;
+		return await tokenAccountRentLamports(bytes);
+	} catch {
+		return await tokenAccountRentLamports(200);
+	}
+}
+
+async function requiredAtaLamportsForSwap(ownerStr, _inMint, outMint) {
+	try {
+		if (!ownerStr || !outMint || outMint === SOL_MINT) return 0;
+		const { PublicKey } = await loadWeb3();
+		const { getAssociatedTokenAddress } = await loadSplToken();
+		const conn = await getConn();
+		const owner = new PublicKey(ownerStr);
+		const mint = new PublicKey(outMint);
+		const pid = await _detectTokenProgramIdForMint(outMint);
+		const ata = await getAssociatedTokenAddress(mint, owner, true, pid);
+		const info = await withTimeout(conn.getAccountInfo(ata, "processed"), 10_000, { label: "getAccountInfo" }).catch((e) => {
+			markRpcStress?.(e, 1500);
+			return null;
+		});
+		if (info) return 0;
+		return await _tokenAccountRentLamportsForMint(outMint);
+	} catch {
+		return 0;
+	}
+}
 
 function now() {
 	return Date.now();
@@ -1005,8 +1120,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				}
 
 				const buyPct = clamp(safeNum(state.buyPct, DEFAULTS.buyPct), 10, 70) / 100;
-				const st = getAutoTraderState();
-				const slip = Math.max(50, Math.min(2000, Number(st?.slippageBps || 250) | 0));
+				const slip = getDynamicSlippageBps("buy");
 				let kp;
 				try {
 					kp = await getAutoKeypair();
@@ -1015,27 +1129,64 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 					return;
 				}
 
-				const balSol = await _getOwnerSolBalanceUi(kp.publicKey);
-				const reserve = _reserveSol(balSol);
-				const spendable = Math.max(0, balSol - reserve);
-				const buySol = Math.max(0, spendable * buyPct);
-				if (!(buySol > 0)) {
-					log(`No spendable SOL (bal=${balSol.toFixed(4)} SOL, reserve≈${reserve.toFixed(4)} SOL).`, "warn");
+				const ownerStr = (() => {
+					try { return kp.publicKey.toBase58(); } catch { return ""; }
+				})();
+				const solBal = await _getOwnerSolBalanceUi(kp.publicKey);
+				const ataRentLamports = await requiredAtaLamportsForSwap(ownerStr, SOL_MINT, mint);
+				const reserveLamports = Number(TX_FEE_BUFFER_LAMPORTS || 0) + Number(EDGE_TX_FEE_ESTIMATE_LAMPORTS || 0) + Number(ataRentLamports || 0);
+				const maxSpendSol = Math.max(0, solBal - reserveLamports / 1e9);
+				const desired = Math.max(0, solBal * buyPct);
+				const buySol = Math.min(desired, maxSpendSol);
+				if (!(buySol >= Math.max(0.001, MIN_JUP_SOL_IN))) {
+					log(`Not enough SOL to buy (bal=${solBal.toFixed(4)}).`, "warn");
+					return;
+				}
+
+				const chk = await preflightBuyLiquidity({
+					dex,
+					solMint: SOL_MINT,
+					mint,
+					inputSol: buySol,
+					slippageBps: slip,
+					maxPriceImpactPct: DEFAULT_BUY_MAX_PRICE_IMPACT_PCT,
+					exitCheckFraction: DEFAULT_BUY_EXIT_CHECK_FRACTION,
+				});
+				if (!chk?.ok) {
+					log(`Buy blocked (liquidity): ${chk?.reason || "no-route"}`, "warn");
 					return;
 				}
 
 				log(
-					`Sizing buy: bal=${balSol.toFixed(4)} SOL reserve≈${reserve.toFixed(4)} SOL spendable≈${spendable.toFixed(4)} SOL pct=${(buyPct * 100).toFixed(0)}% => buy≈${buySol.toFixed(4)} SOL`,
-					"help",
+					`Hold BUY ${mint.slice(0, 6)}… ~${buySol.toFixed(4)} SOL (slip=${slip}bps)`,
+					"ok",
 				);
-				log(`Buying ${_shortMint(mint)}…`, "info");
-				const res = await dex.buyWithConfirm(
-					{ signer: kp, mint, solUi: buySol, slippageBps: slip },
-					{ retries: 0, confirmMs: HOLD_BUY_CONFIRM_MS, fastConfirm: HOLD_FAST_SWAPS, closeWsolAta: false },
-				);
-				const ownerStr = (() => {
-					try { return kp.publicKey.toBase58(); } catch { return ""; }
-				})();
+				let sig = "";
+				try {
+					sig = await withTimeout(
+						dex.jupSwapWithKeypair({
+							signer: kp,
+							inputMint: SOL_MINT,
+							outputMint: mint,
+							amountUi: buySol,
+							slippageBps: slip,
+						}),
+						75_000,
+						{ label: "hold_buy" },
+					);
+				} catch (e) {
+					const msg = String(e?.message || e || "");
+					if (/COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|NO_ROUTES|BELOW_MIN_NOTIONAL|0x1788|0x1789/i.test(msg)) {
+						log(`BUY failed (no route): ${msg}`, "warn");
+					} else if (/INSUFFICIENT_LAMPORTS/i.test(msg)) {
+						log(`BUY failed (insufficient SOL): ${msg}`, "warn");
+					} else {
+						log(`BUY error: ${msg}`, "warn");
+					}
+					return;
+				}
+
+				const res = { ok: false, sig };
 				try {
 					if (res?.sig) {
 						log(`Buy sent (${String(res.sig).slice(0, 8)}…); awaiting token credit…`, "help");
@@ -1064,11 +1215,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 						try { void _tryReconcilePendingEntry(_pendingEntry); } catch {}
 					}
 				} catch {}
-				if (res?.ok) {
-					log(`Buy sent/confirmed (${res.sig || "no-sig"}).`, "ok");
-				} else {
-					log(`Buy not confirmed yet (${res?.sig || "no-sig"}); will keep watching.`, "help");
-				}
+				log(`BUY submitted (pending credit): ${String(res?.sig || "")}`, "warn");
 
 				try {
 					if (ownerStr) {
@@ -1228,8 +1375,14 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				log(String(e?.message || e || "Wallet error"), "error");
 				return;
 			}
-			const st = getAutoTraderState();
-			const slip = Math.max(50, Math.min(2000, Number(st?.slippageBps || 250) | 0));
+			let slip = getDynamicSlippageBps("sell");
+			try {
+				// If this tick is rug-driven liquidation, mirror Sniper’s wider exit slip.
+				const rs = getRugSignalForMint(mint);
+				const sev = Number(rs?.sev ?? rs?.severity ?? 0);
+				const thr = clamp(safeNum(state.rugSevThreshold, HOLD_RUG_DEFAULT_SEV_THRESHOLD), 1, 4);
+				if (rs?.rugged && sev >= thr) slip = Math.max(slip, 1500);
+			} catch {}
 			if (hitTarget) {
 				log(`Profit target hit (${pnlPct.toFixed(2)}% ≥ ${targetPct.toFixed(2)}%). Selling…`, "ok");
 			} else {
@@ -1239,9 +1392,29 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				try { return kp.publicKey.toBase58(); } catch { return ""; }
 			})();
 			const prevSizeUi = Number(pos?.sizeUi || active?.sizeUi || 0);
-			const res = await dex.sellWithConfirm(
-				{ signer: kp, mint, amountUi: 0, slippageBps: slip },
-				{ retries: 0, confirmMs: HOLD_SELL_CONFIRM_MS, fastConfirm: HOLD_FAST_SWAPS, closeTokenAta: false, closeWsolAta: false },
+			let sellUi = Number(pos?.sizeUi || active?.sizeUi || 0);
+			try {
+				const b = await dex.getAtaBalanceUi(ownerStr, mint, Number(pos?.decimals || active?.decimals || 6));
+				if (Number(b?.sizeUi || 0) > 0) sellUi = Number(b.sizeUi);
+			} catch {}
+			if (!(sellUi > 0)) {
+				log(`Sell skipped: no on-chain balance to sell for ${_shortMint(mint)}.`, "warn");
+				_lastProbe = null;
+				_lastExitQuote = null;
+				_pendingEntry = null;
+				_pendingExit = null;
+				_clearAutoPosForMint(mint);
+				_clearCycle();
+				if (!state.repeatBuy) {
+					await stop({ liquidate: false });
+					return;
+				}
+				return;
+			}
+
+			const res = await dex.executeSwapWithConfirm(
+				{ signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: slip },
+				{ retries: 1, confirmMs: Math.max(15_000, Number(HOLD_SELL_CONFIRM_MS || 0)) },
 			);
 
 			if (res?.ok) {
@@ -1257,21 +1430,6 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 					return;
 				}
 				log("Repeat enabled; waiting for next entry.", "help");
-				return;
-			}
-
-			if (res?.noBalance) {
-				log(`Sell skipped: no on-chain balance to sell for ${_shortMint(mint)}.`, "warn");
-				_lastProbe = null;
-				_lastExitQuote = null;
-				_pendingEntry = null;
-				_pendingExit = null;
-				_clearAutoPosForMint(mint);
-				_clearCycle();
-				if (!state.repeatBuy) {
-					await stop({ liquidate: false });
-					return;
-				}
 				return;
 			}
 
@@ -1411,12 +1569,18 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				}
 
 				if (kp) {
-					const st = getAutoTraderState();
-					const baseSlip = Math.max(50, Math.min(2000, Number(st?.slippageBps || 250) | 0));
+					const baseSlip = Math.max(1500, getDynamicSlippageBps("sell"));
 
 					const trySell = async (slippageBps) => {
-						return await dex.sellWithConfirm(
-							{ signer: kp, mint, amountUi: 0, slippageBps },
+						let sellUi = 0;
+						try {
+							const ownerStr = kp.publicKey.toBase58();
+							const b = await dex.getAtaBalanceUi(ownerStr, mint, 6);
+							sellUi = Number(b?.sizeUi || 0);
+						} catch {}
+						if (!(sellUi > 0)) return { ok: false, noBalance: true, sig: "" };
+						return await dex.executeSwapWithConfirm(
+							{ signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps },
 							{ retries: 2, confirmMs: 45_000 },
 						);
 					};
