@@ -455,6 +455,27 @@ function _upsertAutoPosFromCredit({ mint, sizeUi, decimals, addCostSol = 0 } = {
 	}
 }
 
+function _setAutoPosCostIfMissing(mint, costSol) {
+	try {
+		const m = String(mint || "").trim();
+		const c = Math.max(0, Number(costSol || 0));
+		if (!m || !(c > 0)) return false;
+		const st = getAutoTraderState();
+		if (!st?.positions || typeof st.positions !== "object") return false;
+		const p = st.positions[m];
+		if (!p || typeof p !== "object") return false;
+		const prevCost = Number(p.costSol || 0);
+		if (prevCost > 0) return false;
+		p.costSol = c;
+		p.hwmSol = Math.max(Number(p.hwmSol || 0), c);
+		if (!Number(p.lastBuyAt || 0)) p.lastBuyAt = now();
+		if (!Number(p.acquiredAt || 0)) p.acquiredAt = now();
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function _clearAutoPosForMint(mint) {
 	try {
 		const m = String(mint || "").trim();
@@ -626,10 +647,22 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				p.lastCreditProbeAt = t;
 				const got = await dex.waitForTokenCredit(ownerStr, mint, { timeoutMs: 1800, pollMs: 250 });
 				if (Number(got?.sizeUi || 0) > 0) {
-					const alreadyApplied = !!p.costApplied;
-					const addCostSol = alreadyApplied ? 0 : Number(p.addCostSol || 0);
-					if (!alreadyApplied) p.costApplied = true;
-					_setCycleFromCredit({ mint, ownerStr, costSol: Number(p.addCostSol || 0), sizeUi: got.sizeUi, decimals: got.decimals });
+					const pos = _getPosForMint(mint);
+					const posCost = Number(pos?.costSol || 0);
+					const wantCost = Math.max(0, Number(p.addCostSol || 0));
+
+					// IMPORTANT: a balance may appear in Auto positions with costSol=0 (e.g. size sync)
+					// before Hold's short credit-wait sees it. Preserve pending cost and apply it once.
+					let addCostSol = 0;
+					if (posCost <= 0 && wantCost > 0 && !_setAutoPosCostIfMissing(mint, wantCost)) {
+						// If we couldn't directly set (missing pos object), fall back to additive upsert.
+						if (!p.costApplied) addCostSol = wantCost;
+					} else if (!p.costApplied && wantCost > 0) {
+						addCostSol = wantCost;
+					}
+					if (wantCost > 0) p.costApplied = true;
+
+					_setCycleFromCredit({ mint, ownerStr, costSol: wantCost || posCost || 0, sizeUi: got.sizeUi, decimals: got.decimals });
 					_upsertAutoPosFromCredit({ mint, sizeUi: got.sizeUi, decimals: got.decimals, addCostSol });
 				}
 			}
@@ -1046,7 +1079,20 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			}
 			try {
 				if (pos && _pendingEntry && _pendingEntry.mint === mint) {
-					_pendingEntry = null;
+					// Don't discard pending entry just because size synced: we may still need
+					// to apply the buy cost to the Auto position.
+					const posCost = Number(pos?.costSol || 0);
+					const pendingCost = Math.max(0, Number(_pendingEntry.addCostSol || 0));
+					if (posCost <= 0 && pendingCost > 0 && !_pendingEntry.costApplied) {
+						try {
+							_setAutoPosCostIfMissing(mint, pendingCost);
+							_setCycleFromCredit({ mint, ownerStr: String(_pendingEntry.ownerStr || ""), costSol: pendingCost, sizeUi: Number(pos?.sizeUi || 0), decimals: Number(pos?.decimals || 6) });
+							_pendingEntry.costApplied = true;
+						} catch {}
+					}
+					if (Number(_getPosForMint(mint)?.costSol || 0) > 0 || _hasActiveCycleForMint(mint)) {
+						_pendingEntry = null;
+					}
 				}
 				if (!pos && _pendingEntry && _pendingEntry.mint === mint) {
 					try { await _tryReconcilePendingEntry(_pendingEntry); } catch {}
@@ -1264,9 +1310,21 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			// Holding: wait indefinitely until profit threshold met.
 			const active = pos || (_hasActiveCycleForMint(mint) ? _cycle : null);
 			if (!active) return;
-			const cost = Number(active.costSol || 0);
+			let cost = Number(active.costSol || 0);
 			if (!(cost > 0)) {
-				log(`Holding ${_shortMint(mint)}… (cost unknown)`, "help");
+				try {
+					if (_cycle && _cycle.mint === mint && Number(_cycle.costSol || 0) > 0) cost = Number(_cycle.costSol || 0);
+					else if (_pendingEntry && _pendingEntry.mint === mint && Number(_pendingEntry.addCostSol || 0) > 0) cost = Number(_pendingEntry.addCostSol || 0);
+					if (cost > 0) _setAutoPosCostIfMissing(mint, cost);
+				} catch {}
+			}
+			if (!(cost > 0)) {
+				traceOnce(
+					`hold:${botId}:costUnknown:${mint}`,
+					`Holding ${_shortMint(mint)}… (cost unknown)` ,
+					Math.max(2000, Math.min(9000, Number(state.pollMs || 1500) * 3)),
+					"help",
+				);
 				return;
 			}
 			const estOut = pos
