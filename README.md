@@ -213,4 +213,4 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
 
-Applied a targeted fix to stop Hold from getting stuck in the “Holding… (cost unknown)” loop when the token balance (size) syncs before the cost basis does.
+feat(flamebar): prefer active pumps + hot PnL animation

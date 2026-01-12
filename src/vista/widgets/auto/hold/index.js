@@ -514,6 +514,10 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 	let _pendingExit = null; // { mint, sig, at, ownerStr, prevSizeUi }
 	let _cycle = null; // { mint, ownerStr, costSol, sizeUi, decimals, enteredAt, lastSeenAt }
 	let _fadePos = null; // { mint, _pnlFade: { ... } }
+	let _lastPnlPct = NaN;
+	let _lastPnlAt = 0;
+	let _lastPnlCostSol = 0;
+	let _lastPnlEstOutSol = 0;
 	let _chartTipEl = null;
 	let _chartTipHideTimer = null;
 	let _chartTipMint = "";
@@ -1381,6 +1385,12 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			const pnlPct = ((estOut - cost) / cost) * 100;
 			const targetPct = Number(state.profitPct || DEFAULTS.profitPct);
 			try {
+				_lastPnlPct = pnlPct;
+				_lastPnlAt = now();
+				_lastPnlCostSol = cost;
+				_lastPnlEstOutSol = estOut;
+			} catch {}
+			try {
 				const m = String(mint || "").trim();
 				if (m) {
 					if (!_fadePos || _fadePos.mint !== m) _fadePos = { mint: m };
@@ -1843,6 +1853,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 	return {
 		id: botId,
 		getState: () => ({ ...state }),
+		getLastPnl: () => ({ pnlPct: _lastPnlPct, at: _lastPnlAt, costSol: _lastPnlCostSol, estOutSol: _lastPnlEstOutSol }),
 		setState: (next) => {
 			state = _coerceState(next || {});
 			_updateLabelCache();
@@ -1943,26 +1954,30 @@ export function initHoldWidget(container = document.body) {
 		} catch {}
 	};
 
-	const removeBot = async (botId) => {
+	const removeBot = async (botId, opts = {}) => {
 		const id = String(botId || "").trim();
 		const bot = bots.get(id);
 		if (!id || !bot) return;
+		const force = !!opts?.force;
+		const liquidate = ("liquidate" in (opts || {})) ? !!opts.liquidate : true;
 
-		let proceed = true;
-		try {
-			if (bot.isRunning()) {
-				proceed = confirm("Delete this hold bot? It will stop and attempt to liquidate the position.");
-			} else {
-				proceed = confirm("Delete this hold bot?");
+		if (!force) {
+			let proceed = true;
+			try {
+				if (bot.isRunning() && liquidate) {
+					proceed = confirm("Delete this hold bot? It will stop and attempt to liquidate the position.");
+				} else {
+					proceed = confirm("Delete this hold bot?");
+				}
+			} catch {
+				proceed = true;
 			}
-		} catch {
-			proceed = true;
+			if (!proceed) return;
 		}
-		if (!proceed) return;
 
 		deleted.add(id);
 		try {
-			if (bot.isRunning()) await bot.stop({ liquidate: true });
+			if (bot.isRunning()) await bot.stop({ liquidate });
 		} catch {}
 		try { bot?.onActiveChanged?.(false); } catch {}
 
@@ -1986,6 +2001,108 @@ export function initHoldWidget(container = document.body) {
 		recomputeRunningLed();
 		persistAll();
 		refreshAddBtn();
+	};
+
+	const _botMint = (b) => {
+		try { return String(b?.getState?.()?.mint || "").trim(); } catch { return ""; }
+	};
+
+	const _botLabel = (b) => {
+		try {
+			const m = _botMint(b);
+			return m ? _shortMint(m) : (typeof b?.tabTitle === "function" ? b.tabTitle() : "Hold");
+		} catch {
+			return "Hold";
+		}
+	};
+
+	const _botLastPnlPct = (b) => {
+		try {
+			const p = b?.getLastPnl?.();
+			const v = Number(p?.pnlPct);
+			return Number.isFinite(v) ? v : NaN;
+		} catch {
+			return NaN;
+		}
+	};
+
+	const _ensureSlotForMint = async (mintStr, { allowGreen = true } = {}) => {
+		try {
+			if (bots.size < HOLD_MAX_TABS) return true;
+			const m = String(mintStr || "").trim();
+			const all = Array.from(bots.values());
+			if (!all.length) return true;
+
+			const isActive = (b) => {
+				try { return String(b?.id || "") === String(activeId || ""); } catch { return false; }
+			};
+
+			// 1) Prefer an idle (not running) tab.
+			const idle = all
+				.filter((b) => b && !b.isRunning())
+				.sort((a, b) => {
+					const aActive = isActive(a) ? 1 : 0;
+					const bActive = isActive(b) ? 1 : 0;
+					if (aActive !== bActive) return aActive - bActive;
+					const aHasMint = _botMint(a) ? 1 : 0;
+					const bHasMint = _botMint(b) ? 1 : 0;
+					return aHasMint - bHasMint;
+				});
+			if (idle.length) {
+				const cand = idle[0];
+				try {
+					const activeBot = bots.get(activeId) || all[0] || null;
+					activeBot?.log?.(
+						`Hold: evicting idle tab ${_botLabel(cand)} to open ${_shortMint(m)}.`,
+						"help",
+						true,
+					);
+				} catch {}
+				await removeBot(cand.id, { force: true, liquidate: false });
+				return true;
+			}
+
+			// 2) Otherwise, optionally offer to replace a green (pnl>=0) tab.
+			if (allowGreen) {
+				const green = all
+					.map((b) => ({ b, pnl: _botLastPnlPct(b) }))
+					.filter((x) => x.b && Number.isFinite(x.pnl) && x.pnl >= 0)
+					.sort((a, b) => {
+						const aActive = isActive(a.b) ? 1 : 0;
+						const bActive = isActive(b.b) ? 1 : 0;
+						if (aActive !== bActive) return aActive - bActive;
+						// prefer more green (higher pnl) since we're "safe" to take profit
+						return Number(b.pnl) - Number(a.pnl);
+					});
+				if (green.length) {
+					const cand = green[0].b;
+					const pnl = green[0].pnl;
+					let proceed = true;
+					try {
+						proceed = confirm(
+							`Hold is full (max ${HOLD_MAX_TABS}). Replace ${_botLabel(cand)} (green ${pnl.toFixed(2)}%) with ${_shortMint(m)}?\n\nThis will stop and attempt to liquidate ${_botLabel(cand)}.`
+						);
+					} catch {
+						proceed = true;
+					}
+					if (!proceed) return false;
+					try {
+						const activeBot = bots.get(activeId) || all[0] || null;
+						activeBot?.log?.(
+							`Hold: replacing green tab ${_botLabel(cand)} (pnl=${pnl.toFixed(2)}%) to open ${_shortMint(m)}…`,
+							"warn",
+							true,
+						);
+					} catch {}
+					await removeBot(cand.id, { force: true, liquidate: true });
+					return true;
+				}
+			}
+
+			return false;
+		} catch {
+			return false;
+		}
 	};
 
 	const setActive = (botId) => {
@@ -2176,7 +2293,7 @@ export function initHoldWidget(container = document.body) {
 		} catch {}
 	}
 
-	function openForMint({ mint, config, tokenHydrate, start, logLoaded, createNew } = {}) {
+	async function openForMint({ mint, config, tokenHydrate, start, logLoaded, createNew } = {}) {
 		const m = String(mint || tokenHydrate?.mint || "").trim();
 		if (!m) return null;
 
@@ -2184,15 +2301,18 @@ export function initHoldWidget(container = document.body) {
 		if (createNew) {
 			try {
 				if (bots.size >= HOLD_MAX_TABS) {
-					const activeBot = bots.get(activeId) || Array.from(bots.values())[0] || null;
-					try {
-						activeBot?.log(
-							`Hold: no instances available (max ${HOLD_MAX_TABS}). Stop/delete a tab to open ${_shortMint(m)}.`,
-							"warn",
-							true,
-						);
-					} catch {}
-					return null;
+					const ok = await _ensureSlotForMint(m, { allowGreen: true });
+					if (!ok) {
+						const activeBot = bots.get(activeId) || Array.from(bots.values())[0] || null;
+						try {
+							activeBot?.log(
+								`Hold: no instances available (max ${HOLD_MAX_TABS}). Stop/delete a tab to open ${_shortMint(m)}.`,
+								"warn",
+								true,
+							);
+						} catch {}
+						return null;
+					}
 				}
 			} catch {}
 
@@ -2287,8 +2407,11 @@ export function initHoldWidget(container = document.body) {
 		// Otherwise create a new tab if possible.
 		if (!target) {
 			if (bots.size >= HOLD_MAX_TABS) {
-				try { alert(`Hold: max ${HOLD_MAX_TABS} tabs. Stop/delete a tab to open a new mint.`); } catch {}
-				return null;
+				const ok = await _ensureSlotForMint(m, { allowGreen: true });
+				if (!ok) {
+					try { alert(`Hold: max ${HOLD_MAX_TABS} tabs. Stop/delete a tab to open a new mint.`); } catch {}
+					return null;
+				}
 			}
 			const createdId = addBot({ state: DEFAULTS });
 			if (createdId) target = bots.get(createdId) || null;

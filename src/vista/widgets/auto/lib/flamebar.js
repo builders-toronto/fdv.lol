@@ -5,6 +5,11 @@ const DEFAULTS = {
   maxPoints: 90,
   tickMs: 1250,
   switchMarginPct: 0.25,
+  pumpLookbackMs: 60 * 1000,
+  minRecentPnlPct: 0.05,
+  nearHighWithinPct: 0.02,
+  recentWeight: 2.0,
+  hotPnlPct: 30,
   title: 'Prospect',
   subtitle: 'Top PnL (15m)',
 };
@@ -85,6 +90,44 @@ function computeWindowPnlPct(rec) {
   if (!first || !last) return null;
   if (first <= 0) return null;
   return ((last - first) / first) * 100;
+}
+
+function computeRecentPnlPct(rec, nowTs, lookbackMs) {
+  const s = rec?.series;
+  if (!s || s.length < 2) return null;
+  const last = _num(s[s.length - 1]?.p);
+  if (!last || last <= 0) return null;
+
+  const cutoff = (Number.isFinite(nowTs) ? nowTs : Date.now()) - (Number.isFinite(lookbackMs) ? lookbackMs : 0);
+  let base = null;
+
+  // Find a base point at/just after cutoff (older point).
+  for (let i = s.length - 1; i >= 0; i--) {
+    if (s[i].t <= cutoff) {
+      base = _num(s[i]?.p);
+      break;
+    }
+  }
+  if (!base) base = _num(s[0]?.p);
+  if (!base || base <= 0) return null;
+  return ((last - base) / base) * 100;
+}
+
+function computeWindowStats(rec) {
+  const s = rec?.series;
+  if (!s || s.length < 2) return null;
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const pt of s) {
+    const p = _num(pt?.p);
+    if (p === null) continue;
+    if (p < lo) lo = p;
+    if (p > hi) hi = p;
+  }
+  const first = _num(s[0]?.p);
+  const last = _num(s[s.length - 1]?.p);
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || first === null || last === null) return null;
+  return { lo, hi, first, last };
 }
 
 function createFlamebarDom({ title, subtitle }) {
@@ -192,25 +235,55 @@ export function initFlamebar(mountEl, opts = {}) {
     return rec;
   }
 
-  function pickLeader(nowTs) {
+  function pickLeader(nowTs, mode = 'pump') {
+    const requirePump = mode !== 'pnl';
     let best = null;
     let bestPnl = -Infinity;
+    let bestRecent = null;
+    let bestScore = -Infinity;
 
     for (const rec of store.values()) {
       if (!rec) continue;
       if (nowTs - rec.lastSeenAt > (options.windowMs * 2)) continue;
+
       const pnl = computeWindowPnlPct(rec);
-      if (pnl === null) continue;
-      if (pnl > bestPnl) {
+      if (pnl === null || pnl <= 0) continue;
+
+      let recent = null;
+      if (requirePump) {
+        recent = computeRecentPnlPct(rec, nowTs, options.pumpLookbackMs);
+        if (recent === null || recent <= 0) continue;
+        if (Number.isFinite(options.minRecentPnlPct) && recent < options.minRecentPnlPct) continue;
+
+        if (Number.isFinite(options.nearHighWithinPct)) {
+          const st = computeWindowStats(rec);
+          if (st?.hi && st.hi > 0 && st?.last !== null) {
+            const gapPct = (st.hi - st.last) / st.hi;
+            if (Number.isFinite(gapPct) && gapPct > options.nearHighWithinPct) continue;
+          }
+        }
+      }
+
+      const score = requirePump
+        ? (pnl + ((recent || 0) * (Number.isFinite(options.recentWeight) ? options.recentWeight : 0)))
+        : pnl;
+
+      if (score > bestScore) {
+        bestScore = score;
         bestPnl = pnl;
+        bestRecent = recent;
         best = rec;
       }
     }
 
-    return { best, bestPnl: Number.isFinite(bestPnl) ? bestPnl : null };
+    return {
+      best,
+      bestPnl: Number.isFinite(bestPnl) ? bestPnl : null,
+      bestRecentPnl: bestRecent,
+    };
   }
 
-  function render({ rec, pnlPct, sampleCount }) {
+  function render({ rec, pnlPct, recentPnlPct, sampleCount }) {
     const has = !!(rec && rec.mint);
     const mint = has ? rec.mint : '';
 
@@ -236,6 +309,7 @@ export function initFlamebar(mountEl, opts = {}) {
 
     if (!has) {
       if (els.pnl) els.pnl.textContent = '—';
+      try { if (els.pnl) els.pnl.classList.remove('is-hot'); } catch {}
       if (els.meta) els.meta.textContent = 'Waiting for snapshot…';
       if (els.fill) els.fill.style.width = '0%';
       frame.style.setProperty('--fdv-flame-alpha', '0.35');
@@ -244,10 +318,15 @@ export function initFlamebar(mountEl, opts = {}) {
     }
 
     if (els.pnl) els.pnl.textContent = _fmtPct(pnlPct);
+    try {
+      const hot = (_num(pnlPct) !== null) && (_num(pnlPct) >= (Number.isFinite(options.hotPnlPct) ? options.hotPnlPct : 30));
+      if (els.pnl) els.pnl.classList.toggle('is-hot', !!hot);
+    } catch {}
 
     const priceText = _fmtUsd(rec.lastPriceUsd);
     const sampleText = sampleCount ? `${sampleCount} samples` : '—';
-    if (els.meta) els.meta.textContent = `${priceText} • ${sampleText}`;
+    const recentText = recentPnlPct !== null && recentPnlPct !== undefined ? ` • ${options.pumpLookbackMs >= 60 * 1000 ? '1m' : 'mom'} ${_fmtPct(recentPnlPct)}` : '';
+    if (els.meta) els.meta.textContent = `${priceText} • ${sampleText}${recentText}`;
 
     const sym = rec.symbol || '—';
     if (els.sym) els.sym.textContent = sym;
@@ -296,7 +375,7 @@ export function initFlamebar(mountEl, opts = {}) {
     const items = Array.isArray(snap) ? snap : (Array.isArray(snap?.items) ? snap.items : []);
 
     if (!items || items.length === 0) {
-      render({ rec: null, pnlPct: null, sampleCount: 0 });
+      render({ rec: null, pnlPct: null, recentPnlPct: null, sampleCount: 0 });
       return;
     }
 
@@ -312,9 +391,14 @@ export function initFlamebar(mountEl, opts = {}) {
       });
     }
 
-    const { best, bestPnl } = pickLeader(nowTs);
+    // Prefer pump candidates; if none qualify yet (e.g. startup / thin samples),
+    // fall back to best positive window PnL so the widget isn't blank.
+    let { best, bestPnl, bestRecentPnl } = pickLeader(nowTs, 'pump');
     if (!best) {
-      render({ rec: null, pnlPct: null, sampleCount: 0 });
+      ({ best, bestPnl, bestRecentPnl } = pickLeader(nowTs, 'pnl'));
+    }
+    if (!best) {
+      render({ rec: null, pnlPct: null, recentPnlPct: null, sampleCount: 0 });
       return;
     }
 
@@ -323,15 +407,16 @@ export function initFlamebar(mountEl, opts = {}) {
       if (leaderMint && leaderMint !== best.mint) {
         const cur = store.get(leaderMint);
         const curPnl = cur ? computeWindowPnlPct(cur) : null;
+        const curRecent = cur ? computeRecentPnlPct(cur, nowTs, options.pumpLookbackMs) : null;
         if (curPnl !== null && bestPnl !== null && (bestPnl - curPnl) < options.switchMarginPct) {
-          render({ rec: cur, pnlPct: curPnl, sampleCount: cur?.series?.length || 0 });
+          render({ rec: cur, pnlPct: curPnl, recentPnlPct: curRecent, sampleCount: cur?.series?.length || 0 });
           return;
         }
       }
     } catch {}
 
     leaderMint = best.mint;
-    render({ rec: best, pnlPct: bestPnl, sampleCount: best?.series?.length || 0 });
+    render({ rec: best, pnlPct: bestPnl, recentPnlPct: bestRecentPnl, sampleCount: best?.series?.length || 0 });
   }
 
   function start() {
