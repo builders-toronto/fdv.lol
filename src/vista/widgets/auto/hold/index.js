@@ -658,13 +658,14 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 					// IMPORTANT: a balance may appear in Auto positions with costSol=0 (e.g. size sync)
 					// before Hold's short credit-wait sees it. Preserve pending cost and apply it once.
 					let addCostSol = 0;
-					if (posCost <= 0 && wantCost > 0 && !_setAutoPosCostIfMissing(mint, wantCost)) {
-						// If we couldn't directly set (missing pos object), fall back to additive upsert.
-						if (!p.costApplied) addCostSol = wantCost;
-					} else if (!p.costApplied && wantCost > 0) {
-						addCostSol = wantCost;
+					if (!p.costApplied && wantCost > 0) {
+						if (posCost <= 0) {
+							const setOk = _setAutoPosCostIfMissing(mint, wantCost);
+							// If we couldn't directly set (missing pos object), fall back to additive upsert.
+							if (!setOk) addCostSol = wantCost;
+						}
+						p.costApplied = true;
 					}
-					if (wantCost > 0) p.costApplied = true;
 
 					_setCycleFromCredit({ mint, ownerStr, costSol: wantCost || posCost || 0, sizeUi: got.sizeUi, decimals: got.decimals });
 					_upsertAutoPosFromCredit({ mint, sizeUi: got.sizeUi, decimals: got.decimals, addCostSol });

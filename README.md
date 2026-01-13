@@ -1,119 +1,202 @@
 ![fdv-lol-banner](banner.png)
 
-# 🐸 FDV Memecoin Radar - UltraLite
+# FDV Memecoin Radar (UltraLite)
 
-A tiny, client-side Solana memecoin radar.  
-No build step. No backend. No data hoarding.  
-Just open the page and get GOOD / WATCH / SHILL signals at a glance.
+BLAZING-FAST client-side SOL memecoin radar with explainable GOOD/WATCH/SHILL.
+
+Trader (Auto), Sentry (Sniper), Hold, Follow, and Volume.
+
+- No build step
+- No backend
+- No accounts required
+
+Open the page and get GOOD / WATCH / SHILL signals at a glance.
+
+Note: This project is for research/education. Nothing here is financial advice.
 
 ---
 
-## 🚀 What It Does
-- Fetches public on-chain and market data directly in your browser
-- Ranks tokens by FDV, volume, and traction
-- Surfaces trending memecoins worth following
-- Provides explainable badges: GOOD · WATCH · SHILL
-- Uses a variety of custom made widgets to accelerate the users MEME expertise and growth.
+## What’s New
+
+- Flamebar now prefers actively pumping leaders (recent momentum weighting)
+- 'Hot PnL' animation highlights outsized movers
+- The Flamebar 'HODL' button can open the Hold bot for that mint
+- Hold bot supports up to 3 parallel tabs and smarter tab replacement when full
 
 ---
 
-## ✨ Features
+## What It Does
 
-- 100% client-side UltraLite app (static hosting friendly)
+- Fetches public on-chain + market data directly in your browser
+- Ranks tokens using transparent inputs (FDV, volume, price action, liquidity, etc.)
+- Surfaces explainable signals: GOOD / WATCH / SHILL
+- Provides automation tools (optional) for monitoring and trading workflows
+
+---
+
+## Features
+
+- 100% client-side app (static hosting friendly)
 - Real-time streaming pipeline with adaptive throttling/backoff
-- Explainable scoring with transparent inputs and badges
-- Mobile-ready UI components and responsive widgets
+- Explainable scoring with visible inputs and badges
+- Mobile-ready UI and responsive widgets
 - Jupiter integration for quotes and swaps with robust fallbacks
 - Local caching for snappy UX and offline-friendly state
 
 ---
 
-## 🧩 Widgets
+## Widgets and Bots
 
-- Auto Pump (src/vista/widgets/auto.js)
-  - Auto wallet mode with local keypair, quick copy/export
-  - Router/dust protections: min-notional buy/sell, cooldowns, pending credit reconciliation
-  - Leader mode: rotate to top pumper; optional multi-buys with batching
-  - Position cache + graceful pending-credit sync to avoid race conditions
-  - Sell logic: TP/SL, trailing stop, partials, staleness, max/min hold, dust-exit toggle
-  - Fallback flow: split-sells, higher slippage re-quotes, USDC bridge sell, manual v0 send
-  - Reserve management: fee/rent/runway buffers, ATA rent estimation per swap
-  - Integrated wallet menu: SOL total, sellable vs dust by Jupiter’s min-notional
+This repo contains both 'read-only' widgets (boards, KPIs) and 'active' bots (that can trade). If you enable trading bots, use a burner wallet and keep balances small.
 
-- Swap Modal (src/vista/widgets/swap.js)
-  - Phantom connect, programmatic sign, session verification (PoW) via Turnstile proxy
-  - Quote preview: est output, min-received, route hops, slippage bps stepper
-  - Fee routing via fee ATAs (ExactIn), sanity checks on-chain
-  - Mobile deep-link to jup.ag; desktop Dex link fallback
-  - Accessible modal, keyboard-safe on mobile, and throttles the live stream while open
+### Auto Tools Panel (Trader / Sentry / Hold / Follow / Volume)
 
-- Favorites Board (src/vista/widgets/favboard.js)
-  - Fan-fav leaderboard with cached fetch + token metadata enrichment
-  - Responsive card-style layout on mobile
-  - Quick links to token pages and live stats
+Implementation entrypoint: `src/vista/widgets/auto/index.js`
+
+The Auto Tools Panel is a tabbed automation suite. These tools share common utilities:
+
+- Adaptive RPC backoff/throttling
+- Backoff-aware slippage adjustments and retry logic
+- Safety checks around dust/min-notional and route cooldowns
+
+#### Trader (Auto)
+
+Best for: hands-off position management with guardrails.
+
+- Auto wallet mode with local keypair (quick copy/export)
+- Automated buy/sell policy set (take-profit, stop-loss, trailing stop, partials)
+- Cooldowns and reconciliation logic to reduce 'double spend / stale state' issues
+- Fallback sell flow: split sizing, higher slippage re-quotes, bridge paths, manual send paths
+- Reserve management (fee/rent/runway buffers) and ATA rent estimation per swap
+
+#### Sentry (Sniper)
+
+Best for: signal-driven entries based on KPIs and short-term momentum.
+
+- Scans top candidates and rotates into the strongest setups
+- Flame mode can track the current Flamebar leader with rotation/cooldown rules
+- Momentum guards and rug gating to reduce bad fills on unstable tokens
+
+#### Hold
+
+Best for: 'I want to watch/hold *this specific mint* and auto-manage a basic exit.'
+
+- Up to 3 concurrent hold tabs (persisted)
+- Open a mint directly from token cards and from the Flamebar 'HODL' button
+- Config options (varies by mode): poll interval, buy %, profit %, rug severity threshold, repeat buys, 'uptick-only' gating
+- Exit logic includes profit targets plus a 'PnL fade' style exit (when green peaks then fades)
+- Dynamic slippage that increases under RPC backoff and on rug/severity events
+
+#### Follow
+
+Best for: mirroring a target wallet using your Auto wallet.
+
+- Watches a target wallet and mirrors buys with configurable sizing
+- Designed to reuse the Auto wallet secret (headless-friendly)
+
+#### Volume
+
+Best for: controlled volume cycling on a specific mint (with pacing + caps).
+
+- Can run multiple bot wallets (1–10) to cycle buys/sells
+- Configurable caps: target volume, min/max buy sizing, pacing delays, slippage cap
+- Optional 'hold tokens' amount to keep inventory instead of full cycling
+
+### Flamebar (Top PnL Leader)
+
+Implementation: `src/vista/widgets/auto/lib/flamebar.js`
+
+- Tracks a rolling performance window (default ~15m)
+- Selects a leader and prefers 'active pumps' (recent positive momentum)
+- Adds a 'hot' highlight for outsized PnL
+- Provides a one-click path into Hold via the 'HODL' action
+
+### Swap Modal
+
+Implementation: `src/vista/widgets/swap/index.js`
+
+- Phantom connect
+- Quote preview (estimated output, min received, route hops)
+- Slippage stepper and sanity checks
+- Mobile deep-link to jup.ag with desktop fallbacks
+- Throttles/pause hooks to keep the live UI responsive while open
+
+### Favorites Board
+
+Implementation: `src/vista/widgets/favboard/index.js`
+
+- Cached leaderboard + token metadata enrichment
+- Responsive layout (table on desktop, cards on mobile)
+- Quick links to token pages and live stats
 
 ![v0.0.5.3.png](v0.0.5.3.png)
----
-
-## 📈 Custom KPIs (hand-written)
-
-- Pumping Radar (PUMP) (src/vista/meme/addons/pumping.js)
-  - Short lookback with fast decay for immediacy
-  - Hard gates: min liquidity, 1h volume, price sanity
-  - Acceleration signals: 5m->1h, 1h->6h, z-scored 1h volume surprise
-  - Breakout vs recent lows, liquidity scaling, buy pressure boost
-  - Badge system: 🔥 Pumping · Warming · Calm
-
-- DEGEN Bottom Sniper (DEGEN) (src/vista/meme/addons/degen.js)
-  - Trailing 3-day history with decay and per-mint caps
-  - Gates: min liquidity/volume, price sanity
-  - Recency-weighted stats (decayed mean/std), bounce from local lows, cheapness factor
-  - Highlights coins recovering from deep pullbacks with improving volume
 
 ---
 
-## ⚙️ Data Engine
+## Use Cases (Playbooks)
 
-- Streaming pipeline (src/engine/pipeline.js)
+- Discover: use the main radar + KPIs to shortlist, then open token pages for confirmation.
+- Track a runner: watch Flamebar and open Hold for the leader to manage a lightweight plan.
+- Mirror a wallet: use Follow with a small buy percentage and strict max-hold.
+- Signal-driven entries: use Sentry for short-term setups and rotate based on momentum.
+- Controlled cycling: use Volume with pacing and a strict cap; treat it as an experiment tool.
+
+---
+
+## Custom KPIs (Hand-Written)
+
+### Pumping Radar (PUMP)
+
+Implementation: `src/vista/meme/metrics/kpi/pumping.js`
+
+- Short lookback with fast decay for immediacy
+- Hard gates: minimum liquidity, minimum volume, price sanity
+- Acceleration signals (short-to-long window transitions)
+- Badge system: Pumping / Warming / Calm
+
+### DEGEN Bottom Sniper (DEGEN)
+
+Implementation: `src/vista/meme/metrics/kpi/degen.js`
+
+- Trailing multi-day history with decay and per-mint caps
+- Gates: minimum liquidity/volume, price sanity
+- Recency-weighted stats and bounce-from-lows detection
+- Highlights coins recovering from deep pullbacks with improving volume
+
+---
+
+## Data Engine
+
+- Streaming pipeline: `src/engine/pipeline.js`
   - Ingests multiple feeds with windowed keyword scanning
-  - TokenStore for stable, NaN-safe merges; MarqueeStore for “Trending/New”
-  - Scoring + recommendations with guarded “measured-only” emission
+  - TokenStore for stable, NaN-safe merges; MarqueeStore for trending/new
+  - Scoring + recommendations with guarded 'measured-only' emission
   - Adaptive stream pause/resume hooks for UI (swap modal, etc.)
   - Ad loader + deterministic selection
 
 ---
 
-## 🛡️ Trading Safeguards (Auto Pump)
+## Trading Safeguards (Applies to the Bots)
 
-- Min order sizing: Jupiter min-in and min sell-notional enforcement
-- Fee/rent/runway reserves; ATA rent estimated per route
-- Pending credit watcher + cache-first reconciliation
-- Router cooldown on dust/no-route errors (per-mint)
-- Sell fallbacks: split sizing, slippage bumps, USDC bridge, manual v0 send
-- Dust-exit toggle with user-defined min SOL out
-
----
-
-## 🔧 Config Highlights
-
-- swap.js CFG
-  - jupiterBase, rpcUrl, auth/turnstile, platformFeeBps
-  - fee ATAs per mint, tokenDecimals hints
-  - Builders to construct Dex/Jupiter URLs for mobile/desktop
+- Min order sizing: Jupiter min-in and minimum sell-notional enforcement
+- Fee/rent/runway reserves; ATA rent estimation per route
+- Pending credit watcher + cache-first reconciliation patterns
+- Router cooldowns on dust/no-route errors (per mint)
+- Sell fallbacks: split sizing, slippage bumps, bridge paths, manual send paths
+- Dust-exit controls (when enabled) with user-defined minimum output
 
 ---
 
-## 🧪 Quick Start
+## Quick Start
 
 - Serve statically (any static host or simple file server)
-- Open the app, set a CORS-enabled RPC (header JSON supported)
-- Generate auto wallet, fund with SOL (recommend at least ~$7)
-- Set Recipient for “End & Return”, tune Buy %, Min/Max, Slippage
-- Start Auto Pump; monitor log and wallet menu
+- Open the app and set a CORS-enabled Solana RPC (optional headers supported)
+- If using bots: generate an Auto wallet and fund it with a small amount of SOL
+- Start with conservative sizing and higher slippage caps until you trust your RPC
 
 ---
 
-## 🧰 Dev CLI (auto trader)
+## Dev CLI (Auto Trader)
 
 - Validate urgent/hard-exit router cooldown bypass:
   - `node tools/trader.mjs --validate-sell-bypass`
@@ -211,6 +294,3 @@ fdv.lol is open-source and community-driven. You can help by:
 ---
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
-
-
-feat(flamebar): prefer active pumps + hot PnL animation

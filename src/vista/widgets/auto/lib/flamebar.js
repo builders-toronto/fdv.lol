@@ -152,7 +152,10 @@ function createFlamebarDom({ title, subtitle }) {
       </div>
 
       <div class="fdv-flamebar-coin" data-flamebar-coin hidden>
-        <div class="fdv-flamebar-logo" aria-hidden="true"><img data-flamebar-img alt="" /></div>
+        <div class="fdv-flamebar-logo" aria-hidden="true">
+          <img data-flamebar-img alt="" />
+          <div class="fdv-flamebar-logoSpin" data-flamebar-logo-spin aria-hidden="true"></div>
+        </div>
         <div class="fdv-flamebar-cointext">
           <div class="fdv-flamebar-sym" data-flamebar-sym></div>
           <div class="fdv-flamebar-name" data-flamebar-name></div>
@@ -174,6 +177,7 @@ function createFlamebarDom({ title, subtitle }) {
     meta: card.querySelector('[data-flamebar-meta]'),
     coin: card.querySelector('[data-flamebar-coin]'),
     img: card.querySelector('[data-flamebar-img]'),
+    logoSpin: card.querySelector('[data-flamebar-logo-spin]'),
     sym: card.querySelector('[data-flamebar-sym]'),
     name: card.querySelector('[data-flamebar-name]'),
     mint: card.querySelector('[data-flamebar-mint]'),
@@ -305,7 +309,12 @@ export function initFlamebar(mountEl, opts = {}) {
       card.dataset.tokenHydrate = '';
     }
 
-    if (els.coin) els.coin.hidden = !has;
+    // Show the coin row in "loading" state so we can display the logo spinner.
+    if (els.coin) els.coin.hidden = false;
+    try { card.classList.toggle('is-loading', !has); } catch {}
+    try {
+      if (els.logoSpin) els.logoSpin.hidden = !!has;
+    } catch {}
 
     if (!has) {
       if (els.pnl) els.pnl.textContent = '—';
@@ -313,9 +322,24 @@ export function initFlamebar(mountEl, opts = {}) {
       if (els.meta) els.meta.textContent = 'Waiting for snapshot…';
       if (els.fill) els.fill.style.width = '0%';
       frame.style.setProperty('--fdv-flame-alpha', '0.35');
-      try { if (els.mint) els.mint.setAttribute('href', '#'); } catch {}
+      try {
+        if (els.sym) els.sym.textContent = '—';
+        if (els.name) els.name.textContent = '';
+        if (els.mint) {
+          els.mint.textContent = '';
+          els.mint.setAttribute('href', '#');
+        }
+      } catch {}
+      try {
+        if (els.hodlBtn) {
+          els.hodlBtn.dataset.mint = '';
+          els.hodlBtn.disabled = true;
+        }
+      } catch {}
       return;
     }
+
+    try { if (els.hodlBtn) els.hodlBtn.disabled = false; } catch {}
 
     if (els.pnl) els.pnl.textContent = _fmtPct(pnlPct);
     try {
