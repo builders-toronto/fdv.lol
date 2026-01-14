@@ -295,10 +295,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-feat(ui): improve charts/cards; add likes; refine links + embeds
-
-Fix flamebar to mount first PnL immediately (reduces drag)
-Tweak card styling across views
-Redesign trend and pair link UI
-Add likes feature and wire it to the backend
-Move hover dextools into an embed under each hold bot
+feat(hold): make DEXTools collapsible + disable when hidden
