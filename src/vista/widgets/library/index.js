@@ -453,6 +453,26 @@ export function createOpenLibraryButton({ label = "Favorites", className = "fdv-
 }
 
 export function bindFavoriteButtons(root = document) {
+  // Make binding idempotent: listeners only once per root, but allow re-scan/hydrate.
+  try {
+    if (!root.__fdvLibFavBindWired) {
+      root.__fdvLibFavBindWired = true;
+
+      root.addEventListener("click", (e) => {
+        const el = e.target.closest("[data-fav-btn]");
+        if (!el) return;
+        const mint = el.getAttribute("data-mint");
+        toggleFavorite(mint);
+      });
+
+      root.addEventListener("click", (e) => {
+        const open = e.target.closest("[data-open-library]");
+        if (!open) return;
+        openLibraryModal();
+      });
+    }
+  } catch {}
+
   // de-dup count hydration per mint
   const mints = new Set();
   root.querySelectorAll("[data-fav-send],[data-fav-btn]").forEach((btn) => {
@@ -473,19 +493,6 @@ export function bindFavoriteButtons(root = document) {
     const c = await fetchFavCount(mint);
     document.querySelectorAll(`[data-fav-send][data-mint="${CSS.escape(mint)}"],[data-fav-btn][data-mint="${CSS.escape(mint)}"]`)
       .forEach((b) => { b.querySelector(".fdv-lib-count").textContent = String(c); });
-  });
-
-  root.addEventListener("click", (e) => {
-    const el = e.target.closest("[data-fav-btn]");
-    if (!el) return;
-    const mint = el.getAttribute("data-mint");
-    toggleFavorite(mint);
-  });
-
-  root.addEventListener("click", (e) => {
-    const open = e.target.closest("[data-open-library]");
-    if (!open) return;
-    openLibraryModal();
   });
 }
 

@@ -1,4 +1,3 @@
-import { createSendFavoriteButton } from '../../widgets/library/index.js';
 import { sparklineSVG } from '../render/sparkline.js';
 import { pctChipsHTML } from '../render/chips.js';
 import { EXPLORER, FALLBACK_LOGO, JUP_SWAP, shortAddr } from '../../../config/env.js';
@@ -10,6 +9,36 @@ import { formatPriceParts, toDecimalString } from '../../../lib/formatPrice.js';
 const __FDV_FLOAT_INIT = '__fdvCardFloatInit';
 const __FDV_FLOAT_STATE = '__fdvCardFloatState';
 const __FDV_COPY_MINT_INIT = '__fdvCopyMintInit';
+const __FDV_LIKE_INIT = '__fdvCardLikeInit';
+const __FDV_LIKE_HYDRATE_INIT = '__fdvCardLikeHydrateInit';
+
+function _runIdle(fn) {
+  try {
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(() => { try { fn(); } catch {} }, { timeout: 200 });
+    } else {
+      setTimeout(() => { try { fn(); } catch {} }, 0);
+    }
+  } catch {
+    try { setTimeout(() => { try { fn(); } catch {} }, 0); } catch {}
+  }
+}
+
+function _scheduleLikeHydrate(root = document) {
+  try {
+    if (typeof window === 'undefined') return;
+    if (window.__fdvLikeHydratePending) return;
+    window.__fdvLikeHydratePending = true;
+
+    _runIdle(async () => {
+      window.__fdvLikeHydratePending = false;
+      try {
+        const mod = await import('../../widgets/library/index.js');
+        if (typeof mod?.bindFavoriteButtons === 'function') mod.bindFavoriteButtons(root);
+      } catch {}
+    });
+  } catch {}
+}
 
 function _flashMintCopyLabel(mintEl) {
   if (!mintEl) return;
@@ -298,6 +327,49 @@ try {
   }
 } catch {}
 
+try {
+  if (typeof window !== 'undefined' && !window[__FDV_LIKE_INIT]) {
+    window[__FDV_LIKE_INIT] = true;
+
+    document.addEventListener('click', async (e) => {
+      const t = e?.target;
+      if (!t) return;
+
+      // Only intercept the first interaction for un-wired like buttons.
+      const btn = t.closest?.('[data-fav-send][data-mint]');
+      if (!btn) return;
+      if (btn.dataset?.fdvlWired === '1') return;
+
+      try { e.preventDefault?.(); } catch {}
+      try { e.stopPropagation?.(); } catch {}
+
+      try {
+        const mint = btn.getAttribute('data-mint') || btn.dataset?.mint || '';
+        const symbol = btn.getAttribute('data-token-symbol') || btn.dataset?.tokenSymbol || '';
+        const name = btn.getAttribute('data-token-name') || btn.dataset?.tokenName || '';
+        const imageUrl = btn.getAttribute('data-token-image') || btn.dataset?.tokenImage || '';
+
+        const mod = await import('../../widgets/library/index.js');
+        if (mod?.ensureSendFavoriteButton) {
+          mod.ensureSendFavoriteButton(btn.parentElement || document.body, { mint, symbol, name, imageUrl, className: 'micro-fav' });
+        } else if (mod?.createSendFavoriteButton) {
+          mod.createSendFavoriteButton({ mint, symbol, name, imageUrl, className: 'micro-fav' });
+        }
+
+        // Re-dispatch click so the freshly wired handler can run.
+        try { btn.click(); } catch {}
+      } catch {}
+    });
+  }
+} catch {}
+
+try {
+  if (typeof window !== 'undefined' && !window[__FDV_LIKE_HYDRATE_INIT]) {
+    window[__FDV_LIKE_HYDRATE_INIT] = true;
+    _scheduleLikeHydrate(document);
+  }
+} catch {}
+
 function escAttr(v) {
   const s = String(v ?? '');
   return s
@@ -407,8 +479,18 @@ export function coinCard(it) {
 
   const micro = `
     <div class="micro" data-micro>
-      ${pctChipsHTML(it._chg)}
-      ${sparklineSVG(it._chg)}
+      <div class="micro-left" data-micro-chips>${pctChipsHTML(it._chg)}</div>
+      <button
+        type="button"
+        class="iconbtn micro-fav"
+        data-fav-send
+        data-mint="${escAttr(it.mint)}"
+        data-token-symbol="${escAttr(it.symbol || '')}"
+        data-token-name="${escAttr(it.name || '')}"
+        data-token-image="${escAttr(rawlogo)}"
+        aria-label="Like"
+        data-tooltip="Like"
+      ><span class="fdv-lib-heart" aria-hidden="true">❤️</span><span class="fdv-lib-count">0</span></button>
     </div>`;
 
   const swapBtn = `
@@ -477,7 +559,7 @@ export function coinCard(it) {
     <div class="kv"><div class="k">24h Volume</div><div class="v v-vol24">${fmtUsd(it.volume?.h24)}</div></div>
     <div class="kv"><div class="k">Liquidity</div><div class="v v-liq">${fmtUsd(it.liquidityUsd)}</div></div>
     <div class="kv"><div class="k">FDV</div><div class="v v-fdv">${it.fdv ? fmtUsd(it.fdv) : '—'}</div></div>
-    <div class="kv"><div class="k">Pair</div><div class="v v-pair">${it.pairUrl ? `<a class="t-pair" href="${escAttr(it.pairUrl)}" target="_blank" rel="noopener">Dexscreener</a>` : '—'}</div></div>
+    <div class="kv"><div class="k">Trend</div><div class="v v-spark" data-spark>${sparklineSVG(it._chg, { w: 160, h: 28 })}</div></div>
   </div>
 
   ${micro}
@@ -642,27 +724,24 @@ export function updateCardDOM(el, it) {
     if (fdvEl.textContent !== txt) fdvEl.textContent = txt;
   }
 
-  const pairWrap = el.querySelector('.v-pair');
-  if (pairWrap) {
-    const link = pairWrap.querySelector('.t-pair');
-    if (it.pairUrl) {
-      if (!link) {
-        pairWrap.innerHTML = `<a class="t-pair" href="${it.pairUrl}" target="_blank" rel="noopener">Dexscreener</a>`;
-      } else if (link.getAttribute('href') !== it.pairUrl) {
-        link.setAttribute('href', it.pairUrl);
-      }
-    } else if (link) {
-      pairWrap.textContent = '—';
-    }
+  const sparkWrap = el.querySelector('[data-spark]');
+  if (sparkWrap) {
+    const chg = Array.isArray(it._chg) ? it._chg : [];
+    const spark = typeof sparklineSVG === 'function' ? sparklineSVG(chg, { w: 160, h: 28 }) : '';
+    if (sparkWrap.innerHTML !== spark) sparkWrap.innerHTML = spark;
   }
 
   const micro = el.querySelector('[data-micro]');
   if (micro) {
     const chg = Array.isArray(it._chg) ? it._chg : [];
     const chips = typeof pctChipsHTML === 'function' ? pctChipsHTML(chg) : '';
-    const spark = typeof sparklineSVG === 'function' ? sparklineSVG(chg) : '';
-    const html = `${chips}${spark}`;
-    if (micro.innerHTML !== html) micro.innerHTML = html;
+    const chipsWrap = micro.querySelector('[data-micro-chips]');
+    if (chipsWrap) {
+      if (chipsWrap.innerHTML !== chips) chipsWrap.innerHTML = chips;
+    } else {
+      // Fallback for older markup
+      if (micro.innerHTML !== chips) micro.innerHTML = chips;
+    }
   }
 }
 
@@ -684,22 +763,6 @@ export function buildOrUpdateCard(existing, token) {
   existing.style.willChange = 'transform,opacity';
   existing.classList.remove('is-exiting');
   return existing;
-}
-
-function attachFavorite(root, token) {
-  try {
-    const top = root.querySelector('.top') || root;
-    if (!top.querySelector(`[data-fav-send][data-mint="${token.mint}"]`)) {
-      const favBtn = createSendFavoriteButton({
-        mint: token.mint,
-        symbol: token.symbol || '',
-        name: token.name || '',
-        imageUrl: token.logoURI || token.imageUrl || ''
-      });
-      favBtn.style.marginLeft = 'auto';
-      top.appendChild(favBtn);
-    }
-  } catch {}
 }
 
 export function patchKeyedGridAnimated(container, nextItems, keyFn, buildFn) {
@@ -738,6 +801,9 @@ export function patchKeyedGridAnimated(container, nextItems, keyFn, buildFn) {
   }
 
   container.appendChild(frag);
+
+  // New cards may have new mints; hydrate like counts lazily.
+  _scheduleLikeHydrate(container);
 
   const newNodes = Array.from(container.children);
   requestAnimationFrame(() => {

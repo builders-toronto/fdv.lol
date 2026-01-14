@@ -10,6 +10,8 @@ const DEFAULTS = {
   nearHighWithinPct: 0.02,
   recentWeight: 2.0,
   hotPnlPct: 30,
+  bootstrapScanLimit: 250,
+  bootstrapMinPnlPct: 0.01,
   title: 'Prospect',
   subtitle: 'Top PnL (15m)',
 };
@@ -80,6 +82,29 @@ function extractName(item) {
     item?.token?.name ??
     ''
   ).trim() || '';
+}
+
+function extractInstantPnlPct(item) {
+  const change = item?.change || item?.changes || item?.priceChange || {};
+  const chgArr = Array.isArray(item?._chg) ? item._chg : [];
+  return _num(
+    item?.pnl15m ??
+    item?.pnlPct ??
+    item?.pnl ??
+    item?.change15m ??
+    item?.chg15m ??
+    change?.m15 ??
+    item?.change5m ??
+    item?.chg5m ??
+    change?.m5 ??
+    chgArr?.[0] ??
+    item?.change1h ??
+    item?.chg1h ??
+    change?.h1 ??
+    chgArr?.[1] ??
+    change?.h24 ??
+    chgArr?.[3]
+  );
 }
 
 function computeWindowPnlPct(rec) {
@@ -194,6 +219,7 @@ export function initFlamebar(mountEl, opts = {}) {
   const store = new Map();
   let leaderMint = null;
   let timer = null;
+  let bootstrappedOnce = false;
 
   const getSnapshot = typeof options.getSnapshot === 'function' ? options.getSnapshot : () => null;
   const isActive = typeof options.isActive === 'function' ? options.isActive : () => true;
@@ -237,6 +263,52 @@ export function initFlamebar(mountEl, opts = {}) {
 
     store.set(mint, rec);
     return rec;
+  }
+
+  function seedFromInstantPnl(mint, nowTs, price, pnlPct, meta) {
+    const p = _num(price);
+    const pnl = _num(pnlPct);
+    if (!mint || !Number.isFinite(nowTs) || p === null || p <= 0 || pnl === null) return null;
+
+    const base = p / (1 + (pnl / 100));
+    if (!Number.isFinite(base) || base <= 0) return null;
+
+    const baseTs = nowTs - Math.max(1000, Math.min(options.windowMs - 1, options.pumpLookbackMs || 0));
+    try { pushPoint(mint, baseTs, base, meta); } catch {}
+    return pushPoint(mint, nowTs, p, meta);
+  }
+
+  function bootstrapLeaderFromSnapshot(items, nowTs) {
+    if (bootstrappedOnce || leaderMint) return null;
+    const list = Array.isArray(items) ? items : [];
+    const lim = Number.isFinite(options.bootstrapScanLimit) && options.bootstrapScanLimit > 0
+      ? Math.floor(options.bootstrapScanLimit)
+      : list.length;
+    const minPnl = Number.isFinite(options.bootstrapMinPnlPct) ? options.bootstrapMinPnlPct : 0;
+
+    for (let i = 0; i < Math.min(list.length, lim); i++) {
+      const item = list[i];
+      const mint = extractMint(item);
+      if (!mint) continue;
+      const price = extractPriceUsd(item);
+      if (price === null || price <= 0) continue;
+
+      const instantPnl = extractInstantPnlPct(item);
+      if (instantPnl === null || instantPnl <= 0 || instantPnl < minPnl) continue;
+
+      const rec = seedFromInstantPnl(mint, nowTs, price, instantPnl, {
+        symbol: extractSymbol(item),
+        name: extractName(item),
+        image: extractImage(item),
+      });
+
+      if (rec) {
+        bootstrappedOnce = true;
+        leaderMint = mint;
+        return { rec, pnlPct: instantPnl };
+      }
+    }
+    return null;
   }
 
   function pickLeader(nowTs, mode = 'pump') {
@@ -403,6 +475,15 @@ export function initFlamebar(mountEl, opts = {}) {
       return;
     }
 
+    if (!leaderMint) {
+      const boot = bootstrapLeaderFromSnapshot(items, nowTs);
+      if (boot?.rec) {
+        const recent = computeRecentPnlPct(boot.rec, nowTs, options.pumpLookbackMs);
+        render({ rec: boot.rec, pnlPct: boot.pnlPct, recentPnlPct: recent, sampleCount: boot.rec?.series?.length || 0 });
+        return;
+      }
+    }
+
     for (const item of items) {
       const mint = extractMint(item);
       if (!mint) continue;
@@ -415,8 +496,6 @@ export function initFlamebar(mountEl, opts = {}) {
       });
     }
 
-    // Prefer pump candidates; if none qualify yet (e.g. startup / thin samples),
-    // fall back to best positive window PnL so the widget isn't blank.
     let { best, bestPnl, bestRecentPnl } = pickLeader(nowTs, 'pump');
     if (!best) {
       ({ best, bestPnl, bestRecentPnl } = pickLeader(nowTs, 'pnl'));
