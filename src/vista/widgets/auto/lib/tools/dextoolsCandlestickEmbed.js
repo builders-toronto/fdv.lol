@@ -8,6 +8,7 @@ export function createDextoolsCandlestickEmbed({
 	retryDelayMs = 650,
 	now = () => Date.now(),
 	title = "DEXTools Candles",
+	preserveIframeOnInactive = true,
 } = {}) {
 	let _rootEl = null;
 	let _iframeEl = null;
@@ -23,6 +24,7 @@ export function createDextoolsCandlestickEmbed({
 	let _loadSeq = 0;
 	let _loadTimer = null;
 	let _loadRetryCount = 0;
+	let _lastGoodUrl = "";
 
 	const _pairCache = new Map(); // mint -> { pair, at, pendingPromise }
 
@@ -66,6 +68,14 @@ export function createDextoolsCandlestickEmbed({
 			_openEl.setAttribute("href", u);
 			_openEl.removeAttribute("aria-disabled");
 		} catch {}
+	}
+
+	function _currentIframeSrc() {
+		try {
+			return String(_iframeEl?.getAttribute?.("src") || _iframeEl?.src || "").trim();
+		} catch {
+			return "";
+		}
 	}
 
 	function _openExternal() {
@@ -248,6 +258,13 @@ export function createDextoolsCandlestickEmbed({
 			}
 
 			if (!force && _mint === m && _url) return;
+			if (force && _mint === m && _url) {
+				// Some callers use "force" when panels/tabs toggle.
+				// Avoid blanking/reloading a working iframe unless explicitly asked via reload().
+				_setOpenLink(_url);
+				if (_mintEl) _mintEl.textContent = m;
+				return;
+			}
 
 			_mint = m;
 			_pair = "";
@@ -258,7 +275,8 @@ export function createDextoolsCandlestickEmbed({
 
 			if (_mintEl) _mintEl.textContent = m;
 			if (_hintEl) _hintEl.innerHTML = `Resolving DEXTools pool…`;
-			if (_iframeEl) _iframeEl.src = "about:blank";
+			// Keep the current iframe content visible while resolving the next pool,
+			// otherwise the UI can flash white and never recover if the new load is blocked.
 			_setOpenLink("");
 
 			const r = await _resolvePairForMint(m);
@@ -272,10 +290,14 @@ export function createDextoolsCandlestickEmbed({
 
 			_pair = String(r.pair || "").trim();
 			_url = _widgetUrlForPair(_pair);
+			_lastGoodUrl = _url;
 			_setOpenLink(_url);
 
 			if (_hintEl) _hintEl.innerHTML = `Pool: <code>${String(_pair).slice(0, 10)}…</code> via Dexscreener · Loading…`;
-			if (_iframeEl && _url) _iframeEl.src = _url;
+			if (_iframeEl && _url) {
+				const cur = _currentIframeSrc();
+				if (cur !== _url) _iframeEl.src = _url;
+			}
 
 			_scheduleLoadTimeout(seq);
 		} catch {
@@ -313,17 +335,23 @@ export function createDextoolsCandlestickEmbed({
 			if (!_active) {
 				if (_loadTimer) clearTimeout(_loadTimer);
 				_loadTimer = null;
-				if (_iframeEl) _iframeEl.src = "about:blank";
-				if (_hintEl) _hintEl.innerHTML = `Chart paused (tab inactive).`;
+				if (!preserveIframeOnInactive) {
+					try {
+						if (_iframeEl) _iframeEl.src = "about:blank";
+					} catch {}
+					if (_hintEl) _hintEl.innerHTML = `Chart paused (tab inactive).`;
+				} else {
+					if (_hintEl && !_currentIframeSrc()) _hintEl.innerHTML = `Chart paused (tab inactive).`;
+				}
 				return;
 			}
 		} catch {}
-		void refresh({ force: true });
+		void refresh({ force: false });
 	}
 
 	function mount() {
 		_renderBase();
-		void refresh({ force: true });
+		void refresh({ force: false });
 	}
 
 	function unmount({ removeEl = false } = {}) {
