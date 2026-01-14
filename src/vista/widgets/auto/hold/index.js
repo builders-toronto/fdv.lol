@@ -38,6 +38,7 @@ const DEFAULTS = Object.freeze({
 	rugSevThreshold: HOLD_RUG_DEFAULT_SEV_THRESHOLD,
 	repeatBuy: false,
 	uptickEnabled: true,
+	dextoolsOpen: true,
 });
 
 const UPTICK_PROBE_SOL = 0.01; // fixed probe amount for "price" signal
@@ -235,6 +236,7 @@ function _coerceState(obj) {
 		rugSevThreshold: clamp(safeNum(parsed.rugSevThreshold, DEFAULTS.rugSevThreshold), 1, 4),
 		repeatBuy: !!parsed.repeatBuy,
 		uptickEnabled: !!parsed.uptickEnabled,
+		dextoolsOpen: parsed.dextoolsOpen === undefined ? DEFAULTS.dextoolsOpen : !!parsed.dextoolsOpen,
 		mint: String(parsed.mint || "").trim(),
 		enabled: !!parsed.enabled,
 	};
@@ -1522,9 +1524,15 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 					</div>
 				</div>
 
-				<div>
-					<div data-hold-dextools></div>
-				</div>
+				<details data-hold-dextools-details ${state.dextoolsOpen ? "open" : ""} style="margin-top:10px;">
+					<summary style="cursor:pointer; user-select:none; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 10px; border:1px solid rgba(122,222,255,.14); border-radius:10px; background:rgba(0,0,0,.18);">
+						<span style="font-weight:800; letter-spacing:.2px; color:var(--text);">DEXTools</span>
+						<span data-hold-dextools-summary style="font-size:12px; color:var(--muted);"></span>
+					</summary>
+					<div style="margin-top:8px;">
+						<div data-hold-dextools></div>
+					</div>
+				</details>
 
 				<div class="fdv-hold-chat" style="margin-top:12px; padding-top:10px; border-top:1px solid rgba(122,222,255,.14);">
 					<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
@@ -1549,6 +1557,8 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		startBtn = root.querySelector("[data-hold-start]");
 		stopBtn = root.querySelector("[data-hold-stop]");
 		chartBtn = root.querySelector("[data-hold-chart]");
+		const dextoolsDetailsEl = root.querySelector("[data-hold-dextools-details]");
+		const dextoolsSummaryEl = root.querySelector("[data-hold-dextools-summary]");
 		const dextoolsWrapEl = root.querySelector("[data-hold-dextools]");
 		const chatEl = root.querySelector("[data-hold-chat]");
 		try {
@@ -1560,6 +1570,52 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 
 		updateUI();
 		// Chat is mounted on tab activation to avoid initializing giscus in hidden panels.
+
+		const _setDextoolsSummary = (open) => {
+			try {
+				if (!dextoolsSummaryEl) return;
+				dextoolsSummaryEl.textContent = open ? "Expanded · click to hide" : "Hidden · click to show";
+			} catch {}
+		};
+
+		const _ensureDextoolsMounted = () => {
+			try {
+				if (!dextoolsWrapEl) return;
+				if (_dextoolsChart) return;
+				_dextoolsChart = createDextoolsCandlestickEmbed({
+					containerEl: dextoolsWrapEl,
+					chainId: "solana",
+					title: "DEXTools Candles",
+					getMint: () => String(mintEl?.value || state.mint || "").trim(),
+				});
+				_dextoolsChart.mount();
+				_dextoolsChart.setActive(!!_isActive);
+			} catch {}
+		};
+
+		const _disableDextools = () => {
+			try {
+				_dextoolsChart?.setActive?.(false);
+				_dextoolsChart?.unmount?.({ removeEl: true });
+			} catch {}
+			_dextoolsChart = null;
+		};
+
+		_setDextoolsSummary(!!state.dextoolsOpen);
+
+		try {
+			if (dextoolsDetailsEl) {
+				dextoolsDetailsEl.addEventListener("toggle", () => {
+					try {
+						state.dextoolsOpen = !!dextoolsDetailsEl.open;
+						_persist();
+						_setDextoolsSummary(!!state.dextoolsOpen);
+						if (state.dextoolsOpen) _ensureDextoolsMounted();
+						else _disableDextools();
+					} catch {}
+				});
+			}
+		} catch {}
 
 		const onChange = () => {
 			_readUiToState();
@@ -1604,18 +1660,10 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			} catch {}
 		});
 
-		// Embedded DEXTools chart: initializes per Hold tab; no hover listeners (less lag).
+		// Embedded DEXTools chart: default open, but fully disabled/unmounted when user hides it.
 		try {
-			if (dextoolsWrapEl) {
-				_dextoolsChart = createDextoolsCandlestickEmbed({
-					containerEl: dextoolsWrapEl,
-					chainId: "solana",
-					title: "DEXTools Candles",
-					getMint: () => String(mintEl?.value || state.mint || "").trim(),
-				});
-				_dextoolsChart.mount();
-				_dextoolsChart.setActive(!!_isActive);
-			}
+			if (state.dextoolsOpen) _ensureDextoolsMounted();
+			else _disableDextools();
 		} catch {}
 	}
 
