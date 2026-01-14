@@ -955,8 +955,8 @@ input[type="checkbox"]:disabled{
 }
 
 .holdCoin{
-  font-weight:800;
-  border-color: color-mix(in oklab, var(--accent2) 45%, rgba(122,222,255,.28));
+  font-weight:600;
+  /* border-color: color-mix(in oklab, var(--accent2) 45%, rgba(122,222,255,.28)); */
   background: transparent;
   transition: transform .14s ease, box-shadow .14s ease, filter .14s ease, background .14s ease;
 }
@@ -1129,23 +1129,24 @@ input[type="checkbox"]:disabled{
 }
 .card .micro .micro-left{ min-width: 0; flex: 1 1 auto; }
 .card .micro .micro-fav{
-  width: auto;
-  min-width: 52px;
-  height: 28px;
-  padding: 0 8px;
-  margin: 0;
-  background: transparent;
-  border: none;
-  border-radius: 10px;
-  font-size: 14px;
-  line-height: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  position: relative;
-  overflow: hidden;
-  transform-origin: center;
+    position: relative;
+    width: 52px;
+    /* min-width: 42px; */
+    height: 34px;
+    /* padding: 0; */
+    margin: 0;
+    background: transparent;
+    border: none;
+    /* border-radius: 10px; */
+    font-size: 14px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    flex-direction: row;
+    overflow: hidden;
+    transform-origin: center;
 }
 .card .micro .micro-fav::after{
   content: '';
@@ -1172,13 +1173,25 @@ input[type="checkbox"]:disabled{
   background: rgba(255, 110, 180, .16);
 } */
 .card .micro .micro-fav .fdv-lib-count{
-  display: inline-block;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
-  opacity: .9;
+    position: absolute;
+    top: 19px;
+    right: 0px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    /* min-width: 16px; */
+    /* height: 16px; */
+    /* padding: 0 5px; */
+    /* border-radius: 999px; */
+    /* background: rgba(0, 0, 0, .92); */
+    /* border: 1px solid rgba(255, 110, 180, .55); */
+    /* box-shadow: 0 4px 12px rgba(0, 0, 0, .35); */
+    /* font-size: 10px; */
+    font-weight: 700;
+    /* line-height: 1; */
+    /* opacity: .95; */
 }
-.card .micro .micro-fav .fdv-lib-heart{ margin:0; display: inline-block; }
+.card .micro .micro-fav .fdv-lib-heart{ margin:0; display: inline-block; font-size: 22px; line-height: 1; }
 
 @keyframes fdvFavPop{
   0%{ transform: scale(.88); }
@@ -1235,7 +1248,7 @@ input[type="checkbox"]:disabled{
 .micro .pct {
   display: inline-block;
   position: relative;
-  font-size: 11px; line-height: 1;
+  font-size: 13px; line-height: 1;
   padding: 13px 6px 4px 15px;
   border-radius: 999px;
   border: 1px solid transparent;
