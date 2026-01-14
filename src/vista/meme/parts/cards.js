@@ -513,7 +513,7 @@ export function coinCard(it) {
       data-hold-btn
       data-mint="${escAttr(it.mint)}"
       title="Open Hold bot for this mint"
-    >Hold</button>`;
+    >HODL</button>`;
 
   return `
   <div class="card-rank" aria-hidden="true"></div>
@@ -568,8 +568,8 @@ export function coinCard(it) {
     ${socialsHtml ? `<div class="actions" data-socials>${socialsHtml}<a class="social-link iconbtn t-explorer" href="${escAttr(EXPLORER(it.mint))}" target="_blank" rel="noopener noreferrer" aria-label="Solscan" title="Solscan" data-tooltip="Solscan">${iconFor('solscan')}</a></div>` : ''}
     
     <div class="btnWrapper">
-      ${holdBtn}
       ${swapBtn}
+      ${holdBtn}
     </div>
   </div>
 </article>`;
