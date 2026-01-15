@@ -58,7 +58,7 @@ export function normalizeSocial(s){
 
 export function iconFor(platform){
   // Make icons scale with text by using 1em (was fixed 10px). Keeps backward look (parent can size via font-size).
-  const svg = (d)=>`<svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" aria-hidden="true">${d}</svg>`;
+  const svg = (d)=>`<svg width="2em" height="2em" viewBox="0 0 24 24" fill="none" aria-hidden="true">${d}</svg>`;
   const stroke = `stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"`;
 
   switch((platform||'').toLowerCase()){

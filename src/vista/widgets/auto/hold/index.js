@@ -1520,7 +1520,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 					<div class="fdv-actions-right">
 						<button data-hold-start>Start</button>
 						<button data-hold-stop>Stop</button>
-						<button data-hold-chart title="Open Dexscreener chart">Chart 📊</button>
+						<button data-hold-chart title="Open Dexscreener chart">Chart</button>
 					</div>
 				</div>
 
