@@ -1,4 +1,6 @@
 import { getTokenLogoPlaceholder, queueTokenLogoLoad } from '../../../../core/ipfs.js';
+import { getRugSignalForMint } from '../../../meme/metrics/kpi/pumping.js';
+import { MINT_RUG_BLACKLIST_MS, RUG_FORCE_SELL_SEVERITY, RUG_QUOTE_SHOCK_FRAC } from './constants.js';
 
 const DEFAULTS = {
   windowMs: 15 * 60 * 1000,
@@ -7,6 +9,11 @@ const DEFAULTS = {
   switchMarginPct: 0.25,
   pumpLookbackMs: 60 * 1000,
   minRecentPnlPct: 0.05,
+  minRecentPnlPnlModePct: -2.5,
+  maxDrawdownFromHighPct: RUG_QUOTE_SHOCK_FRAC,
+  respectMintBlacklist: true,
+  rugSevThreshold: RUG_FORCE_SELL_SEVERITY,
+  rugBlacklistMs: MINT_RUG_BLACKLIST_MS,
   nearHighWithinPct: 0.02,
   recentWeight: 2.0,
   hotPnlPct: 30,
@@ -153,6 +160,69 @@ function computeWindowStats(rec) {
   const last = _num(s[s.length - 1]?.p);
   if (!Number.isFinite(lo) || !Number.isFinite(hi) || first === null || last === null) return null;
   return { lo, hi, first, last };
+}
+
+function _getMintBlacklistMap() {
+  try {
+    const map = window?._fdvMintBlacklist;
+    return map && typeof map.get === 'function' ? map : null;
+  } catch {
+    return null;
+  }
+}
+
+function isMintBlacklisted(mint) {
+  try {
+    const m = String(mint || '').trim();
+    if (!m) return false;
+    const map = _getMintBlacklistMap();
+    if (!map) return false;
+
+    const rec = map.get(m);
+    if (!rec) return false;
+
+    // Different modules use either a number(untilMs) or an object({until}).
+    const until = typeof rec === 'number' ? rec : Number(rec?.until || 0);
+    if (!(until > Date.now())) {
+      try { map.delete(m); } catch {}
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function setMintBlacklist(mint, ms) {
+  try {
+    const m = String(mint || '').trim();
+    if (!m) return false;
+    if (typeof window === 'undefined') return false;
+    if (!window._fdvMintBlacklist) window._fdvMintBlacklist = new Map();
+    const map = window._fdvMintBlacklist;
+    const prev = map.get(m);
+    const prevCount = typeof prev === 'object' && prev ? Number(prev.count || 0) : 0;
+    const until = Date.now() + Math.max(5_000, Number(ms || 0));
+    map.set(m, { until, count: prevCount + 1, lastAt: Date.now() });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getRugSig(mint) {
+  try {
+    return typeof getRugSignalForMint === 'function' ? (getRugSignalForMint(mint) || null) : null;
+  } catch {
+    return null;
+  }
+}
+
+function drawdownFromHighFrac(rec) {
+  const st = computeWindowStats(rec);
+  if (!st || !Number.isFinite(st.hi) || !(st.hi > 0) || st.last === null) return null;
+  const dd = (st.hi - st.last) / st.hi;
+  return Number.isFinite(dd) ? dd : null;
 }
 
 function createFlamebarDom({ title, subtitle }) {
@@ -311,6 +381,51 @@ export function initFlamebar(mountEl, opts = {}) {
     return null;
   }
 
+  function isRejectedMint(mint, rec, nowTs) {
+    try {
+      const m = String(mint || '').trim();
+      if (!m) return { reject: true, reason: 'missing' };
+
+      if (options.respectMintBlacklist && isMintBlacklisted(m)) {
+        return { reject: true, reason: 'blacklisted' };
+      }
+
+      const sig = getRugSig(m);
+      const sev = Number(sig?.sev ?? 0);
+      const sevThr = Number.isFinite(options.rugSevThreshold) ? options.rugSevThreshold : null;
+
+      // Treat high severity as a reject even before it flips `rugged`.
+      if ((sig?.rugged === true) || (sevThr !== null && Number.isFinite(sev) && sev >= sevThr)) {
+        try { setMintBlacklist(m, options.rugBlacklistMs); } catch {}
+        return { reject: true, reason: 'rug', sev };
+      }
+
+      if (rec) {
+        const dd = drawdownFromHighFrac(rec);
+        if (dd !== null && Number.isFinite(options.maxDrawdownFromHighPct) && dd >= options.maxDrawdownFromHighPct) {
+          // Dumped too hard from its own recent high.
+          try { setMintBlacklist(m, options.rugBlacklistMs); } catch {}
+          return { reject: true, reason: 'drawdown', dd };
+        }
+
+        const recent = computeRecentPnlPct(rec, nowTs, options.pumpLookbackMs);
+        if (
+          recent !== null &&
+          Number.isFinite(options.minRecentPnlPnlModePct) &&
+          recent < options.minRecentPnlPnlModePct
+        ) {
+          // Fast downside momentum.
+          try { setMintBlacklist(m, Math.min(5 * 60 * 1000, options.rugBlacklistMs)); } catch {}
+          return { reject: true, reason: 'recent-drop', recent };
+        }
+      }
+
+      return { reject: false, reason: '' };
+    } catch {
+      return { reject: false, reason: '' };
+    }
+  }
+
   function pickLeader(nowTs, mode = 'pump') {
     const requirePump = mode !== 'pnl';
     let best = null;
@@ -321,6 +436,9 @@ export function initFlamebar(mountEl, opts = {}) {
     for (const rec of store.values()) {
       if (!rec) continue;
       if (nowTs - rec.lastSeenAt > (options.windowMs * 2)) continue;
+
+      const rej = isRejectedMint(rec.mint, rec, nowTs);
+      if (rej?.reject) continue;
 
       const pnl = computeWindowPnlPct(rec);
       if (pnl === null || pnl <= 0) continue;
@@ -337,6 +455,14 @@ export function initFlamebar(mountEl, opts = {}) {
             const gapPct = (st.hi - st.last) / st.hi;
             if (Number.isFinite(gapPct) && gapPct > options.nearHighWithinPct) continue;
           }
+        }
+      }
+
+      // Even in PnL-only fallback mode, don't promote actively dumping names.
+      if (!requirePump) {
+        const recentPnl = computeRecentPnlPct(rec, nowTs, options.pumpLookbackMs);
+        if (recentPnl !== null && Number.isFinite(options.minRecentPnlPnlModePct) && recentPnl < options.minRecentPnlPnlModePct) {
+          continue;
         }
       }
 
@@ -478,9 +604,15 @@ export function initFlamebar(mountEl, opts = {}) {
     if (!leaderMint) {
       const boot = bootstrapLeaderFromSnapshot(items, nowTs);
       if (boot?.rec) {
+        // Do not bootstrap into a known-bad mint.
+        const rej = isRejectedMint(boot.rec.mint, boot.rec, nowTs);
+        if (rej?.reject) {
+          leaderMint = null;
+        } else {
         const recent = computeRecentPnlPct(boot.rec, nowTs, options.pumpLookbackMs);
         render({ rec: boot.rec, pnlPct: boot.pnlPct, recentPnlPct: recent, sampleCount: boot.rec?.series?.length || 0 });
         return;
+        }
       }
     }
 
@@ -496,6 +628,17 @@ export function initFlamebar(mountEl, opts = {}) {
       });
     }
 
+    // If the current leader has become rugged/blacklisted/dumped, drop it immediately.
+    try {
+      if (leaderMint) {
+        const cur = store.get(leaderMint);
+        const rej = isRejectedMint(leaderMint, cur, nowTs);
+        if (rej?.reject) {
+          leaderMint = null;
+        }
+      }
+    } catch {}
+
     let { best, bestPnl, bestRecentPnl } = pickLeader(nowTs, 'pump');
     if (!best) {
       ({ best, bestPnl, bestRecentPnl } = pickLeader(nowTs, 'pnl'));
@@ -509,11 +652,16 @@ export function initFlamebar(mountEl, opts = {}) {
     try {
       if (leaderMint && leaderMint !== best.mint) {
         const cur = store.get(leaderMint);
+        const curRej = cur ? isRejectedMint(leaderMint, cur, nowTs) : null;
+        if (curRej?.reject) {
+          // Never hold onto a rejected mint.
+        } else {
         const curPnl = cur ? computeWindowPnlPct(cur) : null;
         const curRecent = cur ? computeRecentPnlPct(cur, nowTs, options.pumpLookbackMs) : null;
         if (curPnl !== null && bestPnl !== null && (bestPnl - curPnl) < options.switchMarginPct) {
           render({ rec: cur, pnlPct: curPnl, recentPnlPct: curRecent, sampleCount: cur?.series?.length || 0 });
           return;
+        }
         }
       }
     } catch {}

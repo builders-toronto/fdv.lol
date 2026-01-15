@@ -504,7 +504,7 @@ export function coinCard(it) {
       data-timeout-ms="${escAttr(timeoutMs)}"
       data-pair-url="${escAttr(pairUrl)}"
       data-swap-opts='${escAttr(JSON.stringify(swapOpts))}'
-    >Chart 📊</button>`;
+    >Chart</button>`;
 
   const holdBtn = `
     <button
@@ -513,7 +513,7 @@ export function coinCard(it) {
       data-hold-btn
       data-mint="${escAttr(it.mint)}"
       title="Open Hold bot for this mint"
-    >HODL</button>`;
+    >Hold</button>`;
 
   return `
   <div class="card-rank" aria-hidden="true"></div>

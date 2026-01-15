@@ -107,13 +107,18 @@ const SENTRY_LOG_PREFETCH_EVERY_MS = 1600;
 const FLAME_SWITCH_COOLDOWN_MS = 6500;
 
 // When holding a position in Flame mode, keep watching the Flamebar leader.
-// Only rotate if the new leader is stable and clearly performing.
+// Rotate to the leader by default (after stability/viability checks),
+// unless the currently held mint is healthy + profitable.
 const FLAME_ROTATE_COOLDOWN_MS = 25_000;
 const FLAME_SWITCH_MIN_CONSEC_TICKS = 3;
 const FLAME_SWITCH_SCORE_MARGIN = 1.25;
 const FLAME_SWITCH_EXTRA_SC_SLOPE = 0.25;
 const FLAME_SWITCH_QUEUE_TTL_MS = 30_000;
 const FLAME_SWITCH_SAMPLE_MIN_MS = 1600;
+
+const FLAME_HOLD_MIN_PROFIT_PCT = 2.5;
+const FLAME_HOLD_MAX_PNL_AGE_MS = 22_000;
+const FLAME_HOLD_MIN_SC_SLOPE = 0.1;
 
 function _isNodeLike() {
 	return isNodeLike();
@@ -196,8 +201,7 @@ function logObj(label, obj) {
 		log(`${label}: (unserializable)`);
 	}
 }
-					let picked = _takeQueuedFlameMint();
-					if (!picked) picked = pickFlameMintFast();
+
 function sentryVerbose() {
 	try {
 		return !!(typeof window !== "undefined" && window._fdvSniperSentryVerbose);
@@ -765,6 +769,32 @@ function _shouldRotateToBetterMint({ heldSig, leaderSig } = {}) {
 
 		// Require a real gap, not a tiny oscillation.
 		return Number(leaderSig.score || 0) >= Number(heldSig.score || 0) + margin;
+	} catch {
+		return false;
+	}
+}
+
+function _isHeldHealthyAndProfitable({ pos, heldSig, nowTs } = {}) {
+	try {
+		if (!pos || !heldSig?.ok) return false;
+		const t = Number(nowTs || now());
+		const pnl = Number(pos._lastPnlNetPct);
+		const pnlAt = Number(pos._lastPnlAt || 0);
+		if (!Number.isFinite(pnl) || pnlAt <= 0) return false;
+		if (t - pnlAt > FLAME_HOLD_MAX_PNL_AGE_MS) return false;
+		if (!(pnl >= FLAME_HOLD_MIN_PROFIT_PCT)) return false;
+
+		if (!heldSig.obsOk) return false;
+		if (!(Number(heldSig.last?.chg5m || 0) > 0)) return false;
+		if (!(Number(heldSig.scSlope || 0) >= FLAME_HOLD_MIN_SC_SLOPE)) return false;
+		if (!(heldSig.badgeNorm === "pumping" || (state.rideWarming && heldSig.badgeNorm === "warming"))) return false;
+
+		const rug = getRugSignalForMint(String(heldSig.mint || "").trim());
+		const sev = Number(rug?.sev || 0);
+		if (Number.isFinite(sev) && sev >= Number(RUG_FORCE_SELL_SEVERITY || 0.7)) return false;
+		if (rug?.rugged) return false;
+
+		return true;
 	} catch {
 		return false;
 	}
@@ -2100,6 +2130,11 @@ async function _enrichSellCtx(ctx) {
 		ctx.pxCost = Number(ctx.pos.costSol || 0) > 0 && Number(ctx.pos.sizeUi || 0) > 0 ? Number(ctx.pos.costSol || 0) / Number(ctx.pos.sizeUi || 0) : 0;
 		ctx.pnlPct = ctx.pos.costSol > 0 ? ((curSol - Number(ctx.pos.costSol || 0)) / Math.max(1e-9, Number(ctx.pos.costSol || 0))) * 100 : 0;
 		ctx.pnlNetPct = ctx.pos.costSol > 0 ? ((ctx.curSolNet - Number(ctx.pos.costSol || 0)) / Math.max(1e-9, Number(ctx.pos.costSol || 0))) * 100 : 0;
+		try {
+			const pnlTrack = Number.isFinite(Number(ctx.pnlNetPct)) ? Number(ctx.pnlNetPct) : Number(ctx.pnlPct);
+			ctx.pos._lastPnlNetPct = pnlTrack;
+			ctx.pos._lastPnlAt = Number(ctx.nowTs || now());
+		} catch {}
 		// Track a short PnL history for fade-exit decisions.
 		try {
 			const pnlTrack = Number.isFinite(Number(ctx.pnlNetPct)) ? Number(ctx.pnlNetPct) : Number(ctx.pnlPct);
@@ -2563,7 +2598,8 @@ async function tickOnce() {
 			if (state.flameEnabled && !state.sentryEnabled && typeof document !== "undefined") {
 				const active = hasAnyActivePosition();
 				if (!active.ok && !_inFlight) {
-					const picked = pickFlameMintFast();
+					let picked = _takeQueuedFlameMint();
+					if (!picked) picked = pickFlameMintFast();
 					if (picked && picked !== String(state.mint || "").trim()) {
 						state.mint = picked;
 						if (mintEl) mintEl.value = picked;
@@ -2647,13 +2683,25 @@ async function tickOnce() {
 						if (Number(_flameLeaderConsec || 0) >= FLAME_SWITCH_MIN_CONSEC_TICKS) {
 							const heldSig = _getLiveSignalForMint(mint);
 							const leaderSig = _getLiveSignalForMint(leader);
-							const better = _shouldRotateToBetterMint({ heldSig, leaderSig });
-							const performing = _isTrulyPerformingForSwitch(leaderSig);
+							const heldHealthy = _isHeldHealthyAndProfitable({ pos, heldSig, nowTs: t });
+							const leaderViable = !!(
+								leaderSig?.ok &&
+								leaderSig.obsOk &&
+								leaderSig.trig &&
+								Number(leaderSig.last?.chg5m || 0) > 0
+							);
 							const existing = pos?._flameSwitch;
 							const existingTo = String(existing?.toMint || "").trim();
 							const existingOk = existingTo && existingTo === leader && (Number(existing?.until || 0) <= 0 || t <= Number(existing.until));
 
-							if (!existingOk && better && performing) {
+							if (!existingOk && heldHealthy) {
+								traceOnce(
+									`sniper:flame:hold:${mint}`,
+									`Flame hold: keeping ${mint.slice(0, 4)}… (healthy + profitable) despite leader ${leader.slice(0, 4)}…` ,
+									6500,
+									"help",
+								);
+							} else if (!existingOk && leaderViable) {
 								if (!_flameSwitchCheck || _flameSwitchCheck.mint !== leader) {
 									const chk = { mint: leader, startedAt: t, done: false, result: null, promise: null };
 									chk.promise = observeMintOnce(leader, { windowMs: 2600, sampleMs: 650, minPasses: 4 })
@@ -2670,7 +2718,7 @@ async function tickOnce() {
 									_flameSwitchCheck = chk;
 									traceOnce(
 										`sniper:flame:switch:check:${leader}`,
-										`Flame switch check: leader ${leader.slice(0, 6)}… looks better; confirming performance…`,
+										`Flame switch check: leader ${leader.slice(0, 6)}… selected by Flamebar; confirming viability…`,
 										3500,
 										"help",
 									);
@@ -2690,7 +2738,7 @@ async function tickOnce() {
 										_flameRotateCooldownUntil = t + FLAME_ROTATE_COOLDOWN_MS;
 										try { saveState(); } catch {}
 										log(
-											`Flame rotate queued: sell ${mint.slice(0, 4)}… → buy ${leader.slice(0, 4)}… (leader confirmed performing)`,
+											`Flame rotate queued: sell ${mint.slice(0, 4)}… → buy ${leader.slice(0, 4)}… (following Flamebar leader)` ,
 											"warn",
 										);
 									} else {
