@@ -38,6 +38,7 @@ import { createDex } from "../lib/dex.js";
 import { setBotRunning } from "../lib/autoLed.js";
 import { preflightBuyLiquidity, DEFAULT_BUY_EXIT_CHECK_FRACTION, DEFAULT_BUY_MAX_PRICE_IMPACT_PCT } from "../lib/liquidity.js";
 import { createPendingCreditManager } from "../lib/pendingCredits.js";
+import { FDV_PLATFORM_FEE_BPS } from "../../../../config/env.js";
 import { rpcWait, rpcBackoffLeft, markRpcStress } from "../lib/rpcThrottle.js";
 
 import { createDustCacheStore } from "../lib/stores/dustCacheStore.js";
@@ -1286,10 +1287,6 @@ async function safeGetDecimalsFast(mint) {
 	}
 }
 
-function getPlatformFeeBps() {
-	return 1;
-}
-
 function shouldAttachFeeForSellSniper({ mint, amountRaw, inDecimals, quoteOutLamports } = {}) {
 	try {
 		const m = String(mint || "").trim();
@@ -1664,7 +1661,6 @@ function _getDex() {
 			}
 		},
 
-		getPlatformFeeBps,
 		tokenAccountRentLamports,
 		requiredAtaLamportsForSwap,
 		requiredOutAtaRentIfMissing: async () => 0,
@@ -1739,7 +1735,7 @@ function estimateNetExitSolFromQuote({ mint, amountUi, inDecimals, quoteOutLampo
 			inDecimals,
 			quoteOutLamports,
 		});
-		const feeBps = feeEligible ? Number(getPlatformFeeBps() || 0) : 0;
+		const feeBps = feeEligible ? Number(FDV_PLATFORM_FEE_BPS || 0) : 0;
 		const platformL = Math.floor(Number(quoteOutLamports || 0) * (feeBps / 10_000));
 		const txL = Number(EDGE_TX_FEE_ESTIMATE_LAMPORTS || 0);
 		const netL = Math.max(0, Number(quoteOutLamports || 0) - platformL - txL);

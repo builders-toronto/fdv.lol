@@ -265,10 +265,6 @@ async function requiredAtaLamportsForSwap(ownerStr, _inMint, outMint) {
   }
 }
 
-function getPlatformFeeBps() {
-  return 1;
-}
-
 function _toBigIntSafe(v) {
   try {
     if (typeof v === 'bigint') return v;
@@ -970,7 +966,6 @@ function getDex() {
     getCfg,
     isValidPubkeyStr,
 
-    getPlatformFeeBps,
     tokenAccountRentLamports,
     requiredAtaLamportsForSwap,
     requiredOutAtaRentIfMissing: async () => 0,
