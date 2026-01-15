@@ -70,6 +70,21 @@ export const FDV_FAV_ENDPOINT = "https://fdv-lol-metrics.fdvlol.workers.dev/api/
 
 export const FDV_FEE_RECEIVER = "ENEKo7GEWM6jDTaHfN558bNHPodA9MB5azNiFvTK7ofm";
 
+// fee bps (hundredths of a percent)
+const _FDV_PLATFORM_FEE_BPS_RAW = getEnv(
+  [
+    "VITE_FDV_PLATFORM_FEE_BPS",
+    "FDV_PLATFORM_FEE_BPS",
+    "VITE_PLATFORM_FEE_BPS",
+    "PLATFORM_FEE_BPS",
+    "platform_fee_bps",
+    "fee_bps",
+  ],
+  25,
+);
+
+export const FDV_PLATFORM_FEE_BPS = Math.max(0, Math.min(10_000, Math.floor(toNum(_FDV_PLATFORM_FEE_BPS_RAW, 25))));
+
 
 export const JUP_SWAP   = (mint)=>`https://jup.ag/tokens/${encodeURIComponent(mint)}`;
 export const JUP_LIST_TTL_MS = 60 * 60 * 1000;

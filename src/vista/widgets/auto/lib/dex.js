@@ -1,3 +1,5 @@
+import { FDV_PLATFORM_FEE_BPS } from "../../../../config/env.js";
+
 export function createDex(deps = {}) {
 	const {
 		// Constants
@@ -32,7 +34,6 @@ export function createDex(deps = {}) {
 		isValidPubkeyStr,
 
 		// Fee + rent helpers
-		getPlatformFeeBps,
 		tokenAccountRentLamports,
 		requiredAtaLamportsForSwap,
 		requiredOutAtaRentIfMissing,
@@ -178,6 +179,121 @@ export function createDex(deps = {}) {
 
 	function _sleep(ms) {
 		return new Promise((r) => setTimeout(r, Math.max(0, Number(ms || 0) | 0)));
+	}
+
+	function _clamp01(v) {
+		const n = Number(v);
+		if (!Number.isFinite(n)) return 0;
+		return Math.max(0, Math.min(1, n));
+	}
+
+	function _getDynFeeTracker(state) {
+		try {
+			if (!state || typeof state !== "object") return null;
+			if (!state.platformFeeDyn || typeof state.platformFeeDyn !== "object") {
+				state.platformFeeDyn = {
+					startedAt: now(),
+					lastAt: 0,
+					lastProfitSol: 0,
+					emaRateSolPerDay: 0,
+					lastSaveAt: 0,
+				};
+			}
+			return state.platformFeeDyn;
+		} catch {
+			return null;
+		}
+	}
+
+	function _updateDynFeeTracker(state, nowTs) {
+		try {
+			const t = _getDynFeeTracker(state);
+			if (!t) return;
+
+			const ts = Number.isFinite(Number(nowTs)) ? Number(nowTs) : now();
+			if (!Number.isFinite(Number(t.startedAt)) || Number(t.startedAt) <= 0) t.startedAt = ts;
+
+			const profitSolRaw = Number(state?.moneyMadeSol || 0);
+			const profitSol = Number.isFinite(profitSolRaw) ? profitSolRaw : 0;
+			const prevAt = Number(t.lastAt || 0);
+			const prevProfit = Number(t.lastProfitSol || 0);
+
+			if (prevAt > 0 && ts > prevAt) {
+				const dtDays = (ts - prevAt) / 86_400_000;
+				const dProfit = profitSol - prevProfit;
+				const instRate = dtDays > 0 ? (dProfit / dtDays) : 0;
+				const alpha = 0.18;
+				const prevEma = Number(t.emaRateSolPerDay || 0);
+				t.emaRateSolPerDay = Number.isFinite(prevEma)
+					? (prevEma * (1 - alpha) + instRate * alpha)
+					: instRate;
+			}
+
+			t.lastAt = ts;
+			t.lastProfitSol = profitSol;
+
+			if (typeof save === "function") {
+				const lastSaveAt = Number(t.lastSaveAt || 0);
+				if (!lastSaveAt || ts - lastSaveAt >= 60_000) {
+					t.lastSaveAt = ts;
+					try { save(); } catch {}
+				}
+			}
+		} catch {}
+	}
+
+	function _computeDynamicPlatformFeeBps({
+		state,
+		baseFeeBps,
+		nowTs,
+		estOutLamports,
+		costSoldSol,
+	} = {}) {
+		try {
+			const base = Math.max(0, Number(baseFeeBps || 0));
+			if (!Number.isFinite(base) || base <= 0) return 0;
+
+			const st = state && typeof state === "object" ? state : null;
+			const ts = Number.isFinite(Number(nowTs)) ? Number(nowTs) : now();
+			_updateDynFeeTracker(st, ts);
+			const tr = _getDynFeeTracker(st);
+
+			const cfg = (st && typeof st.dynamicFeeConfig === "object") ? st.dynamicFeeConfig : {};
+			const minFrac = _clamp01("minFrac" in cfg ? cfg.minFrac : 0.25);
+			const totalTargetSol = Math.max(0.25, Number("totalProfitTargetSol" in cfg ? cfg.totalProfitTargetSol : 5));
+			const rateTargetSolPerDay = Math.max(0.05, Number("profitRateTargetSolPerDay" in cfg ? cfg.profitRateTargetSolPerDay : 1));
+			const ageTargetDays = Math.max(1, Number("ageTargetDays" in cfg ? cfg.ageTargetDays : 14));
+
+			const totalProfitSolRaw = Number(st?.moneyMadeSol || 0);
+			const totalProfitSol = Number.isFinite(totalProfitSolRaw) ? totalProfitSolRaw : 0;
+			const ageDays = tr?.startedAt ? Math.max(0, (ts - Number(tr.startedAt || 0)) / 86_400_000) : 0;
+			const emaRate = Number(tr?.emaRateSolPerDay || 0);
+
+			const sTotal = _clamp01(Math.max(0, totalProfitSol) / totalTargetSol);
+			const sRate = _clamp01(Math.max(0, emaRate) / rateTargetSolPerDay);
+			const sAge = _clamp01(ageDays / ageTargetDays);
+			const growthScore = _clamp01((0.65 * sTotal) + (0.25 * sRate) + (0.10 * sAge));
+
+			let frac = minFrac + (1 - minFrac) * growthScore;
+
+			const outLamports = Number(estOutLamports || 0);
+			const proceedsSol = Number.isFinite(outLamports) ? (outLamports / 1e9) : NaN;
+			const costSol = Number(costSoldSol || 0);
+			if (Number.isFinite(proceedsSol) && Number.isFinite(costSol) && costSol > 0) {
+				const pnlSol = proceedsSol - costSol;
+				const pnlPct = (pnlSol / Math.max(1e-9, costSol)) * 100;
+				const sTrade = _clamp01((pnlPct - 2) / 18);
+				frac *= (0.60 + 0.40 * sTrade);
+			}
+
+			frac = Math.max(0, Math.min(1, frac));
+			if (frac <= 0) return 0;
+
+			const eff = Math.floor(base * frac);
+			return Math.max(0, Math.min(10_000, eff));
+		} catch {
+			return Math.max(0, Math.floor(Number(baseFeeBps || 0)));
+		}
 	}
 
 	async function _getOwnerAtaInternal(ownerPubkeyStr, mintStr, programIdOverride) {
@@ -752,7 +868,8 @@ export function createDex(deps = {}) {
 		const { PublicKey, VersionedTransaction, Transaction } = await loadWeb3();
 		const conn = await getConn();
 		const userPub = signer.publicKey.toBase58();
-		const feeBps = Number((typeof getPlatformFeeBps === "function" ? getPlatformFeeBps() : 0) || 0);
+		const baseFeeBps = Number(FDV_PLATFORM_FEE_BPS || 0);
+		let appliedFeeBps = Math.max(0, Math.floor(baseFeeBps));
 		let feeAccount = null;
 		let lastErrCode = "";
 		let lastErrMsg = "";
@@ -884,13 +1001,13 @@ export function createDex(deps = {}) {
 			u.searchParams.set("amount", String(amt));
 			u.searchParams.set("slippageBps", String(slipBps));
 			u.searchParams.set("restrictIntermediateTokens", String(restrict === "false" ? false : true));
-			if (withFee && feeBps > 0 && feeAccount) u.searchParams.set("platformFeeBps", String(feeBps));
+			if (withFee && appliedFeeBps > 0) u.searchParams.set("platformFeeBps", String(appliedFeeBps));
 			if (asLegacy) u.searchParams.set("asLegacyTransaction", "true");
 			return u;
 		}
 
 		let feeDestCandidate = null;
-		if (feeBps > 0 && isSell) {
+		if (baseFeeBps > 0 && isSell) {
 			const acct = FEE_ATAS?.[outputMint] || (outputMint === SOL_MINT ? FEE_ATAS?.[SOL_MINT] : null);
 			feeDestCandidate = acct || null;
 		}
@@ -903,7 +1020,8 @@ export function createDex(deps = {}) {
 			inDecimals,
 			slippageBps: baseSlip,
 			restrictIntermediateTokens: restrictIntermediates,
-			feeBps: 0,
+			baseFeeBps: Math.floor(baseFeeBps) || 0,
+			appliedFeeBps: Math.floor(appliedFeeBps) || 0,
 		});
 
 		let quote;
@@ -964,7 +1082,7 @@ export function createDex(deps = {}) {
 						slipBps: baseSlip,
 						restrict: restrictIntermediates,
 						asLegacy: true,
-						withFee: !!(feeAccount && feeBps > 0),
+						withFee: !!(feeAccount && appliedFeeBps > 0),
 					});
 					const qResL = await jupFetch(qLegacy.pathname + qLegacy.search);
 					if (!qResL.ok) {
@@ -986,7 +1104,7 @@ export function createDex(deps = {}) {
 				dynamicComputeUnitLimit: true,
 				useSharedAccounts: !!sharedAllowed,
 				asLegacyTransaction: !!asLegacy,
-				...(feeAccount && feeBps > 0 ? { feeAccount, platformFeeBps: feeBps } : {}),
+				...(feeAccount && appliedFeeBps > 0 ? { feeAccount, platformFeeBps: appliedFeeBps } : {}),
 			};
 
 			try {
@@ -996,7 +1114,7 @@ export function createDex(deps = {}) {
 				}
 			} catch {}
 
-			logObj("Swap body", { hasFee: !!feeAccount, feeBps: feeAccount ? feeBps : 0, useSharedAccounts: !!sharedAllowed, asLegacy: !!asLegacy });
+			logObj("Swap body", { hasFee: !!feeAccount, appliedFeeBps: feeAccount ? appliedFeeBps : 0, baseFeeBps: Math.floor(baseFeeBps) || 0, useSharedAccounts: !!sharedAllowed, asLegacy: !!asLegacy });
 
 			const sRes = await jupFetch(`/swap/v1/swap`, {
 				method: "POST",
@@ -1139,7 +1257,7 @@ export function createDex(deps = {}) {
 					dynamicComputeUnitLimit: true,
 					useSharedAccounts: !!sharedAllowed,
 					asLegacyTransaction: false,
-					...(feeAccount && feeBps > 0 ? { feeAccount, platformFeeBps: feeBps } : {}),
+					...(feeAccount && appliedFeeBps > 0 ? { feeAccount, platformFeeBps: appliedFeeBps } : {}),
 				};
 				try {
 					const { cuPriceMicroLamports } = await getComputeBudgetConfig?.();
@@ -1393,36 +1511,6 @@ export function createDex(deps = {}) {
 				}
 
 				if (haveQuote) {
-					if (isSell) {
-						const outRaw = Number(quote?.outAmount || 0);
-						const outSol = outRaw / 1e9;
-						const eligible = feeBps > 0 && !!feeDestCandidate && (
-							typeof shouldAttachFeeForSell !== "function" ||
-							!!shouldAttachFeeForSell({
-								mint: inputMint,
-								amountRaw: amountRaw,
-								inDecimals: inDecimals,
-								quoteOutLamports: outRaw,
-							})
-						);
-						if (eligible) {
-							const qFee = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: restrictIntermediates, withFee: true });
-							const qFeeRes = await jupFetch(qFee.pathname + qFee.search);
-							if (qFeeRes.ok) {
-								quote = await qFeeRes.json();
-								feeAccount = feeDestCandidate;
-								quoteIncludesFee = true;
-								log(`Sell fee enabled @ ${feeBps} bps (est out ${outSol.toFixed(6)} SOL)`);
-							} else {
-								log("Fee quote failed; proceeding without fee for this sell.");
-								quoteIncludesFee = false;
-							}
-						} else {
-							feeAccount = null;
-							quoteIncludesFee = false;
-							if (outSol > 0) log(`Small sell detected (${outSol.toFixed(6)} SOL). Fee disabled.`);
-						}
-					}
 					logObj("Quote", { inAmount: quote?.inAmount, outAmount: quote?.outAmount, routePlanLen: quote?.routePlan?.length });
 				}
 			} catch (e) {
@@ -1452,9 +1540,25 @@ export function createDex(deps = {}) {
 				}
 			}
 
-			if (isSell && feeDestCandidate) {
+			if (isSell && baseFeeBps > 0 && feeDestCandidate) {
 				try {
 					const outRawNoFee = Number(quote?.outAmount || 0);
+					const ts = now();
+					const pos = state?.positions?.[inputMint];
+					const costSoldSol = Number(pos?.costSol || 0);
+					appliedFeeBps = _computeDynamicPlatformFeeBps({
+						state,
+						baseFeeBps,
+						nowTs: ts,
+						estOutLamports: outRawNoFee,
+						costSoldSol,
+					});
+
+					if (!(appliedFeeBps > 0)) {
+						feeAccount = null;
+						quoteIncludesFee = false;
+						log("Dynamic fee computed as 0 bps; fee disabled for this sell.");
+					} else {
 					const profitableNoFee = (typeof shouldAttachFeeForSell === "function")
 						? shouldAttachFeeForSell({
 							mint: inputMint,
@@ -1464,7 +1568,7 @@ export function createDex(deps = {}) {
 						})
 						: true;
 
-					if (profitableNoFee) {
+						if (profitableNoFee) {
 						const qFee = buildQuoteUrl({ outMint: outputMint, slipBps: baseSlip, restrict: restrictIntermediates, withFee: true });
 						const qFeeRes = await jupFetch(qFee.pathname + qFee.search);
 						if (qFeeRes.ok) {
@@ -1483,7 +1587,8 @@ export function createDex(deps = {}) {
 								feeAccount = feeDestCandidate;
 								quoteIncludesFee = true;
 								const outSol = outRawWithFee / 1e9;
-								log(`Sell fee enabled @ ${feeBps} bps (est PnL>0, out ${outSol.toFixed(6)} SOL).`);
+									const frac = baseFeeBps > 0 ? (appliedFeeBps / Math.max(1e-9, baseFeeBps)) : 0;
+									log(`Sell fee enabled @ ${appliedFeeBps} bps (base ${Math.floor(baseFeeBps)}; x${frac.toFixed(2)}). Est out ${outSol.toFixed(6)} SOL.`);
 							} else {
 								feeAccount = null;
 								quoteIncludesFee = false;
@@ -1498,6 +1603,7 @@ export function createDex(deps = {}) {
 						feeAccount = null;
 						quoteIncludesFee = false;
 						log("No estimated profit; fee disabled for this sell.");
+					}
 					}
 				} catch {
 					feeAccount = null;
@@ -1652,7 +1758,7 @@ export function createDex(deps = {}) {
 				try {
 					const slip2 = 2000;
 					const rFlag = restrictAllowed ? "false" : "true";
-					const q2 = buildQuoteUrl({ outMint: outputMint, slipBps: slip2, restrict: rFlag, withFee: !!(feeAccount && feeBps > 0) });
+					const q2 = buildQuoteUrl({ outMint: outputMint, slipBps: slip2, restrict: rFlag, withFee: !!(feeAccount && appliedFeeBps > 0) });
 					log(`Tiny-notional fallback: relax route, slip=${slip2} bps …`);
 					const r2 = await jupFetch(q2.pathname + q2.search);
 					if (r2.ok) {
@@ -1747,45 +1853,67 @@ export function createDex(deps = {}) {
 							}
 
 							let chunkFeeAccount = null;
-							if (feeBps > 0 && feeDestCandidate) {
+							const prevAppliedFeeBps = appliedFeeBps;
+							if (baseFeeBps > 0 && feeDestCandidate) {
 								try {
+									const ts = now();
 									const decIn = Number.isFinite(inDecimals) ? inDecimals : (_decHint ?? 6);
-									const profitableChunkNoFee = shouldAttachFeeForSell?.({
-										mint: inputMint,
-										amountRaw: partRaw,
-										inDecimals: decIn,
-										quoteOutLamports: outPartRaw,
+									const pos = state?.positions?.[inputMint];
+									const prevSizeUi = _preSplitUi > 0 ? _preSplitUi : Number(pos?.sizeUi || 0);
+									const soldUi = partRaw / Math.pow(10, decIn);
+									const costSoldSol = prevSizeUi > 0
+										? Number(pos?.costSol || 0) * Math.min(1, Math.max(0, soldUi / Math.max(1e-9, prevSizeUi)))
+										: Number(pos?.costSol || 0);
+									appliedFeeBps = _computeDynamicPlatformFeeBps({
+										state,
+										baseFeeBps,
+										nowTs: ts,
+										estOutLamports: outPartRaw,
+										costSoldSol,
 									});
-									if (profitableChunkNoFee) {
-										const qPFee = buildQuoteUrl({ outMint: outputMint, slipBps: slipSplit, restrict, amountOverrideRaw: partRaw, withFee: true });
-										const rPFee = await jupFetch(qPFee.pathname + qPFee.search);
-										if (rPFee.ok) {
-											const quotePartWithFee = await rPFee.json();
-											const outPartRawWithFee = Number(quotePartWithFee?.outAmount || 0);
-											const stillProfChunk = shouldAttachFeeForSell?.({
-												mint: inputMint,
-												amountRaw: partRaw,
-												inDecimals: decIn,
-												quoteOutLamports: outPartRawWithFee,
-											});
-											if (stillProfChunk) {
-												quote = quotePartWithFee;
-												chunkFeeAccount = feeDestCandidate;
-												log(`Split-sell fee enabled @ ${feeBps} bps for f=${f}.`);
+
+									if (appliedFeeBps > 0) {
+										const profitableChunkNoFee = shouldAttachFeeForSell?.({
+											mint: inputMint,
+											amountRaw: partRaw,
+											inDecimals: decIn,
+											quoteOutLamports: outPartRaw,
+										});
+										if (profitableChunkNoFee) {
+											const qPFee = buildQuoteUrl({ outMint: outputMint, slipBps: slipSplit, restrict, amountOverrideRaw: partRaw, withFee: true });
+											const rPFee = await jupFetch(qPFee.pathname + qPFee.search);
+											if (rPFee.ok) {
+												const quotePartWithFee = await rPFee.json();
+												const outPartRawWithFee = Number(quotePartWithFee?.outAmount || 0);
+												const stillProfChunk = shouldAttachFeeForSell?.({
+													mint: inputMint,
+													amountRaw: partRaw,
+													inDecimals: decIn,
+													quoteOutLamports: outPartRawWithFee,
+												});
+												if (stillProfChunk) {
+													quote = quotePartWithFee;
+													chunkFeeAccount = feeDestCandidate;
+													log(`Split-sell fee enabled @ ${appliedFeeBps} bps (base ${Math.floor(baseFeeBps)}) for f=${f}.`);
+												} else {
+													quote = quotePart;
+													chunkFeeAccount = null;
+													log(`Split-sell fee suppressed (removes profit) for f=${f}.`);
+												}
 											} else {
 												quote = quotePart;
 												chunkFeeAccount = null;
-												log(`Split-sell fee suppressed (removes profit) for f=${f}.`);
+												log("Split-sell fee quote failed; proceeding without fee.");
 											}
 										} else {
 											quote = quotePart;
 											chunkFeeAccount = null;
-											log("Split-sell fee quote failed; proceeding without fee.");
+											log("Split-sell no estimated profit; fee disabled for this chunk.");
 										}
 									} else {
 										quote = quotePart;
 										chunkFeeAccount = null;
-										log("Split-sell no estimated profit; fee disabled for this chunk.");
+										log(`Split-sell dynamic fee computed as 0 bps for f=${f}; fee disabled.`);
 									}
 								} catch {
 									quote = quotePart;
@@ -1865,6 +1993,7 @@ export function createDex(deps = {}) {
 							}
 
 							feeAccount = prevFeeAccount;
+							appliedFeeBps = prevAppliedFeeBps;
 						}
 					}
 				} catch (e) {

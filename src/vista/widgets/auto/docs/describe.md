@@ -232,7 +232,7 @@ Key groups in `state`:
 - Net exit estimate: platform fee (if profitable) + conservative tx fee + optional rent depending on comparison.
 
 ## 24. Fee Logic
-- `getPlatformFeeBps()` returns `1` (1 bps = 0.01%; comment mentions 0.05%).
+- Platform fee bps is configured via `FDV_PLATFORM_FEE_BPS` in `src/config/env.js`.
 - Sells attach fee only when:
   - Not small (`estOut ≥ SMALL_SELL_FLOOR`).
   - Proportional cost ⇒ positive PnL.

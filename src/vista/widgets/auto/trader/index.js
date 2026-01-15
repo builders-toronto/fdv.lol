@@ -2,6 +2,7 @@ import { isNodeLike as _isNodeLike } from "../lib/runtime.js";
 import { createSolanaDepsLoader } from "../lib/solana/deps.js";
 import { createConnectionGetter } from "../lib/solana/connection.js";
 import { createConfirmSig } from "../lib/solana/confirm.js";
+import { FDV_PLATFORM_FEE_BPS } from "../../../../config/env.js";
 
 import { computePumpingLeaders, getRugSignalForMint, focusMint } from "../../../meme/metrics/kpi/pumping.js";
 import { getLatestSnapshot } from "../../../meme/metrics/ingest.js";
@@ -242,7 +243,6 @@ function _getDex() {
     getCfg,
     isValidPubkeyStr,
 
-    getPlatformFeeBps,
     tokenAccountRentLamports,
     requiredAtaLamportsForSwap,
     requiredOutAtaRentIfMissing,
@@ -1538,11 +1538,6 @@ export async function getJupBase() {
 //     ).trim();
 //   return fromCfg;
 // }
- 
-function getPlatformFeeBps() {
-  return 1; // 0.01%
-}
-
 async function tokenAccountRentLamports() {
   if (window._fdvAtaRentLamports) return window._fdvAtaRentLamports;
   try {
@@ -2516,7 +2511,7 @@ async function estimateRoundtripEdgePct(ownerPub, outMint, buySolUi, { slippageB
     if (!backLamports || backLamports <= 0) return null;
 
     // Fees
-    const feeBps = Number(getPlatformFeeBps() || 0);
+    const feeBps = Number(FDV_PLATFORM_FEE_BPS || 0);
     const txFeesL = EDGE_TX_FEE_ESTIMATE_LAMPORTS;
     const ataRentL = Number.isFinite(ataRentLamports)
       ? Math.max(0, Math.floor(Number(ataRentLamports)))
@@ -3207,7 +3202,7 @@ function estimateNetExitSolFromQuote({ mint, amountUi, inDecimals, quoteOutLampo
       quoteOutLamports: Number(quoteOutLamports || 0),
     });
 
-    const feeBps = Number(getPlatformFeeBps() || 0);
+    const feeBps = Number(FDV_PLATFORM_FEE_BPS || 0);
     const platformL = attachFee ? Math.floor(Number(quoteOutLamports || 0) * (feeBps / 10_000)) : 0;
     const txL = EDGE_TX_FEE_ESTIMATE_LAMPORTS; // conservative recurring estimate
     const netL = Math.max(0, Number(quoteOutLamports || 0) - platformL - txL);
@@ -7808,7 +7803,7 @@ export function initTraderWidget(container = document.body) {
   startBtn.addEventListener("click", () => onToggle(true));
   stopBtn.addEventListener("click", () => onToggle(false));
   wrap.querySelector("[data-auto-reset]").addEventListener("click", () => {
-    let feeBps = getPlatformFeeBps();
+    let feeBps = Number(FDV_PLATFORM_FEE_BPS || 0);
     log(`Estimated fee bps: ~${feeBps}bps`);
     state.holdingsUi = 0;
     state.avgEntryUsd = 0;

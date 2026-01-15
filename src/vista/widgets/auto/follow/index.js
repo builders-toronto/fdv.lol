@@ -331,10 +331,6 @@ async function requiredWsolAtaRentLamportsIfMissing(ownerStr) {
 	}
 }
 
-function getPlatformFeeBps() {
-	return 1;
-}
-
 async function safeGetDecimalsFast(mint) {
 	if (!mint) return 6;
 	if (mint === SOL_MINT) return 9;
@@ -564,7 +560,6 @@ function getDex() {
 		getCfg,
 		isValidPubkeyStr,
 
-		getPlatformFeeBps,
 		tokenAccountRentLamports,
 		requiredAtaLamportsForSwap,
 		requiredOutAtaRentIfMissing: async () => 0,
