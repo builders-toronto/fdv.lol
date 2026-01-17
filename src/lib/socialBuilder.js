@@ -56,9 +56,16 @@ export function normalizeSocial(s){
   return { platform, href };
 }
 
-export function iconFor(platform){
-  // Make icons scale with text by using 1em (was fixed 10px). Keeps backward look (parent can size via font-size).
-  const svg = (d)=>`<svg width="2em" height="2em" viewBox="0 0 24 24" fill="none" aria-hidden="true">${d}</svg>`;
+export function iconFor(platform, options){
+  const size = (
+    typeof options === 'number'
+      ? `${options}px`
+      : (typeof options === 'string'
+          ? options
+          : (options && typeof options === 'object' && options.size ? String(options.size) : '10px'))
+  );
+
+  const svg = (d)=>`<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true">${d}</svg>`;
   const stroke = `stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"`;
 
   switch((platform||'').toLowerCase()){
@@ -96,7 +103,7 @@ export function iconFor(platform){
 }
 
 // Build socials HTML
-export function buildSocialLinksHtml(token, mint) {
+export function buildSocialLinksHtml(token, mint, options) {
   const out = [];
   const seen = new Set();
 
@@ -147,9 +154,11 @@ export function buildSocialLinksHtml(token, mint) {
 
   if (!out.length) return "";
 
+  const iconSize = options && typeof options === 'object' ? options.iconSize : undefined;
+
   return out.map(s => {
     const href = s.href;
-    const ico = iconFor(s.platform);
+    const ico = iconSize ? iconFor(s.platform, { size: iconSize }) : iconFor(s.platform);
     const title = s.fallbackSearch
       ? "Search on X"
       : s.platform.charAt(0).toUpperCase() + s.platform.slice(1);
