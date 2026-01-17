@@ -475,7 +475,7 @@ export function coinCard(it) {
   const links = [];
   if (website) uniqPush(links, { platform: 'website', href: website });
 
-  let socialsHtml = buildSocialLinksHtml(it, it.mint);
+  let socialsHtml = buildSocialLinksHtml(it, it.mint, { iconSize: '2em' });
 
   const micro = `
     <div class="micro" data-micro>
@@ -565,7 +565,7 @@ export function coinCard(it) {
   ${micro}
 
   <div class="actions actionButtons">
-    ${socialsHtml ? `<div class="actions" data-socials>${socialsHtml}<a class="social-link iconbtn t-explorer" href="${escAttr(EXPLORER(it.mint))}" target="_blank" rel="noopener noreferrer" aria-label="Solscan" title="Solscan" data-tooltip="Solscan">${iconFor('solscan')}</a></div>` : ''}
+    ${socialsHtml ? `<div class="actions" data-socials>${socialsHtml}<a class="social-link iconbtn t-explorer" href="${escAttr(EXPLORER(it.mint))}" target="_blank" rel="noopener noreferrer" aria-label="Solscan" title="Solscan" data-tooltip="Solscan">${iconFor('solscan', { size: '2em' })}</a></div>` : ''}
     
     <div class="btnWrapper">
       ${swapBtn}
