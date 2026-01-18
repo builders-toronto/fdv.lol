@@ -3,7 +3,7 @@ import { createSolanaDepsLoader } from "../lib/solana/deps.js";
 import { createConnectionGetter } from "../lib/solana/connection.js";
 import { createConfirmSig } from "../lib/solana/confirm.js";
 import { FDV_PLATFORM_FEE_BPS, FDV_LEDGER_URL } from "../../../../config/env.js";
-import { registerFdvWallet, reportFdvStats } from "./ledger.js";
+import { registerFdvWallet, reportFdvStats } from "../lib/telemetry/ledger.js";
 
 import { computePumpingLeaders, getRugSignalForMint, focusMint } from "../../../meme/metrics/kpi/pumping.js";
 import { getLatestSnapshot } from "../../../meme/metrics/ingest.js";
@@ -237,6 +237,7 @@ function _getDex() {
     getConn,
     loadWeb3,
     loadSplToken,
+    loadDeps,
     rpcWait,
     rpcBackoffLeft,
     markRpcStress: _markRpcStress,
@@ -616,7 +617,15 @@ async function _pushLedgerReport(reason = "tick", { force = false, tx = null } =
 function _noteDexTx(kind, mint, res, extra = null) {
   try {
     const tx = _mkTxMeta({ kind, mint, res, extra });
-    _pushLedgerReport(`dex:${String(kind || "tx")}`, { force: true, tx });
+    try { window._fdvLastDexTx = tx; } catch {}
+
+    // If the DEX layer is already emitting ledger reports, don't double-report here.
+    const dexReports = (() => {
+      try { return !!window.__fdvDexReportsLedger; } catch { return false; }
+    })();
+    if (!dexReports) {
+      _pushLedgerReport(`dex:${String(kind || "tx")}`, { force: true, tx });
+    }
   } catch {}
 }
 
@@ -640,6 +649,15 @@ async function _addRealizedPnl(solProceeds, costSold, label = "PnL") {
     state.moneyMadeSol = Number(state.moneyMadeSol || 0) + pnl;
   }
   save();
+
+  // Emit a post-accounting ledger report so leaderboard reflects updated PnL.
+  try {
+    const tx = (() => {
+      try { return window._fdvLastDexTx || null; } catch { return null; }
+    })();
+    const lbl = String(label || "PnL").slice(0, 40);
+    _pushLedgerReport(`pnl:update:${lbl}`, { force: true, tx });
+  } catch {}
   try {
     const px = await getSolUsd();
     const totalSol = Number(state.moneyMadeSol || 0);
@@ -6628,7 +6646,7 @@ export async function __fdvCli_start({ enable = true } = {}) {
   } catch {}
 
   if (enable) state.enabled = true;
-  try { (await import('../lib/autoLed.js')).setBotRunning?.('trader', !!state.enabled); } catch {}
+  try { (await import('../lib/led.js')).setBotRunning?.('trader', !!state.enabled); } catch {}
 
   // Basic safety check.
   if (!currentRpcUrl()) throw new Error("Missing rpcUrl (set state.rpcUrl or provide profile.rpcUrl)");
@@ -6690,7 +6708,7 @@ export async function __fdvCli_start({ enable = true } = {}) {
 export async function __fdvCli_stop({ runFinalSellEval = true } = {}) {
   try {
     state.enabled = false;
-    try { (await import('../lib/autoLed.js')).setBotRunning?.('trader', false); } catch {}
+    try { (await import('../lib/led.js')).setBotRunning?.('trader', false); } catch {}
     if (timer) {
       clearInterval(timer);
       timer = null;
@@ -6713,12 +6731,12 @@ export async function __fdvCli_stop({ runFinalSellEval = true } = {}) {
 
 function renderStatusLed() {
   // LED is global/aggregated (trader should only report its running state)
-  try { import('../lib/autoLed.js').then((m) => m?.setBotRunning?.('trader', !!state.enabled)).catch(() => {}); } catch {}
+  try { import('../lib/led.js').then((m) => m?.setBotRunning?.('trader', !!state.enabled)).catch(() => {}); } catch {}
 }
 
 function onToggle(on) {
    state.enabled = !!on;
-  try { import('../lib/autoLed.js').then((m) => m?.setBotRunning?.('trader', !!state.enabled)).catch(() => {}); } catch {}
+  try { import('../lib/led.js').then((m) => m?.setBotRunning?.('trader', !!state.enabled)).catch(() => {}); } catch {}
    if (toggleEl) toggleEl.value = state.enabled ? "yes" : "no";
    startBtn.disabled = state.enabled;
    stopBtn.disabled = !state.enabled;

@@ -1,5 +1,5 @@
 import { createDex } from '../lib/dex.js';
-import { setBotRunning } from '../lib/autoLed.js';
+import { setBotRunning } from '../lib/led.js';
 import {
   SOL_MINT,
   FEE_RESERVE_MIN,

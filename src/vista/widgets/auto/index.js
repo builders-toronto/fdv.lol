@@ -10,7 +10,7 @@ import {
 } from './trader/index.js';
 
 import { importFromUrl } from '../../../utils/netImport.js';
-import { ensureAutoLed } from './lib/autoLed.js';
+import { ensureAutoLed } from './lib/led.js';
 import { getLatestSnapshot } from '../../meme/metrics/ingest.js';
 import { initFlamebar } from './lib/flamebar.js';
 

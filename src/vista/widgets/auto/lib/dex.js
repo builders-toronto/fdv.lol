@@ -1,4 +1,5 @@
 import { FDV_PLATFORM_FEE_BPS } from "../../../../config/env.js";
+import { reportFdvStats } from "./telemetry/ledger.js";
 
 export function createDex(deps = {}) {
 	const {
@@ -25,6 +26,7 @@ export function createDex(deps = {}) {
 		getConn,
 		loadWeb3,
 		loadSplToken,
+		loadDeps,
 		rpcWait,
 		rpcBackoffLeft,
 		markRpcStress,
@@ -171,6 +173,110 @@ export function createDex(deps = {}) {
 		} catch {
 			try { log(msg, type); } catch {}
 		}
+	}
+
+	function _sessionPnlSolFromState(st) {
+		try {
+			return Number(st?.moneyMadeSol || 0) - Number(st?.pnlBaselineSol || 0);
+		} catch {
+			return 0;
+		}
+	}
+
+	function _deduceSwapKind(inputMint, outputMint) {
+		try {
+			if (inputMint === SOL_MINT && outputMint && outputMint !== SOL_MINT) return "buy";
+			if (outputMint === SOL_MINT && inputMint && inputMint !== SOL_MINT) return "sell";
+			return "swap";
+		} catch {
+			return "swap";
+		}
+	}
+
+	function _deduceMintForTx(inputMint, outputMint) {
+		try {
+			if (inputMint === SOL_MINT && outputMint && outputMint !== SOL_MINT) return String(outputMint || "");
+			if (outputMint === SOL_MINT && inputMint && inputMint !== SOL_MINT) return String(inputMint || "");
+			return String((outputMint && outputMint !== SOL_MINT) ? outputMint : inputMint || "");
+		} catch {
+			return "";
+		}
+	}
+
+	function _shortLedgerMsg(v, maxLen = 220) {
+		try {
+			let s = String(v?.message || v || "");
+			s = s.replace(/\s+/g, " ").trim();
+			if (s.length > maxLen) s = s.slice(0, maxLen) + "…";
+			return s;
+		} catch {
+			return "";
+		}
+	}
+
+	function _fireLedgerReport(p) {
+		try {
+			setTimeout(() => {
+				Promise.resolve(p).catch(() => {});
+			}, 0);
+		} catch {
+			try { Promise.resolve(p).catch(() => {}); } catch {}
+		}
+	}
+
+	function noteLedgerSwap({ signer, inputMint, outputMint, amountUi, slippageBps, res, stage } = {}) {
+		try {
+			if (typeof reportFdvStats !== "function") return;
+			if (typeof loadDeps !== "function") return;
+			if (!signer?.secretKey || !signer?.secretKey?.length) return;
+
+			try { window.__fdvDexReportsLedger = true; } catch {}
+
+			const kind = _deduceSwapKind(inputMint, outputMint);
+			const mint = _deduceMintForTx(inputMint, outputMint);
+			const sig = String(res?.sig || "");
+			const ok = !!res?.ok;
+			const msg = _shortLedgerMsg(res?.msg || res?.code || stage || "");
+
+			_fireLedgerReport((async () => {
+				const { bs58 } = await loadDeps();
+				const st = (typeof getState === "function") ? (getState() || {}) : {};
+
+				const moneyMadeSol = Number(st?.moneyMadeSol || 0);
+				const pnlBaselineSol = Number(st?.pnlBaselineSol || 0);
+				const sessionPnlSol = _sessionPnlSolFromState(st);
+				const solBal = Number.isFinite(Number(window._fdvLastSolBal)) ? Number(window._fdvLastSolBal) : undefined;
+
+				const tx = {
+					kind,
+					mint,
+					ok,
+					sig,
+					msg,
+				};
+				try { window._fdvLastDexTx = tx; } catch {}
+				if (Number.isFinite(Number(slippageBps))) tx.slippageBps = Math.floor(Number(slippageBps));
+				if (kind === "buy") {
+					if (Number.isFinite(Number(amountUi))) tx.solUi = Number(amountUi);
+				} else {
+					if (Number.isFinite(Number(amountUi))) tx.amountUi = Number(amountUi);
+				}
+
+				const metrics = {
+					kind: "auto",
+					reason: `dex:${kind}${stage ? `:${String(stage)}` : ""}`,
+					at: Date.now(),
+					solBalance: solBal,
+					moneyMadeSol,
+					pnlBaselineSol,
+					sessionPnlSol: Number.isFinite(sessionPnlSol) ? sessionPnlSol : 0,
+					enabled: !!st?.enabled,
+					lastTx: tx,
+				};
+
+				await reportFdvStats({ keypair: signer, bs58, metrics });
+			})());
+		} catch {}
 	}
 
 	function _rpcLeft() {
@@ -2033,7 +2139,9 @@ export function createDex(deps = {}) {
 					lastSig = sig;
 
 					if (fastConfirm) {
-						return { ok: false, sig, slip, fast: true };
+						const out = { ok: false, sig, slip, fast: true };
+						try { noteLedgerSwap({ signer: opts?.signer, inputMint: opts?.inputMint, outputMint: opts?.outputMint, amountUi: opts?.amountUi, slippageBps: slip, res: out, stage: "fast" }); } catch {}
+						return out;
 					}
 
 					if (isBuy) {
@@ -2053,11 +2161,17 @@ export function createDex(deps = {}) {
 						timeoutMs: Math.max(Number(confirmMs || 0), minConfirmMs),
 						requireFinalized: needFinal,
 					}).catch(() => false);
-					if (ok) return { ok: true, sig, slip };
+					if (ok) {
+						const out = { ok: true, sig, slip };
+						try { noteLedgerSwap({ signer: opts?.signer, inputMint: opts?.inputMint, outputMint: opts?.outputMint, amountUi: opts?.amountUi, slippageBps: slip, res: out, stage: "confirmed" }); } catch {}
+						return out;
+					}
 
 					if (isBuy) {
 						log("Buy sent; skipping retries and relying on pending credit.");
-						return { ok: false, sig, slip };
+						const out = { ok: false, sig, slip };
+						try { noteLedgerSwap({ signer: opts?.signer, inputMint: opts?.inputMint, outputMint: opts?.outputMint, amountUi: opts?.amountUi, slippageBps: slip, res: out, stage: "unconfirmed" }); } catch {}
+						return out;
 					}
 				} catch (e) {
 					const msg = String(e?.message || e || "");
@@ -2075,19 +2189,25 @@ export function createDex(deps = {}) {
 						);
 					}
 					if (isInsufficient) {
-						return { ok: false, insufficient: true, msg, sig: lastSig };
+						const out = { ok: false, insufficient: true, msg, sig: lastSig };
+						try { noteLedgerSwap({ signer: opts?.signer, inputMint: opts?.inputMint, outputMint: opts?.outputMint, amountUi: opts?.amountUi, slippageBps: slip, res: out, stage: "insufficient" }); } catch {}
+						return out;
 					}
 					if (isNoRoute) {
 						if (opts?.inputMint && opts?.outputMint === SOL_MINT && opts.inputMint !== SOL_MINT) {
 							setRouterHold?.(opts.inputMint, ROUTER_COOLDOWN_MS);
 						}
-						return { ok: false, noRoute: true, msg, sig: lastSig };
+						const out = { ok: false, noRoute: true, msg, sig: lastSig };
+						try { noteLedgerSwap({ signer: opts?.signer, inputMint: opts?.inputMint, outputMint: opts?.outputMint, amountUi: opts?.amountUi, slippageBps: slip, res: out, stage: "no_route" }); } catch {}
+						return out;
 					}
 				}
 				slip = Math.min(2000, Math.floor(slip * 1.6));
 				log(`Swap not confirmed; retrying with slippage=${slip} bps…`);
 			}
-			return { ok: false, sig: lastSig };
+			const out = { ok: false, sig: lastSig };
+			try { noteLedgerSwap({ signer: opts?.signer, inputMint: opts?.inputMint, outputMint: opts?.outputMint, amountUi: opts?.amountUi, slippageBps: slip, res: out, stage: "not_confirmed" }); } catch {}
+			return out;
 		} finally {
 			window._fdvDeferSeed = prevDefer;
 		}
