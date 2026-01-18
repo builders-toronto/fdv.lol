@@ -1,4 +1,4 @@
-import { setBotRunning } from "../lib/autoLed.js";
+import { setBotRunning } from "../lib/led.js";
 import { createSolanaDepsLoader } from "../lib/solana/deps.js";
 import { createConnectionGetter } from "../lib/solana/connection.js";
 import { clamp, safeNum } from "../lib/util.js";

@@ -1,5 +1,5 @@
-import { importFromUrlWithFallback } from "../../../../utils/netImport.js";
-import { FDV_LEDGER_BASE } from "../../../../config/env.js";
+import { importFromUrlWithFallback } from "../../../../../utils/netImport.js";
+import { FDV_LEDGER_BASE } from "../../../../../config/env.js";
 
 let _naclPromise = null;
 

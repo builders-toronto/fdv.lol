@@ -35,7 +35,7 @@ import {
 import { clamp, fmtUsd, safeNum } from "../lib/util.js";
 
 import { createDex } from "../lib/dex.js";
-import { setBotRunning } from "../lib/autoLed.js";
+import { setBotRunning } from "../lib/led.js";
 import { preflightBuyLiquidity, DEFAULT_BUY_EXIT_CHECK_FRACTION, DEFAULT_BUY_MAX_PRICE_IMPACT_PCT } from "../lib/liquidity.js";
 import { createPendingCreditManager } from "../lib/pendingCredits.js";
 import { FDV_PLATFORM_FEE_BPS } from "../../../../config/env.js";

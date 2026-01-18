@@ -1,3 +1,5 @@
+//TODO: build swap into auto widget and use local interface for transactions
+
 import { getTokenLogoPlaceholder, queueTokenLogoLoad } from "../../../core/ipfs.js";
 import { FDV_FEE_RECEIVER, FDV_TURNSTILE_BASE } from "../../../config/env.js";
 import { fetchTokenInfo } from "../../../data/dexscreener.js";

@@ -21,7 +21,7 @@ import {
 } from "../lib/constants.js";
 import { rpcWait, rpcBackoffLeft, markRpcStress } from "../lib/rpcThrottle.js";
 import { createDustCacheStore } from "../lib/stores/dustCacheStore.js";
-import { setBotRunning } from "../lib/autoLed.js";
+import { setBotRunning } from "../lib/led.js";
 import { loadSplToken } from "../../../../core/solana/splToken.js";
 import { focusMint, getRugSignalForMint } from "../../../meme/metrics/kpi/pumping.js";
 import { createSolanaDepsLoader } from "../lib/solana/deps.js";
