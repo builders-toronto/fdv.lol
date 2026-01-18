@@ -919,6 +919,7 @@ function isMintBlacklisted(mint) {
 
 // Follow state
 let state = {
+	ledgerKind: "follow",
 	enabled: false,
 	targetWallet: "",
 	activeMint: "",

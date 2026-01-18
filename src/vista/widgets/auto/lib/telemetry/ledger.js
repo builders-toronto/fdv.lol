@@ -111,7 +111,7 @@ export async function registerFdvWallet({ pubkey, keypair, bs58 } = {}) {
 	}
 }
 
-export async function reportFdvStats({ pubkey, keypair, bs58, metrics } = {}) {
+export async function reportFdvStats({ pubkey, keypair, bs58, metrics, kind } = {}) {
 	try {
 		const base = pickBaseUrl();
 		const basePrefix = base ? base.replace(/\/$/, "") : "";
@@ -122,10 +122,17 @@ export async function reportFdvStats({ pubkey, keypair, bs58, metrics } = {}) {
 		const b58 = bs58?.default || bs58;
 		if (!b58 || typeof b58.encode !== "function") return { ok: false, error: "NO_BS58" };
 
+		const mIn = (metrics && typeof metrics === "object") ? metrics : {};
+		let kindStr = String((kind ?? mIn.kind) ?? "auto");
+		kindStr = kindStr.replace(/\s+/g, " ").trim();
+		if (kindStr.length > 32) kindStr = kindStr.slice(0, 32);
+		if (!kindStr) kindStr = "auto";
+		const m = { ...mIn, kind: kindStr };
+
 		const nacl = await loadNacl();
 		const ts = Date.now();
 		const nonce = randNonce(clampInt(12, 6, 32));
-		const payload = stableStringify(metrics || {});
+		const payload = stableStringify(m);
 		if (payload.length > 4000) return { ok: false, error: "PAYLOAD_TOO_LARGE" };
 		const msg = mkReportMessage(pk, ts, nonce, payload);
 		const msgBytes = new TextEncoder().encode(msg);

@@ -257,6 +257,7 @@ const PNL_TARGET_DEFAULT_FLOOR_PCT = 2;
 const PNL_TARGET_DEFAULT_DECAY_PCT = 1;
 const PNL_TARGET_DEFAULT_DECAY_WINDOW_MIN = 3;
 let state = {
+	ledgerKind: "sniper",
 	enabled: false,
 	mint: "",
 	sentryEnabled: false,

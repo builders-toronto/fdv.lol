@@ -984,8 +984,9 @@ input[type="checkbox"]:disabled{
   margin-bottom: 10px;
 }
 
-/* Dashboard cards: keep icons larger */
-.cards .iconbtn{ width:40px; height:40px; }
+/* Dashboard cards: keep icons larger (also while hovered/floated to <body>) */
+.cards .iconbtn,
+.card.is-floating .iconbtn{ width:40px; height:40px; }
 .iconbtn:hover {
   filter:brightness(1.12);
   border-color:rgba(26,255,213,.45)
