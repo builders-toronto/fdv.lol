@@ -38,7 +38,7 @@ const DEFAULTS = Object.freeze({
 	rugSevThreshold: HOLD_RUG_DEFAULT_SEV_THRESHOLD,
 	repeatBuy: false,
 	uptickEnabled: true,
-	dextoolsOpen: true,
+	dextoolsOpen: false,
 });
 
 const UPTICK_PROBE_SOL = 0.01; // fixed probe amount for "price" signal
@@ -520,6 +520,10 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 	let _lastPnlCostSol = 0;
 	let _lastPnlEstOutSol = 0;
 	let _dextoolsChart = null;
+	let _dextoolsJiggleTimer = null;
+	let _startJiggleTimer = null;
+	let _dextoolsDetailsEl = null;
+	let _dextoolsSummaryRowEl = null;
 	let _chatMountId = "";
 	let _chatLastMint = "";
 	let _isActive = false;
@@ -782,10 +786,31 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		} catch {}
 	}
 
+	function _pulseJiggle(el) {
+		try {
+			if (!el) return;
+			el.classList.remove("fdv-jiggle-hint");
+			// Force a reflow so the animation reliably restarts.
+			void el.offsetWidth;
+			el.classList.add("fdv-jiggle-hint");
+			setTimeout(() => {
+				try {
+					el.classList.remove("fdv-jiggle-hint");
+				} catch {}
+			}, 650);
+		} catch {}
+	}
+
 	function onActiveChanged(isActive) {
 		_isActive = !!isActive;
 		try {
 			_dextoolsChart?.setActive?.(_isActive);
+		} catch {}
+		try {
+			if (_isActive) {
+				if (!state.enabled) _pulseJiggle(startBtn);
+				if (!(_dextoolsDetailsEl?.open) && _dextoolsSummaryRowEl) _pulseJiggle(_dextoolsSummaryRowEl);
+			}
 		} catch {}
 		if (_isActive) _syncChat({ force: true });
 		else _unmountChat();
@@ -1484,6 +1509,13 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 	}
 
 	function mount(panelEl) {
+		try { if (_dextoolsJiggleTimer) clearInterval(_dextoolsJiggleTimer); } catch {}
+		_dextoolsJiggleTimer = null;
+		try { if (_startJiggleTimer) clearInterval(_startJiggleTimer); } catch {}
+		_startJiggleTimer = null;
+		_dextoolsDetailsEl = null;
+		_dextoolsSummaryRowEl = null;
+
 		try {
 			_dextoolsChart?.unmount?.({ removeEl: true });
 		} catch {}
@@ -1525,7 +1557,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				</div>
 
 				<details data-hold-dextools-details ${state.dextoolsOpen ? "open" : ""} style="margin-top:10px;">
-					<summary style="cursor:pointer; user-select:none; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 10px; border:1px solid rgba(122,222,255,.14); border-radius:10px; background:rgba(0,0,0,.18);">
+					<summary data-hold-dextools-summary-row style="cursor:pointer; user-select:none; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 10px; border:1px solid rgba(122,222,255,.14); border-radius:10px; background:rgba(0,0,0,.18);">
 						<span style="font-weight:800; letter-spacing:.2px; color:var(--text);">DEXTools</span>
 						<span data-hold-dextools-summary style="font-size:12px; color:var(--muted);"></span>
 					</summary>
@@ -1559,8 +1591,11 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		chartBtn = root.querySelector("[data-hold-chart]");
 		const dextoolsDetailsEl = root.querySelector("[data-hold-dextools-details]");
 		const dextoolsSummaryEl = root.querySelector("[data-hold-dextools-summary]");
+		const dextoolsSummaryRowEl = root.querySelector("[data-hold-dextools-summary-row]");
 		const dextoolsWrapEl = root.querySelector("[data-hold-dextools]");
 		const chatEl = root.querySelector("[data-hold-chat]");
+		_dextoolsDetailsEl = dextoolsDetailsEl;
+		_dextoolsSummaryRowEl = dextoolsSummaryRowEl;
 		try {
 			if (chatEl) {
 				_chatMountId = _safeDomId(`fdv_hold_chat_${botId}`);
@@ -1602,6 +1637,52 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		};
 
 		_setDextoolsSummary(!!state.dextoolsOpen);
+
+		// If the DEXTools panel starts collapsed, give a subtle nudge so users notice it.
+		try {
+			if (!state.dextoolsOpen && dextoolsSummaryRowEl) {
+				setTimeout(() => {
+					try {
+						if (!_isActive) return;
+						if (dextoolsDetailsEl?.open) return;
+						_pulseJiggle(dextoolsSummaryRowEl);
+					} catch {}
+				}, 650);
+
+				// Repeat the hint occasionally while the panel remains collapsed.
+				try {
+					_dextoolsJiggleTimer = setInterval(() => {
+						try {
+							if (!_isActive) return;
+							if (!dextoolsSummaryRowEl) return;
+							if (dextoolsDetailsEl?.open) return;
+							_pulseJiggle(dextoolsSummaryRowEl);
+						} catch {}
+					}, 12_000);
+				} catch {}
+			}
+		} catch {}
+
+		// Small repeating hint on Start when bot isn't running.
+		try {
+			if (startBtn) {
+				setTimeout(() => {
+					try {
+						if (!_isActive) return;
+						if (state.enabled) return;
+						_pulseJiggle(startBtn);
+					} catch {}
+				}, 900);
+
+				_startJiggleTimer = setInterval(() => {
+					try {
+						if (!_isActive) return;
+						if (state.enabled) return;
+						_pulseJiggle(startBtn);
+					} catch {}
+				}, 15_000);
+			}
+		} catch {}
 
 		try {
 			if (dextoolsDetailsEl) {

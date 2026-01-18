@@ -2,7 +2,8 @@ import { isNodeLike as _isNodeLike } from "../lib/runtime.js";
 import { createSolanaDepsLoader } from "../lib/solana/deps.js";
 import { createConnectionGetter } from "../lib/solana/connection.js";
 import { createConfirmSig } from "../lib/solana/confirm.js";
-import { FDV_PLATFORM_FEE_BPS } from "../../../../config/env.js";
+import { FDV_PLATFORM_FEE_BPS, FDV_LEDGER_URL } from "../../../../config/env.js";
+import { registerFdvWallet, reportFdvStats } from "./ledger.js";
 
 import { computePumpingLeaders, getRugSignalForMint, focusMint } from "../../../meme/metrics/kpi/pumping.js";
 import { getLatestSnapshot } from "../../../meme/metrics/ingest.js";
@@ -540,6 +541,93 @@ const executeSellDecisionPolicy = createExecuteSellDecisionPolicy({
 
 function getSessionPnlSol() {
   return Number(state.moneyMadeSol || 0) - Number(state.pnlBaselineSol || 0);
+}
+
+let _ledgerReportTimer = null;
+let _lastLedgerReportAt = 0;
+
+function _shortTxErr(v, maxLen = 220) {
+  try {
+    let s = String(v?.message || v || "");
+    s = s.replace(/\s+/g, " ").trim();
+    if (s.length > maxLen) s = s.slice(0, maxLen) + "…";
+    return s;
+  } catch {
+    return "";
+  }
+}
+
+function _mkTxMeta({ kind, mint, res, extra } = {}) {
+  try {
+    const ok = !!res?.ok;
+    const sig = String(res?.sig || "");
+    const msg = _shortTxErr(res?.msg || res?.err || res?.error || res?.reason || "");
+    const out = {
+      kind: String(kind || "tx"),
+      mint: String(mint || ""),
+      ok,
+      sig,
+      msg,
+    };
+    if (extra && typeof extra === "object") {
+      if (Number.isFinite(Number(extra?.solUi))) out.solUi = Number(extra.solUi);
+      if (Number.isFinite(Number(extra?.amountUi))) out.amountUi = Number(extra.amountUi);
+      if (Number.isFinite(Number(extra?.slippageBps))) out.slippageBps = Math.floor(Number(extra.slippageBps));
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+async function _pushLedgerReport(reason = "tick", { force = false, tx = null } = {}) {
+  try {
+    if (!state?.autoWalletPub) return;
+    if (!state?.autoWalletSecret) return;
+
+    // Avoid spamming.
+    const t = Date.now();
+    const minGap = force ? 0 : 45_000;
+    if (t - _lastLedgerReportAt < minGap) return;
+    _lastLedgerReportAt = t;
+
+    const { bs58 } = await loadDeps();
+    const kp = await getAutoKeypair().catch(() => null);
+    if (!kp) return;
+
+    const solBal = Number.isFinite(Number(window._fdvLastSolBal)) ? Number(window._fdvLastSolBal) : undefined;
+    const metrics = {
+      kind: "auto",
+      reason: String(reason || "tick"),
+      at: t,
+      solBalance: solBal,
+      moneyMadeSol: Number(state.moneyMadeSol || 0),
+      pnlBaselineSol: Number(state.pnlBaselineSol || 0),
+      sessionPnlSol: getSessionPnlSol(),
+      enabled: !!state.enabled,
+    };
+
+    if (tx) metrics.lastTx = tx;
+
+    await reportFdvStats({ pubkey: state.autoWalletPub, keypair: kp, bs58, metrics }).catch(() => null);
+  } catch {}
+}
+
+function _noteDexTx(kind, mint, res, extra = null) {
+  try {
+    const tx = _mkTxMeta({ kind, mint, res, extra });
+    _pushLedgerReport(`dex:${String(kind || "tx")}`, { force: true, tx });
+  } catch {}
+}
+
+function _startLedgerReporting() {
+  try {
+    if (_ledgerReportTimer) return;
+    _ledgerReportTimer = setInterval(() => {
+      _pushLedgerReport("interval");
+    }, 75_000);
+    try { _pushLedgerReport("start"); } catch {}
+  } catch {}
 }
 
 async function _addRealizedPnl(solProceeds, costSold, label = "PnL") {
@@ -2406,11 +2494,21 @@ async function _migrateWalletFunds({ fromSigner, toSigner }) {
 }
 
 async function ensureAutoWallet() {
-  if (state.autoWalletPub && state.autoWalletSecret) return state.autoWalletPub;
+  if (state.autoWalletPub && state.autoWalletSecret) {
+    try { _startLedgerReporting(); } catch {}
+    return state.autoWalletPub;
+  }
   const gen = await _generateAutoWalletKeypair();
   state.autoWalletPub = gen.publicKey;
   state.autoWalletSecret = gen.secretKey;
   save();
+
+  // Best-effort: publish this wallet to the public FDV ledger.
+  try {
+    const { bs58 } = await loadDeps();
+    await registerFdvWallet({ pubkey: state.autoWalletPub, keypair: gen.kp, bs58 });
+  } catch {}
+  try { _startLedgerReporting(); } catch {}
   return state.autoWalletPub;
 }
 
@@ -2654,6 +2752,8 @@ async function sweepAllToSolAndReturn() {
         { signer, mint, amountUi: uiAmt, slippageBps: state.slippageBps },
         { retries: 2, confirmMs: 15000, closeWsolAta: false },
       );
+
+      try { _noteDexTx("sell", mint, res, { amountUi: uiAmt, slippageBps: state.slippageBps }); } catch {}
 
       if (!res.ok) {
         log(`Sell fail ${mint.slice(0,4)}…: route execution failed`);
@@ -4448,6 +4548,8 @@ async function sweepNonSolToSolAtStart() {
         { retries: 1, confirmMs: 15000, closeWsolAta: false },
       );
 
+    try { _noteDexTx("sell", mint, res, { amountUi: realUi, slippageBps: state.slippageBps }); } catch {}
+
     if (!res?.ok) {
     // No-balance: stale cache/position entry; prune silently.
     if (res?.noBalance) {
@@ -4538,6 +4640,8 @@ async function sweepDustToSolAtStart() {
         { signer: kp, mint, amountUi: uiAmt, slippageBps: state.slippageBps },
         { retries: 2, confirmMs: 15000, closeWsolAta: false },
       );
+
+      try { _noteDexTx("sell", mint, res, { amountUi: uiAmt, slippageBps: state.slippageBps }); } catch {}
 
       if (!res.ok) {
         if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
@@ -5412,6 +5516,8 @@ async function switchToLeader(newMint) {
           { retries: 2, confirmMs: 15000, closeWsolAta: false },
         );
 
+        try { _noteDexTx("sell", mint, res, { amountUi: uiAmt, slippageBps: state.slippageBps }); } catch {}
+
         if (!res.ok) {
           if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
           log(`Rotate sell not confirmed ${mint.slice(0,4)}… keeping position.`);
@@ -6173,6 +6279,8 @@ async function tick() {
         { signer: kp, mint, solUi: buySol, slippageBps: dynSlip },
         { retries: 2, confirmMs: 32000 },
       );
+
+      try { _noteDexTx("buy", mint, res, { solUi: buySol, slippageBps: dynSlip }); } catch {}
 
       if (!res.ok) {
         try {
@@ -7096,6 +7204,7 @@ export function initTraderWidget(container = document.body) {
     </details>
     <div class="fdv-tool-row">
       <button class="btn tool-btn" data-auto-gen>Generate</button>
+      <button class="btn tool-btn" data-auto-ledger title="Open in Ledger Explorer">Ledger</button>
       <button class="btn tool-btn" data-auto-copy style="display:none;">Address</button>
       <button class="btn tool-btn" data-auto-snapshot title="Download latest sell snapshot">Snapshot</button>
       <button class="btn tool-btn" data-auto-unwind>Return</button>
@@ -7276,6 +7385,28 @@ export function initTraderWidget(container = document.body) {
   rpcEl.value   = currentRpcUrl();
   try { rpchEl.value = JSON.stringify(currentRpcHeaders() || {}); } catch { rpchEl.value = "{}"; }
   depAddrEl.value = state.autoWalletPub || "";
+
+  // Best-effort: publish any existing auto wallet to the public FDV ledger.
+  try {
+    if (state.autoWalletPub && state.autoWalletSecret) {
+      try { _startLedgerReporting(); } catch {}
+      if (!window._fdvLedgerRegistered) window._fdvLedgerRegistered = new Set();
+      const k = String(state.autoWalletPub || "").trim();
+      if (k && !window._fdvLedgerRegistered.has(k)) {
+        window._fdvLedgerRegistered.add(k);
+        setTimeout(() => {
+          void (async () => {
+            try {
+              const kp = await getAutoKeypair();
+              const { bs58 } = await loadDeps();
+              if (kp) await registerFdvWallet({ pubkey: k, keypair: kp, bs58 });
+            } catch {}
+          })();
+        }, 250);
+      }
+    }
+  } catch {}
+
   recvEl.value    = state.recipientPub || "";
   lifeEl.value    = state.lifetimeMins;
   buyPctEl.value  = (state.buyPct * 100).toFixed(2);
@@ -7753,6 +7884,12 @@ export function initTraderWidget(container = document.body) {
       state.autoWalletSecret = gen.secretKey;
       save();
 
+      // Best-effort: publish this new wallet to the public FDV ledger.
+      try {
+        const { bs58 } = await loadDeps();
+        await registerFdvWallet({ pubkey: state.autoWalletPub, keypair: gen.kp, bs58 });
+      } catch {}
+
       depAddrEl.value = state.autoWalletPub;
       log("Wallet rotation complete. New auto wallet is ready.");
       logObj("Auto wallet (NEW)", { publicKey: state.autoWalletPub, secretKey: state.autoWalletSecret });
@@ -7760,6 +7897,13 @@ export function initTraderWidget(container = document.body) {
       log(`Generate/rotate failed: ${e?.message || e}`, "err");
     } finally {
       try { window._fdvAutoWalletRotateInflight = false; } catch {}
+    }
+  });
+  wrap.querySelector("[data-auto-ledger]").addEventListener("click", async () => {
+    try {
+      window.open(FDV_LEDGER_URL, "_blank");
+    } catch (e) {
+      log(`Failed to open ledger: ${e.message || e}`, "err");
     }
   });
   wrap.querySelector("[data-auto-copy]").addEventListener("click", async () => {
@@ -8213,6 +8357,8 @@ async function _tryLightTopUp(kp) {
         { signer: kp, mint, solUi: buySol, slippageBps: dynSlip },
         { retries: 2, confirmMs: 32000 },
       );
+
+      try { _noteDexTx("buy", mint, res, { solUi: buySol, slippageBps: dynSlip }); } catch {}
       if (!res.ok) {
         log(`Light top-up not confirmed for ${mint.slice(0,4)}… will retry later.`, "warn");
         pos.lightTopUpArmedAt = nowTs + Math.max(2500, LIGHT_TOPUP_ARM_MS);

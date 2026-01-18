@@ -1110,6 +1110,24 @@ input[type="checkbox"]:disabled{
   overflow: hidden;
 }
 
+@keyframes fdv-jiggle{
+  0%{ transform: translateX(0); }
+  18%{ transform: translateX(-1px); }
+  36%{ transform: translateX(1px); }
+  54%{ transform: translateX(-1px); }
+  72%{ transform: translateX(1px); }
+  100%{ transform: translateX(0); }
+}
+
+.fdv-jiggle-hint{
+  animation: fdv-jiggle 360ms ease-in-out 0s 1;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce){
+  .fdv-jiggle-hint{ animation: none !important; }
+}
+
 .fdv-chart-tooltip__hint{
   padding: 8px 12px;
   border-top: 1px solid rgba(122,222,255,.12);
@@ -2630,7 +2648,7 @@ button[data-auto-unwind]{ color:#fff; }
 /* Head/actions wrap on small screens */
 @media (max-width: 740px){
   .fdv-auto-head{ justify-content:space-between; gap:10px; }
-  .fdv-actions button{ padding: 10px 10px; flex:1; }
+  .fdv-actions button{ padding: 10px 5px; flex:1; }
 }
 
 /* Reduce motion */
