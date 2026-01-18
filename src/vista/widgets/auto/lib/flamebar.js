@@ -238,7 +238,10 @@ function createFlamebarDom({ title, subtitle }) {
       <div class="fdv-flamebar-top">
         <div class="fdv-flamebar-title">
           <span class="fdv-flamebar-badge">${String(title || 'Prospect')}</span>
-          <span class="fdv-flamebar-sub">${String(subtitle || 'Top PnL (15m)')}</span>
+          <span class="fdv-flamebar-sub">
+            <span class="fdv-flamebar-subFlame" data-flamebar-sub-flame hidden aria-hidden="true">🔥</span>
+            ${String(subtitle || 'Top PnL (15m)')}
+          </span>
         </div>
         <div class="fdv-flamebar-kpi">
           <span class="fdv-flamebar-pnl" data-flamebar-pnl>—</span>
@@ -270,6 +273,7 @@ function createFlamebarDom({ title, subtitle }) {
   const els = {
     pnl: card.querySelector('[data-flamebar-pnl]'),
     meta: card.querySelector('[data-flamebar-meta]'),
+    subFlame: card.querySelector('[data-flamebar-sub-flame]'),
     coin: card.querySelector('[data-flamebar-coin]'),
     img: card.querySelector('[data-flamebar-img]'),
     logoSpin: card.querySelector('[data-flamebar-logo-spin]'),
@@ -288,6 +292,7 @@ export function initFlamebar(mountEl, opts = {}) {
 
   const store = new Map();
   let leaderMint = null;
+  let leaderMode = 'pump';
   let timer = null;
   let bootstrappedOnce = false;
 
@@ -346,6 +351,58 @@ export function initFlamebar(mountEl, opts = {}) {
     const baseTs = nowTs - Math.max(1000, Math.min(options.windowMs - 1, options.pumpLookbackMs || 0));
     try { pushPoint(mint, baseTs, base, meta); } catch {}
     return pushPoint(mint, nowTs, p, meta);
+  }
+
+  function pickInstantLeaderFromSnapshot(items, nowTs) {
+    try {
+      const list = Array.isArray(items) ? items : [];
+      if (list.length === 0) return null;
+
+      let best = null;
+      let bestPnl = -Infinity;
+
+      for (const item of list) {
+        const mint = extractMint(item);
+        if (!mint) continue;
+
+        const price = extractPriceUsd(item);
+        if (price === null || price <= 0) continue;
+
+        const instantPnl = extractInstantPnlPct(item);
+        if (instantPnl === null) continue;
+
+        // Keep the same rejection rules as main leader logic.
+        const existing = store.get(mint) || null;
+        const rej = isRejectedMint(mint, existing, nowTs);
+        if (rej?.reject) continue;
+
+        if (instantPnl > bestPnl) {
+          bestPnl = instantPnl;
+          best = { mint, price, item };
+        }
+      }
+
+      if (!best || !Number.isFinite(bestPnl)) return null;
+
+      const meta = {
+        symbol: extractSymbol(best.item),
+        name: extractName(best.item),
+        image: extractImage(best.item),
+      };
+
+      let rec = store.get(best.mint) || null;
+      if (!rec || !rec.series || rec.series.length < 2) {
+        // Seed a tiny series so the flamebar has something to show.
+        try { rec = seedFromInstantPnl(best.mint, nowTs, best.price, bestPnl, meta); } catch { rec = null; }
+      } else {
+        try { pushPoint(best.mint, nowTs, best.price, meta); } catch {}
+      }
+
+      if (!rec) return null;
+      return { rec, pnlPct: bestPnl };
+    } catch {
+      return null;
+    }
   }
 
   function bootstrapLeaderFromSnapshot(items, nowTs) {
@@ -489,6 +546,10 @@ export function initFlamebar(mountEl, opts = {}) {
     const has = !!(rec && rec.mint);
     const mint = has ? rec.mint : '';
 
+    const pumping = !!(has && leaderMode === 'pump');
+    try { card.classList.toggle('is-pumping', pumping); } catch {}
+    try { if (els.subFlame) els.subFlame.hidden = !pumping; } catch {}
+
     card.dataset.mint = mint;
     if (els.hodlBtn) els.hodlBtn.dataset.mint = mint;
 
@@ -609,6 +670,7 @@ export function initFlamebar(mountEl, opts = {}) {
         if (rej?.reject) {
           leaderMint = null;
         } else {
+        leaderMode = 'instant';
         const recent = computeRecentPnlPct(boot.rec, nowTs, options.pumpLookbackMs);
         render({ rec: boot.rec, pnlPct: boot.pnlPct, recentPnlPct: recent, sampleCount: boot.rec?.series?.length || 0 });
         return;
@@ -640,10 +702,21 @@ export function initFlamebar(mountEl, opts = {}) {
     } catch {}
 
     let { best, bestPnl, bestRecentPnl } = pickLeader(nowTs, 'pump');
+    let bestMode = best ? 'pump' : '';
     if (!best) {
       ({ best, bestPnl, bestRecentPnl } = pickLeader(nowTs, 'pnl'));
+      bestMode = best ? 'pnl' : '';
     }
     if (!best) {
+      const inst = pickInstantLeaderFromSnapshot(items, nowTs);
+      if (inst?.rec) {
+        const recent = computeRecentPnlPct(inst.rec, nowTs, options.pumpLookbackMs);
+        leaderMint = inst.rec.mint;
+        leaderMode = 'instant';
+        render({ rec: inst.rec, pnlPct: inst.pnlPct, recentPnlPct: recent, sampleCount: inst.rec?.series?.length || 0 });
+        return;
+      }
+
       render({ rec: null, pnlPct: null, recentPnlPct: null, sampleCount: 0 });
       return;
     }
@@ -651,6 +724,10 @@ export function initFlamebar(mountEl, opts = {}) {
     // Hysteresis to reduce leader flicker.
     try {
       if (leaderMint && leaderMint !== best.mint) {
+        // Never let instant/pnl leaders "stick" once pump mode has a candidate.
+        if (bestMode === 'pump' && leaderMode !== 'pump') {
+          // Skip hysteresis; immediately switch.
+        } else {
         const cur = store.get(leaderMint);
         const curRej = cur ? isRejectedMint(leaderMint, cur, nowTs) : null;
         if (curRej?.reject) {
@@ -663,10 +740,12 @@ export function initFlamebar(mountEl, opts = {}) {
           return;
         }
         }
+        }
       }
     } catch {}
 
     leaderMint = best.mint;
+    leaderMode = bestMode || 'pump';
     render({ rec: best, pnlPct: bestPnl, recentPnlPct: bestRecentPnl, sampleCount: best?.series?.length || 0 });
   }
 
@@ -692,6 +771,7 @@ export function initFlamebar(mountEl, opts = {}) {
     try { frame.remove(); } catch {}
     store.clear();
     leaderMint = null;
+    leaderMode = 'pump';
   }
 
   function setActive(on) {
@@ -717,9 +797,17 @@ export function initFlamebar(mountEl, opts = {}) {
           destroy,
           setActive,
           getLeaderMint: () => leaderMint,
+          getLeaderMode: () => leaderMode,
+          isPumping: () => !!leaderMint && leaderMode === 'pump',
         };
         window.__fdvFlamebar.getLeaderMint = () => {
           try { return window.__fdvFlamebar?.instance?.getLeaderMint?.() || null; } catch { return null; }
+        };
+        window.__fdvFlamebar.getLeaderMode = () => {
+          try { return window.__fdvFlamebar?.instance?.getLeaderMode?.() || ''; } catch { return ''; }
+        };
+        window.__fdvFlamebar.isPumping = () => {
+          try { return !!window.__fdvFlamebar?.instance?.isPumping?.(); } catch { return false; }
         };
       } catch {}
     }
@@ -736,5 +824,7 @@ export function initFlamebar(mountEl, opts = {}) {
     destroy,
     setActive,
     getLeaderMint: () => leaderMint,
+    getLeaderMode: () => leaderMode,
+    isPumping: () => !!leaderMint && leaderMode === 'pump',
   };
 }

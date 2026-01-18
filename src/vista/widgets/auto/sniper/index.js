@@ -642,6 +642,8 @@ function pickFlameMintFast() {
 		const t = now();
 		if (_flameTargetMint && t < _flameStickyUntil) return _flameTargetMint;
 
+		if (!isFlamebarPumpingNow()) return "";
+
 		let m = "";
 		try {
 			m = String(window?.__fdvFlamebar?.getLeaderMint?.() || "").trim();
@@ -667,8 +669,22 @@ function pickFlameMintFast() {
 	}
 }
 
+function isFlamebarPumpingNow() {
+	try {
+		const fb = window?.__fdvFlamebar;
+		if (fb && typeof fb.isPumping === "function") return !!fb.isPumping();
+		if (fb && typeof fb.getLeaderMode === "function") return String(fb.getLeaderMode() || "") === "pump";
+		// DOM fallback: flamebar sets `.fdv-flamebar-card.is-pumping` when 🔥 is shown.
+		const el = typeof document !== "undefined" ? document.querySelector(".fdv-flamebar-card") : null;
+		return !!el?.classList?.contains?.("is-pumping");
+	} catch {
+		return false;
+	}
+}
+
 function getFlameLeaderMintNow() {
 	try {
+		if (!isFlamebarPumpingNow()) return "";
 		const m = String(window?.__fdvFlamebar?.getLeaderMint?.() || "").trim();
 		return _isMaybeMintStr(m) ? m : "";
 	} catch {
@@ -2840,6 +2856,16 @@ async function tickOnce() {
 				return;
 			}
 			if (trig) {
+				if (state.flameEnabled && !state.sentryEnabled && typeof document !== "undefined" && !isFlamebarPumpingNow()) {
+					traceOnce(
+						"sniper:flame:gate",
+						`Flame gate: skipping buy for ${mint.slice(0, 4)}… (waiting for Flamebar 🔥 pump)` ,
+						4500,
+						"help",
+					);
+					updateUI();
+					return;
+				}
 				log(`Trigger: upward momentum for ${mint.slice(0, 4)}… buying.`, "info");
 				await mirrorBuy(mint, { entryMode: "momentum" });
 			}
