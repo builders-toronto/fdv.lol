@@ -662,6 +662,7 @@ const SLIPPAGE_TIERS_BPS = [50, 100, 200, 500, 1000, 2000];
 
 // State
 let state = {
+  ledgerKind: "volume",
   enabled: false,
   mint: "",
   minBuyAmountSol: 0.005,

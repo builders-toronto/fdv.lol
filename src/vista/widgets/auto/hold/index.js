@@ -1,17 +1,28 @@
 import { setBotRunning } from "../lib/led.js";
 import { createSolanaDepsLoader } from "../lib/solana/deps.js";
 import { createConnectionGetter } from "../lib/solana/connection.js";
+import { createConfirmSig } from "../lib/solana/confirm.js";
 import { clamp, safeNum } from "../lib/util.js";
 import {
 	EDGE_TX_FEE_ESTIMATE_LAMPORTS,
 	FEE_RESERVE_MIN,
 	FEE_RESERVE_PCT,
+	MAX_CONSEC_SWAP_400,
+	MIN_QUOTE_RAW_AMOUNT,
+	MIN_SELL_CHUNK_SOL,
 	MIN_JUP_SOL_IN,
+	MINT_RUG_BLACKLIST_MS,
+	ROUTER_COOLDOWN_MS,
 	RUG_FORCE_SELL_SEVERITY,
+	SMALL_SELL_FEE_FLOOR,
 	SOL_MINT,
+	SPLIT_FRACTIONS,
 	TX_FEE_BUFFER_LAMPORTS,
+	FEE_ATAS,
+	AUTO_CFG,
 } from "../lib/constants.js";
-import { dex, getAutoTraderState } from "../trader/index.js";
+import { createDex } from "../lib/dex.js";
+import { getAutoTraderState } from "../trader/index.js";
 import { getRugSignalForMint } from "../../../meme/metrics/kpi/pumping.js";
 import { createPnlFadeExitPolicy, pushPnlFadeSample } from "../lib/sell/policies/pnlFadeExit.js";
 import { preflightBuyLiquidity, DEFAULT_BUY_EXIT_CHECK_FRACTION, DEFAULT_BUY_MAX_PRICE_IMPACT_PCT } from "../lib/liquidity.js";
@@ -30,6 +41,7 @@ const MAX_LOG_ENTRIES = 120;
 const HOLD_RUG_DEFAULT_SEV_THRESHOLD = clamp(safeNum(RUG_FORCE_SELL_SEVERITY, 1), 1, 4);
 
 const DEFAULTS = Object.freeze({
+	ledgerKind: "hold",
 	enabled: false,
 	mint: "",
 	pollMs: 1500,
@@ -96,6 +108,14 @@ const getConn = createConnectionGetter({
 	getRpcUrl: currentRpcUrl,
 	getRpcHeaders: currentRpcHeaders,
 	commitment: "confirmed",
+});
+
+const confirmSig = createConfirmSig({
+	getConn,
+	markRpcStress,
+	defaultCommitment: "confirmed",
+	defaultTimeoutMs: 20_000,
+	throwOnTimeout: true,
 });
 
 function rpcBackoffLeft() {
@@ -195,6 +215,67 @@ async function requiredAtaLamportsForSwap(ownerStr, _inMint, outMint) {
 	} catch {
 		return 0;
 	}
+}
+
+async function safeGetDecimalsFast(mint) {
+	if (!mint) return 6;
+	if (mint === SOL_MINT) return 9;
+	try {
+		const cfg = AUTO_CFG || {};
+		const cached = Number(cfg?.tokenDecimals?.[mint]);
+		if (Number.isFinite(cached)) return cached;
+	} catch {}
+	try {
+		const conn = await getConn();
+		const { PublicKey } = await loadWeb3();
+		const info = await withTimeout(conn.getParsedAccountInfo(new PublicKey(mint), "processed"), 10_000, {
+			label: "getParsedAccountInfo",
+		});
+		const d = Number(info?.value?.data?.parsed?.info?.decimals);
+		if (Number.isFinite(d)) return d;
+	} catch {}
+	return 6;
+}
+
+let _dex;
+function getDex() {
+	if (_dex) return _dex;
+	_dex = createDex({
+		SOL_MINT,
+		MIN_QUOTE_RAW_AMOUNT,
+		MIN_SELL_CHUNK_SOL,
+		MAX_CONSEC_SWAP_400,
+		ROUTER_COOLDOWN_MS,
+		TX_FEE_BUFFER_LAMPORTS,
+		EDGE_TX_FEE_ESTIMATE_LAMPORTS,
+		SMALL_SELL_FEE_FLOOR,
+		SPLIT_FRACTIONS,
+		MINT_RUG_BLACKLIST_MS,
+		FEE_ATAS,
+
+		now: () => Date.now(),
+		log: () => {},
+		logObj: () => {},
+		getState: () => {
+			const st = getAutoTraderState?.() || {};
+			return { ...st, ledgerKind: "hold" };
+		},
+
+		getConn,
+		loadWeb3,
+		loadSplToken,
+		rpcBackoffLeft,
+		markRpcStress,
+
+		getCfg: () => AUTO_CFG,
+		tokenAccountRentLamports,
+		requiredAtaLamportsForSwap,
+		requiredOutAtaRentIfMissing: async () => 0,
+		minSellNotionalSol: () => 0,
+		safeGetDecimalsFast,
+		confirmSig,
+	});
+	return _dex;
 }
 
 function now() {
@@ -350,7 +431,7 @@ function _toRawBig(amountUi, decimals = 6) {
 
 async function _probeOutRaw(mint) {
 	const inLamports = Math.floor(UPTICK_PROBE_SOL * 1e9);
-	const q = await dex.quoteGeneric(SOL_MINT, mint, String(inLamports), 250);
+	const q = await getDex().quoteGeneric(SOL_MINT, mint, String(inLamports), 250);
 	const out = q?.outAmount;
 	if (!out) return null;
 	try {
@@ -383,7 +464,7 @@ async function _estimateExitSolForPosition(mint, pos) {
 		if (!(raw > 0n)) return 0;
 		const st = getAutoTraderState();
 		const slip = Math.max(50, Math.min(2000, Number(st?.slippageBps || 250) | 0));
-		const q = await dex.quoteGeneric(mint, SOL_MINT, raw.toString(), slip);
+		const q = await getDex().quoteGeneric(mint, SOL_MINT, raw.toString(), slip);
 		const out = q?.outAmount;
 		if (!out) return 0;
 		const lamports = BigInt(out);
@@ -399,7 +480,7 @@ async function _estimateExitSolFromUiAmount(mint, sizeUi, decimals = 6) {
 		if (!(raw > 0n)) return 0;
 		const st = getAutoTraderState();
 		const slip = Math.max(50, Math.min(2000, Number(st?.slippageBps || 250) | 0));
-		const q = await dex.quoteGeneric(mint, SOL_MINT, raw.toString(), slip);
+		const q = await getDex().quoteGeneric(mint, SOL_MINT, raw.toString(), slip);
 		const out = q?.outAmount;
 		if (!out) return 0;
 		return Number(BigInt(out)) / 1e9;
@@ -650,7 +731,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			const lastProbe = Number(p.lastCreditProbeAt || 0);
 			if (t - lastProbe >= 5500) {
 				p.lastCreditProbeAt = t;
-				const got = await dex.waitForTokenCredit(ownerStr, mint, { timeoutMs: 1800, pollMs: 250 });
+				const got = await getDex().waitForTokenCredit(ownerStr, mint, { timeoutMs: 1800, pollMs: 250 });
 				if (Number(got?.sizeUi || 0) > 0) {
 					const pos = _getPosForMint(mint);
 					const posCost = Number(pos?.costSol || 0);
@@ -932,7 +1013,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				try {
 					const c = _cycle;
 					if (c && c.ownerStr) {
-						const got = await dex.waitForTokenCredit(c.ownerStr, mint, { timeoutMs: 900, pollMs: 250 });
+						const got = await getDex().waitForTokenCredit(c.ownerStr, mint, { timeoutMs: 900, pollMs: 250 });
 						if (Number(got?.sizeUi || 0) > 0) {
 							c.sizeUi = Number(got.sizeUi || c.sizeUi);
 							if (Number.isFinite(got.decimals)) c.decimals = got.decimals;
@@ -997,7 +1078,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				}
 
 				const chk = await preflightBuyLiquidity({
-					dex,
+					dex: getDex(),
 					solMint: SOL_MINT,
 					mint,
 					inputSol: buySol,
@@ -1017,7 +1098,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				let sig = "";
 				try {
 					sig = await withTimeout(
-						dex.jupSwapWithKeypair({
+						getDex().jupSwapWithKeypair({
 							signer: kp,
 							inputMint: SOL_MINT,
 							outputMint: mint,
@@ -1078,7 +1159,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 							2500,
 							"help",
 						);
-						const got = await dex.waitForTokenCredit(ownerStr, mint, { timeoutMs: 1200, pollMs: 300 });
+						const got = await getDex().waitForTokenCredit(ownerStr, mint, { timeoutMs: 1200, pollMs: 300 });
 						if (Number(got?.sizeUi || 0) > 0) {
 							_setCycleFromCredit({ mint, ownerStr, costSol: buySol, sizeUi: got.sizeUi, decimals: got.decimals });
 							let addCostSol = buySol;
@@ -1265,7 +1346,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			const prevSizeUi = Number(pos?.sizeUi || active?.sizeUi || 0);
 			let sellUi = Number(pos?.sizeUi || active?.sizeUi || 0);
 			try {
-				const b = await dex.getAtaBalanceUi(ownerStr, mint, Number(pos?.decimals || active?.decimals || 6));
+				const b = await getDex().getAtaBalanceUi(ownerStr, mint, Number(pos?.decimals || active?.decimals || 6));
 				if (Number(b?.sizeUi || 0) > 0) sellUi = Number(b.sizeUi);
 			} catch {}
 			if (!(sellUi > 0)) {
@@ -1283,7 +1364,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				return;
 			}
 
-			const res = await dex.executeSwapWithConfirm(
+			const res = await getDex().executeSwapWithConfirm(
 				{ signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: slip },
 				{ retries: 1, confirmMs: Math.max(15_000, Number(HOLD_SELL_CONFIRM_MS || 0)) },
 			);
@@ -1310,7 +1391,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				void (async () => {
 					try {
 						if (!ownerStr) return;
-						const deb = await dex.waitForTokenDebit(ownerStr, mint, prevSizeUi, {
+						const deb = await getDex().waitForTokenDebit(ownerStr, mint, prevSizeUi, {
 							timeoutMs: HOLD_EXIT_DEBIT_TIMEOUT_MS,
 							pollMs: HOLD_EXIT_DEBIT_POLL_MS,
 						});
@@ -1420,7 +1501,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 					if (p && p.mint === mint && p.ownerStr) {
 						void (async () => {
 							try {
-								const got = await dex.waitForTokenCredit(p.ownerStr, mint, { timeoutMs: 20_000, pollMs: 300 });
+								const got = await getDex().waitForTokenCredit(p.ownerStr, mint, { timeoutMs: 20_000, pollMs: 300 });
 								if (Number(got?.sizeUi || 0) > 0) {
 									_setCycleFromCredit({ mint, ownerStr: p.ownerStr, costSol: Number(p.addCostSol || 0), sizeUi: got.sizeUi, decimals: got.decimals });
 									_upsertAutoPosFromCredit({ mint, sizeUi: got.sizeUi, decimals: got.decimals, addCostSol: Number(p.addCostSol || 0) });
@@ -1446,11 +1527,11 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 						let sellUi = 0;
 						try {
 							const ownerStr = kp.publicKey.toBase58();
-							const b = await dex.getAtaBalanceUi(ownerStr, mint, 6);
+							const b = await getDex().getAtaBalanceUi(ownerStr, mint, 6);
 							sellUi = Number(b?.sizeUi || 0);
 						} catch {}
 						if (!(sellUi > 0)) return { ok: false, noBalance: true, sig: "" };
-						return await dex.executeSwapWithConfirm(
+						return await getDex().executeSwapWithConfirm(
 							{ signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps },
 							{ retries: 2, confirmMs: 45_000 },
 						);

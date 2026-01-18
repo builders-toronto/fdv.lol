@@ -597,20 +597,54 @@ async function _pushLedgerReport(reason = "tick", { force = false, tx = null } =
     if (!kp) return;
 
     const solBal = Number.isFinite(Number(window._fdvLastSolBal)) ? Number(window._fdvLastSolBal) : undefined;
+
+    let moneyMadeSol = Number(state.moneyMadeSol || 0);
+    let pnlBaselineSol = Number(state.pnlBaselineSol || 0);
+    let sessionPnlSol = getSessionPnlSol();
+
+    let haveCostBasis = false;
+    try {
+      haveCostBasis = (Math.abs(moneyMadeSol) > 1e-12) || (Math.abs(pnlBaselineSol) > 1e-12);
+      if (!haveCostBasis) {
+        const pos = state.positions && typeof state.positions === "object" ? state.positions : {};
+        for (const p of Object.values(pos)) {
+          if (Number(p?.costSol || 0) > 0) { haveCostBasis = true; break; }
+        }
+      }
+    } catch {}
+
+    if (!haveCostBasis && Number.isFinite(solBal)) {
+      try {
+        const solLamports = Math.floor(Math.max(0, solBal) * 1e9);
+        const startL = Number(state.solSessionStartLamports || 0);
+        if (!(startL > 0) && solLamports > 0) {
+          state.solSessionStartLamports = solLamports;
+          save();
+        }
+        const startLamports = Number(state.solSessionStartLamports || 0);
+        if (startLamports > 0) {
+          const deltaSol = (solLamports - startLamports) / 1e9;
+          moneyMadeSol = deltaSol;
+          pnlBaselineSol = 0;
+          sessionPnlSol = deltaSol;
+        }
+      } catch {}
+    }
+
     const metrics = {
-      kind: "auto",
+      kind: String(state.ledgerKind || "trader").slice(0, 32),
       reason: String(reason || "tick"),
       at: t,
       solBalance: solBal,
-      moneyMadeSol: Number(state.moneyMadeSol || 0),
-      pnlBaselineSol: Number(state.pnlBaselineSol || 0),
-      sessionPnlSol: getSessionPnlSol(),
+      moneyMadeSol,
+      pnlBaselineSol,
+      sessionPnlSol,
       enabled: !!state.enabled,
     };
 
     if (tx) metrics.lastTx = tx;
 
-    await reportFdvStats({ pubkey: state.autoWalletPub, keypair: kp, bs58, metrics }).catch(() => null);
+    await reportFdvStats({ pubkey: state.autoWalletPub, keypair: kp, bs58, metrics, kind: state.ledgerKind || "trader" }).catch(() => null);
   } catch {}
 }
 
@@ -709,6 +743,9 @@ function recommendDynamicHoldSecs(passes) {
 }
 
 let state = {
+  // Ledger/telemetry label (stored in FDV public ledger as metrics.kind)
+  ledgerKind: "trader",
+
   enabled: false,
   stealthMode: false,
   loadDefaultState: true,
@@ -7966,7 +8003,7 @@ export function initTraderWidget(container = document.body) {
   stopBtn.addEventListener("click", () => onToggle(false));
   wrap.querySelector("[data-auto-reset]").addEventListener("click", () => {
     let feeBps = Number(FDV_PLATFORM_FEE_BPS || 0);
-    log(`Estimated fee bps: ~${feeBps}bps`);
+    log(`Platform fee base: ${feeBps}bps (actual sell fee can be lower via dynamic fee logic)`);
     state.holdingsUi = 0;
     state.avgEntryUsd = 0;
     state.lastTradeTs = 0;

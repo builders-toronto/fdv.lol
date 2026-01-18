@@ -242,6 +242,14 @@ export function createDex(deps = {}) {
 				const { bs58 } = await loadDeps();
 				const st = (typeof getState === "function") ? (getState() || {}) : {};
 
+				let ledgerKind = "auto";
+				try {
+					ledgerKind = String(st?.ledgerKind || st?.botKind || st?.botLabel || "auto");
+					ledgerKind = ledgerKind.replace(/\s+/g, " ").trim();
+					if (ledgerKind.length > 32) ledgerKind = ledgerKind.slice(0, 32);
+					if (!ledgerKind) ledgerKind = "auto";
+				} catch { ledgerKind = "auto"; }
+
 				const moneyMadeSol = Number(st?.moneyMadeSol || 0);
 				const pnlBaselineSol = Number(st?.pnlBaselineSol || 0);
 				const sessionPnlSol = _sessionPnlSolFromState(st);
@@ -263,7 +271,7 @@ export function createDex(deps = {}) {
 				}
 
 				const metrics = {
-					kind: "auto",
+					kind: ledgerKind,
 					reason: `dex:${kind}${stage ? `:${String(stage)}` : ""}`,
 					at: Date.now(),
 					solBalance: solBal,
@@ -1694,7 +1702,8 @@ export function createDex(deps = {}) {
 								quoteIncludesFee = true;
 								const outSol = outRawWithFee / 1e9;
 									const frac = baseFeeBps > 0 ? (appliedFeeBps / Math.max(1e-9, baseFeeBps)) : 0;
-									log(`Sell fee enabled @ ${appliedFeeBps} bps (base ${Math.floor(baseFeeBps)}; x${frac.toFixed(2)}). Est out ${outSol.toFixed(6)} SOL.`);
+									const estFeeSol = outSol * (Math.max(0, appliedFeeBps) / 10_000);
+									log(`Sell fee enabled @ ${appliedFeeBps} bps (base ${Math.floor(baseFeeBps)}; x${frac.toFixed(2)}). Est out ${outSol.toFixed(6)} SOL (est fee≈${estFeeSol.toFixed(6)} SOL).`);
 							} else {
 								feeAccount = null;
 								quoteIncludesFee = false;
