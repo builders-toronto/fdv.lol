@@ -82,6 +82,17 @@ const { loadWeb3, loadBs58 } = createSolanaDepsLoader({
 	bs58Version: "6.0.0",
 });
 
+async function isValidPubkeyStr(s) {
+	try {
+		const { PublicKey } = await loadWeb3();
+		// eslint-disable-next-line no-new
+		new PublicKey(String(s || "").trim());
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function currentRpcUrl() {
 	try {
 		const fromLs = typeof localStorage !== "undefined" ? String(localStorage.getItem("fdv_rpc_url") || "") : "";
@@ -264,10 +275,15 @@ function getDex() {
 		getConn,
 		loadWeb3,
 		loadSplToken,
+		loadDeps: async () => {
+			const bs58 = await loadBs58();
+			return { bs58 };
+		},
 		rpcBackoffLeft,
 		markRpcStress,
 
 		getCfg: () => AUTO_CFG,
+		isValidPubkeyStr,
 		tokenAccountRentLamports,
 		requiredAtaLamportsForSwap,
 		requiredOutAtaRentIfMissing: async () => 0,

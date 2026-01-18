@@ -295,7 +295,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-Fix bot telemetry labels + prevent social icon shrink on hover
-
-Add ledgerKind defaults to Sniper/Follow/Volume and wire Hold to its own Dex instance so swap telemetry is labeled correctly per bot
-Ensure card social icons keep their 40px sizing while a hovered card is “floated” (.card.is-floating .iconbtn)
+Hold-specific Dex instance patc to include isValidPubkeyStr; fix missing telemetry dependencies
