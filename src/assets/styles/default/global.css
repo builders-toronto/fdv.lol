@@ -2385,6 +2385,24 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 }
 .fdv-flamebar-sub{ color: var(--muted); font-size: .84rem; }
 
+.fdv-flamebar-subFlame{
+  display: inline-block;
+  margin-right: 6px;
+  transform-origin: 50% 70%;
+  filter: drop-shadow(0 0 10px rgba(255, 92, 0, .28));
+}
+
+@keyframes fdv-flamebar-emojiFlicker{
+  0%{ transform: translateY(0) rotate(-4deg) scale(1); opacity: .92; }
+  35%{ transform: translateY(-0.9px) rotate(3deg) scale(1.06); opacity: 1; }
+  70%{ transform: translateY(0.2px) rotate(-2deg) scale(1.02); opacity: .96; }
+  100%{ transform: translateY(0) rotate(-4deg) scale(1); opacity: .92; }
+}
+
+.fdv-flamebar-card.is-pumping .fdv-flamebar-subFlame{
+  animation: fdv-flamebar-emojiFlicker .42s steps(2, end) infinite;
+}
+
 .fdv-flamebar-kpi{ text-align:right; }
 .fdv-flamebar-pnl{
   display:block;
@@ -2423,6 +2441,7 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 
 @media (prefers-reduced-motion: reduce){
   .fdv-flamebar-pnl.is-hot{ animation: none; }
+  .fdv-flamebar-card.is-pumping .fdv-flamebar-subFlame{ animation: none; }
 }
 
 @supports (color: color-mix(in srgb, white 50%, black)){
