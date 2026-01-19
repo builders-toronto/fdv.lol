@@ -3,6 +3,7 @@ import { createSolanaDepsLoader } from "../lib/solana/deps.js";
 import { createConnectionGetter } from "../lib/solana/connection.js";
 import { createConfirmSig } from "../lib/solana/confirm.js";
 import { clamp, safeNum } from "../lib/util.js";
+import { computeEdgeCaseCostLamports, recommendTargetProfitPct, lamportsToSol } from "../lib/edgeCase.js";
 import {
 	EDGE_TX_FEE_ESTIMATE_LAMPORTS,
 	FEE_RESERVE_MIN,
@@ -515,6 +516,34 @@ async function _getOwnerSolBalanceUi(ownerPubkey) {
 	}
 }
 
+function _getAutoUiCachedSolBalanceUi(ownerPubkeyStr) {
+	try {
+		const want = String(ownerPubkeyStr || "").trim();
+		if (!want) return null;
+
+		const g = typeof window !== "undefined" ? window : globalThis;
+		const v = Number(g?._fdvLastSolBal);
+		if (!Number.isFinite(v) || v < 0) return null;
+
+		// Prefer explicit pubkey tagging (newer Auto UI).
+		const pub = String(g?._fdvLastSolBalPub || "").trim();
+		const at = Number(g?._fdvLastSolBalAt || 0);
+		if (!pub || pub !== want) return null;
+		if (!(at > 0) || (Date.now() - at) > 60_000) return null;
+
+		return v;
+	} catch {
+		return null;
+	}
+}
+
+async function _getOwnerSolBalanceUiPreferCache(ownerPubkeyStr, ownerPubkey) {
+	const cached = _getAutoUiCachedSolBalanceUi(ownerPubkeyStr);
+	if (Number.isFinite(cached)) return { solBal: cached, fromCache: true };
+	const sol = await _getOwnerSolBalanceUi(ownerPubkey);
+	return { solBal: sol, fromCache: false };
+}
+
 function _reserveSol(balanceSol) {
 	const bal = Math.max(0, Number(balanceSol || 0));
 	const pct = Math.max(0, Math.min(0.5, Number(FEE_RESERVE_PCT || 0)));
@@ -595,11 +624,32 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 	let pollEl;
 	let buyPctEl;
 	let profitEl;
+	let edgeCostEl;
+	let edgeRecEl;
+	let edgeRecHintEl;
+	let edgeBadgeEl;
 	let repeatEl;
 	let uptickEl;
 	let rugSevEl;
 	let rugSevLabelEl;
 	let _persistDebounceTimer = null;
+	let _edgeUiTimer = 0;
+	let _edgeUiNonce = 0;
+	let _edgeUiCache = { at: 0, mint: "", ownerStr: "", edgeCostLamports: 0, buySol: 0, recPct: null, solBal: 0, buyPct: 0 };
+
+	function _fallbackBasisSol() {
+		try {
+			const st = getAutoTraderState?.() || {};
+			const minB = Number(st?.minBuySol);
+			const maxB = Number(st?.maxBuySol);
+			if (Number.isFinite(minB) && Number.isFinite(maxB) && minB > 0 && maxB > 0) {
+				return Math.max(minB, Math.min(maxB, (minB + maxB) / 2));
+			}
+			if (Number.isFinite(minB) && minB > 0) return minB;
+			if (Number.isFinite(maxB) && maxB > 0) return maxB;
+		} catch {}
+		return 0.05; // safe-ish fallback basis when balance is unavailable
+	}
 
 	let _timer = null;
 	let _tickInFlight = false;
@@ -782,6 +832,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		state.uptickEnabled = !!uptickEl?.checked;
 		_emitLabelChanged();
 		_persist();
+		if (_isActive) _debouncedEdgeUiUpdate(250);
 	}
 
 	function _rugTier(sev) {
@@ -911,9 +962,182 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		} catch {}
 		if (_isActive) _syncChat({ force: true });
 		else _unmountChat();
+		if (_isActive) _debouncedEdgeUiUpdate(50);
 	}
 
+	function _setEdgeUi({ edgeCostLamports = 0, recPct = null, basisSol = 0, solBal = null, buyPct = null, reason = "" } = {}) {
+		try {
+			if (edgeCostEl) edgeCostEl.textContent = edgeCostLamports > 0 ? `${lamportsToSol(edgeCostLamports).toFixed(6)} SOL` : "-";
+			if (edgeRecEl) edgeRecEl.textContent = Number.isFinite(recPct) ? `${Number(recPct).toFixed(2)}%` : "-";
+			if (edgeBadgeEl) {
+				edgeBadgeEl.classList.remove("warn", "ok", "idle");
+				const userTarget = Number(state.profitPct || DEFAULTS.profitPct);
+				const warn = Number.isFinite(recPct) && Number.isFinite(userTarget) && (userTarget + 1e-9 < recPct);
+				if (warn) {
+					edgeBadgeEl.textContent = "EDGE HIGH";
+					edgeBadgeEl.classList.add("warn");
+				} else if (Number.isFinite(recPct)) {
+					edgeBadgeEl.textContent = "EDGE OK";
+					edgeBadgeEl.classList.add("ok");
+				} else {
+					edgeBadgeEl.textContent = "EDGE";
+					edgeBadgeEl.classList.add("idle");
+				}
+			}
+			if (edgeRecHintEl) {
+				const userTarget = Number(state.profitPct || DEFAULTS.profitPct);
+				if (Number.isFinite(recPct) && Number.isFinite(userTarget)) {
+					const warn = userTarget + 1e-9 < recPct;
+					const basisTxt = `${Math.max(0, Number(basisSol || 0)).toFixed(3)} SOL`;
+					const balTxt = Number.isFinite(Number(solBal)) ? `${Math.max(0, Number(solBal)).toFixed(4)} SOL` : "?";
+					const pctTxt = Number.isFinite(Number(buyPct)) ? `${Math.max(0, Number(buyPct)).toFixed(0)}%` : "";
+					const suffix = (Number.isFinite(Number(solBal)) && Number(solBal) > 0)
+						? ` (buy~${basisTxt}${pctTxt ? ` @${pctTxt}` : ""} of bal~${balTxt})`
+						: ` (buy~${basisTxt})`;
+					edgeRecHintEl.textContent = warn
+						? `Target ${userTarget.toFixed(2)}% < breakeven ~${Number(recPct).toFixed(2)}%${suffix}.`
+						: `Breakeven looks covered by your target.`;
+					try { edgeRecHintEl.style.color = warn ? "var(--fdv-warn)" : "var(--muted)"; } catch {}
+					try { if (edgeRecEl) edgeRecEl.style.color = warn ? "var(--fdv-warn)" : "var(--good)"; } catch {}
+				} else {
+					const r = String(reason || "");
+					if (r === "missing-mint") edgeRecHintEl.textContent = "Set a mint to estimate breakeven.";
+					else if (r === "missing-wallet") edgeRecHintEl.textContent = "Set Auto wallet in Auto tab to estimate breakeven.";
+					else if (r === "no-buy-room") edgeRecHintEl.textContent = "No buy room after reserving fees (lower Buy % or fund the wallet).";
+					else if (r === "balance-unavailable") edgeRecHintEl.textContent = "Could not read SOL balance; rec target uses a typical buy size.";
+					else if (r === "balance-zero") edgeRecHintEl.textContent = "Wallet balance is 0; rec target uses a typical buy size.";
+					else edgeRecHintEl.textContent = "";
+					try { edgeRecHintEl.style.color = "var(--muted)"; } catch {}
+					try { if (edgeRecEl) edgeRecEl.style.color = "var(--muted)"; } catch {}
+				}
+			}
+		} catch {}
+	}
 
+	function _debouncedEdgeUiUpdate(ms = 250) {
+		try {
+			if (_edgeUiTimer) clearTimeout(_edgeUiTimer);
+			_edgeUiTimer = setTimeout(() => {
+				_edgeUiTimer = 0;
+				void _updateEdgeUi();
+			}, Math.max(0, Number(ms || 0)));
+		} catch {
+			void _updateEdgeUi();
+		}
+	}
+
+	async function _updateEdgeUi() {
+		const nonce = ++_edgeUiNonce;
+		try {
+			if (!edgeCostEl || !edgeRecEl) return;
+			const mint = String(mintEl?.value || state.mint || "").trim();
+			if (!mint) {
+				_setEdgeUi({ edgeCostLamports: 0, recPct: null, basisSol: 0, reason: "missing-mint" });
+				return;
+			}
+
+			let kp;
+			try {
+				kp = await getAutoKeypair();
+			} catch {
+				if (nonce !== _edgeUiNonce) return;
+				_setEdgeUi({ edgeCostLamports: 0, recPct: null, basisSol: 0, reason: "missing-wallet" });
+				return;
+			}
+			const ownerStr = (() => {
+				try { return kp.publicKey.toBase58(); } catch { return ""; }
+			})();
+			if (!ownerStr) {
+				_setEdgeUi({ edgeCostLamports: 0, recPct: null, basisSol: 0, reason: "missing-wallet" });
+				return;
+			}
+
+			// Light cache to avoid spamming RPC while typing.
+			try {
+				const wantBuyPct = clamp(safeNum(state.buyPct, DEFAULTS.buyPct), 10, 70);
+				const c = _edgeUiCache;
+				if (
+					now() - Number(c.at || 0) < 12_000 &&
+					c.mint === mint &&
+					c.ownerStr === ownerStr &&
+					Math.abs(Number(c.buyPct || 0) - wantBuyPct) < 1e-9 &&
+					Number.isFinite(c.recPct) &&
+					Number.isFinite(c.buySol) &&
+					c.buySol > 0
+				) {
+					_setEdgeUi({ edgeCostLamports: c.edgeCostLamports, recPct: c.recPct, basisSol: c.buySol, solBal: c.solBal, buyPct: c.buyPct, reason: "" });
+					return;
+				}
+			} catch {}
+
+			const { solBal: solBalRaw, fromCache } = await _getOwnerSolBalanceUiPreferCache(ownerStr, kp.publicKey);
+			let solBal = solBalRaw;
+			let solBalKnown = Number.isFinite(solBal) && (fromCache || solBal > 0);
+			if (!solBalKnown) {
+				// If balance read failed, prefer a recent cached non-zero balance for this wallet.
+				try {
+					const c = _edgeUiCache;
+					if (c.ownerStr === ownerStr && now() - Number(c.at || 0) < 60_000 && Number(c.solBal || 0) > 0) {
+						solBal = Number(c.solBal);
+						solBalKnown = true;
+					}
+				} catch {}
+			}
+			const ataRentLamports = await requiredAtaLamportsForSwap(ownerStr, SOL_MINT, mint);
+
+			const reserve = computeEdgeCaseCostLamports({
+				ataRentLamports,
+				txFeeEstimateLamports: EDGE_TX_FEE_ESTIMATE_LAMPORTS,
+				txFeeBufferLamports: TX_FEE_BUFFER_LAMPORTS,
+				includeBuffer: true,
+			});
+			const maxSpendSol = solBalKnown ? Math.max(0, solBal - reserve.totalLamports / 1e9) : 0;
+			const buyPct = clamp(safeNum(state.buyPct, DEFAULTS.buyPct), 10, 70) / 100;
+			const desired = solBalKnown ? Math.max(0, solBal * buyPct) : 0;
+			const plannedBuySol = solBalKnown ? Math.min(desired, maxSpendSol) : 0;
+			let basisSol = 0;
+			let basisReason = "";
+			if (solBalKnown && plannedBuySol > 0) {
+				basisSol = plannedBuySol;
+			} else if (solBalKnown && desired > 0 && maxSpendSol <= 0) {
+				// Can't buy after reserving fees; don't show an absurd %.
+				basisSol = 0;
+				basisReason = "no-buy-room";
+			} else if (solBalKnown && desired > 0) {
+				// Should be rare, but keep a stable basis.
+				basisSol = desired;
+			} else if (solBalKnown && solBal === 0) {
+				basisSol = Math.max(Number(MIN_JUP_SOL_IN || 0), _fallbackBasisSol());
+				basisReason = "balance-zero";
+			} else {
+				basisSol = Math.max(Number(MIN_JUP_SOL_IN || 0), _fallbackBasisSol());
+				basisReason = "balance-unavailable";
+			}
+
+			const edgeCost = computeEdgeCaseCostLamports({
+				ataRentLamports,
+				txFeeEstimateLamports: EDGE_TX_FEE_ESTIMATE_LAMPORTS,
+				txFeeBufferLamports: 0,
+				includeBuffer: false,
+			});
+			const recPct = basisSol > 0
+				? recommendTargetProfitPct({ buySol: basisSol, edgeCostLamports: edgeCost.totalLamports, safetyBufferPct: 0.1, minPct: 0.1 })
+				: null;
+
+			if (nonce !== _edgeUiNonce) return;
+			_edgeUiCache = { at: now(), mint, ownerStr, edgeCostLamports: edgeCost.totalLamports, buySol: basisSol, recPct, solBal: solBalKnown ? solBal : 0, buyPct: buyPct * 100 };
+			_setEdgeUi({
+				edgeCostLamports: edgeCost.totalLamports,
+				recPct,
+				basisSol,
+				solBal: solBalKnown ? solBal : null,
+				buyPct: buyPct * 100,
+				reason: basisReason || (solBalKnown ? "" : "balance-unavailable"),
+			});
+		} catch {
+			// Keep UI stable; avoid throwing from background refresh.
+		}
+	}
 
 	async function tickOnce(runId) {
 		if (!state.enabled) return;
@@ -1082,9 +1306,14 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				const ownerStr = (() => {
 					try { return kp.publicKey.toBase58(); } catch { return ""; }
 				})();
-				const solBal = await _getOwnerSolBalanceUi(kp.publicKey);
+				const { solBal } = await _getOwnerSolBalanceUiPreferCache(ownerStr, kp.publicKey);
 				const ataRentLamports = await requiredAtaLamportsForSwap(ownerStr, SOL_MINT, mint);
-				const reserveLamports = Number(TX_FEE_BUFFER_LAMPORTS || 0) + Number(EDGE_TX_FEE_ESTIMATE_LAMPORTS || 0) + Number(ataRentLamports || 0);
+				const reserveLamports = computeEdgeCaseCostLamports({
+					ataRentLamports,
+					txFeeEstimateLamports: EDGE_TX_FEE_ESTIMATE_LAMPORTS,
+					txFeeBufferLamports: TX_FEE_BUFFER_LAMPORTS,
+					includeBuffer: true,
+				}).totalLamports;
 				const maxSpendSol = Math.max(0, solBal - reserveLamports / 1e9);
 				const desired = Math.max(0, solBal * buyPct);
 				const buySol = Math.min(desired, maxSpendSol);
@@ -1619,6 +1848,20 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		_dextoolsChart = null;
 
 		const root = panelEl;
+		try {
+			if (typeof document !== "undefined" && !document.getElementById("fdv-hold-edge-style")) {
+				const style = document.createElement("style");
+				style.id = "fdv-hold-edge-style";
+				style.textContent = `
+					.fdv-edge-badge{display:inline-flex;align-items:center;justify-content:center;padding:3px 8px;border-radius:999px;font-weight:900;letter-spacing:.6px;font-size:11px;line-height:1;border:1px solid rgba(122,222,255,.18);background:rgba(0,0,0,.22);color:var(--muted)}
+					.fdv-edge-badge.ok{border-color:rgba(72,255,176,.35);color:var(--good)}
+					.fdv-edge-badge.warn{border-color:rgba(255,122,122,.45);color:var(--fdv-warn);animation:fdv-edge-pop 1.2s ease-in-out infinite}
+					.fdv-edge-badge.idle{opacity:.9}
+					@keyframes fdv-edge-pop{0%,100%{transform:scale(1);filter:drop-shadow(0 0 0 rgba(255,122,122,0))}50%{transform:scale(1.06);filter:drop-shadow(0 0 10px rgba(255,122,122,.45))}}
+				`;
+				document.head.appendChild(style);
+			}
+		} catch {}
 		root.innerHTML = `
 			<div class="fdv-tab-content active" data-tab-content="hold">
 				<div class="fdv-grid">
@@ -1653,6 +1896,13 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 					</div>
 				</div>
 
+				<div class="fdv-hold-edge pill" style="margin-top:6px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; font-size:12px;">
+					<span data-hold-edge-badge class="fdv-edge-badge idle">EDGE</span>
+					<div style="color:var(--muted)">Edge cost <span data-hold-edge-cost style="font-weight:900; color:var(--text)">—</span></div>
+					<div style="color:var(--muted)">Rec target <span data-hold-edge-rec style="font-weight:900; color:var(--muted)">—</span></div>
+					<div data-hold-edge-hint style="flex:1 1 260px; min-width:200px; color:var(--muted)"></div>
+				</div>
+
 				<details data-hold-dextools-details ${state.dextoolsOpen ? "open" : ""} style="margin-top:10px;">
 					<summary data-hold-dextools-summary-row style="cursor:pointer; user-select:none; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 10px; border:1px solid rgba(122,222,255,.14); border-radius:10px; background:rgba(0,0,0,.18);">
 						<span style="font-weight:800; letter-spacing:.2px; color:var(--text);">DEXTools</span>
@@ -1678,6 +1928,10 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		pollEl = root.querySelector("[data-hold-poll]");
 		buyPctEl = root.querySelector("[data-hold-buy-pct]");
 		profitEl = root.querySelector("[data-hold-profit]");
+		edgeCostEl = root.querySelector("[data-hold-edge-cost]");
+		edgeRecEl = root.querySelector("[data-hold-edge-rec]");
+		edgeRecHintEl = root.querySelector("[data-hold-edge-hint]");
+		edgeBadgeEl = root.querySelector("[data-hold-edge-badge]");
 		repeatEl = root.querySelector("[data-hold-repeat]");
 		uptickEl = root.querySelector("[data-hold-uptick]");
 		rugSevEl = root.querySelector("[data-hold-rug-sev]");
@@ -1701,6 +1955,8 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		} catch {}
 
 		updateUI();
+		_setEdgeUi({ edgeCostLamports: 0, recPct: null, basisSol: 0, reason: "missing-mint" });
+		if (_isActive) _debouncedEdgeUiUpdate(100);
 		// Chat is mounted on tab activation to avoid initializing giscus in hidden panels.
 
 		const _setDextoolsSummary = (open) => {
@@ -1795,20 +2051,48 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			}
 		} catch {}
 
-		const onChange = () => {
+		const onChange = (e) => {
+			const prevChatMint = _currentChatMint();
 			_readUiToState();
 			updateUI();
 			try {
 				_dextoolsChart?.refresh?.();
 			} catch {}
-			if (_isActive) _syncChat();
+			// Avoid resetting giscus on unrelated setting tweaks.
+			try {
+				if (_isActive && e?.target === mintEl) {
+					const nextChatMint = _currentChatMint();
+					if (nextChatMint && nextChatMint !== prevChatMint) _syncChat({ force: true });
+				}
+			} catch {}
 			if (state.enabled) startLoop();
+		};
+
+		// Number/text inputs only fire "change" on blur/enter; keep edge indicator responsive while typing.
+		const onSoftInput = () => {
+			try {
+				state.mint = String(mintEl?.value || state.mint || "").trim();
+				state.pollMs = clamp(safeNum(pollEl?.value, state.pollMs), 250, 60_000);
+				state.buyPct = clamp(safeNum(buyPctEl?.value, state.buyPct), 10, 70);
+				state.profitPct = clamp(safeNum(profitEl?.value, state.profitPct), 0.1, 500);
+				try {
+					_edgeUiNonce++;
+					_edgeUiCache.at = 0;
+				} catch {}
+				_emitLabelChanged();
+				_debouncedPersist(300);
+			} catch {}
+			if (_isActive) _debouncedEdgeUiUpdate(80);
 		};
 
 		mintEl?.addEventListener("change", onChange);
 		pollEl?.addEventListener("change", onChange);
 		buyPctEl?.addEventListener("change", onChange);
 		profitEl?.addEventListener("change", onChange);
+		mintEl?.addEventListener("input", onSoftInput);
+		pollEl?.addEventListener("input", onSoftInput);
+		buyPctEl?.addEventListener("input", onSoftInput);
+		profitEl?.addEventListener("input", onSoftInput);
 		repeatEl?.addEventListener("change", onChange);
 		uptickEl?.addEventListener("change", onChange);
 		rugSevEl?.addEventListener("change", onChange);
@@ -1829,7 +2113,6 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		});
 		chartBtn?.addEventListener("click", () => {
 			try {
-				// Prefer the live input value so user can click Chart before change/blur.
 				const m = String(mintEl?.value || state.mint || "").trim();
 				if (!m) return;
 				const url = _dexscreenerUrlForMint(m);
@@ -1838,7 +2121,6 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			} catch {}
 		});
 
-		// Embedded DEXTools chart: default open, but fully disabled/unmounted when user hides it.
 		try {
 			if (state.dextoolsOpen) _ensureDextoolsMounted();
 			else _disableDextools();
@@ -1850,11 +2132,22 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		getState: () => ({ ...state }),
 		getLastPnl: () => ({ pnlPct: _lastPnlPct, at: _lastPnlAt, costSol: _lastPnlCostSol, estOutSol: _lastPnlEstOutSol }),
 		setState: (next) => {
+			const prevChatMint = _currentChatMint();
 			state = _coerceState(next || {});
 			_updateLabelCache();
 			_persist();
 			updateUI();
-			if (_isActive) _syncChat();
+			try {
+				_edgeUiNonce++;
+				_edgeUiCache = { at: 0, mint: "", ownerStr: "", edgeCostLamports: 0, buySol: 0, recPct: null, solBal: 0, buyPct: 0 };
+			} catch {}
+			if (_isActive) {
+				_debouncedEdgeUiUpdate(50);
+				try {
+					const nextChatMint = _currentChatMint();
+					if (nextChatMint && nextChatMint !== prevChatMint) _syncChat({ force: true });
+				} catch {}
+			}
 		},
 		mount,
 		start,
@@ -2169,7 +2462,6 @@ export function initHoldWidget(container = document.body) {
 					if (!b) return;
 					persistAll();
 					updateTabLabel(bid);
-					if (bid === activeId) setActive(bid);
 				} catch {}
 			},
 			onAnyRunningChanged: () => {

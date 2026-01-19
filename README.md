@@ -295,4 +295,9 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-Hold-specific Dex instance patc to include isValidPubkeyStr; fix missing telemetry dependencies
+feat(hold): add edge cost + breakeven indicator
+
+Factor ATA rent + tx-fee “edge cost” math into shared auto/lib helper
+Show Edge cost + recommended target % in Hold UI with animated EDGE HIGH/OK badge
+Make indicator live-updating on config changes (mint/buy%/target%) without chat reloads
+Use Auto Trader cached SOL balance (pubkey+timestamp) for stable basis sizing and avoid stale/wrong balance reads

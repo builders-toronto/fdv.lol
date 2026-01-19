@@ -2016,7 +2016,13 @@ export async function fetchSolBalance(pubkeyStr) {
   }
   const sol = lamports / 1e9;
   log(`Balance: ${sol.toFixed(6)} SOL`, 'info');
-  try { window._fdvLastSolBal = sol; updateStatsHeader(); } catch {}
+  try {
+    window._fdvLastSolBal = sol;
+    window._fdvLastSolBalPub = String(pubkeyStr || "");
+    window._fdvLastSolBalAt = Date.now();
+    window._fdvFetchSolBalance = fetchSolBalance;
+    updateStatsHeader();
+  } catch {}
   return sol;
 }
 
