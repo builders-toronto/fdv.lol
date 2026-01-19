@@ -43,6 +43,13 @@ const _fmtUsd = (v) => {
   if (n >= 1) return `$${n.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}`;
   return `$${n.toPrecision(3)}`;
 };
+const _fmtUsdSigned = (v) => {
+  const n = _num(v);
+  if (n === null) return '—';
+  if (n === 0) return '$0';
+  const sign = n > 0 ? '+' : '−';
+  return `${sign}${_fmtUsd(Math.abs(n))}`;
+};
 const _shortMint = (m) => {
   const s = String(m || '');
   if (s.length <= 12) return s;
@@ -244,7 +251,10 @@ function createFlamebarDom({ title, subtitle }) {
           </span>
         </div>
         <div class="fdv-flamebar-kpi">
-          <span class="fdv-flamebar-pnl" data-flamebar-pnl>—</span>
+          <div class="fdv-flamebar-pnlLine">
+            <span class="fdv-flamebar-pnl" data-flamebar-pnl>—</span>
+            <span class="fdv-flamebar-pnlExact" data-flamebar-pnl-exact hidden>—</span>
+          </div>
           <span class="fdv-flamebar-meta" data-flamebar-meta>Waiting for snapshot…</span>
         </div>
       </div>
@@ -272,6 +282,7 @@ function createFlamebarDom({ title, subtitle }) {
 
   const els = {
     pnl: card.querySelector('[data-flamebar-pnl]'),
+    pnlExact: card.querySelector('[data-flamebar-pnl-exact]'),
     meta: card.querySelector('[data-flamebar-meta]'),
     subFlame: card.querySelector('[data-flamebar-sub-flame]'),
     coin: card.querySelector('[data-flamebar-coin]'),
@@ -290,6 +301,14 @@ function createFlamebarDom({ title, subtitle }) {
 export function initFlamebar(mountEl, opts = {}) {
   const options = { ...DEFAULTS, ...(opts || {}) };
 
+  // Hypothetical position sizing for "exact" PnL: 70% of cached SOL balance.
+  const HYPOTHETICAL_BAL_FRAC = 0.70;
+  const SOL_USD_LS_KEY = 'fdv_sol_usd_px';
+  const SOL_USD_LS_TS_KEY = 'fdv_sol_usd_px_ts';
+  const SOL_BAL_LS_KEY = 'fdv_last_sol_bal';
+  const SOL_BAL_LS_TS_KEY = 'fdv_last_sol_bal_ts';
+  let _solUsdCache = { ts: 0, usd: 0, inflight: null };
+
   const store = new Map();
   let leaderMint = null;
   let leaderMode = 'pump';
@@ -304,6 +323,85 @@ export function initFlamebar(mountEl, opts = {}) {
   try {
     if (mountEl) mountEl.appendChild(frame);
   } catch {}
+
+  function _readCachedSolBalanceUi() {
+    try {
+      const g = typeof window !== 'undefined' ? window : globalThis;
+      const v = Number(g?._fdvLastSolBal);
+      if (Number.isFinite(v) && v >= 0) {
+        try {
+          if (typeof localStorage !== 'undefined') {
+            localStorage.setItem(SOL_BAL_LS_KEY, String(v));
+            localStorage.setItem(SOL_BAL_LS_TS_KEY, String(Date.now()));
+          }
+        } catch {}
+        return v;
+      }
+    } catch {}
+
+    try {
+      if (typeof localStorage === 'undefined') return null;
+      const v = Number(localStorage.getItem(SOL_BAL_LS_KEY));
+      if (!Number.isFinite(v) || v < 0) return null;
+      const ts = Number(localStorage.getItem(SOL_BAL_LS_TS_KEY) || 0);
+      // Don’t trust ancient balances.
+      if (!(ts > 0) || (Date.now() - ts) > 10 * 60_000) return null;
+      return v;
+    } catch {
+      return null;
+    }
+  }
+
+  function _readCachedSolUsd() {
+    // Prefer memory cache.
+    try {
+      const t = Date.now();
+      if (_solUsdCache.usd > 0 && (t - _solUsdCache.ts) < 60_000) return _solUsdCache.usd;
+    } catch {}
+
+    // Then localStorage cache.
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const px = Number(localStorage.getItem(SOL_USD_LS_KEY));
+        const ts = Number(localStorage.getItem(SOL_USD_LS_TS_KEY) || 0);
+        if (Number.isFinite(px) && px > 0 && ts > 0 && (Date.now() - ts) < 10 * 60_000) {
+          _solUsdCache = { ..._solUsdCache, usd: px, ts };
+          return px;
+        }
+      }
+    } catch {}
+
+    return _solUsdCache.usd || 0;
+  }
+
+  function _ensureSolUsdRefresh() {
+    try {
+      const t = Date.now();
+      if (_solUsdCache.inflight) return;
+      if (_solUsdCache.usd > 0 && (t - _solUsdCache.ts) < 60_000) return;
+
+      _solUsdCache.inflight = (async () => {
+        try {
+          const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd', {
+            headers: { accept: 'application/json' },
+          });
+          const j = await res.json();
+          const px = Number(j?.solana?.usd || 0);
+          if (Number.isFinite(px) && px > 0) {
+            _solUsdCache.usd = px;
+            _solUsdCache.ts = Date.now();
+            try {
+              if (typeof localStorage !== 'undefined') {
+                localStorage.setItem(SOL_USD_LS_KEY, String(px));
+                localStorage.setItem(SOL_USD_LS_TS_KEY, String(_solUsdCache.ts));
+              }
+            } catch {}
+          }
+        } catch {}
+        _solUsdCache.inflight = null;
+      })();
+    } catch {}
+  }
 
   function pushPoint(mint, t, price, meta) {
     const prev = store.get(mint);
@@ -578,6 +676,13 @@ export function initFlamebar(mountEl, opts = {}) {
     if (!has) {
       if (els.pnl) els.pnl.textContent = '—';
       try { if (els.pnl) els.pnl.classList.remove('is-hot'); } catch {}
+      try {
+        if (els.pnlExact) {
+          els.pnlExact.textContent = '—';
+          els.pnlExact.hidden = true;
+          els.pnlExact.classList.remove('is-pos', 'is-neg');
+        }
+      } catch {}
       if (els.meta) els.meta.textContent = 'Waiting for snapshot…';
       if (els.fill) els.fill.style.width = '0%';
       frame.style.setProperty('--fdv-flame-alpha', '0.35');
@@ -604,6 +709,35 @@ export function initFlamebar(mountEl, opts = {}) {
     try {
       const hot = (_num(pnlPct) !== null) && (_num(pnlPct) >= (Number.isFinite(options.hotPnlPct) ? options.hotPnlPct : 30));
       if (els.pnl) els.pnl.classList.toggle('is-hot', !!hot);
+    } catch {}
+
+    // Exact PnL: hypothetical position sized to 70% of cached SOL balance.
+    try {
+      _ensureSolUsdRefresh();
+      const solBal = _readCachedSolBalanceUi();
+      const solUsd = _readCachedSolUsd();
+      const pct = _num(pnlPct);
+
+      if (els.pnlExact) {
+        if (solBal === null || !(solUsd > 0) || pct === null) {
+          els.pnlExact.hidden = true;
+          els.pnlExact.textContent = '—';
+          els.pnlExact.classList.remove('is-pos', 'is-neg');
+        } else {
+          const notionalUsd = Math.max(0, solBal) * solUsd * HYPOTHETICAL_BAL_FRAC;
+          const pnlUsd = notionalUsd * (pct / 100);
+          if (Number.isFinite(pnlUsd)) {
+            els.pnlExact.hidden = false;
+            els.pnlExact.textContent = _fmtUsdSigned(pnlUsd);
+            els.pnlExact.classList.toggle('is-pos', pnlUsd > 0);
+            els.pnlExact.classList.toggle('is-neg', pnlUsd < 0);
+          } else {
+            els.pnlExact.hidden = true;
+            els.pnlExact.textContent = '—';
+            els.pnlExact.classList.remove('is-pos', 'is-neg');
+          }
+        }
+      }
     } catch {}
 
     const priceText = _fmtUsd(rec.lastPriceUsd);

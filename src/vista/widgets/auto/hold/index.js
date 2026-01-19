@@ -673,6 +673,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 	let _dextoolsSummaryRowEl = null;
 	let _chatMountId = "";
 	let _chatLastMint = "";
+	let _chatRefreshBtn = null;
 	let _isActive = false;
 
 	const _traceLast = new Map();
@@ -850,7 +851,19 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			const tier = _rugTier(sev);
 			if (rugSevLabelEl) {
 				rugSevLabelEl.textContent = `sev ≥ ${sev.toFixed(2)} (${tier.label})`;
-				rugSevLabelEl.style.color = `var(${tier.colorVar})`;
+				try {
+					rugSevLabelEl.classList.remove(
+						"fdv-hold-rug-tier-low",
+						"fdv-hold-rug-tier-medium",
+						"fdv-hold-rug-tier-high",
+						"fdv-hold-rug-tier-extreme",
+					);
+					const k = String(tier.label || "").toLowerCase();
+					if (k === "low") rugSevLabelEl.classList.add("fdv-hold-rug-tier-low");
+					else if (k === "medium") rugSevLabelEl.classList.add("fdv-hold-rug-tier-medium");
+					else if (k === "high") rugSevLabelEl.classList.add("fdv-hold-rug-tier-high");
+					else rugSevLabelEl.classList.add("fdv-hold-rug-tier-extreme");
+				} catch {}
 			}
 		} catch {}
 	}
@@ -997,8 +1010,17 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 					edgeRecHintEl.textContent = warn
 						? `Target ${userTarget.toFixed(2)}% < breakeven ~${Number(recPct).toFixed(2)}%${suffix}.`
 						: `Breakeven looks covered by your target.`;
-					try { edgeRecHintEl.style.color = warn ? "var(--fdv-warn)" : "var(--muted)"; } catch {}
-					try { if (edgeRecEl) edgeRecEl.style.color = warn ? "var(--fdv-warn)" : "var(--good)"; } catch {}
+					try {
+						edgeRecHintEl.classList.toggle("fdv-hold-edge-hint-warn", warn);
+						edgeRecHintEl.classList.toggle("fdv-hold-edge-hint-ok", !warn);
+					} catch {}
+					try {
+						if (edgeRecEl) {
+							edgeRecEl.classList.toggle("fdv-hold-edge-rec-warn", warn);
+							edgeRecEl.classList.toggle("fdv-hold-edge-rec-ok", !warn);
+							edgeRecEl.classList.remove("fdv-hold-edge-rec-muted");
+						}
+					} catch {}
 				} else {
 					const r = String(reason || "");
 					if (r === "missing-mint") edgeRecHintEl.textContent = "Set a mint to estimate breakeven.";
@@ -1007,8 +1029,15 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 					else if (r === "balance-unavailable") edgeRecHintEl.textContent = "Could not read SOL balance; rec target uses a typical buy size.";
 					else if (r === "balance-zero") edgeRecHintEl.textContent = "Wallet balance is 0; rec target uses a typical buy size.";
 					else edgeRecHintEl.textContent = "";
-					try { edgeRecHintEl.style.color = "var(--muted)"; } catch {}
-					try { if (edgeRecEl) edgeRecEl.style.color = "var(--muted)"; } catch {}
+					try {
+						edgeRecHintEl.classList.remove("fdv-hold-edge-hint-warn", "fdv-hold-edge-hint-ok");
+					} catch {}
+					try {
+						if (edgeRecEl) {
+							edgeRecEl.classList.remove("fdv-hold-edge-rec-warn", "fdv-hold-edge-rec-ok");
+							edgeRecEl.classList.add("fdv-hold-edge-rec-muted");
+						}
+					} catch {}
 				}
 			}
 		} catch {}
@@ -1848,20 +1877,6 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		_dextoolsChart = null;
 
 		const root = panelEl;
-		try {
-			if (typeof document !== "undefined" && !document.getElementById("fdv-hold-edge-style")) {
-				const style = document.createElement("style");
-				style.id = "fdv-hold-edge-style";
-				style.textContent = `
-					.fdv-edge-badge{display:inline-flex;align-items:center;justify-content:center;padding:3px 8px;border-radius:999px;font-weight:900;letter-spacing:.6px;font-size:11px;line-height:1;border:1px solid rgba(122,222,255,.18);background:rgba(0,0,0,.22);color:var(--muted)}
-					.fdv-edge-badge.ok{border-color:rgba(72,255,176,.35);color:var(--good)}
-					.fdv-edge-badge.warn{border-color:rgba(255,122,122,.45);color:var(--fdv-warn);animation:fdv-edge-pop 1.2s ease-in-out infinite}
-					.fdv-edge-badge.idle{opacity:.9}
-					@keyframes fdv-edge-pop{0%,100%{transform:scale(1);filter:drop-shadow(0 0 0 rgba(255,122,122,0))}50%{transform:scale(1.06);filter:drop-shadow(0 0 10px rgba(255,122,122,.45))}}
-				`;
-				document.head.appendChild(style);
-			}
-		} catch {}
 		root.innerHTML = `
 			<div class="fdv-tab-content active" data-tab-content="hold">
 				<div class="fdv-grid">
@@ -1877,17 +1892,17 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 						<div class="fdv-hold-rug-value" data-hold-rug-label></div>
 					</div>
 					<div class="fdv-hold-rug-slider">
-						<div class="fdv-hold-rug-end" style="color:var(--good)">Low</div>
+						<div class="fdv-hold-rug-end fdv-hold-rug-end-good">Low</div>
 						<input class="fdv-range fdv-range-rug" data-hold-rug-sev type="range" min="1" max="4" step="0.05" />
-						<div class="fdv-hold-rug-end" style="color:var(--avoid)">Extreme</div>
+						<div class="fdv-hold-rug-end fdv-hold-rug-end-avoid">Extreme</div>
 					</div>
 				</div>
 
 				<div class="fdv-log" data-hold-log></div>
-				<div class="fdv-actions" style="margin-top:6px;">
-					<div class="fdv-actions-left" style="display:flex; flex-direction:row; gap:4px; align-items:center;">
-						<label style="display:flex;flex-direction:row;align-items:center;gap:4px;">Repeat<input data-hold-repeat type="checkbox"></label>
-						<label style="display:flex;flex-direction:row;align-items:center;gap:4px;">Uptick<input data-hold-uptick type="checkbox"></label>
+				<div class="fdv-actions fdv-hold-actions">
+					<div class="fdv-actions-left fdv-hold-actions-left">
+						<label class="fdv-hold-toggle">Repeat<input data-hold-repeat type="checkbox"></label>
+						<label class="fdv-hold-toggle">Uptick<input data-hold-uptick type="checkbox"></label>
 					</div>
 					<div class="fdv-actions-right">
 						<button data-hold-start>Start</button>
@@ -1896,27 +1911,30 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 					</div>
 				</div>
 
-				<div class="fdv-hold-edge pill" style="margin-top:6px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; font-size:12px;">
+				<div class="fdv-hold-edge">
 					<span data-hold-edge-badge class="fdv-edge-badge idle">EDGE</span>
-					<div style="color:var(--muted)">Edge cost <span data-hold-edge-cost style="font-weight:900; color:var(--text)">—</span></div>
-					<div style="color:var(--muted)">Rec target <span data-hold-edge-rec style="font-weight:900; color:var(--muted)">—</span></div>
-					<div data-hold-edge-hint style="flex:1 1 260px; min-width:200px; color:var(--muted)"></div>
+					<div class="fdv-hold-edge-item">Edge cost <span data-hold-edge-cost class="fdv-hold-edge-value">—</span></div>
+					<div class="fdv-hold-edge-item">Rec target <span data-hold-edge-rec class="fdv-hold-edge-value fdv-hold-edge-value-muted">—</span></div>
+					<div data-hold-edge-hint class="fdv-hold-edge-hint"></div>
 				</div>
 
-				<details data-hold-dextools-details ${state.dextoolsOpen ? "open" : ""} style="margin-top:10px;">
-					<summary data-hold-dextools-summary-row style="cursor:pointer; user-select:none; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 10px; border:1px solid rgba(122,222,255,.14); border-radius:10px; background:rgba(0,0,0,.18);">
-						<span style="font-weight:800; letter-spacing:.2px; color:var(--text);">DEXTools</span>
-						<span data-hold-dextools-summary style="font-size:12px; color:var(--muted);"></span>
+				<details data-hold-dextools-details ${state.dextoolsOpen ? "open" : ""} class="fdv-hold-dextools-details">
+					<summary data-hold-dextools-summary-row class="fdv-hold-dextools-summary-row">
+						<span class="fdv-hold-dextools-title">DEXTools</span>
+						<span data-hold-dextools-summary class="fdv-hold-dextools-summary"></span>
 					</summary>
-					<div style="margin-top:8px;">
+					<div class="fdv-hold-dextools-body">
 						<div data-hold-dextools></div>
 					</div>
 				</details>
 
-				<div class="fdv-hold-chat" style="margin-top:12px; padding-top:10px; border-top:1px solid rgba(122,222,255,.14);">
-					<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-						<div style="font-weight:800; letter-spacing:.2px; color:var(--text);">Chat</div>
-						<div style="font-size:12px; color:var(--muted);">Giscus · mint thread</div>
+				<div class="fdv-hold-chat">
+					<div class="fdv-hold-chat-head">
+						<div class="fdv-hold-chat-title">Chat</div>
+						<div class="fdv-hold-chat-right">
+							<button data-hold-chat-refresh title="Refresh chat" aria-label="Refresh chat" class="fdv-hold-chat-refresh">↻</button>
+							<div class="fdv-hold-chat-meta">Giscus · mint thread</div>
+						</div>
 					</div>
 					<div data-hold-chat></div>
 				</div>
@@ -1936,6 +1954,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		uptickEl = root.querySelector("[data-hold-uptick]");
 		rugSevEl = root.querySelector("[data-hold-rug-sev]");
 		rugSevLabelEl = root.querySelector("[data-hold-rug-label]");
+		_chatRefreshBtn = root.querySelector("[data-hold-chat-refresh]");
 		logEl = root.querySelector("[data-hold-log]");
 		startBtn = root.querySelector("[data-hold-start]");
 		stopBtn = root.querySelector("[data-hold-stop]");
@@ -1951,6 +1970,20 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			if (chatEl) {
 				_chatMountId = _safeDomId(`fdv_hold_chat_${botId}`);
 				chatEl.id = _chatMountId;
+			}
+		} catch {}
+
+		try {
+			if (_chatRefreshBtn) {
+				_chatRefreshBtn.addEventListener("click", (e) => {
+					try { e?.preventDefault?.(); e?.stopPropagation?.(); } catch {}
+					try {
+						if (!_isActive) return;
+						// Force a fresh mount for the current mint.
+						_unmountChat();
+						_syncChat({ force: true });
+					} catch {}
+				});
 			}
 		} catch {}
 
@@ -2188,7 +2221,7 @@ export function initHoldWidget(container = document.body) {
 	const outer = document.createElement("div");
 	outer.className = "fdv-follow-wrap";
 	outer.innerHTML = `
-		<div class="fdv-tabs" data-hold-tabs style="display:flex; gap:8px; margin:8px 0; overflow: auto;">
+		<div class="fdv-tabs fdv-hold-tabs" data-hold-tabs>
 			<!-- hold bot tabs inserted here -->
 			<button class="fdv-tab-btn" data-hold-add title="Add hold bot">+</button>
 		</div>
@@ -2404,7 +2437,7 @@ export function initHoldWidget(container = document.body) {
 		for (const [bid, panel] of tabPanels.entries()) {
 			if (!panel) continue;
 			const isActive = bid === activeId;
-			panel.style.display = isActive ? "block" : "none";
+			panel.classList.toggle("active", isActive);
 			try { bots.get(bid)?.onActiveChanged?.(isActive); } catch {}
 		}
 		persistAll();
@@ -2422,11 +2455,9 @@ export function initHoldWidget(container = document.body) {
 		const btn = document.createElement("button");
 		btn.className = "fdv-tab-btn";
 		btn.dataset.holdTab = id;
-		btn.style.position = "relative";
-		btn.style.paddingRight = "26px";
 		btn.innerHTML = `
 			<span data-hold-tab-label></span>
-			<span data-hold-tab-del title="Delete" aria-label="Delete hold bot" style="position:absolute; top:4px; right:6px; opacity:.7; line-height:1; font-size:14px;">×</span>
+			<span data-hold-tab-del class="fdv-hold-tab-del" title="Delete" aria-label="Delete hold bot">×</span>
 		`;
 		const labelEl = btn.querySelector('[data-hold-tab-label]');
 		if (labelEl) labelEl.textContent = state?.mint ? _shortMint(state.mint) : `Hold ${seq}`;
@@ -2449,7 +2480,7 @@ export function initHoldWidget(container = document.body) {
 
 		const panel = document.createElement("div");
 		panel.dataset.holdPanel = id;
-		panel.style.display = "none";
+		panel.className = "fdv-hold-panel";
 		panelsEl.appendChild(panel);
 
 		const bot = createHoldBotInstance({
@@ -2494,11 +2525,9 @@ export function initHoldWidget(container = document.body) {
 		const btn = document.createElement("button");
 		btn.className = "fdv-tab-btn";
 		btn.dataset.holdTab = id;
-		btn.style.position = "relative";
-		btn.style.paddingRight = "26px";
 		btn.innerHTML = `
 			<span data-hold-tab-label></span>
-			<span data-hold-tab-del title="Delete" aria-label="Delete hold bot" style="position:absolute; top:4px; right:6px; opacity:.7; line-height:1; font-size:14px;">×</span>
+			<span data-hold-tab-del class="fdv-hold-tab-del" title="Delete" aria-label="Delete hold bot">×</span>
 		`;
 		const labelEl = btn.querySelector('[data-hold-tab-label]');
 		if (labelEl) labelEl.textContent = st.mint ? _shortMint(st.mint) : `Hold ${seq}`;
@@ -2521,7 +2550,7 @@ export function initHoldWidget(container = document.body) {
 
 		const panel = document.createElement("div");
 		panel.dataset.holdPanel = id;
-		panel.style.display = "none";
+		panel.className = "fdv-hold-panel";
 		panelsEl.appendChild(panel);
 
 		const bot = createHoldBotInstance({

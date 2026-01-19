@@ -295,9 +295,8 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-feat(hold): add edge cost + breakeven indicator
+Simulated Flamebar PnL (70% SOL balance); responsive KPI styling
 
-Factor ATA rent + tx-fee “edge cost” math into shared auto/lib helper
-Show Edge cost + recommended target % in Hold UI with animated EDGE HIGH/OK badge
-Make indicator live-updating on config changes (mint/buy%/target%) without chat reloads
-Use Auto Trader cached SOL balance (pubkey+timestamp) for stable basis sizing and avoid stale/wrong balance reads
+Add simulated pnl dollar value beside Flamebar % PnL, sized to 70% of cached SOL balance
+Cache SOL balance + SOL/USD price in localStorage and refresh SOL/USD periodically
+Improve mobile responsiveness: clamp font sizes, allow KPI line wrap, prevent overflow
