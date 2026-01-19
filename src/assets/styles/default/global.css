@@ -569,7 +569,7 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
 .pill {
   display:inline-flex; align-items:center; gap:6px;
   padding:8px 8px; border-radius:999px;
-  background: rgba(148,163,184,.10);
+  background: rgba(0, 0, 0, 0.1);
   border:1px solid rgba(122,222,255,.14);
   color: inherit;
   white-space: nowrap;
