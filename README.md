@@ -295,8 +295,7 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-Simulated Flamebar PnL (70% SOL balance); responsive KPI styling
+fix: resolve unparsable structured data; begin Auto swap migration
 
-Add simulated pnl dollar value beside Flamebar % PnL, sized to 70% of cached SOL balance
-Cache SOL balance + SOL/USD price in localStorage and refresh SOL/USD periodically
-Improve mobile responsiveness: clamp font sizes, allow KPI line wrap, prevent overflow
+Fix JSON-LD/structured data output so it parses cleanly
+Start refactor of Auto swap module: migrate toward Auto Wallet + Auto RPC config (remove Phantom-first assumptions, prep keypair signing flow)
