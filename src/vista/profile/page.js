@@ -16,7 +16,7 @@ try { registerCoreWidgets(); } catch {}
 try { prewarmDefaults(); } catch {}
 try {
   widgets.register('swap', {
-    importer: () => import('../widgets/swap/index.js'),
+    importer: () => import('../widgets/auto/swap/index.js'),
     init: ({ mod }) => {
       if (typeof mod.initSwap === 'function') mod.initSwap();
       if (typeof mod.bindSwapButtons === 'function') mod.bindSwapButtons(document);

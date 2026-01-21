@@ -369,7 +369,7 @@ export function registerCoreWidgets() {
   });
 
   widgets.register('favboard', {
-    importer: () => import('./favboard/index.js'),
+    importer: () => import('./board/index.js'),
     init: ({ mod }) => mod.initFavboard(),
     button: (mod, opts) => mod.createOpenFavboardButton(opts),
     eager: true,
