@@ -1,7 +1,7 @@
 
-import { collectInstantSolana } from "../../../../../../data/feeds.js";
-import { fetchTokenInfo } from "../../../../../../data/dexscreener.js";
-import { ingestSnapshot } from "../../../../../meme/metrics/ingest.js";
+import { collectInstantSolana } from "../../../../../data/feeds.js";
+import { fetchTokenInfo } from "../../../../../data/dexscreener.js";
+import { ingestSnapshot } from "../../../../meme/metrics/ingest.js";
 
 function sleep(ms) {
 	return new Promise((r) => setTimeout(r, ms));
