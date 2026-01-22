@@ -2198,18 +2198,64 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 
 // Legacy CLI hooks kept for compatibility (no localStorage in node-like runs).
 let _cliState = { ...DEFAULTS };
+let _cliBot = null;
+
+function __fdvCli_applyHoldConfig(cfg = {}) {
+	try {
+		if (!cfg || typeof cfg !== "object") return false;
+		_cliState = { ..._cliState, ...cfg };
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 async function __fdvCli_startHold(cfg = {}) {
 	if (!_isNodeLike()) return 1;
-	_cliState = { ..._cliState, ...cfg, enabled: true };
-	return 0;
+	try { __fdvCli_applyHoldConfig(cfg); } catch {}
+
+	// Restart semantics: stop any existing runner first.
+	try {
+		if (_cliBot && typeof _cliBot.stop === "function") {
+			await _cliBot.stop({ liquidate: false });
+		}
+	} catch {}
+	_cliBot = null;
+
+	try {
+		_cliBot = createHoldBotInstance({
+			id: "cli",
+			initialState: { ..._cliState, enabled: false },
+			onPersist: () => {},
+			onAnyRunningChanged: () => {},
+			onLabelChanged: () => {},
+		});
+		await _cliBot.start({ resume: false });
+		return 0;
+	} catch (e) {
+		try {
+			const msg = String(e?.stack || e?.message || e || "Hold CLI start failed");
+			// eslint-disable-next-line no-console
+			console.error(msg);
+		} catch {}
+		return 2;
+	}
 }
 
-async function __fdvCli_stopHold() {
+async function __fdvCli_stopHold(opts = {}) {
 	if (!_isNodeLike()) return 1;
-	_cliState.enabled = false;
+	const liquidate = opts?.liquidate === undefined ? true : !!opts.liquidate;
+	try {
+		_cliState.enabled = false;
+		if (_cliBot && typeof _cliBot.stop === "function") {
+			await _cliBot.stop({ liquidate });
+		}
+	} catch {}
+	_cliBot = null;
 	return 0;
 }
 
+export const __fdvCli_applyConfig = __fdvCli_applyHoldConfig;
 export const __fdvCli_start = __fdvCli_startHold;
 export const __fdvCli_stop = __fdvCli_stopHold;
 

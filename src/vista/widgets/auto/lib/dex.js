@@ -2443,14 +2443,16 @@ export function createDex(deps = {}) {
 	) {
 		let effAmountUi = Number(amountUi || 0);
 		let balanceUi = null;
+		let sampleOk = false;
 		try {
 			const owner = signer?.publicKey?.toBase58?.();
 			if (owner && mint) {
 				const b = await getAtaBalanceUiInternal(owner, mint);
 				balanceUi = Number(b?.sizeUi || 0);
+				sampleOk = !!b?.sampleOk;
 				if (!Number.isFinite(balanceUi)) balanceUi = 0;
 				if (!Number.isFinite(effAmountUi)) effAmountUi = 0;
-				if (balanceUi <= 0) {
+				if (balanceUi <= 0 && (sampleOk || !(effAmountUi > 0))) {
 					if (closeTokenAta) {
 						try { await closeEmptyTokenAtas(signer, mint); } catch {}
 					}
