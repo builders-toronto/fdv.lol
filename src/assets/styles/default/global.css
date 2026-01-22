@@ -337,11 +337,11 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
   height:22px;
   width:22px;
   padding:0;
-  /* border-radius:8px; */
+  border-radius:8px;
   display:inline-flex;
   align-items:center;
   justify-content:center;
-  border:none;
+  border:1px solid rgba(122,222,255,.18);
   background:rgba(0,0,0,.15);
   color:var(--muted);
   cursor:pointer;
