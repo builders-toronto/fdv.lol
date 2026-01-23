@@ -151,7 +151,7 @@ export function createOpenAIChatClient({
 		return body;
 	}
 
-	async function chatJson({ system, user, temperature = 0.15, maxTokens = 550, verbosity = "low" } = {}) {
+	async function chatJson({ system, user, temperature = 0.15, maxTokens = 950, verbosity = "low" } = {}) {
 		const ctl = new AbortController();
 		const to = setTimeout(() => {
 			try { ctl.abort(); } catch {}
@@ -230,8 +230,6 @@ export function createOpenAIChatClient({
 			const out = String(ext?.text || "");
 			if (out && out.trim()) return out;
 
-			// If the model hit the completion budget and returned empty/whitespace, retry once with a larger budget.
-			// This addresses cases like: finish_reason=length, content="".
 			try {
 				const finish0 = String(json?.choices?.[0]?.finish_reason || "").toLowerCase();
 				if (finish0 === "length") {
