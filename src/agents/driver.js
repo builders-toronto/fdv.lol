@@ -119,6 +119,19 @@ function _validateBuyDecision(obj) {
 	}
 	const tune = _validateTune(obj.tune);
 	if (tune) out.tune = tune;
+	// Optional evolve feedback (ignored by bot execution, used for long-term improvement).
+	try {
+		if (obj.evolve && typeof obj.evolve === "object") {
+			const outcomeTs = _safeNum(obj.evolve.outcomeTs, 0);
+			const selfCritique = String(obj.evolve.selfCritique || "").slice(0, 220);
+			const lesson = String(obj.evolve.lesson || "").slice(0, 220);
+			if (Number.isFinite(outcomeTs) && outcomeTs > 0 && (selfCritique || lesson)) {
+				out.evolve = { outcomeTs };
+				if (selfCritique) out.evolve.selfCritique = selfCritique;
+				if (lesson) out.evolve.lesson = lesson;
+			}
+		}
+	} catch {}
 	return out;
 }
 
@@ -135,6 +148,19 @@ function _validateSellDecision(obj) {
 	}
 	const tune = _validateTune(obj.tune);
 	if (tune) out.tune = tune;
+	// Optional evolve feedback (ignored by bot execution, used for long-term improvement).
+	try {
+		if (obj.evolve && typeof obj.evolve === "object") {
+			const outcomeTs = _safeNum(obj.evolve.outcomeTs, 0);
+			const selfCritique = String(obj.evolve.selfCritique || "").slice(0, 220);
+			const lesson = String(obj.evolve.lesson || "").slice(0, 220);
+			if (Number.isFinite(outcomeTs) && outcomeTs > 0 && (selfCritique || lesson)) {
+				out.evolve = { outcomeTs };
+				if (selfCritique) out.evolve.selfCritique = selfCritique;
+				if (lesson) out.evolve.lesson = lesson;
+			}
+		}
+	} catch {}
 	return out;
 }
 
@@ -154,6 +180,17 @@ function _readBoolLs(key, fallback = false) {
 		if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
 		if (v === "0" || v === "false" || v === "no" || v === "off") return false;
 		return fallback;
+	} catch {
+		return fallback;
+	}
+}
+
+function _readLsJson(key, fallback = null) {
+	try {
+		const raw = _readLs(key, "");
+		if (!raw) return fallback;
+		const json = _safeJsonParse(raw);
+		return json ?? fallback;
 	} catch {
 		return fallback;
 	}
@@ -257,10 +294,23 @@ export function createAutoTraderAgentDriver({
 			payload: body,
 		};
 
+		const evolveSummary = (() => {
+			try {
+				const s = _readLsJson("fdv_agent_evolve_summary_v1", null);
+				const txt = String(s?.text || "").trim();
+				return txt ? txt.slice(0, 1400) : "";
+			} catch {
+				return "";
+			}
+		})();
+		const systemPrompt = evolveSummary
+			? `${GARY_SYSTEM_PROMPT}\n\n${evolveSummary}`
+			: GARY_SYSTEM_PROMPT;
+
 		let text = "";
 		try {
 			text = await client.chatJson({
-				system: GARY_SYSTEM_PROMPT,
+				system: systemPrompt,
 				user: JSON.stringify(userMsg),
 				temperature: 0.15,
 				maxTokens: Math.max(120, Number((_getConfig() || {}).maxTokens || 350)),
@@ -297,8 +347,11 @@ export function createAutoTraderAgentDriver({
 				const g = (typeof window !== "undefined") ? window : globalThis;
 				const o = g && g.__fdvAgentOverrides && typeof g.__fdvAgentOverrides === "object" ? g.__fdvAgentOverrides : null;
 				const lsEnabled = _readBoolLs("fdv_agent_enabled", true);
+				const riskRaw = String((o && o.riskLevel) ? o.riskLevel : _readLs("fdv_agent_risk", "safe")).trim().toLowerCase();
+				const riskLevel = (riskRaw === "safe" || riskRaw === "medium" || riskRaw === "degen") ? riskRaw : "safe";
 				return {
 					enabled: o && ("enabled" in o) ? !!o.enabled : lsEnabled,
+					riskLevel,
 					openaiApiKey: (o && o.openaiApiKey) ? String(o.openaiApiKey) : _readLs("fdv_openai_key", ""),
 					openaiModel: (o && o.openaiModel) ? String(o.openaiModel) : _readLs("fdv_openai_model", "gpt-4o-mini"),
 					openaiBaseUrl: (o && o.openaiBaseUrl) ? String(o.openaiBaseUrl) : _readLs("fdv_openai_base_url", "https://api.openai.com/v1"),

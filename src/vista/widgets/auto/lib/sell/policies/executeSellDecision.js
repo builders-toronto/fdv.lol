@@ -22,6 +22,7 @@ export function createExecuteSellDecisionPolicy({
   executeSwapWithConfirm,
   waitForTokenDebit,
   addRealizedPnl,
+  onRealizedPnl,
   maybeStealthRotate,
   clearRouteDustFails,
 }) {
@@ -193,6 +194,20 @@ export function createExecuteSellDecisionPolicy({
             );
             const costSold = Number(pos.costSol || 0);
             await addRealizedPnl(estTotalSol, costSold, "Full sell PnL");
+            try {
+              if (typeof onRealizedPnl === "function") {
+                onRealizedPnl({
+                  mint,
+                  kind: "sell_full",
+                  proceedsSol: estTotalSol,
+                  costSold,
+                  pnlSol: Number(estTotalSol || 0) - Number(costSold || 0),
+                  label: "Full sell PnL",
+                  decision: ctx?.decision || null,
+                  nowTs: Number(ctx?.nowTs || 0),
+                });
+              }
+            } catch {}
             delete state.positions[mint];
             removeFromPosCache(kp.publicKey.toBase58(), mint);
             try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
@@ -268,6 +283,20 @@ export function createExecuteSellDecisionPolicy({
       save();
 
       await addRealizedPnl(estSol, costSold, "Partial sell PnL");
+      try {
+        if (typeof onRealizedPnl === "function") {
+          onRealizedPnl({
+            mint,
+            kind: "sell_partial",
+            proceedsSol: estSol,
+            costSold,
+            pnlSol: Number(estSol || 0) - Number(costSold || 0),
+            label: "Partial sell PnL",
+            decision: ctx?.decision || null,
+            nowTs: Number(ctx?.nowTs || 0),
+          });
+        }
+      } catch {}
       } else {
         // FULL SELL (original block)
         let sellUi = pos.sizeUi;
@@ -329,6 +358,20 @@ export function createExecuteSellDecisionPolicy({
           );
           const costSold = Number(pos.costSol || 0);
           await addRealizedPnl(estTotalSol, costSold, "Full sell PnL");
+          try {
+            if (typeof onRealizedPnl === "function") {
+              onRealizedPnl({
+                mint,
+                kind: "sell_full",
+                proceedsSol: estTotalSol,
+                costSold,
+                pnlSol: Number(estTotalSol || 0) - Number(costSold || 0),
+                label: "Full sell PnL",
+                decision: ctx?.decision || null,
+                nowTs: Number(ctx?.nowTs || 0),
+              });
+            }
+          } catch {}
           delete state.positions[mint];
           removeFromPosCache(kp.publicKey.toBase58(), mint);
           save();

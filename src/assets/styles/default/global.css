@@ -1089,7 +1089,7 @@ input[type="checkbox"]:disabled{
   background: transparent;
   transition: transform .14s ease, box-shadow .14s ease, filter .14s ease, background .14s ease;
 }
-.holdCoin:hover{ transform: translateY(-1px); box-shadow: var(--shadow-1) }
+.holdCoin:hover{ box-shadow: var(--shadow-1) }
 .holdCoin:active{ transform: translateY(0) scale(.99) }
 
 .innerControls .btn {
@@ -2837,7 +2837,7 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 
 @media (max-width: 520px){
   .fdv-agent-bar{ gap: 8px; }
-  .fdv-holdtime-row{ flex-wrap: wrap; }
+  /* .fdv-holdtime-row{ flex-wrap: wrap; } */
   .fdv-holdtime-label{ width: auto; }
   .fdv-holdtime-val{ width: auto; }
   .fdv-holdtime-dyn{ margin-left: 0; }

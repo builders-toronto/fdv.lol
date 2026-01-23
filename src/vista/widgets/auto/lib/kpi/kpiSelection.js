@@ -152,6 +152,7 @@ export function selectTradeCandidatesFromKpis({
   topN = 1,
   minLiqUsd = 2500,
   minVol24 = 250,
+  rugSevSkip = 2,
   rugFn = null,
   pumpBoost = 0.08,
 } = {}) {
@@ -178,7 +179,9 @@ export function selectTradeCandidatesFromKpis({
       try {
         const sig = rugFn(mint);
         const sev = Number(sig?.severity || 0);
-        if (Number.isFinite(sev) && sev >= 2) continue;
+        const thr = Number(rugSevSkip);
+        const skipAt = Number.isFinite(thr) ? thr : 2;
+        if (Number.isFinite(sev) && sev >= skipAt) continue;
       } catch {}
     }
 
