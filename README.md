@@ -50,37 +50,6 @@ Note: This project is for research/education. Nothing here is financial advice.
 
 This repo contains both 'read-only' widgets (boards, KPIs) and 'active' bots (that can trade). If you enable trading bots, use a burner wallet and keep balances small.
 
-## CLI
-
-Local (from a repo checkout):
-
-- Help: `node tools/trader.mjs --help`
-- Sim (no RPC/swaps): `node tools/trader.mjs --sim-index`
-- Run bots from a profile JSON (supports Auto / Follow / Sentry / Hold / Volume):
-  `node tools/trader.mjs --run-profile --profiles tools/profiles/dev.json --profile default`
-
-Remote (no checkout) via curl + Node:
-
-- Run interactive CLI (simplest): `curl -fsSL https://fdv.lol/cli.mjs | node`
-- Help / pass args: `curl -fsSL https://fdv.lol/cli.mjs | node - --help`
-- Quick start: `curl -fsSL https://fdv.lol/cli.mjs | node - quick-start`
-- Run a profile hosted at a URL:
-  `curl -fsSL https://fdv.lol/cli.mjs | node - --run-profile --profiles https://example.com/fdv.profiles.json --profile myProfile`
-
-Local testing tip (serve this repo over HTTP):
-
-- From the repo root: `python3 -m http.server 3000` then `curl -fsSL http://localhost:3000/cli.mjs | node - -- --help`
-
-Notes:
-- If you run `curl .../cli.mjs | node` while inside a repo checkout, the bootstrap will auto-run the local files (no `--base-url` needed).
-- If you’re curling `cli.mjs` from a non-default host (localhost/VM), pass `--base-url <origin>` or set `FDV_BASE_URL`.
-- To pass arguments to a script coming from stdin, use `node - <args...>` (otherwise Node treats the first arg as a filename).
-
-Bootstrap flags (optional):
-
-- `--base-url <url>` to point at a different deployment.
-- `--no-clean` to keep the downloaded temp folder (debug).
-
 ### Auto Tools Panel (Trader / Sentry / Hold / Follow / Volume)
 
 Implementation entrypoint: `src/vista/widgets/auto/index.js`
@@ -100,8 +69,6 @@ Best for: hands-off position management with guardrails.
 - Cooldowns and reconciliation logic to reduce 'double spend / stale state' issues
 - Fallback sell flow: split sizing, higher slippage re-quotes, bridge paths, manual send paths
 - Reserve management (fee/rent/runway buffers) and ATA rent estimation per swap
-
-![v0.0.5.3.png](v0.0.5.3.png)
 
 #### Sentry (Sniper)
 
@@ -163,6 +130,7 @@ Implementation: `src/vista/widgets/favboard/index.js`
 - Responsive layout (table on desktop, cards on mobile)
 - Quick links to token pages and live stats
 
+![v0.0.5.3.png](v0.0.5.3.png)
 
 ---
 

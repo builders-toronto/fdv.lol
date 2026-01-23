@@ -2152,7 +2152,7 @@ export async function loadWeb3() {
   if (_isNodeLike()) {
     if (_web3NodePromise) return _web3NodePromise;
     _web3NodePromise = (async () => {
-      const { loadSolanaWeb3FromWeb } = await import("../cli/helpers/web3.node.js");
+      const { loadSolanaWeb3FromWeb } = await import("./cli/helpers/web3.node.js");
       return await loadSolanaWeb3FromWeb();
     })();
     const web3 = await _web3NodePromise;
@@ -2170,7 +2170,7 @@ export async function loadBs58() {
   if (_isNodeLike()) {
     if (_bs58NodePromise) return _bs58NodePromise;
     _bs58NodePromise = (async () => {
-      const mod = await import("../cli/helpers/bs58.node.js");
+      const mod = await import("./cli/helpers/bs58.node.js");
       return mod?.default || mod?.bs58 || mod;
     })();
     const bs58 = await _bs58NodePromise;
@@ -2910,105 +2910,15 @@ async function executeSwapWithConfirm(opts, { retries = 2, confirmMs = 15000 } =
   }
 }
 
-async function transferAllSolToRecipient(recipientPub) {
+async function sweepAllToSolAndReturn() {
   const { PublicKey, SystemProgram, Transaction } = await loadWeb3();
   const signer = await getAutoKeypair();
   if (!signer) throw new Error("auto wallet not ready");
-
-  const dest = String(recipientPub || "").trim();
-  if (!dest) throw new Error("recipient missing");
-
-  const conn = await getConn();
-
-  // Return SOL to recipient
-  try { await unwrapWsolIfAny(signer); } catch {}
-  try { await closeAllEmptyAtas(signer); } catch {}
-  const bal = await conn.getBalance(signer.publicKey).catch(() => 0);
-  const rent = 0.001 * 1e9;
-  const sendLamports = Math.max(0, bal - Math.ceil(rent));
-  if (sendLamports <= 0) {
-    log("No SOL available to return (after rent buffer).", "warn");
-    return { ok: false, sentLamports: 0 };
-  }
-
-  const tx = new Transaction().add(
-    SystemProgram.transfer({
-      fromPubkey: signer.publicKey,
-      toPubkey: new PublicKey(dest),
-      lamports: sendLamports,
-    })
-  );
-  tx.feePayer = signer.publicKey;
-  tx.recentBlockhash = (await conn.getLatestBlockhash()).blockhash;
-  tx.sign(signer);
-  const sig = await conn.sendRawTransaction(tx.serialize(), { preflightCommitment: "processed" });
-  log(`Returned SOL: ${sig}`);
-  return { ok: true, sig, sentLamports: sendLamports };
-}
-
-async function sweepAllNonSolToSol({ slippageBps, confirmMs, retries } = {}) {
-  const { PublicKey, SystemProgram, Transaction } = await loadWeb3();
-  const signer = await getAutoKeypair();
-  if (!signer) throw new Error("auto wallet not ready");
-  log("Unwind: selling SPL positions…");
+  if (!state.recipientPub) throw new Error("recipient missing");
+  log("Unwind: selling SPL positions and returning SOL…");
 
   const conn = await getConn();
   const owner = signer.publicKey.toBase58();
-
-  const effSlippageBps = Math.max(
-    1200,
-    Math.min(
-      10_000,
-      Math.floor(
-        Number.isFinite(Number(slippageBps)) && Number(slippageBps) > 0
-          ? Number(slippageBps)
-          : Number(state.slippageBps || 0)
-      )
-    )
-  );
-  const effConfirmMs = Math.max(20_000, Math.floor(Number(confirmMs || 0) || 45_000));
-  const effRetries = Math.max(1, Math.min(5, Math.floor(Number(retries || 0) || 3)));
-
-  let chainMintTotals = null;
-  try {
-    const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = await loadSplToken();
-    const ownerPk = new PublicKey(owner);
-    const totals = new Map();
-    const scanPid = async (programId) => {
-      if (!programId) return;
-      // This is an expensive RPC call; keep it to a minimum to avoid 429s.
-      await rpcWait?.("unwind-scan", 900);
-      const resp = await conn.getParsedTokenAccountsByOwner(ownerPk, { programId }, "confirmed");
-      for (const it of resp?.value || []) {
-        const info = it?.account?.data?.parsed?.info;
-        const mint = String(info?.mint || "").trim();
-        if (!mint || mint === SOL_MINT) continue;
-        const ta = info?.tokenAmount || {};
-        const dec = Number(ta?.decimals ?? 0);
-        const rawStr = String(ta?.amount || "");
-        let ui = Number(ta?.uiAmount);
-        if (!Number.isFinite(ui)) ui = 0;
-        // Some RPCs return uiAmount as null; fall back to a best-effort estimate from raw.
-        if (!(ui > 0) && rawStr && /^\d+$/.test(rawStr) && rawStr !== "0" && Number.isFinite(dec) && dec >= 0 && dec <= 12) {
-          const denom = Math.pow(10, dec);
-          const rawNum = Number(rawStr);
-          if (Number.isFinite(rawNum) && rawNum > 0 && denom > 0) ui = rawNum / denom;
-        }
-        if (!(ui > 0) && !(rawStr && /^\d+$/.test(rawStr) && rawStr !== "0")) continue;
-
-        const prev = totals.get(mint) || { sumUi: 0, decimals: Number.isFinite(dec) ? dec : undefined };
-        prev.sumUi += Number.isFinite(ui) ? ui : 0;
-        if (!Number.isFinite(prev.decimals) && Number.isFinite(dec)) prev.decimals = dec;
-        totals.set(mint, prev);
-      }
-    };
-
-    await scanPid(TOKEN_PROGRAM_ID);
-    await scanPid(TOKEN_2022_PROGRAM_ID);
-    chainMintTotals = totals;
-  } catch (e) {
-    try { _markRpcStress?.(e, 3500); } catch {}
-  }
 
   const queue = [];
   const seen = new Set();
@@ -3047,41 +2957,12 @@ async function sweepAllNonSolToSol({ slippageBps, confirmMs, retries } = {}) {
     }
   }
 
-  // Add any on-chain token accounts not represented in cache/state.
-  try {
-    if (chainMintTotals && chainMintTotals.size) {
-      for (const [mint, v] of chainMintTotals.entries()) {
-        if (!mint || mint === SOL_MINT || seen.has(mint)) continue;
-        const sizeUi = Math.max(0, Number(v?.sumUi || 0));
-        if (!(sizeUi > 0)) continue;
-        queue.push({
-          mint,
-          sizeUi,
-          decimals: Number.isFinite(v?.decimals) ? v.decimals : 6,
-          from: "chain",
-        });
-        seen.add(mint);
-      }
-    }
-  } catch {}
-
-  const sold = [];
-  const failed = [];
-
   for (const item of queue) {
     const mint = item.mint;
     try {
-      // Source of truth: parsed on-chain balances.
-      // ATA-based balance fetches can be wrong for non-ATA accounts or mismatched token programs.
-      const chainKnown = chainMintTotals?.get?.(mint);
-      const uiAmt = Math.max(
-        0,
-        Number(item?.sizeUi || 0),
-        Number(chainKnown?.sumUi || 0),
-      );
-      const dec = Number.isFinite(chainKnown?.decimals)
-        ? chainKnown.decimals
-        : (item.decimals ?? state.positions[mint]?.decimals ?? 6);
+      const b = await getAtaBalanceUi(owner, mint, item.decimals);
+      const uiAmt = Number(b.sizeUi || 0);
+      const dec = Number.isFinite(b.decimals) ? b.decimals : (item.decimals ?? state.positions[mint]?.decimals ?? 6);
 
       if (uiAmt <= 0) {
         // Cleanup zero balances from caches
@@ -3094,45 +2975,29 @@ async function sweepAllNonSolToSol({ slippageBps, confirmMs, retries } = {}) {
       let estSol = 0;
       try { estSol = await quoteOutSol(mint, uiAmt, dec); } catch {}
 
-      const trySell = async (slip) => {
-        return await _getDex().sellWithConfirm(
-          { signer, mint, amountUi: uiAmt, slippageBps: slip },
-          { retries: effRetries, confirmMs: effConfirmMs },
-        );
-      };
-
-      let res = await trySell(effSlippageBps);
-      if (!res?.ok && !res?.noBalance) {
-        // Pump tokens often need aggressive slippage to unwind safely.
-        const slip2 = Math.max(effSlippageBps, Math.min(6500, Math.floor(effSlippageBps * 1.6)));
-        if (slip2 !== effSlippageBps) {
-          try { log(`Unwind retry ${mint.slice(0,4)}… with higher slippage (${effSlippageBps} -> ${slip2})`, "warn"); } catch {}
-          await _sleep(400);
-          res = await trySell(slip2);
-        }
-      }
+      const res = await _getDex().sellWithConfirm(
+        { signer, mint, amountUi: uiAmt, slippageBps: state.slippageBps },
+        { retries: 2, confirmMs: 15000, closeWsolAta: false },
+      );
 
       try { _noteDexTx("sell", mint, res, { amountUi: uiAmt, slippageBps: state.slippageBps }); } catch {}
 
       if (!res.ok) {
-        const code = String(res?.code || "").trim();
-        const msg = String(res?.msg || "").trim();
-        log(`Sell fail ${mint.slice(0,4)}…: ${code || "EXEC"}${msg ? ` ${msg}` : ""}`);
-        failed.push({ mint, ok: false, code: code || String(res?.msg || "EXEC"), msg: msg || String(res?.msg || ""), uiAmt });
+        log(`Sell fail ${mint.slice(0,4)}…: route execution failed`);
         continue;
       }
-
-      sold.push({ mint, ok: true, uiAmt, sig: String(res?.sig || "") });
 
       // Wait for debit to handle partials
       let remainUi = 0;
       try {
-        // Keep this short to avoid hammering RPC under 429.
-        const debit = await waitForTokenDebit(owner, mint, uiAmt, { timeoutMs: 6000, pollMs: 750 });
-        remainUi = Number(debit?.remainUi || 0);
+        const debit = await waitForTokenDebit(owner, mint, uiAmt);
+        remainUi = Number(debit.remainUi || 0);
       } catch {
-        // If we can't confirm debit (RPC stress), allow the next unwind pass to pick up any remainder.
-        remainUi = 0;
+        // If debit watcher not available, best-effort balance fetch
+        try {
+          const bb = await getAtaBalanceUi(owner, mint, dec);
+          remainUi = Number(bb.sizeUi || 0);
+        } catch {}
       }
 
       if (remainUi > 1e-9) {
@@ -3158,71 +3023,36 @@ async function sweepAllNonSolToSol({ slippageBps, confirmMs, retries } = {}) {
       if (item.from === "dust") removeFromDustCache(owner, mint);
     } catch (e) {
       log(`Sell fail ${mint.slice(0,4)}…: ${e.message||e}`);
-      failed.push({ mint, ok: false, code: "EXCEPTION", msg: String(e?.message || e || ""), uiAmt: Number(item?.sizeUi || 0) });
     }
   }
 
-  log("Unwind sells complete.");
+  // Return SOL to recipient
+  try { await unwrapWsolIfAny(signer); } catch {}
+  try { await closeAllEmptyAtas(signer); } catch {}
+  const bal = await conn.getBalance(signer.publicKey).catch(()=>0);
+  const rent = 0.001 * 1e9;
+  const sendLamports = Math.max(0, bal - Math.ceil(rent));
+  if (sendLamports > 0) {
+    const tx = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: signer.publicKey,
+        toPubkey: new PublicKey(state.recipientPub),
+        lamports: sendLamports,
+      })
+    );
+    tx.feePayer = signer.publicKey;
+    tx.recentBlockhash = (await conn.getLatestBlockhash()).blockhash;
+    tx.sign(signer);
+    const sig = await conn.sendRawTransaction(tx.serialize(), { preflightCommitment: "processed" });
+    log(`Returned SOL: ${sig}`);
+  }
+  log("Unwind complete.");
   onToggle(false);
   state.holdingsUi = 0;
   state.avgEntryUsd = 0;
   state.lastTradeTs = 0;
   state.endAt = 0;
   save();
-
-  // Stash a summary for the CLI.
-  try {
-    const g = (typeof window !== "undefined") ? window : globalThis;
-    g._fdvLastUnwindReport = {
-      ts: Date.now(),
-      sold,
-      failed,
-      rpcBackoffLeftMs: (typeof rpcBackoffLeft === "function") ? Math.max(0, Number(rpcBackoffLeft() || 0)) : 0,
-    };
-  } catch {}
-
-  return { sold, failed };
-}
-
-async function sweepAllToSolAndReturn() {
-  if (!state.recipientPub) throw new Error("recipient missing");
-  await sweepAllNonSolToSol();
-  await transferAllSolToRecipient(state.recipientPub);
-  log("Unwind complete.");
-}
-
-// Headless CLI: sweep all SPL -> SOL (no transfer)
-export async function __fdvCli_sellAllToSol(opts = {}) {
-  await sweepAllNonSolToSol(opts);
-  return 0;
-}
-
-// Headless CLI: sweep all SPL -> SOL and return a detailed report (for UX / debugging)
-export async function __fdvCli_sellAllToSolReport(opts = {}) {
-  const rep = await sweepAllNonSolToSol(opts);
-  return rep && typeof rep === "object" ? rep : { sold: [], failed: [] };
-}
-
-// Headless CLI: transfer SOL to a recipient (prompt can happen after sweep)
-export async function __fdvCli_returnAllSolToRecipient({ recipientPub } = {}) {
-  const dest = String(recipientPub || "").trim();
-  if (!dest) throw new Error("recipient missing");
-  state.recipientPub = dest;
-  save();
-  await transferAllSolToRecipient(dest);
-  return 0;
-}
-
-// Headless CLI: sweep + transfer in one shot
-export async function __fdvCli_unwindToRecipient({ recipientPub } = {}) {
-  const dest = String(recipientPub || "").trim();
-  if (!dest) throw new Error("recipient missing");
-  state.recipientPub = dest;
-  save();
-  await sweepAllNonSolToSol();
-  await transferAllSolToRecipient(dest);
-  log("Unwind complete.");
-  return 0;
 }
 
 function scorePumpCandidate(it) {
@@ -7227,7 +7057,7 @@ async function __fdvCli_startKpiFeeder() {
     const intervalMs = Math.max(2000, Number(state.kpiFeedIntervalMs || 10_000));
     const topN = Math.max(12, Number(state.kpiFeedTopN || 60));
 
-    const { startKpiFeeder } = await import("../cli/helpers/kpiFeeder.node.js");
+    const { startKpiFeeder } = await import("./cli/helpers/kpiFeeder.node.js");
     _cliKpiFeederStop = startKpiFeeder({ log, intervalMs, topN });
     return true;
   } catch (e) {
@@ -7374,15 +7204,15 @@ function renderStatusLed() {
 function onToggle(on) {
    state.enabled = !!on;
   try { import('../lib/led.js').then((m) => m?.setBotRunning?.('trader', !!state.enabled)).catch(() => {}); } catch {}
-   try { if (toggleEl) toggleEl.value = state.enabled ? "yes" : "no"; } catch {}
-   try { if (startBtn) startBtn.disabled = state.enabled; } catch {}
-   try { if (stopBtn) stopBtn.disabled = !state.enabled; } catch {}
+   if (toggleEl) toggleEl.value = state.enabled ? "yes" : "no";
+   startBtn.disabled = state.enabled;
+   stopBtn.disabled = !state.enabled;
    if (state.enabled && !currentRpcUrl()) {
      log("Configure a CORS-enabled Solana RPC URL before starting.");
      state.enabled = false;
-     try { if (toggleEl) toggleEl.value = "no"; } catch {}
-     try { if (startBtn) startBtn.disabled = false; } catch {}
-     try { if (stopBtn) stopBtn.disabled = true; } catch {}
+     if (toggleEl) toggleEl.value = "no";
+     startBtn.disabled = false;
+     stopBtn.disabled = true;
      try { renderStatusLed(); } catch {}
      save();
      try { updateStatsHeader(); } catch {}
