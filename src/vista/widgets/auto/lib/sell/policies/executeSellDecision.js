@@ -88,8 +88,7 @@ export function createExecuteSellDecisionPolicy({
       ctx.isFastExit ||
       ctx.forceRug ||
       ctx.forcePumpDrop ||
-      ctx.forceObserverDrop ||
-      ctx.forceMomentum
+		ctx.forceObserverDrop
     );
     if (!ctx.forceExpire && routerHoldActive && !bypassRouterHold) {
       log(`Router cooldown for ${mint.slice(0,4)}… until ${new Date(routerHoldUntil).toLocaleTimeString()}`);
@@ -128,97 +127,12 @@ export function createExecuteSellDecisionPolicy({
       const estSol = await quoteOutSol(mint, sellUi, pos.decimals).catch(() => 0);
       if (estSol < ctx.minNotional && !isFastExit) {
         if (ctx.curSol >= ctx.minNotional) {
-          log(`Partial ${pct}% ${mint.slice(0,4)}… below min (${estSol.toFixed(6)} SOL < ${ctx.minNotional}). Escalating to full sell …`);
-
-          let sellUi2 = pos.sizeUi;
-          try {
-            const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
-            if (Number(b.sizeUi || 0) > 0) sellUi2 = Number(b.sizeUi);
-          } catch {}
-
-          const res2 = await executeSwapWithConfirm({
-            signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi2, slippageBps: state.slippageBps,
-          }, { retries: 1, confirmMs: 15000 });
-
-          if (!res2.ok) {
-            if (res2.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
-            log(`Sell not confirmed for ${mint.slice(0,4)}… Keeping position.`);
-            setInFlight(false);
-            unlockMint(mint);
-            return { done: true, returned: true };
-          }
-
-          const prevSize2 = Number(pos.sizeUi || sellUi2);
-          const debit = await waitForTokenDebit(kp.publicKey.toBase58(), mint, prevSize2, { timeoutMs: 25000, pollMs: 400 });
-          const remainUi2 = Number(debit.remainUi || 0);
-
-          if (remainUi2 > 1e-9) {
-            let chkUi = remainUi2, chkDec = pos.decimals;
-            try {
-              const chk = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
-              chkUi = Number(chk.sizeUi || 0);
-              if (Number.isFinite(chk.decimals)) chkDec = chk.decimals;
-            } catch {}
-            if (chkUi <= 1e-9) {
-              delete state.positions[mint];
-              removeFromPosCache(kp.publicKey.toBase58(), mint);
-              try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
-            } else {
-              const estRemainSol = await quoteOutSol(mint, chkUi, chkDec).catch(() => 0);
-              const minN = minSellNotionalSol();
-              if (estRemainSol >= minN) {
-                pos.sizeUi = chkUi;
-                if (Number.isFinite(chkDec)) pos.decimals = chkDec;
-                updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
-              } else {
-                try { addToDustCache(kp.publicKey.toBase58(), mint, chkUi, chkDec ?? 6); } catch {}
-                try { removeFromPosCache(kp.publicKey.toBase58(), mint); } catch {}
-                delete state.positions[mint];
-                save();
-                log(`Leftover below notional for ${mint.slice(0,4)}… moved to dust cache.`);
-              }
-            }
-          } else {
-            const reason = (ctx.decision && ctx.decision.reason) ? ctx.decision.reason : "done";
-            const estFullSolGross = ctx.curSol > 0 ? ctx.curSol : await quoteOutSol(mint, sellUi2, pos.decimals).catch(()=>0);
-            const estFullSolNet = (Number.isFinite(ctx.curSolNet) && ctx.curSolNet > 0) ? ctx.curSolNet : estFullSolGross;
-            let reclaimedSol = 0;
-            try {
-              const closed = await closeEmptyTokenAtas(kp, mint);
-              reclaimedSol = Number(closed?.reclaimedLamportsEst || 0) / 1e9;
-            } catch {}
-            const estTotalSol = estFullSolNet + reclaimedSol;
-            log(
-              `Sold ${sellUi2.toFixed(6)} ${mint.slice(0,4)}… -> ~${estTotalSol.toFixed(6)} SOL (${reason})` +
-              (reclaimedSol > 0 ? ` (+rent≈${reclaimedSol.toFixed(6)} SOL)` : "")
-            );
-            const costSold = Number(pos.costSol || 0);
-            await addRealizedPnl(estTotalSol, costSold, "Full sell PnL");
-            try {
-              if (typeof onRealizedPnl === "function") {
-                onRealizedPnl({
-                  mint,
-                  kind: "sell_full",
-                  proceedsSol: estTotalSol,
-                  costSold,
-                  pnlSol: Number(estTotalSol || 0) - Number(costSold || 0),
-                  label: "Full sell PnL",
-                  decision: ctx?.decision || null,
-                  nowTs: Number(ctx?.nowTs || 0),
-                });
-              }
-            } catch {}
-            delete state.positions[mint];
-            removeFromPosCache(kp.publicKey.toBase58(), mint);
-            try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
-            save();
-          }
-          state.lastTradeTs = now();
-          try { await maybeStealthRotate("sell"); } catch {}
+          log(`Skip partial ${pct}% ${mint.slice(0,4)}… (below min-notional: est ${estSol.toFixed(6)} SOL < ${ctx.minNotional}; no escalation)`);
           setInFlight(false);
-          unlockMint(mint);
-          save();
-          return { done: true, returned: true };
+          try { unlockMint(mint); } catch {}
+          // Not an action; allow the evaluator to consider other mints this tick.
+          return { done: false, returned: true };
+
         } else {
           log(`Skip partial ${pct}% ${mint.slice(0,4)}… (est ${estSol.toFixed(6)} SOL < ${ctx.minNotional})`);
           setInFlight(false);

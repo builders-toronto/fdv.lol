@@ -90,8 +90,6 @@ function _validateTune(tune) {
 
 		// Buy sizing / gating
 		set("buyPct", tune.buyPct, 0.01, 0.5, 0.005);
-		set("minNetEdgePct", tune.minNetEdgePct, -25, 25, 0.25);
-		set("edgeSafetyBufferPct", tune.edgeSafetyBufferPct, 0, 5, 0.05);
 
 		// Entry simulation tuning
 		set("entrySimMinWinProb", tune.entrySimMinWinProb, 0, 1, 0.01);

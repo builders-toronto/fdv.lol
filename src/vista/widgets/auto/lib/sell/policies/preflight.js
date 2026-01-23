@@ -21,10 +21,8 @@ export function createPreflightSellPolicy({
     ctx.maxHold = Math.max(0, Number(state.maxHoldSecs || 0));
     ctx.forceExpire = ctx.maxHold > 0 && ctx.ageMs >= ctx.maxHold * 1000;
 
-    // Momentum forced-exit should be computed early so it can bypass soft gates.
-    ctx.forceMomentum = shouldForceMomentumExit ? shouldForceMomentumExit(mint) : false;
-    // But do not allow momentum-only forced exits to bypass the configured min-hold window.
-    if (ctx.inMinHold && ctx.forceMomentum) ctx.forceMomentum = false;
+  	// Momentum drop is informational/risk-only; it must not force exits.
+  	ctx.forceMomentum = false;
 
     // Peek urgent signal early (if available) so we can bypass cooldown gates when needed.
     const urgent = (typeof peekUrgentSell === "function") ? peekUrgentSell(mint) : null;
@@ -36,8 +34,8 @@ export function createPreflightSellPolicy({
     try {
       if (!ctx.forceExpire && window._fdvRouterHold && window._fdvRouterHold.get(mint) > _now()) {
         const until = window._fdvRouterHold.get(mint);
-        if (urgentHard || ctx.forceMomentum) {
-          _log(`Router cooldown bypass for ${mint.slice(0, 4)}… (urgent/momentum hard-exit)`);
+		if (urgentHard) {
+			_log(`Router cooldown bypass for ${mint.slice(0, 4)}… (urgent hard-exit)`);
         } else {
           _log(`Router cooldown for ${mint.slice(0, 4)}… until ${new Date(until).toLocaleTimeString()}`);
           return { stop: true };

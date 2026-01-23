@@ -74,7 +74,6 @@ import { createMintLockStore } from "../lib/stores/mintLockStore.js";
 import { createVolatilityGuardPolicy } from "../lib/sell/policies/volatilityGuard.js";
 import { createQuoteAndEdgePolicy } from "../lib/sell/policies/quoteAndEdge.js";
 import { createFastExitPolicy } from "../lib/sell/policies/fastExit.js";
-import { createDynamicHardStopPolicy } from "../lib/sell/policies/dynamicHardStop.js";
 import { createProfitLockPolicy } from "../lib/sell/policies/profitLock.js";
 import { createFallbackSellPolicy } from "../lib/sell/policies/fallbackSell.js";
 import { createForceFlagDecisionPolicy } from "../lib/sell/policies/forceFlagDecision.js";
@@ -165,6 +164,76 @@ function getAutoTraderAgent() {
     },
   });
   return _autoTraderAgent;
+}
+
+let _flamebarMissLastMint = "";
+let _flamebarMissLastAt = 0;
+function _isProbablySolanaMintStr(m) {
+  try {
+    const s = String(m || "").trim();
+    if (!s) return false;
+    if (s.length < 28 || s.length > 60) return false;
+    if (/\s/.test(s)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function _getFlamebarLeaderPick() {
+  try {
+    const g = (typeof window !== "undefined") ? window : globalThis;
+    const fb = g?.__fdvFlamebar;
+    const mint = String(fb?.getLeaderMint?.() || "").trim();
+    const mode = String(fb?.getLeaderMode?.() || "").trim();
+    const pumping = (() => {
+      try {
+        if (typeof fb?.isPumping === "function") return !!fb.isPumping();
+      } catch {}
+      return mode === "pump";
+    })();
+    if (!_isProbablySolanaMintStr(mint)) return null;
+    return { mint, mode, pumping };
+  } catch {
+    return null;
+  }
+}
+
+function _getBuyAnalysisStore() {
+  try {
+    const g = (typeof window !== "undefined") ? window : globalThis;
+    if (!g._fdvBuyAnalysis) g._fdvBuyAnalysis = new Map(); // mint -> { firstAt, seen, lastAt, lastLogAt }
+    return g._fdvBuyAnalysis;
+  } catch {
+    return new Map();
+  }
+}
+
+function _noteBuyCandidateAndCheckReady(mint, opts = {}) {
+  try {
+    const m = String(mint || "").trim();
+    if (!m) return { ready: false, reason: "missing" };
+    const store = _getBuyAnalysisStore();
+    const t = now();
+    const rec = store.get(m) || { firstAt: t, seen: 0, lastAt: 0, lastLogAt: 0 };
+    rec.seen = Number(rec.seen || 0) + 1;
+    rec.lastAt = t;
+    store.set(m, rec);
+
+    // Defaults: require a little time + multiple observations + a few leader-series points.
+    const minMs = Math.max(0, Number(opts.minMs ?? state.buyAnalysisMinMs ?? 8000));
+    const minSeen = Math.max(1, Number(opts.minSeen ?? state.buyAnalysisMinTicks ?? 3));
+    const minSeries = Math.max(1, Number(opts.minSeries ?? state.buyAnalysisMinLeaderSeries ?? 5));
+
+    let seriesN = 0;
+    try { seriesN = (getLeaderSeries(m, Math.max(3, minSeries)) || []).length; } catch { seriesN = 0; }
+
+    const ageMs = t - Number(rec.firstAt || t);
+    const ready = (ageMs >= minMs) && (rec.seen >= minSeen) && (seriesN >= minSeries);
+    return { ready, ageMs, seen: rec.seen, seriesN, minMs, minSeen, minSeries, rec };
+  } catch {
+    return { ready: false, reason: "err" };
+  }
 }
 
 function _dbgSellEnabled() {
@@ -414,9 +483,6 @@ function _applyAgentTune(tune, { source = "", mint = "", confidence = 0, reason 
 
     // Buy sizing / gating
     setNum("buyPct", tune.buyPct, 0.01, 0.5, 0.005);
-    setNum("minNetEdgePct", tune.minNetEdgePct, -25, 25, 0.25);
-    setNum("edgeSafetyBufferPct", tune.edgeSafetyBufferPct, 0, 5, 0.05);
-
     // Entry simulation
     setNum("entrySimMinWinProb", tune.entrySimMinWinProb, 0, 1, 0.01);
     setNum("entrySimHorizonSecs", tune.entrySimHorizonSecs, 30, 600, "int");
@@ -698,14 +764,6 @@ const quoteAndEdgePolicy = createQuoteAndEdgePolicy({
 const fastExitPolicy = createFastExitPolicy({
   log,
   checkFastExitTriggers,
-});
-
-const dynamicHardStopPolicy = createDynamicHardStopPolicy({
-  log,
-  getState: () => state,
-  DYN_HS,
-  computeFinalGateIntensity,
-  computeDynamicHardStopPct,
 });
 
 const profitLockPolicy = createProfitLockPolicy({
@@ -1753,14 +1811,8 @@ function noteMomentumExit(mint, ttlMs = 30_000) {
   _getMomExitStore().set(mint, until);
 }
 function shouldForceMomentumExit(mint) {
-  try {
-    const m = _getMomExitStore();
-    const until = Number(m.get(mint) || 0);
-    if (!until) return false;
-    const alive = now() < until;
-    if (!alive) m.delete(mint);
-    return alive;
-  } catch { return false; }
+	// Momentum drop is used for risk/rug context only; it must NOT force sells.
+	return false;
 }
 
 
@@ -2467,11 +2519,6 @@ function checkFastExitTriggers(mint, pos, { pnlPct, pxNow, nowTs }) {
 
     const alpha = computeFastAlphaMetrics(mint);
     updateFastExitState(pos, pxNow, alpha, nowTs);
-
-    const fhs = computeFastHardStopThreshold(mint, pos, { nowTs });
-    if (Number.isFinite(pnlPct) && pnlPct <= -Math.abs(fhs)) {
-      return { action: "sell_all", reason: `FAST_HARD_STOP ${pnlPct.toFixed(2)}%<=-${fhs.toFixed(2)}%`, hardStop: true };
-    }
 
     const armed = Number.isFinite(pnlPct) && pnlPct >= Math.max(0, state.fastTrailArmPct);
     if (armed && Number.isFinite(pos.fastPeakPx) && pos.fastPeakPx > 0) {
@@ -5047,7 +5094,8 @@ function fastDropCheck(mint, pos) {
       const passChg    = c.chg5m <= a.chg5m;
       const passScore  = c.pumpScore <= a.pumpScore * 0.97;
       if (passChg && passScore && (scSlopeMin < 0 || chgSlopeMin < 0)) {
-        return { trigger: true, reason: "momentum drop (3/5)", sev: 0.55 };
+			// Momentum drops are informational only (used for risk/rug context), not exit triggers.
+			return { trigger: false, reason: "momentum drop (3/5)", sev: 0.55, momentum: true };
       }
     }
   } catch {}
@@ -5092,8 +5140,6 @@ function startFastObserver() {
 
             // Only arm if outside immediate post-buy guard
             if (rec.count >= MOMENTUM_FORCED_EXIT_CONSEC && ageMs >= postBuyCooldownMs) {
-              noteMomentumExit(mint, 30_000);
-              flagUrgentSell(mint, "momentum_drop_x28", 0.90);
               rec.count = 0;
             }
           } else {
@@ -5204,7 +5250,7 @@ function applyWarmingPolicy({ mint, pos, nowTs, pnlNetPct, pnlPct, curSol, decis
         pos.warmingClearedAt = now();
         delete pos.warmingExtendUntil;
         save();
-        result.decision = { action: "sell_all", reason: msg, hardStop: true };
+        result.decision = { action: "sell_all", reason: msg };
         result.warmingMaxLossTriggered = true;
         return result;
       }
@@ -5220,7 +5266,7 @@ function applyWarmingPolicy({ mint, pos, nowTs, pnlNetPct, pnlPct, curSol, decis
       delete pos.warmingExtendUntil;
       save();
       const msg = `WARMING_TARGET ${pnl.toFixed(2)}% ≥ ${warmReq.req.toFixed(2)}%`;
-      result.decision = { action: "sell_all", reason: msg, hardStop: true };
+      result.decision = { action: "sell_all", reason: msg };
       log(`Warming target met for ${mint.slice(0,4)}… selling now (${msg}).`);
       return result;
     }
@@ -5246,7 +5292,7 @@ function applyWarmingPolicy({ mint, pos, nowTs, pnlNetPct, pnlPct, curSol, decis
       result.forcePumpDrop = false;
 
       const rsn = String(result.decision?.reason || "");
-      const isHardOrFast = !!result.decision?.hardStop || /rug|warming-max-loss|HARD_STOP|FAST_/i.test(rsn);
+      const isHardOrFast = /rug|warming\s*max\s*loss|warming_target|FAST_/i.test(rsn);
       if (result.decision && result.decision.action !== "none" && !isHardOrFast) {
         log(`Warming hold: skipping sell (${result.decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnl.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
         result.decision = { action: "none", reason: "warming-hold-until-profit" };
@@ -5276,9 +5322,9 @@ function _mkSellCtx({ kp, mint, pos, nowTs }) {
     leaderMode: !!state.holdUntilLeaderSwitch,
     ageMs: 0,
     maxHold: 0,
-    forceExpire: true,
+    forceExpire: false,
     inSellGuard: false,
-    forceMomentum: true,
+    forceMomentum: false,
     verified: false,
     hasPending: false,
     creditGraceMs: 0,
@@ -5323,22 +5369,8 @@ function _mkSellCtx({ kp, mint, pos, nowTs }) {
 }
 
 function momentumForcePolicy(ctx) {
-  if (!ctx.forceMomentum) return;
-  if (ctx.inMinHold) {
-    try {
-      traceOnce(
-        `sell:minhold:momentumForce:${ctx.mint}`,
-        `Min-hold active; suppressing momentum forced-exit for ${ctx.mint.slice(0, 4)}…`,
-        5000,
-        "help",
-      );
-    } catch {
-      try { log(`Min-hold active; suppressing momentum forced-exit for ${ctx.mint.slice(0, 4)}…`); } catch {}
-    }
-    return;
-  }
-  ctx.decision = { action: "sell_all", reason: `MOMENTUM_DROP_X${Number(MOMENTUM_FORCED_EXIT_CONSEC || 0) || 0}`, hardStop: true };
-  log(`Forced sell (momentum x${Number(MOMENTUM_FORCED_EXIT_CONSEC || 0) || 0}) for ${ctx.mint.slice(0,4)}…`);
+	// Momentum drop should never force an exit.
+	return;
 }
 
 function profitFloorGatePolicy(ctx) {
@@ -5346,9 +5378,16 @@ function profitFloorGatePolicy(ctx) {
     const d = ctx?.decision;
     if (!d || d.action === "none") return;
 
-    // Allow severe rugs (and explicit max-hold expiry) to exit even if red.
     if (ctx.forceRug) return;
     if (ctx.forceExpire) return;
+    if (ctx.forcePumpDrop) return;
+    if (ctx.forceObserverDrop) return;
+    if (ctx.isFastExit) return;
+
+  	const reason = String(d.reason || "");
+  	if (/\b(URGENT|FAST_FADE)\b/i.test(reason)) return;
+    if (/\bSL\b/i.test(reason)) return;
+    if (/\bmax-hold\b/i.test(reason)) return;
 
     const floor = Math.max(0, Number(state.warmingMinProfitFloorPct ?? 0));
     const lossBypass = Math.min(0, Number(state.warmingProfitFloorLossBypassPct ?? -60));
@@ -5364,6 +5403,7 @@ function profitFloorGatePolicy(ctx) {
       );
       ctx.decision = { action: "none", reason: "profit-floor" };
       ctx.isFastExit = false;
+      ctx.stop = true;
     }
   } catch {}
 }
@@ -5420,10 +5460,6 @@ async function runPipeline(ctx, steps = []) {
       try { log(`Pipeline step failed (${name}): ${e.message || e}`, "err"); } catch {}
     }
 
-    // Allow policies (especially preflight) to halt the pipeline cleanly.
-    // This prevents downstream steps from consuming one-shot signals (e.g. urgent)
-    // or attempting execution when prerequisites (balance verification, size sync, etc.)
-    // are not satisfied.
     if (ctx?.stop || ctx?.done) {
       if (dbgOn) _dbgSell(`pipeline:halt:${name}`, { stop: !!ctx?.stop, done: !!ctx?.done, decision: ctx?.decision || null });
       break;
@@ -5468,7 +5504,6 @@ async function runSellPipelineForPosition(ctx) {
     { name: "volatilityGuard", fn: (c) => volatilityGuardPolicy(c) },
     { name: "quoteAndEdge", fn: (c) => quoteAndEdgePolicy(c) },
     { name: "fastExit", fn: (c) => fastExitPolicy(c) },
-    { name: "dynamicHardStop", fn: (c) => dynamicHardStopPolicy(c) },
     { name: "warmingHook", fn: (c) => warmingPolicyHook(c) },
     { name: "profitLock", fn: (c) => profitLockPolicy(c) },
     { name: "observerThree", fn: (c) => observerThreePolicy(c) },
@@ -6003,6 +6038,14 @@ async function tick() {
     : (state.allowMultiBuy ? Math.max(1, state.multiBuyTopN | 0) : 1);
   let picks = [];
 
+  const flamebarEnabled = state.flamebarBuyEnabled !== false;
+  const flamebarPreferPick = state.flamebarPreferPick !== false; // default true
+  const flamebarRequirePump = state.flamebarRequirePump === true; // default false
+  const flamePick = flamebarEnabled ? _getFlamebarLeaderPick() : null;
+  const flameMint = String(flamePick?.mint || "").trim();
+  const flameMode = String(flamePick?.mode || "").trim();
+  const flamePumping = !!flamePick?.pumping;
+
   // Higher-level selection: use the full KPI snapshot to rank trade candidates.
   // Falls back to legacy pumping selection when snapshot is unavailable.
   const kpiSnapshot = (() => {
@@ -6117,6 +6160,43 @@ async function tick() {
           log(`Pump leader ${pumpTopMint.slice(0, 4)}… not in current KPI snapshot; comparing snapshot-only candidates.`, "info");
         }
       }
+
+      // Flamebar: inject the current leader mint as an eligible KPI candidate 
+      const flame = normMint(flameMint);
+      if (flame) {
+        if (snapshotMintSet.has(flame)) {
+          const flameItem = snap.find(it => normMint(kpiGetMint(it)) === flame) || null;
+          if (flameItem) {
+            const liq = Number(kpiGetLiqUsd(flameItem) || 0);
+            const vol = Number(kpiGetVol24(flameItem) || 0);
+
+            const sig = (() => { try { return getRugSignalForMint(flame); } catch { return null; } })();
+            const sev = Number(sig?.severity ?? sig?.sev ?? 0);
+
+            if (Number.isFinite(sev) && sev >= rugSevSkip) {
+              log(`Flamebar pick ${flame.slice(0,4)}… rejected by rug filter (sev=${sev.toFixed(2)}; mode=${flameMode||"?"}).`);
+            } else if (!Number.isFinite(liq) || liq < minLiqUsd) {
+              log(`Flamebar pick ${flame.slice(0,4)}… rejected by KPI liq gate (${fmtUsd(liq)} < ${fmtUsd(minLiqUsd)}; mode=${flameMode||"?"}).`);
+            } else if (!Number.isFinite(vol) || vol < minVol24) {
+              log(`Flamebar pick ${flame.slice(0,4)}… rejected by KPI vol gate (${fmtUsd(vol)} < ${fmtUsd(minVol24)}; mode=${flameMode||"?"}).`);
+            } else {
+              const ctx = buildKpiScoreContext(kpiSnapshot);
+              const flameRow = scoreKpiItem(flameItem, ctx);
+              if (flameRow?.mint && !merged.some(r => r?.mint === flameRow.mint)) {
+                flameRow.flamebarChoice = true;
+                merged.push(flameRow);
+              }
+            }
+          }
+        } else {
+          const ts = now();
+          if (_flamebarMissLastMint !== flame || (ts - _flamebarMissLastAt) > 15000) {
+            _flamebarMissLastMint = flame;
+            _flamebarMissLastAt = ts;
+            log(`Flamebar leader ${flame.slice(0, 4)}… not in current KPI snapshot (mode=${flameMode||"?"}); skipping KPI compare.`, "info");
+          }
+        }
+      }
     } catch {}
 
     merged.sort((a, b) => (Number(b?.score01 || 0) - Number(a?.score01 || 0)));
@@ -6130,12 +6210,33 @@ async function tick() {
     } catch {}
     picks = merged.slice(0, poolN).map(r => r?.mint).filter(Boolean);
 
+    // If Flamebar leader is eligible, optionally prefer it (still must pass later buy gates).
+    try {
+      const flame = String(flameMint || "").trim();
+      if (flame && merged.some(r => String(r?.mint || "") === flame)) {
+        const okMode = !flamebarRequirePump || flamePumping;
+        if (okMode && flamebarPreferPick) {
+          picks = [flame, ...picks.filter(m => m !== flame)];
+        } else if (okMode && !picks.includes(flame)) {
+          picks = [...picks, flame];
+        }
+        picks = picks.slice(0, poolN);
+      }
+    } catch {}
+
     // Apply existing blacklist / pump-drop bans.
     picks = picks.filter(m => m && !isMintBlacklisted(m) && !isPumpDropBanned(m));
   }
 
   // Legacy selection fallback.
   if (!picks.length) {
+    // Flamebar fallback: if Flamebar is actively pumping, try it as a candidate before legacy pump picks.
+    if (flamebarEnabled && flamebarPreferPick && flameMint && (!flamebarRequirePump || flamePumping)) {
+      if (!isMintBlacklisted(flameMint) && !isPumpDropBanned(flameMint)) {
+        picks = [flameMint];
+      }
+    }
+
     if (leaderMode) {
       // Simple mode: always take the top KPI leader
       const leadersTop = computePumpingLeaders(1) || [];
@@ -6152,6 +6253,18 @@ async function tick() {
     }
   }
   if (!picks.length) return;
+
+  // If Flamebar is enabled, ensure it is at least considered when we have other picks.
+  try {
+    if (flamebarEnabled && flameMint && (!flamebarRequirePump || flamePumping)) {
+      if (!picks.includes(flameMint) && !isMintBlacklisted(flameMint) && !isPumpDropBanned(flameMint)) {
+        picks = [flameMint, ...picks].filter(Boolean);
+        // Keep picks list reasonably sized.
+        const lim = leaderMode ? 1 : Math.max(1, Math.min(24, desiredBuyCount * 6));
+        picks = picks.slice(0, lim);
+      }
+    }
+  } catch {}
 
   let ignoreCooldownForLeaderBuy = false;
   if (leaderMode && picks[0]) {
@@ -6293,6 +6406,29 @@ async function tick() {
         log(`Final gate: not ready to buy ${mint.slice(0,4)}… waiting for pump score up Δ.`, 'warn');
         continue;
       }
+
+      try {
+        if (state.buyAnalysisEnabled !== false) {
+          const st = _noteBuyCandidateAndCheckReady(mint);
+          if (!st?.ready) {
+            // Avoid log spam: at most once per ~2s per mint.
+            const t = now();
+            const lastLogAt = Number(st?.rec?.lastLogAt || 0);
+            if (!lastLogAt || (t - lastLogAt) > 2000) {
+              try {
+                st.rec.lastLogAt = t;
+                _getBuyAnalysisStore().set(String(mint || "").trim(), st.rec);
+              } catch {}
+              log(
+                `Buy warmup: skip ${mint.slice(0,4)}… ` +
+                `(age ${(Math.max(0, st.ageMs)/1000).toFixed(1)}s/${(st.minMs/1000).toFixed(0)}s, ` +
+                `seen ${st.seen}/${st.minSeen}, series ${st.seriesN}/${st.minSeries})`
+              );
+            }
+            continue;
+          }
+        }
+      } catch {}
 
       if (state.allowMultiBuy && mint !== picks[0]) {
         try {
@@ -6496,6 +6632,8 @@ async function tick() {
       let entryEdgeExclPct = NaN;
       let entryEdgeCostPct = 0;
       let entryTpBumpPct = 0;
+      let entryBaseGoalPct = NaN;
+      let entryRequiredGrossTpPct = NaN;
       let entrySim = null;
       let entryBadge = "";
       let entryEdge = null;
@@ -6554,12 +6692,25 @@ async function tick() {
         const excl = Number(edge.pctNoOnetime); // excludes one-time ATA rent
 
         entryEdgeExclPct = excl;
+
+          // Manual edge gating (before Agent Gary sees the coin).
+          // Edge is a first-pass gate: if it fails, we do not proceed further.
+          const manualMinEdgePct = Number.isFinite(Number(state.minNetEdgePct)) ? Number(state.minNetEdgePct) : null;
+          if (Number.isFinite(manualMinEdgePct) && Number.isFinite(excl) && excl < manualMinEdgePct) {
+            log(
+              `Skip ${mint.slice(0,4)}… (manual edge gate: edgeExcl=${excl.toFixed(2)}% < minNetEdgePct=${manualMinEdgePct.toFixed(2)}%)`
+            );
+            continue;
+          }
+
         entryEdgeCostPct = Math.max(0, -excl);
         const buffer   = Math.max(0, Number(state.edgeSafetyBufferPct || 0.1));
         entryTpBumpPct = entryEdgeCostPct + buffer;
 
         const baseGoal = Math.max(0.5, Number(state.minProfitToTrailPct || 2));
         const requiredGrossTp = baseGoal + entryTpBumpPct;
+        entryBaseGoalPct = baseGoal;
+        entryRequiredGrossTpPct = requiredGrossTp;
 
         let horizonSecs = horizonSecsBase;
         if (simEnabled) {
@@ -6570,13 +6721,10 @@ async function tick() {
             try { await focusMintAndRecord(mint, { refresh: true, ttlMs: 2000 }); } catch {}
             try { _seriesN = (getLeaderSeries(mint, 3) || []).length; } catch {}
             if (_seriesN < 3) {
-              const msg = `Skip ${mint.slice(0,4)}… (sim: warming series ${_seriesN}/3)`;
-              if (simMode === "enforce" && !agentActiveForBuy) { log(msg); continue; }
-              if (simMode === "enforce" && agentActiveForBuy) {
-                log(msg.replace(/^Skip /, "Sim veto (agent override) "));
-              } else {
-                log(msg.replace(/^Skip /, "Sim warn ")); // warn-only mode: allow buy
-              }
+              // Hard requirement: do not buy without enough samples.
+              const msg = `Skip ${mint.slice(0,4)}… (need leader series >=3; have ${_seriesN}/3)`;
+              log(msg);
+              continue;
             }
           }
 
@@ -6620,13 +6768,11 @@ async function tick() {
               entrySim = sim;
 
           if (!sim) {
+            // Hard requirement: do not buy without a sim model (insufficient leader series).
+            // Agent Gary can tune sizing/slippage and veto, but cannot override missing data.
             const msg = `Skip ${mint.slice(0,4)}… (sim: insufficient leader series)`;
-            if (simMode === "enforce" && !agentActiveForBuy) { log(msg); continue; }
-            if (simMode === "enforce" && agentActiveForBuy) {
-              log(msg.replace(/^Skip /, "Sim veto (agent override) "));
-            } else {
-              log(msg.replace(/^Skip /, "Sim warn "));
-            }
+            log(msg);
+            continue;
           } else {
             log(
               `Sim gate ${mint.slice(0,4)}… horizon=${sim.horizonSecs}s ` +
@@ -6640,12 +6786,9 @@ async function tick() {
               const msg =
                 `Skip ${mint.slice(0,4)}… sim P(hit goal) ${(Number(sim.pHit) * 100).toFixed(1)}% < ${(minWinProb * 100).toFixed(0)}% ` +
                 `(goal≈${requiredGrossTp.toFixed(2)}% = baseGoal + edgeCost + buf)`;
-              if (simMode === "enforce" && !agentActiveForBuy) { log(msg); continue; }
-              if (simMode === "enforce" && agentActiveForBuy) {
-                log(msg.replace(/^Skip /, "Sim veto (agent override) "));
-              } else {
-                log(msg.replace(/^Skip /, "Sim warn "));
-              }
+              // Enforce means enforce (do not allow agent overrides here).
+              if (simMode === "enforce") { log(msg); continue; }
+              log(msg.replace(/^Skip /, "Sim warn "));
             }
           }
         }
@@ -6684,38 +6827,36 @@ async function tick() {
         }
       } catch {}
 
-        // Agent gate/tuning (optional): can veto buy or adjust size/slippage.
-        try {
-          const agent = getAutoTraderAgent();
-          const cfg = agent?.getConfigFromRuntime ? agent.getConfigFromRuntime() : null;
-          if (cfg && cfg.enabled !== false && String(cfg.openaiApiKey || "").trim()) {
+        // Agent gate (required when enabled): when Agent Gary is ON, do not buy unless he explicitly says "buy".
+        {
+          let agent = null;
+          let cfg = null;
+          let enabledFlag = false;
+          let keyPresent = false;
+
+          try {
+            agent = getAutoTraderAgent();
+            cfg = agent?.getConfigFromRuntime ? agent.getConfigFromRuntime() : null;
+            enabledFlag = !!(cfg && cfg.enabled !== false);
+            keyPresent = !!String(cfg?.openaiApiKey || "").trim();
+          } catch {}
+
+          const requireApproval = enabledFlag;
+
+          if (requireApproval && !keyPresent) {
+            log(`[AGENT GARY] buy blocked ${mint.slice(0,4)}… (agent enabled but missing key)`);
+            continue;
+          }
+
+          if (enabledFlag && keyPresent && agent && typeof agent.decideBuy === "function") {
             const _riskRaw = String(cfg?.riskLevel || "safe").trim().toLowerCase();
             const _riskLevel = (_riskRaw === "safe" || _riskRaw === "medium" || _riskRaw === "degen") ? _riskRaw : "safe";
+
             try { entryKpiPick = _kpiPickByMint.get(mint) || null; } catch { entryKpiPick = null; }
             try { entryFinalGate = computeFinalGateIntensity(mint); } catch { entryFinalGate = null; }
 
-            const _minWinProbForProspect = (() => {
-              try { return Math.max(0, Math.min(1, Number(state.entrySimMinWinProb || 0.55))); } catch { return 0.55; }
-            })();
-            const prospect = _shouldRunGaryBuyProspect({
-              mint,
-              kpiPick: entryKpiPick,
-              entrySim,
-              finalGate: entryFinalGate,
-              minWinProb: _minWinProbForProspect,
-              riskLevel: _riskLevel,
-            });
-            if (!prospect?.ok) {
-              try {
-                log(`[AGENT GARY] skip ${mint.slice(0,4)}… (no prospect; why=${String(prospect.why||"?")})`);
-              } catch {}
-              throw new Error("agent_skip_no_prospect");
-            }
-
             const posCount = (() => {
-              try {
-                return Object.keys(state.positions || {}).filter((m) => m && m !== SOL_MINT).length;
-              } catch { return 0; }
+              try { return Object.keys(state.positions || {}).filter((m) => m && m !== SOL_MINT).length; } catch { return 0; }
             })();
 
             const prevPosSnap = (() => {
@@ -6732,78 +6873,99 @@ async function tick() {
               } catch { return null; }
             })();
 
-            const adec = await agent.decideBuy({
-              mint,
-              proposedBuySolUi: buySol,
-              proposedSlippageBps: dynSlip,
-              signals: {
-                agentRisk: _riskLevel,
-                outcomes: {
-                  sessionPnlSol: getSessionPnlSol(),
-                  recent: (() => { try { return agentOutcomes.summarize(8); } catch { return []; } })(),
-                  lastForMint: (() => { try { return agentOutcomes.lastForMint(mint); } catch { return null; } })(),
+            let adec;
+            try {
+              adec = await agent.decideBuy({
+                mint,
+                proposedBuySolUi: buySol,
+                proposedSlippageBps: dynSlip,
+                signals: {
+                  agentRisk: _riskLevel,
+                  targets: {
+                    sessionPnlSol: getSessionPnlSol(),
+                    minNetEdgePct: Number(state.minNetEdgePct),
+                    edgeExclPct: Number.isFinite(entryEdgeExclPct) ? entryEdgeExclPct : null,
+                    edgeSafetyBufferPct: Number(state.edgeSafetyBufferPct),
+                    baseGoalPct: Number.isFinite(entryBaseGoalPct) ? Number(entryBaseGoalPct) : null,
+                    requiredGrossTpPct: Number.isFinite(entryRequiredGrossTpPct) ? Number(entryRequiredGrossTpPct) : null,
+                    takeProfitPct: Number(state.takeProfitPct),
+                  },
+                  outcomes: {
+                    sessionPnlSol: getSessionPnlSol(),
+                    recent: (() => { try { return agentOutcomes.summarize(8); } catch { return []; } })(),
+                    lastForMint: (() => { try { return agentOutcomes.lastForMint(mint); } catch { return null; } })(),
+                  },
+                  kpiPick: entryKpiPick,
+                  finalGate: entryFinalGate,
+                  tickNow: _summarizePumpTickNowForMint(mint),
+                  badge: entryBadge,
+                  rugSignal: entryRugSignal,
+                  leaderNow: entryLeaderNow,
+                  leaderSeries: entryLeaderSeries,
+                  past: _summarizePastCandlesForMint(mint, 24),
+                  entryEdgeExclPct: Number.isFinite(entryEdgeExclPct) ? entryEdgeExclPct : null,
+                  entryTpBumpPct: Number.isFinite(entryTpBumpPct) ? entryTpBumpPct : null,
+                  entrySim,
+                  edge: entryEdgeSummary,
+                  liqUsd: Number.isFinite(liqUsdHint) ? liqUsdHint : null,
+                  solUsd: Number.isFinite(solUsdHint) ? solUsdHint : null,
+                  priceImpactProxy,
+                  buySolUi: buySol,
+                  buyCostSolUi: buyCostSol,
+                  reqRentLamports: reqRent,
+                  minPerOrderLamports,
+                  wallet: {
+                    holdingsUi: Number(state.holdingsUi || 0),
+                    budgetUi: Number(state.budgetUi || 0),
+                    buyPct: Number(state.buyPct || 0),
+                    minBuySol: Number(state.minBuySol || 0),
+                    maxBuySol: Number(state.maxBuySol || 0),
+                    maxTrades: Number(state.maxTrades || 0),
+                    posCount,
+                  },
+                  prevPos: prevPosSnap,
+                  stateKnobs: {
+                    minNetEdgePct: state.minNetEdgePct,
+                    edgesafetyBufferPct: state.edgeSafetyBufferPct,
+                    slippageBps: state.slippageBps,
+                    buyPct: state.buyPct,
+                    minProfitToTrailPct: state.minProfitToTrailPct,
+                    minHoldSecs: state.minHoldSecs,
+                    maxHoldSecs: state.maxHoldSecs,
+                    takeProfitPct: state.takeProfitPct,
+                    stopLossPct: state.stopLossPct,
+                    trailPct: state.trailPct,
+                    entrySimMode: state.entrySimMode,
+                    entrySimHorizonSecs: state.entrySimHorizonSecs,
+                    entrySimMinWinProb: state.entrySimMinWinProb,
+                  },
                 },
-                kpiPick: entryKpiPick,
-                finalGate: entryFinalGate,
-                tickNow: _summarizePumpTickNowForMint(mint),
-                badge: entryBadge,
-                rugSignal: entryRugSignal,
-                leaderNow: entryLeaderNow,
-                leaderSeries: entryLeaderSeries,
-                past: _summarizePastCandlesForMint(mint, 24),
-                entryEdgeExclPct: Number.isFinite(entryEdgeExclPct) ? entryEdgeExclPct : null,
-                entryTpBumpPct: Number.isFinite(entryTpBumpPct) ? entryTpBumpPct : null,
-                entrySim,
-                edge: entryEdgeSummary,
-                liqUsd: Number.isFinite(liqUsdHint) ? liqUsdHint : null,
-                solUsd: Number.isFinite(solUsdHint) ? solUsdHint : null,
-                priceImpactProxy,
-                buySolUi: buySol,
-                buyCostSolUi: buyCostSol,
-                reqRentLamports: reqRent,
-                minPerOrderLamports,
-                wallet: {
-                  holdingsUi: Number(state.holdingsUi || 0),
-                  budgetUi: Number(state.budgetUi || 0),
-                  buyPct: Number(state.buyPct || 0),
-                  minBuySol: Number(state.minBuySol || 0),
-                  maxBuySol: Number(state.maxBuySol || 0),
-                  maxTrades: Number(state.maxTrades || 0),
-                  posCount,
-                },
-                prevPos: prevPosSnap,
-                stateKnobs: {
-                  minNetEdgePct: state.minNetEdgePct,
-                  edgesafetyBufferPct: state.edgeSafetyBufferPct,
-                  slippageBps: state.slippageBps,
-                  buyPct: state.buyPct,
-                  minProfitToTrailPct: state.minProfitToTrailPct,
-                  minHoldSecs: state.minHoldSecs,
-                  maxHoldSecs: state.maxHoldSecs,
-                  takeProfitPct: state.takeProfitPct,
-                  stopLossPct: state.stopLossPct,
-                  trailPct: state.trailPct,
-                  entrySimMode: state.entrySimMode,
-                  entrySimHorizonSecs: state.entrySimHorizonSecs,
-                  entrySimMinWinProb: state.entrySimMinWinProb,
-                },
-              },
-            });
-            if (adec?.ok && adec.decision) {
-              const d = adec.decision;
-
-              try {
-                if (d && d.evolve) agentOutcomes.applyEvolve(d.evolve);
-              } catch {}
-
-              try {
-                if (d.tune) _applyAgentTune(d.tune, { source: "buy", mint, confidence: d.confidence, reason: d.reason });
-              } catch {}
-
-              if (d.action === "skip") {
-                log(`[AGENT GARY] veto ${mint.slice(0,4)}… (${String(d.reason || "skip")})`);
+              });
+            } catch (e) {
+              if (requireApproval) {
+                log(`[AGENT GARY] buy blocked ${mint.slice(0,4)}… (request failed)`);
                 continue;
               }
+              adec = null;
+            }
+
+            if (!(adec?.ok && adec.decision)) {
+              if (requireApproval) {
+                const err = String(adec?.err || "no decision");
+                log(`[AGENT GARY] buy blocked ${mint.slice(0,4)}… (${err.slice(0, 120)})`);
+                continue;
+              }
+            } else {
+              const d = adec.decision;
+
+              try { if (d && d.evolve) agentOutcomes.applyEvolve(d.evolve); } catch {}
+              try { if (d.tune) _applyAgentTune(d.tune, { source: "buy", mint, confidence: d.confidence, reason: d.reason }); } catch {}
+
+              if (String(d.action || "").toLowerCase() !== "buy") {
+                log(`[AGENT GARY] veto ${mint.slice(0,4)}… (${String(d.reason || "not approved")})`);
+                continue;
+              }
+
               let tuneBits = [];
               if (d.buy && Number.isFinite(Number(d.buy.slippageBps))) {
                 const s = Math.max(50, Math.min(2500, Math.floor(Number(d.buy.slippageBps))));
@@ -6827,7 +6989,7 @@ async function tick() {
               } catch {}
             }
           }
-        } catch {}
+        }
 
       const res = await _getDex().buyWithConfirm(
         { signer: kp, mint, solUi: buySol, slippageBps: dynSlip },
@@ -7950,6 +8112,7 @@ export function initTraderWidget(container = document.body) {
             <option value="gpt-4o-mini">gpt-4o-mini</option>
             <option value="gpt-4.1-mini">gpt-4.1-mini</option>
             <option value="gpt-4o">gpt-4o</option>
+            <option value="gpt-5-nano">gpt-5-nano</option>
           </select>
         </label>
       </div>
