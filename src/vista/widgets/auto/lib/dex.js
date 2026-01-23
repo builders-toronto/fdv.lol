@@ -2481,12 +2481,15 @@ export function createDex(deps = {}) {
 			);
 			if (res?.ok && closeTokenAta) {
 				try { await closeEmptyTokenAtas(signer, mint); } catch {}
+				// Debits can settle after the swap reaches confirmation; retry shortly after.
+				try { setTimeout(() => { closeEmptyTokenAtas(signer, mint).catch(() => {}); }, 1400); } catch {}
 			}
 			return res;
 		} finally {
 			// Always best-effort cleanup for wSOL ATA, even if swap failed after creating it.
 			if (closeWsolAta) {
 				try { await closeEmptyTokenAtas(signer, SOL_MINT, { allowSolMint: true }); } catch {}
+				try { setTimeout(() => { closeEmptyTokenAtas(signer, SOL_MINT, { allowSolMint: true }).catch(() => {}); }, 1400); } catch {}
 			}
 		}
 	}

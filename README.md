@@ -298,13 +298,11 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-feat(agent-gary): enrich buy/sell context + safe runtime tuning; agent gary born;
+Agent Gary: add evolve loop w/ outcome feedback + risk mode
 
-Expand Gary prompt to reflect richer market/safety inputs and document optional tune block
-Validate/clamp tune in agent driver and attach to validated decisions (buy + sell)
-Enrich buy payload with summarized rug signal, leader-series snapshot, roundtrip edge/route friction summary, wallet/position constraints, and buy cost estimate
-Enrich sell payload via ctx.agentSignals and forward optional agent tuning suggestions back to Trader
-Add Trader-side _applyAgentTune with confidence gate + cooldown + state persistence
-Fix minor payload bloat by summarizing rug-signal objects; resolve duplicate rug declaration and accidental stray insertion during tuning work
-
+Add Safe/Medium/Degen risk selector and thread into prospect gating + KPI candidate thresholds
+Persist per-trade realized PnL outcomes and surface to Gary on buy/sell as feedback signals
+Extract outcomes into shared evolve module; store rolling EVOLVE summary in localStorage
+Let Gary return optional evolve self-critique/lesson tied to outcomeTs; persist annotations
+Inject EVOLVE summary into Gary system prompt each call for gradual behavior improvement
 feat/agent-gary-richer-signals-tuning
