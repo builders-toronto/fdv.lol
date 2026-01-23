@@ -1019,7 +1019,7 @@ function profitFloorGatePolicy(ctx) {
 			const pnl0 = Number.isFinite(Number(ctx.pnlNetPct)) ? Number(ctx.pnlNetPct) : Number(ctx.pnlPct);
 			if (Number.isFinite(pnl0) && pnl0 < 0) {
 				ctx.decision = { action: "none", reason: "profit-floor" };
-				ctx.stop = false;
+				ctx.stop = true;
 			}
 			return;
 		}
@@ -1027,7 +1027,7 @@ function profitFloorGatePolicy(ctx) {
 		const pnl = Number.isFinite(Number(ctx.pnlNetPct)) ? Number(ctx.pnlNetPct) : Number(ctx.pnlPct);
 		if (Number.isFinite(pnl) && pnl < floor) {
 			ctx.decision = { action: "none", reason: "profit-floor" };
-			ctx.stop = false;
+			ctx.stop = true;
 		}
 	} catch {}
 }
@@ -3109,7 +3109,6 @@ async function liquidateAllPositionsOnStop() {
 				ctx.minNotional = minSellNotionalSol();
 				// Treat stop-liquidation like a fast exit: bypass router cooldown but avoid extreme slippage.
 				ctx.isFastExit = true;
-				ctx.forceMomentum = true;
 				ctx.forceExpire = false;
 				ctx.decision = { action: "sell_all", reason: "USER_STOP" };
 

@@ -30,6 +30,23 @@ export function createAgentDecisionPolicy({
 
       const state = _getState();
 
+      const _isSystemPnlExit = (decision) => {
+        try {
+          if (!decision || decision.action === "none") return false;
+          const rsn = String(decision.reason || "");
+          return (
+            /^SL\b/i.test(rsn) ||
+            /^TP\b/i.test(rsn) ||
+            /^Trail\b/i.test(rsn) ||
+            /^FAST_/i.test(rsn) ||
+            /^WARMING/i.test(rsn) ||
+			/\bURGENT:/i.test(rsn)
+          );
+        } catch {
+          return false;
+        }
+      };
+
       const cfg = (() => {
         try {
           return agent && typeof agent.getConfigFromRuntime === "function" ? agent.getConfigFromRuntime() : {};
@@ -54,6 +71,9 @@ export function createAgentDecisionPolicy({
         curSolNet: Number(ctx?.curSolNet ?? 0),
         pnlPct: Number(ctx?.pnlPct ?? 0),
         pnlNetPct: Number(ctx?.pnlNetPct ?? 0),
+
+        // Execution constraints
+        minNotionalSol: Number(ctx?.minNotional ?? 0),
 
         // Signals / force flags
         forceRug: !!ctx?.forceRug,
@@ -87,6 +107,61 @@ export function createAgentDecisionPolicy({
       if (!res?.ok || !res?.decision) return;
       const d = res.decision;
 
+      try {
+        const allowDuringMinHold = !!(
+          ctx?.forceRug ||
+          ctx?.forcePumpDrop ||
+          ctx?.forceObserverDrop ||
+          ctx?.isFastExit
+        );
+        if (ctx?.inMinHold && !allowDuringMinHold) {
+          if (String(d.action || "").toLowerCase() !== "hold") {
+            try { _log(`sell ignored (min-hold)`); } catch {}
+          }
+          return;
+        }
+      } catch {}
+
+      try {
+        const action = String(d.action || "").toLowerCase();
+        const wantsSell = (action === "sell_all" || action === "sell_partial");
+        if (wantsSell) {
+          const pnl = Number.isFinite(ctx?.pnlNetPct) ? Number(ctx?.pnlNetPct) : Number(ctx?.pnlPct);
+          if (Number.isFinite(pnl)) {
+            const floor = Math.max(0, Number(state?.warmingMinProfitFloorPct ?? 0));
+            const lossBypass = Math.min(0, Number(state?.warmingProfitFloorLossBypassPct ?? -60));
+
+            const allowBypass = !!(
+              ctx?.forceRug ||
+              ctx?.forceExpire ||
+              ctx?.forcePumpDrop ||
+              ctx?.forceObserverDrop ||
+              ctx?.isFastExit
+            );
+
+            // Allow severe losses to exit (avoid being trapped).
+            if (!allowBypass && pnl > lossBypass && pnl < floor) {
+              ctx.decision = {
+                action: "none",
+                reason: `agent-ignored (profit-floor ${floor.toFixed(2)}% pnl=${pnl.toFixed(2)}%)`,
+              };
+              try { _log(`sell ignored (profit-floor floor=${floor.toFixed(2)} pnl=${pnl.toFixed(2)})`); } catch {}
+              return;
+            }
+          }
+        }
+      } catch {}
+
+      try {
+        const action = String(d.action || "").toLowerCase();
+        const pnlNet = Number(ctx?.pnlNetPct ?? ctx?.pnlPct ?? NaN);
+        if (action === "sell_partial" && !(Number.isFinite(pnlNet) && pnlNet > 0)) {
+          ctx.decision = { action: "none", reason: `agent-partial-ignored pnl=${Number.isFinite(pnlNet) ? pnlNet.toFixed(2) : "?"}%` };
+          try { _log(`sell_partial ignored (pnl<=0)`); } catch {}
+          return;
+        }
+      } catch {}
+
     // Optional evolve feedback: annotate recent outcomes with self-critique/lesson.
     try {
       const ev = d && d.evolve;
@@ -108,10 +183,11 @@ export function createAgentDecisionPolicy({
       } catch {}
 
       if (d.action === "hold") {
-        // Agent explicitly holds: override non-hard forced decisions.
-        // Note: execute policy treats action === "none" as no-op.
+        if (_isSystemPnlExit(ctx?.decision)) {
+          try { _log(`hold ignored (system PnL exit active)`); } catch {}
+          return;
+        }
         ctx.decision = { action: "none", reason: `agent-hold ${String(d.reason || "")}`.trim() };
-
         try { _log(`sell mapped -> none (hold)`); } catch {}
         return;
       }
@@ -120,8 +196,6 @@ export function createAgentDecisionPolicy({
         ctx.decision = {
           action: "sell_all",
           reason: `agent-sell ${String(d.reason || "")}`.trim(),
-          // preserve hard stop context if already present
-          hardStop: !!(ctx?.decision && ctx.decision.hardStop),
         };
 
         try { _log(`sell mapped -> sell_all`); } catch {}

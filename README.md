@@ -298,11 +298,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-Agent Gary: add evolve loop w/ outcome feedback + risk mode
-
-Add Safe/Medium/Degen risk selector and thread into prospect gating + KPI candidate thresholds
-Persist per-trade realized PnL outcomes and surface to Gary on buy/sell as feedback signals
-Extract outcomes into shared evolve module; store rolling EVOLVE summary in localStorage
-Let Gary return optional evolve self-critique/lesson tied to outcomeTs; persist annotations
-Inject EVOLVE summary into Gary system prompt each call for gradual behavior improvement
-feat/agent-gary-richer-signals-tuning
+Fix Agent Gary trading guardrails + GPT‑5 nano integration
