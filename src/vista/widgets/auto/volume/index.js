@@ -1254,7 +1254,12 @@ async function ensureBought(bot, wallet) {
 
     // If we already sent a buy tx, wait for it to settle instead of re-buying.
     if (bot.cycleBuySig) {
-      await confirmSig(bot.cycleBuySig, { timeoutMs: 40_000 });
+      const ok = await confirmSig(bot.cycleBuySig, { timeoutMs: 40_000 });
+      if (!ok) {
+        const prev = bot.cycleBuySig;
+        bot.cycleBuySig = null;
+        throw new Error(`BUY_TX_FAILED${prev ? ` (${String(prev).slice(0, 8)}…)` : ''}`);
+      }
       const start = Date.now();
       while (Date.now() - start < 45_000) {
         // eslint-disable-next-line no-await-in-loop
@@ -1292,7 +1297,12 @@ async function ensureBought(bot, wallet) {
     bot.cycleBuySig = res?.sig || null;
 
     if (bot.cycleBuySig) {
-      await confirmSig(bot.cycleBuySig, { timeoutMs: 40_000 });
+      const ok = await confirmSig(bot.cycleBuySig, { timeoutMs: 40_000 });
+      if (!ok) {
+        const prev = bot.cycleBuySig;
+        bot.cycleBuySig = null;
+        throw new Error(`BUY_TX_FAILED${prev ? ` (${String(prev).slice(0, 8)}…)` : ''}`);
+      }
     }
 
     const start = Date.now();
@@ -1376,7 +1386,12 @@ async function ensureSold(bot, wallet) {
 
     bot.cycleSellSig = res?.sig || null;
     if (bot.cycleSellSig) {
-      await confirmSig(bot.cycleSellSig, { timeoutMs: 50_000 });
+      const ok = await confirmSig(bot.cycleSellSig, { timeoutMs: 50_000 });
+      if (!ok) {
+        const prev = bot.cycleSellSig;
+        bot.cycleSellSig = null;
+        throw new Error(`SELL_TX_FAILED${prev ? ` (${String(prev).slice(0, 8)}…)` : ''}`);
+      }
     }
 
     const start = Date.now();

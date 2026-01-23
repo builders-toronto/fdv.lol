@@ -29,6 +29,8 @@ import { createConnectionGetter } from "../lib/solana/connection.js";
 import { createConfirmSig } from "../lib/solana/confirm.js";
 import { withTimeout, delay } from "../lib/async.js";
 import { isNodeLike } from "../lib/runtime.js";
+import { FDV_PLATFORM_FEE_BPS } from "../../../../config/env.js";
+import { createRoundtripEdgeEstimator } from "../lib/honeypot.js";
 
 const { loadWeb3, loadBs58 } = createSolanaDepsLoader({
 	cacheKeyPrefix: "fdv:follow",
@@ -876,6 +878,17 @@ function logObj(label, obj) {
 		log(`${label}: ${JSON.stringify(obj)}`, "help");
 	} catch {}
 }
+
+const estimateRoundtripEdgePct = createRoundtripEdgeEstimator({
+	solMint: SOL_MINT,
+	quoteGeneric: (...args) => getDex().quoteGeneric(...args),
+	requiredAtaLamportsForSwap,
+	platformFeeBps: Number(FDV_PLATFORM_FEE_BPS || 0),
+	txFeeEstimateLamports: EDGE_TX_FEE_ESTIMATE_LAMPORTS,
+	smallSellFeeFloorSol: SMALL_SELL_FEE_FLOOR,
+	log,
+	logObj,
+});
 
 function clampNum(n, min, max, fallback = min) {
 	const v = Number(n);
@@ -2354,6 +2367,20 @@ async function mirrorBuy(mint) {
 				);
 			}
 			return { ok: false, sig: "", spentSol: 0, blocked: true, reason: why || "no-route" };
+		}
+	}
+
+	// Honeypot/unsellable protection: ensure a viable SOL round-trip quote exists.
+	{
+		const totalAtaRentLamports = Number(ataRentLamports || 0) + Number(wsolAtaRentLamports || 0);
+		const edge = await estimateRoundtripEdgePct(ownerStr, mint, buySol, {
+			slippageBps: slip,
+			dynamicFee: true,
+			ataRentLamports: totalAtaRentLamports,
+		});
+		if (!edge) {
+			log(`BUY blocked: no round-trip quote for ${String(mint || "").slice(0, 6)}…`, "warn");
+			return { ok: false, sig: "", spentSol: 0, blocked: true, reason: "no-roundtrip" };
 		}
 	}
 

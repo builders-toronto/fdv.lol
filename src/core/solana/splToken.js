@@ -20,6 +20,11 @@ async function importWithFallback(urls) {
 
 async function loadWeb3() {
   const g = _g();
+  try {
+    const w = g?.window || g;
+    const local = w?.solanaWeb3 || g?.solanaWeb3;
+    if (local?.PublicKey) return local;
+  } catch {}
   if (g.__fdvWeb3Promise) return g.__fdvWeb3Promise;
   g.__fdvWeb3Promise = (async () =>
     importWithFallback([

@@ -31,6 +31,8 @@ import { withTimeout } from "../lib/async.js";
 import { mountGiscus, unmountGiscus } from "../../chat/chat.js";
 import { loadSplToken } from "../../../../core/solana/splToken.js";
 import { createDextoolsCandlestickEmbed } from "../lib/tools/dextoolsCandlestickEmbed.js";
+import { FDV_PLATFORM_FEE_BPS } from "../../../../config/env.js";
+import { createRoundtripEdgeEstimator } from "../lib/honeypot.js";
 
 const HOLD_SINGLE_LS_KEY = "fdv_hold_bot_v1";
 const HOLD_TABS_LS_KEY = "fdv_hold_tabs_v1";
@@ -721,6 +723,16 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		} catch {}
 	}
 
+	const estimateRoundtripEdgePct = createRoundtripEdgeEstimator({
+		solMint: SOL_MINT,
+		quoteGeneric: (...args) => getDex().quoteGeneric(...args),
+		requiredAtaLamportsForSwap,
+		platformFeeBps: Number(FDV_PLATFORM_FEE_BPS || 0),
+		txFeeEstimateLamports: EDGE_TX_FEE_ESTIMATE_LAMPORTS,
+		smallSellFeeFloorSol: SMALL_SELL_FEE_FLOOR,
+		log,
+	});
+
 	function traceOnce(key, msg, everyMs = 6000, type = "info") {
 		try {
 			const k = String(key || "");
@@ -1362,6 +1374,17 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				});
 				if (!chk?.ok) {
 					log(`Buy blocked (liquidity): ${chk?.reason || "no-route"}`, "warn");
+					return;
+				}
+
+				// Honeypot/unsellable protection: ensure a viable SOL round-trip quote exists.
+				const edge = await estimateRoundtripEdgePct(ownerStr, mint, buySol, {
+					slippageBps: slip,
+					dynamicFee: true,
+					ataRentLamports,
+				});
+				if (!edge) {
+					log(`Buy blocked (edge): no round-trip quote for ${mint.slice(0, 6)}…`, "warn");
 					return;
 				}
 

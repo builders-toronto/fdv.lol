@@ -1968,6 +1968,16 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
   gap: 8px;
 }
 
+.fdv-wallet-dump{
+  background:#7f1d1d;
+  color:#fff;
+  border:1px solid #a11;
+  padding:6px 10px;
+  border-radius:6px;
+  cursor:pointer;
+}
+.fdv-wallet-dump:hover{ filter: brightness(1.05); }
+
 .fdv-wallet-sol{
   font-size: 12px;
   opacity: .9;
@@ -2754,6 +2764,7 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
   display:flex;
   flex-wrap:wrap;
   align-items:center;
+  justify-content: flex-end;
   gap: clamp(6px, 1.4vw, 10px);
   padding-bottom: 8px;
   margin-bottom: 8px;
@@ -2764,6 +2775,72 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
   border-radius: 10px;
   font-size: clamp(.82rem, 1.6vw, .92rem);
   min-height: 38px;
+}
+
+/* Utilities (used by widgets) */
+.fdv-hidden{ display:none !important; }
+.fdv-mutedline{ opacity: .7; }
+
+/* Auto Trader: Advanced panel helpers */
+.fdv-advanced{ margin: 8px 0; }
+.fdv-advanced-summary{ cursor:pointer; user-select:none; margin-bottom: 25px; }
+.fdv-advanced-grid{ margin-top: 8px; }
+
+/* Auto Trader: Agent Gary config */
+.fdv-agent-bar{
+  display:grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: clamp(10px, 1.6vw, 14px);
+  align-items: end;
+  padding-top: 8px;
+  margin-top: 8px;
+  margin-bottom: 30px;
+  border-top: 1px solid var(--fdv-border);
+  /* border-bottom: 1px solid var(--fdv-border); */
+}
+.fdv-agent-item{ display:flex; flex-direction:column; gap: 6px; align-items:stretch; min-width: 0; }
+.fdv-agent-toggle{ align-items:flex-start; gap: 6px; }
+.fdv-agent-state{ opacity: .85; }
+.fdv-agent-key input[type="password"],
+.fdv-agent-model select{ width: 100%; min-width: 0; }
+
+.fdv-agent-bar strong{ color: var(--fdv-text); }
+.fdv-agent-bar label{ font-size: .88rem; color: var(--fdv-muted); }
+
+/* Keep Agent Gary inputs/selects consistent with .fdv-grid inputs */
+.fdv-agent-bar input[type="password"],
+.fdv-agent-bar select{
+  width: 100%;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  border: 1px solid var(--fdv-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--fdv-text);
+  font-size: .95rem;
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease;
+}
+.fdv-agent-bar input[type="password"]:focus-visible,
+.fdv-agent-bar select:focus-visible{
+  border-color: var(--fdv-primary);
+  box-shadow: 0 0 0 3px var(--fdv-focus);
+}
+
+/* Auto Trader: Hold time slider */
+.fdv-hold-time-slider{ margin-top: 6px; }
+.fdv-holdtime-row{ display:flex; align-items:center; gap: 10px; padding: 6px 0; }
+.fdv-holdtime-label{ width: 110px; }
+.fdv-holdtime-range{ width: 100%; accent-color: var(--fdv-primary); }
+.fdv-holdtime-val{ width: 56px; text-align:right; }
+.fdv-holdtime-dyn{ display:flex; align-items:center; gap: 6px; margin-left: 8px; white-space: nowrap; }
+.fdv-holdtime-infty{ opacity: .9; }
+
+@media (max-width: 520px){
+  .fdv-agent-bar{ gap: 8px; }
+  .fdv-holdtime-row{ flex-wrap: wrap; }
+  .fdv-holdtime-label{ width: auto; }
+  .fdv-holdtime-val{ width: auto; }
+  .fdv-holdtime-dyn{ margin-left: 0; }
 }
 
 @media (max-width: 520px){
