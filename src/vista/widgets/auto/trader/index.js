@@ -3042,6 +3042,8 @@ async function sweepAllToSolAndReturn() {
         // Keep dust entry if it came from dust cache; otherwise it remains in positions/cache
         continue;
       }
+      // Full exit: try closing now-empty token ATA(s) to reclaim rent.
+      try { await closeEmptyTokenAtas(signer, mint); } catch {}
 
       log(`Sold ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
       const costSold = Number(state.positions[mint]?.costSol || 0);
@@ -4824,6 +4826,7 @@ async function sweepNonSolToSolAtStart() {
     }
 
     log(`Startup sweep sold ${realUi.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
+      try { setTimeout(() => { closeEmptyTokenAtas(kp, mint).catch(() => {}); }, 1600); } catch {}
       const costSold = Number(state.positions[mint]?.costSol || 0);
       await _addRealizedPnl(estSol, costSold, "Startup sweep PnL");
       if (state.positions[mint]) { delete state.positions[mint]; save(); }
@@ -4940,6 +4943,8 @@ async function sweepDustToSolAtStart() {
         try { clearPendingCredit(owner, mint); } catch {}
         if (state.positions[mint]) { delete state.positions[mint]; save(); }
         log(`Dust sweep sold ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
+        // Full exit: try closing now-empty token ATA(s) to reclaim rent.
+        try { await closeEmptyTokenAtas(kp, mint); } catch {}
         sold++;
       }
       await new Promise(r => setTimeout(r, 200));
@@ -5870,6 +5875,8 @@ async function switchToLeader(newMint) {
         }
 
         // Fully rotated out
+    // Full exit: try closing now-empty token ATA(s) to reclaim rent.
+    try { await closeEmptyTokenAtas(kp, mint); } catch {}
         log(`Rotated out: ${uiAmt.toFixed(6)} ${mint.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL`);
         const costSold = Number(state.positions[mint]?.costSol || 0);
         await _addRealizedPnl(estSol, costSold, "Rotation PnL");
