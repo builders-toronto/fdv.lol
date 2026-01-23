@@ -5,7 +5,7 @@ import { createConfirmSig } from "../lib/solana/confirm.js";
 import { FDV_PLATFORM_FEE_BPS, FDV_LEDGER_URL } from "../../../../config/env.js";
 import { registerFdvWallet, reportFdvStats } from "../lib/telemetry/ledger.js";
 
-import { computePumpingLeaders, getRugSignalForMint, focusMint } from "../../../meme/metrics/kpi/pumping.js";
+import { computePumpingLeaders, getRugSignalForMint, getPumpHistoryForMint, focusMint } from "../../../meme/metrics/kpi/pumping.js";
 import { getLatestSnapshot } from "../../../meme/metrics/ingest.js";
 import { buildKpiScoreContext, scoreKpiItem, selectTradeCandidatesFromKpis } from "../lib/kpi/kpiSelection.js";
 import { getMint as kpiGetMint, getLiqUsd as kpiGetLiqUsd, getVol24 as kpiGetVol24 } from "../lib/kpi/kpiExtract.js";
@@ -83,6 +83,11 @@ import { createExecuteSellDecisionPolicy } from "../lib/sell/policies/executeSel
 import { createStealthTools } from "../lib/stealth.js";
 import { loadSplToken } from "../../../../core/solana/splToken.js";
 
+import { createAgentDecisionPolicy } from "../lib/sell/policies/agentDecision.js";
+import { createAutoTraderAgentDriver } from "../../../../agents/driver.js";
+
+import { createRoundtripEdgeEstimator } from "../lib/honeypot.js";
+
 import { createDustCacheStore } from "../lib/stores/dustCacheStore.js";
 import { createPosCacheStore } from "../lib/stores/posCacheStore.js";
 import { createBuySeedStore } from "../lib/stores/buySeedStore.js";
@@ -124,6 +129,25 @@ let log = (msg, type) => {
 let logObj = (label, obj) => {
   try { log(`${label}: ${JSON.stringify(obj)}`); } catch {}
 };
+
+let _autoTraderAgent;
+function getAutoTraderAgent() {
+  if (_autoTraderAgent) return _autoTraderAgent;
+  _autoTraderAgent = createAutoTraderAgentDriver({
+    log,
+    getState: () => state,
+    getConfig: () => {
+      try {
+        // Prefer explicit runtime getters.
+        if (_autoTraderAgent && typeof _autoTraderAgent.getConfigFromRuntime === "function") {
+          return _autoTraderAgent.getConfigFromRuntime();
+        }
+      } catch {}
+      return { enabled: false, openaiApiKey: "" };
+    },
+  });
+  return _autoTraderAgent;
+}
 
 function _dbgSellEnabled() {
   try {
@@ -178,6 +202,209 @@ function _getAutoBotOverride(name) {
     return v ?? null;
   } catch {
     return null;
+  }
+}
+
+function _summarizeLeaderSeries(mint, n = 6) {
+  try {
+    const s = getLeaderSeries(mint, 3) || [];
+    const tail = s.slice(Math.max(0, s.length - Math.max(1, Math.min(12, n | 0))));
+    return tail.map((x) => ({
+      pumpScore: Number(x?.pumpScore ?? x?.score ?? 0),
+      liqUsd: Number(x?.liqUsd ?? 0),
+      v1h: Number(x?.v1h ?? x?.v1hTotal ?? 0),
+      chg5m: Number(x?.chg5m ?? x?.change5m ?? 0),
+      chg1h: Number(x?.chg1h ?? x?.change1h ?? 0),
+    }));
+  } catch {
+    return null;
+  }
+}
+
+function _summarizeKpiPickRow(row) {
+  try {
+    if (!row || typeof row !== "object") return null;
+    const kp = row.kp && typeof row.kp === "object" ? row.kp : {};
+    return {
+      score01: Number(row.score01 ?? 0),
+      quality01: Number(row.quality01 ?? 0),
+      alpha01: Number(row.alpha01 ?? 0),
+      risk01: Number(row.risk01 ?? 0),
+      kp: {
+        symbol: String(kp.symbol || ""),
+        name: String(kp.name || ""),
+        pairUrl: String(kp.pairUrl || ""),
+        priceUsd: Number(kp.priceUsd ?? 0),
+        chg24: Number(kp.chg24 ?? 0),
+        liqUsd: Number(kp.liqUsd ?? 0),
+        vol24: Number(kp.vol24 ?? 0),
+        tx24: Number(kp.tx24 ?? 0),
+        imbalance01: Number(kp.imbalance01 ?? 0),
+        mcap: Number(kp.mcap ?? 0),
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+function _summarizePumpTickNowForMint(mint) {
+  try {
+    const ticks = getPumpHistoryForMint(mint, { limit: 1 }) || [];
+    const t = ticks[ticks.length - 1] || null;
+    if (!t) return null;
+    return {
+      ts: Number(t.ts || 0),
+      priceUsd: Number(t.priceUsd ?? 0),
+      liqUsd: Number(t.liqUsd ?? 0),
+      change5m: Number(t.change5m ?? 0),
+      change1h: Number(t.change1h ?? 0),
+      change24h: Number(t.change24h ?? 0),
+      v5mUsd: Number(t.v5mUsd ?? 0),
+      v1hUsd: Number(t.v1hUsd ?? 0),
+      v24hUsd: Number(t.v24hUsd ?? 0),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function _shouldRunGaryBuyProspect({ mint, kpiPick, entrySim, finalGate, minWinProb = 0.55 }) {
+  try {
+    const score01 = Number(kpiPick?.score01 ?? NaN);
+    const alpha01 = Number(kpiPick?.alpha01 ?? NaN);
+    const quality01 = Number(kpiPick?.quality01 ?? NaN);
+    const pHit = Number(entrySim?.pHit ?? NaN);
+    const intensity = Number(finalGate?.intensity ?? NaN);
+
+    // Cheap “prospect” heuristics (math gates):
+    // - strong KPI pick (pipeline snapshot)
+    // - strong final-pump-gate momentum
+    // - strong sim probability
+    const strongKpi = (Number.isFinite(score01) && score01 >= 0.62) ||
+      ((Number.isFinite(alpha01) && alpha01 >= 0.62) && (Number.isFinite(quality01) && quality01 >= 0.45));
+    const strongGate = Number.isFinite(intensity) && intensity >= 1.0;
+    const minP = Math.max(0, Math.min(1, Number(minWinProb || 0.55)));
+    const strongSim = Number.isFinite(pHit) && pHit >= Math.min(0.95, minP + 0.03);
+
+    if (strongKpi) return { ok: true, why: "kpi" };
+    if (strongGate) return { ok: true, why: "finalGate" };
+    if (strongSim) return { ok: true, why: "sim" };
+    return { ok: false, why: "no-prospect" };
+  } catch {
+    return { ok: true, why: "fallback" };
+  }
+}
+
+function _summarizeEdge(edge) {
+  try {
+    if (!edge || typeof edge !== "object") return null;
+    const fwd = edge.forward || null;
+    const back = edge.backward || null;
+    const fwdLen = Number(fwd?.routePlan?.length || fwd?.routePlanLen || 0);
+    const backLen = Number(back?.routePlan?.length || back?.routePlanLen || 0);
+    return {
+      pctInclOnetime: Number.isFinite(Number(edge.pct)) ? Number(edge.pct) : null,
+      pctNoOnetime: Number.isFinite(Number(edge.pctNoOnetime)) ? Number(edge.pctNoOnetime) : null,
+      ataRentLamports: Number(edge.ataRentLamports || 0),
+      recurringLamports: Number(edge.recurringLamports || 0),
+      feesLamports: Number(edge.feesLamports || 0),
+      platformBpsApplied: Number(edge.platformBpsApplied || 0),
+      forward: {
+        inAmount: Number(fwd?.inAmount || 0),
+        outAmount: Number(fwd?.outAmount || 0),
+        routePlanLen: fwdLen,
+      },
+      backward: {
+        inAmount: Number(back?.inAmount || 0),
+        outAmount: Number(back?.outAmount || 0),
+        routePlanLen: backLen,
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+function _summarizeRugSignal(rs) {
+  try {
+    if (!rs || typeof rs !== "object") return null;
+    return {
+      badge: rs.badge ?? null,
+      sev: Number(rs.sev ?? rs.severity ?? rs.score ?? 0),
+      reason: rs.reason ?? rs.why ?? rs.label ?? null,
+      at: Number(rs.at ?? rs.ts ?? rs.updatedAt ?? 0) || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function _applyAgentTune(tune, { source = "", mint = "", confidence = 0, reason = "" } = {}) {
+  try {
+    if (!tune || typeof tune !== "object") return false;
+    const conf = Number(confidence || 0);
+    if (!(conf >= 0.6)) return false;
+
+    const g = (typeof window !== "undefined") ? window : globalThis;
+    const nowTs = now();
+    const cooldownMs = 25_000;
+    const lastAt = Number(g._fdvAgentTuneLastAt || 0);
+    if (nowTs - lastAt < cooldownMs) return false;
+
+    let changed = false;
+    const changedKeys = [];
+    const setNum = (k, v, min, max, roundStep = null) => {
+      if (!Number.isFinite(Number(v))) return;
+      let next = Number(v);
+      next = Math.max(min, Math.min(max, next));
+      if (roundStep === "int") next = Math.floor(next);
+      else if (Number.isFinite(Number(roundStep)) && Number(roundStep) > 0) next = Math.round(next / roundStep) * roundStep;
+      const prev = Number(state?.[k]);
+      if (!Number.isFinite(prev) || Math.abs(prev - next) > 1e-9) {
+        state[k] = next;
+        changed = true;
+        changedKeys.push(k);
+      }
+    };
+
+    // Risk / exit
+    setNum("takeProfitPct", tune.takeProfitPct, 0, 250, 0.25);
+    setNum("stopLossPct", tune.stopLossPct, 0, 99, 0.25);
+    setNum("trailPct", tune.trailPct, 0, 99, 0.25);
+    setNum("minProfitToTrailPct", tune.minProfitToTrailPct, 0, 200, 0.25);
+
+    // Holds
+    setNum("minHoldSecs", tune.minHoldSecs, 0, 20_000, "int");
+    if (Number.isFinite(Number(tune.maxHoldSecs))) {
+      const _clamped = clampHoldSecs(Number(tune.maxHoldSecs));
+      if (Number(state.maxHoldSecs) !== _clamped) {
+        state.maxHoldSecs = _clamped;
+        changed = true;
+        changedKeys.push("maxHoldSecs");
+      }
+    }
+
+    // Buy sizing / gating
+    setNum("buyPct", tune.buyPct, 0.01, 0.5, 0.005);
+    setNum("minNetEdgePct", tune.minNetEdgePct, -25, 25, 0.25);
+    setNum("edgeSafetyBufferPct", tune.edgeSafetyBufferPct, 0, 5, 0.05);
+
+    // Entry simulation
+    setNum("entrySimMinWinProb", tune.entrySimMinWinProb, 0, 1, 0.01);
+    setNum("entrySimHorizonSecs", tune.entrySimHorizonSecs, 30, 600, "int");
+
+    if (changed) {
+      g._fdvAgentTuneLastAt = nowTs;
+      try { save(); } catch {}
+      try {
+        const mintShort = String(mint || "").slice(0, 4);
+        log(`[AGENT GARY] tune(${source}) keys=[${changedKeys.join(", ")}] mint=${mintShort}… conf=${conf.toFixed(2)} ${String(reason || "").slice(0, 120)}`);
+      } catch {}
+    }
+    return changed;
+  } catch {
+    return false;
   }
 }
 
@@ -470,6 +697,12 @@ const fallbackSellPolicy = createFallbackSellPolicy({
 const forceFlagDecisionPolicy = createForceFlagDecisionPolicy({
   log,
   getState: () => state,
+});
+
+const agentDecisionPolicy = createAgentDecisionPolicy({
+  log,
+  getState: () => state,
+  getAgent: () => getAutoTraderAgent(),
 });
 
 const reboundGatePolicy = createReboundGatePolicy({
@@ -1692,6 +1925,14 @@ async function tokenAccountRentLamports() {
   return window._fdvAtaRentLamports;
 }
 
+async function requiredOutAtaRentIfMissing(ownerPubkeyStr, outputMint) {
+  const outMint = String(outputMint || "").trim();
+  if (!outMint || outMint === SOL_MINT) return 0;
+  const rent = await tokenAccountRentLamports();
+  const hasOut = await ataExists(ownerPubkeyStr, outMint);
+  return hasOut ? 0 : rent;
+}
+
 async function requiredAtaLamportsForSwap(ownerPubkeyStr, inputMint, outputMint) {
   let need = 0;
   const rent = await tokenAccountRentLamports();
@@ -2647,91 +2888,16 @@ async function quoteOutSol(inputMint, amountUi, inDecimals) {
   }
 }
 
-async function requiredOutAtaRentIfMissing(ownerPubkeyStr, outMint) {
-  try {
-    if (!outMint || outMint === SOL_MINT) return 0;
-    const hasOut = await ataExists(ownerPubkeyStr, outMint);
-    if (hasOut) return 0;
-    return await tokenAccountRentLamports();
-  } catch { return 0; }
-}
-
-async function estimateRoundtripEdgePct(ownerPub, outMint, buySolUi, { slippageBps, dynamicFee = true, ataRentLamports } = {}) {
-  try {
-    const buyLamports = Math.floor(Number(buySolUi || 0) * 1e9);
-    if (!Number.isFinite(buyLamports) || buyLamports <= 0) return null;
-
-    const fwd = await quoteGeneric(SOL_MINT, outMint, buyLamports, slippageBps);
-    const outRaw = Number(fwd?.outAmount || 0);
-    if (!outRaw || outRaw <= 0) return null;
-
-    const back = await quoteGeneric(outMint, SOL_MINT, outRaw, slippageBps);
-    const backLamports = Number(back?.outAmount || 0);
-    if (!backLamports || backLamports <= 0) return null;
-
-    // Fees
-    const feeBps = Number(FDV_PLATFORM_FEE_BPS || 0);
-    const txFeesL = EDGE_TX_FEE_ESTIMATE_LAMPORTS;
-    const ataRentL = Number.isFinite(ataRentLamports)
-      ? Math.max(0, Math.floor(Number(ataRentLamports)))
-      : await requiredAtaLamportsForSwap(ownerPub, SOL_MINT, outMint); // one-time (wSOL + out ATA if needed)
-
-    const outSol = backLamports / 1e9;
-    const buySol = buyLamports / 1e9;
-    let appliedFeeBps = feeBps;
-
-    if (dynamicFee) {
-      if (!(outSol >= SMALL_SELL_FEE_FLOOR)) {
-        appliedFeeBps = 0;
-      } else {
-        // fee's only on profitable buys
-        const feeSol = outSol * (feeBps / 10_000);
-        const pnlNoFee = outSol - buySol;
-        const pnlWithFee = outSol - feeSol - buySol;
-        if (!(pnlWithFee > 0) || !(pnlNoFee > 0)) {
-          appliedFeeBps = 0;
-        }
-      }
-    }
-
-    const platformL = Math.floor(backLamports * (appliedFeeBps / 10_000));
-    const recurringL = platformL + txFeesL;
-
-    const edgeL_inclOnetime = backLamports - buyLamports - recurringL - Math.max(0, ataRentL);
-    const edgeL_noOnetime   = backLamports - buyLamports - recurringL;
-
-    const pct          = (edgeL_inclOnetime / Math.max(1, buyLamports)) * 100;
-    const pctNoOnetime = (edgeL_noOnetime   / Math.max(1, buyLamports)) * 100;
-
-    logObj("Roundtrip edge breakdown", {
-      buySol: buyLamports/1e9,
-      backSol: backLamports/1e9,
-      platformBpsConfigured: feeBps,
-      platformBpsApplied: appliedFeeBps,
-      platformSol: platformL/1e9,
-      txFeesSol: txFeesL/1e9,
-      ataRentSol: ataRentL/1e9,
-      netSolInclOnetime: edgeL_inclOnetime/1e9,
-      netSolNoOnetime: edgeL_noOnetime/1e9,
-      pctInclOnetime: Number(pct.toFixed(2)),
-      pctNoOnetime: Number(pctNoOnetime.toFixed(2)),
-    });
-
-    return {
-      pct,
-      pctNoOnetime,
-      sol: edgeL_inclOnetime / 1e9,
-      feesLamports: recurringL + Math.max(0, ataRentL),
-      ataRentLamports: Math.max(0, ataRentL),
-      recurringLamports: recurringL,
-      platformBpsApplied: appliedFeeBps,
-      forward: fwd,
-      backward: back
-    };
-  } catch {
-    return null;
-  }
-}
+const estimateRoundtripEdgePct = createRoundtripEdgeEstimator({
+  solMint: SOL_MINT,
+  quoteGeneric: async (...args) => await quoteGeneric(...args),
+  requiredAtaLamportsForSwap: async (...args) => await requiredAtaLamportsForSwap(...args),
+  platformFeeBps: Number(FDV_PLATFORM_FEE_BPS || 0),
+  txFeeEstimateLamports: EDGE_TX_FEE_ESTIMATE_LAMPORTS,
+  smallSellFeeFloorSol: SMALL_SELL_FEE_FLOOR,
+  log: (...args) => log(...args),
+  logObj: (...args) => logObj(...args),
+});
 
 async function executeSwapWithConfirm(opts, { retries = 2, confirmMs = 15000 } = {}) {
   try {
@@ -5284,6 +5450,11 @@ function _mkSellCtx({ kp, mint, pos, nowTs }) {
     postGrace: 0,
     postWarmGraceActive: false,
     inWarmingHold: false,
+
+    // Extra signals for agent consumption (populated by Trader when possible)
+    agentSignals: null,
+	agentTune: null,
+	agentTuneMeta: null,
   };
   return ctx;
 }
@@ -5443,6 +5614,7 @@ async function runSellPipelineForPosition(ctx) {
     { name: "reboundGate", fn: (c) => reboundGatePolicy(c) },
     { name: "momentumForce", fn: (c) => momentumForcePolicy(c) },
     { name: "profitFloor", fn: (c) => profitFloorGatePolicy(c) },
+    { name: "agentDecision", fn: (c) => agentDecisionPolicy(c) },
     ...(() => {
       const skip = _getAutoBotOverride("skipExecute");
       if (skip) return [];
@@ -5602,6 +5774,43 @@ async function evalAndMaybeSellPositions() {
         } catch {}
         const ctx = _mkSellCtx({ kp, mint, pos, nowTs });
 
+        try {
+          const rug = (() => { try { return _summarizeRugSignal(getRugSignalForMint(mint)) || null; } catch { return null; } })();
+          const badge = normBadge(rug?.badge);
+          const series = _summarizeLeaderSeries(mint, 6);
+          // Do not share object references between `leaderNow` and `leaderSeries`.
+          const leaderNow = (series && series.length) ? { ...(series[series.length - 1] || {}) } : null;
+          ctx.agentSignals = {
+            finalGate: (() => { try { return computeFinalGateIntensity(mint); } catch { return null; } })(),
+            tickNow: _summarizePumpTickNowForMint(mint),
+            badge,
+            rugSignal: rug,
+            leaderNow,
+            leaderSeries: series,
+            past: _summarizePastCandlesForMint(mint, 24),
+            pos: {
+              sizeUi: Number(pos?.sizeUi || 0),
+              costSol: Number(pos?.costSol || 0),
+              hwmSol: Number(pos?.hwmSol || 0),
+              acquiredAt: Number(pos?.acquiredAt || 0),
+              lastBuyAt: Number(pos?.lastBuyAt || 0),
+              lastSellAt: Number(pos?.lastSellAt || 0),
+              warmingHold: !!pos?.warmingHold,
+              postWarmGraceUntil: Number(pos?.postWarmGraceUntil || 0),
+            },
+            cfg: {
+              minHoldSecs: Number(state?.minHoldSecs ?? 0),
+              maxHoldSecs: Number(state?.maxHoldSecs ?? 0),
+              takeProfitPct: Number(state?.takeProfitPct ?? 0),
+              stopLossPct: Number(state?.stopLossPct ?? 0),
+              trailPct: Number(state?.trailPct ?? 0),
+              minProfitToTrailPct: Number(state?.minProfitToTrailPct ?? 0),
+              minNetEdgePct: Number(state?.minNetEdgePct ?? 0),
+              edgeSafetyBufferPct: Number(state?.edgeSafetyBufferPct ?? 0),
+            },
+          };
+        } catch {}
+
         _dbgSell(`eval:${evalId}:ctx:init`, {
           mint,
           leaderMode: !!ctx.leaderMode,
@@ -5634,6 +5843,17 @@ async function evalAndMaybeSellPositions() {
 
         _dbgSell(`eval:${evalId}:pipeline:begin`, { mint });
         await runSellPipelineForPosition(ctx);
+
+        try {
+          if (ctx.agentTune) {
+            _applyAgentTune(ctx.agentTune, {
+              source: "sell",
+              mint,
+              confidence: Number(ctx?.agentTuneMeta?.confidence || 0),
+              reason: String(ctx?.agentTuneMeta?.reason || ""),
+            });
+          }
+        } catch {}
 
         try { _recordSellSnapshot(ctx, { stage: "post_pipeline", evalId }); } catch {}
 
@@ -5920,6 +6140,10 @@ async function tick() {
   })();
   const kpiSelectEnabled = state.kpiSelectEnabled !== false;
 
+  // Keep lightweight per-mint info about why a mint was picked from KPI snapshot.
+  // (Used later to enrich Agent Gary signals.)
+  const _kpiPickByMint = new Map();
+
   if (kpiSelectEnabled && Array.isArray(kpiSnapshot) && kpiSnapshot.length) {
     // When multi-buy is enabled, request a larger pool than the final buy count.
     // This allows us to still place N buys after eligibility/locks/blacklists.
@@ -6000,6 +6224,14 @@ async function tick() {
     } catch {}
 
     merged.sort((a, b) => (Number(b?.score01 || 0) - Number(a?.score01 || 0)));
+    try {
+      for (const r of merged) {
+        const m = String(r?.mint || "").trim();
+        if (!m) continue;
+        const s = _summarizeKpiPickRow(r);
+        if (s) _kpiPickByMint.set(m, s);
+      }
+    } catch {}
     picks = merged.slice(0, poolN).map(r => r?.mint).filter(Boolean);
 
     // Apply existing blacklist / pump-drop bans.
@@ -6360,21 +6592,41 @@ async function tick() {
         }
       } catch {}
 
-      const buySol = buyLamports / 1e9;
       // True-ish net accounting: include one-time ATA rent (wSOL + out ATA if needed)
       // and a conservative buy-side tx fee estimate into cost basis.
-      const buyCostSol = buySol + (Math.max(0, reqRent) + Math.max(0, EDGE_TX_FEE_ESTIMATE_LAMPORTS)) / 1e9;
+      let buySol = buyLamports / 1e9;
+      let buyCostSol = buySol + (Math.max(0, reqRent) + Math.max(0, EDGE_TX_FEE_ESTIMATE_LAMPORTS)) / 1e9;
 
       let entryEdgeExclPct = NaN;
       let entryEdgeCostPct = 0;
       let entryTpBumpPct = 0;
+      let entrySim = null;
+      let entryBadge = "";
+      let entryEdge = null;
+      let entryEdgeSummary = null;
+      let entryRugSignal = null;
+      let entryLeaderSeries = null;
+      let entryLeaderNow = null;
+      let entryKpiPick = null;
+      let entryFinalGate = null;
 
       try {
+        let agentActiveForBuy = false;
+        try {
+          const agent = getAutoTraderAgent();
+          const cfg = agent?.getConfigFromRuntime ? agent.getConfigFromRuntime() : null;
+          agentActiveForBuy = !!(cfg && cfg.enabled !== false && String(cfg.openaiApiKey || "").trim());
+        } catch {}
+
         const simMode = String(state.entrySimMode || "enforce").toLowerCase();
         const simEnabled = simMode !== "off";
         const horizonSecsBase = Math.max(30, Math.min(600, Number(state.entrySimHorizonSecs || 120)));
         const horizonCapHold = Math.max(30, Math.min(600, Number(state.maxHoldSecs || HOLD_MAX_SECS)));
         const minWinProb = Math.max(0, Math.min(1, Number(state.entrySimMinWinProb || 0.55)));
+
+        entryRugSignal = (() => {
+          try { return _summarizeRugSignal(getRugSignalForMint(mint)) || null; } catch { return null; }
+        })();
 
         const edge = await estimateRoundtripEdgePct(
           kp.publicKey.toBase58(),
@@ -6382,6 +6634,8 @@ async function tick() {
           buySol,
           { slippageBps: state.slippageBps, dynamicFee: true, ataRentLamports: reqRent }
         );
+        entryEdge = edge;
+        entryEdgeSummary = _summarizeEdge(edge);
         // let needPct = Number.isFinite(Number(state.minNetEdgePct)) ? Number(state.minNetEdgePct) : -8;
         // try {
         //   const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
@@ -6395,7 +6649,8 @@ async function tick() {
         //     }
         //   }
         // } catch {}
-        const badgeNow = normBadge(getRugSignalForMint(mint)?.badge);
+            const badgeNow = normBadge(entryRugSignal?.badge);
+            entryBadge = badgeNow;
         if (!edge) { log(`Skip ${mint.slice(0,4)}… (no round-trip quote)`); continue; }
 
         // const hasOnetime = Number(edge.ataRentLamports || 0) > 0;
@@ -6420,8 +6675,12 @@ async function tick() {
             try { _seriesN = (getLeaderSeries(mint, 3) || []).length; } catch {}
             if (_seriesN < 3) {
               const msg = `Skip ${mint.slice(0,4)}… (sim: warming series ${_seriesN}/3)`;
-              if (simMode === "enforce") { log(msg); continue; }
-              log(msg.replace(/^Skip /, "Sim warn ")); // warn-only mode: allow buy
+              if (simMode === "enforce" && !agentActiveForBuy) { log(msg); continue; }
+              if (simMode === "enforce" && agentActiveForBuy) {
+                log(msg.replace(/^Skip /, "Sim veto (agent override) "));
+              } else {
+                log(msg.replace(/^Skip /, "Sim warn ")); // warn-only mode: allow buy
+              }
             }
           }
 
@@ -6462,11 +6721,16 @@ async function tick() {
             sigmaFloorPct: state.entrySimSigmaFloorPct,
             muLevelWeight: state.entrySimMuLevelWeight,
           });
+              entrySim = sim;
 
           if (!sim) {
             const msg = `Skip ${mint.slice(0,4)}… (sim: insufficient leader series)`;
-            if (simMode === "enforce") { log(msg); continue; }
-            log(msg.replace(/^Skip /, "Sim warn "));
+            if (simMode === "enforce" && !agentActiveForBuy) { log(msg); continue; }
+            if (simMode === "enforce" && agentActiveForBuy) {
+              log(msg.replace(/^Skip /, "Sim veto (agent override) "));
+            } else {
+              log(msg.replace(/^Skip /, "Sim warn "));
+            }
           } else {
             log(
               `Sim gate ${mint.slice(0,4)}… horizon=${sim.horizonSecs}s ` +
@@ -6480,8 +6744,12 @@ async function tick() {
               const msg =
                 `Skip ${mint.slice(0,4)}… sim P(hit goal) ${(Number(sim.pHit) * 100).toFixed(1)}% < ${(minWinProb * 100).toFixed(0)}% ` +
                 `(goal≈${requiredGrossTp.toFixed(2)}% = baseGoal + edgeCost + buf)`;
-              if (simMode === "enforce") { log(msg); continue; }
-              log(msg.replace(/^Skip /, "Sim warn "));
+              if (simMode === "enforce" && !agentActiveForBuy) { log(msg); continue; }
+              if (simMode === "enforce" && agentActiveForBuy) {
+                log(msg.replace(/^Skip /, "Sim veto (agent override) "));
+              } else {
+                log(msg.replace(/^Skip /, "Sim warn "));
+              }
             }
           }
         }
@@ -6493,18 +6761,164 @@ async function tick() {
       const ownerStr = kp.publicKey.toBase58();
       const basePos  = prevPos || { costSol: 0, hwmSol: 0, acquiredAt: now() };
 
-      let dynSlip = Math.max(150, Number(state.slippageBps || 150));
+        let dynSlip = Math.max(150, Number(state.slippageBps || 150));
+        let liqUsdHint = NaN;
+        let solUsdHint = NaN;
+        let priceImpactProxy = NaN;
       try {
         const leadersNow = computePumpingLeaders(3) || [];
         const itNow = leadersNow.find(x => x?.mint === mint);
         const kpNow = itNow?.kp || {};
-        const solPx = await getSolUsd();
-        const liq = Number(kpNow.liqUsd || 0);
+          const solPx = await getSolUsd();
+          const liq = Number(kpNow.liqUsd || 0);
+          solUsdHint = solPx;
+          liqUsdHint = liq;
         if (solPx > 0 && liq > 0) {
-          const imp = Math.max(0, Math.min(0.01, (buySol * solPx) / liq)); // cap at 1%
+            const imp = Math.max(0, Math.min(0.01, (buySol * solPx) / liq)); // cap at 1%
+            priceImpactProxy = imp;
           dynSlip = Math.min(600, Math.max(150, Math.floor(10000 * imp * 1.2)));
         }
       } catch {}
+
+      try {
+        entryLeaderSeries = _summarizeLeaderSeries(mint, 6);
+        if (entryLeaderSeries && entryLeaderSeries.length) {
+          // Do not share object references between `leaderNow` and `leaderSeries`.
+          entryLeaderNow = { ...(entryLeaderSeries[entryLeaderSeries.length - 1] || {}) };
+        }
+      } catch {}
+
+        // Agent gate/tuning (optional): can veto buy or adjust size/slippage.
+        try {
+          const agent = getAutoTraderAgent();
+          const cfg = agent?.getConfigFromRuntime ? agent.getConfigFromRuntime() : null;
+          if (cfg && cfg.enabled !== false && String(cfg.openaiApiKey || "").trim()) {
+            try { entryKpiPick = _kpiPickByMint.get(mint) || null; } catch { entryKpiPick = null; }
+            try { entryFinalGate = computeFinalGateIntensity(mint); } catch { entryFinalGate = null; }
+
+            const _minWinProbForProspect = (() => {
+              try { return Math.max(0, Math.min(1, Number(state.entrySimMinWinProb || 0.55))); } catch { return 0.55; }
+            })();
+            const prospect = _shouldRunGaryBuyProspect({
+              mint,
+              kpiPick: entryKpiPick,
+              entrySim,
+              finalGate: entryFinalGate,
+              minWinProb: _minWinProbForProspect,
+            });
+            if (!prospect?.ok) {
+              try {
+                log(`[AGENT GARY] skip ${mint.slice(0,4)}… (no prospect; why=${String(prospect.why||"?")})`);
+              } catch {}
+              throw new Error("agent_skip_no_prospect");
+            }
+
+            const posCount = (() => {
+              try {
+                return Object.keys(state.positions || {}).filter((m) => m && m !== SOL_MINT).length;
+              } catch { return 0; }
+            })();
+
+            const prevPosSnap = (() => {
+              try {
+                const p = prevPos || null;
+                if (!p) return null;
+                return {
+                  sizeUi: Number(p?.sizeUi || 0),
+                  costSol: Number(p?.costSol || 0),
+                  acquiredAt: Number(p?.acquiredAt || 0),
+                  lastBuyAt: Number(p?.lastBuyAt || 0),
+                  lastSellAt: Number(p?.lastSellAt || 0),
+                };
+              } catch { return null; }
+            })();
+
+            const adec = await agent.decideBuy({
+              mint,
+              proposedBuySolUi: buySol,
+              proposedSlippageBps: dynSlip,
+              signals: {
+                kpiPick: entryKpiPick,
+                finalGate: entryFinalGate,
+                tickNow: _summarizePumpTickNowForMint(mint),
+                badge: entryBadge,
+                rugSignal: entryRugSignal,
+                leaderNow: entryLeaderNow,
+                leaderSeries: entryLeaderSeries,
+                past: _summarizePastCandlesForMint(mint, 24),
+                entryEdgeExclPct: Number.isFinite(entryEdgeExclPct) ? entryEdgeExclPct : null,
+                entryTpBumpPct: Number.isFinite(entryTpBumpPct) ? entryTpBumpPct : null,
+                entrySim,
+                edge: entryEdgeSummary,
+                liqUsd: Number.isFinite(liqUsdHint) ? liqUsdHint : null,
+                solUsd: Number.isFinite(solUsdHint) ? solUsdHint : null,
+                priceImpactProxy,
+                buySolUi: buySol,
+                buyCostSolUi: buyCostSol,
+                reqRentLamports: reqRent,
+                minPerOrderLamports,
+                wallet: {
+                  holdingsUi: Number(state.holdingsUi || 0),
+                  budgetUi: Number(state.budgetUi || 0),
+                  buyPct: Number(state.buyPct || 0),
+                  minBuySol: Number(state.minBuySol || 0),
+                  maxBuySol: Number(state.maxBuySol || 0),
+                  maxTrades: Number(state.maxTrades || 0),
+                  posCount,
+                },
+                prevPos: prevPosSnap,
+                stateKnobs: {
+                  minNetEdgePct: state.minNetEdgePct,
+                  edgesafetyBufferPct: state.edgeSafetyBufferPct,
+                  slippageBps: state.slippageBps,
+                  buyPct: state.buyPct,
+                  minProfitToTrailPct: state.minProfitToTrailPct,
+                  minHoldSecs: state.minHoldSecs,
+                  maxHoldSecs: state.maxHoldSecs,
+                  takeProfitPct: state.takeProfitPct,
+                  stopLossPct: state.stopLossPct,
+                  trailPct: state.trailPct,
+                  entrySimMode: state.entrySimMode,
+                  entrySimHorizonSecs: state.entrySimHorizonSecs,
+                  entrySimMinWinProb: state.entrySimMinWinProb,
+                },
+              },
+            });
+            if (adec?.ok && adec.decision) {
+              const d = adec.decision;
+
+              try {
+                if (d.tune) _applyAgentTune(d.tune, { source: "buy", mint, confidence: d.confidence, reason: d.reason });
+              } catch {}
+
+              if (d.action === "skip") {
+                log(`[AGENT GARY] veto ${mint.slice(0,4)}… (${String(d.reason || "skip")})`);
+                continue;
+              }
+              let tuneBits = [];
+              if (d.buy && Number.isFinite(Number(d.buy.slippageBps))) {
+                const s = Math.max(50, Math.min(2500, Math.floor(Number(d.buy.slippageBps))));
+                if (s !== dynSlip) tuneBits.push(`slip ${dynSlip}→${s}`);
+                dynSlip = s;
+              }
+              if (d.buy && Number.isFinite(Number(d.buy.solUi))) {
+                const wantLamports = Math.floor(Math.max(0, Number(d.buy.solUi)) * 1e9);
+                const capLamports = Math.floor(Math.max(0, buySol) * 1e9);
+                const nextLamports = Math.min(capLamports, wantLamports);
+                if (nextLamports >= Math.max(minPerOrderLamports, Math.floor(MIN_JUP_SOL_IN * 1e9))) {
+                  if (nextLamports !== buyLamports) tuneBits.push(`sol ${(buyLamports/1e9).toFixed(4)}→${(nextLamports/1e9).toFixed(4)}`);
+                  buyLamports = nextLamports;
+                  buySol = buyLamports / 1e9;
+                  buyCostSol = buySol + (Math.max(0, reqRent) + Math.max(0, EDGE_TX_FEE_ESTIMATE_LAMPORTS)) / 1e9;
+                }
+              }
+              try {
+                const t = tuneBits.length ? ` tune=[${tuneBits.join(", ")}]` : "";
+                log(`[AGENT GARY] BUY ok ${mint.slice(0,4)}… conf=${Number(d.confidence||0).toFixed(2)} ${String(d.reason||"")}${t}`);
+              } catch {}
+            }
+          }
+        } catch {}
 
       const res = await _getDex().buyWithConfirm(
         { signer: kp, mint, solUi: buySol, slippageBps: dynSlip },
@@ -6777,6 +7191,16 @@ async function startAutoAsync() {
     if (!timer && state.enabled) {
       timer = setInterval(tick, Math.max(1200, Number(state.tickMs || 1000)));
       log("Auto trading started");
+
+      try {
+        const agent = getAutoTraderAgent();
+        const cfg = agent && typeof agent.getConfigFromRuntime === "function" ? agent.getConfigFromRuntime() : {};
+        const enabledFlag = cfg && (cfg.enabled !== false);
+        const keyPresent = !!String(cfg?.openaiApiKey || "").trim();
+        const eff = enabledFlag && keyPresent;
+        const model = String(cfg?.openaiModel || "gpt-4o-mini").trim() || "gpt-4o-mini";
+        log(`Agent Gary Mode: ${eff ? "ACTIVE" : (enabledFlag ? "INACTIVE (missing key)" : "OFF")} (model=${model})`);
+      } catch {}
     }
     startFastObserver();
   } finally {
@@ -7272,6 +7696,138 @@ function _ensureStatsHeader() {
         logEl.insertBefore(hdr, logEl.firstChild);
       }
     }
+
+
+    // Build the header contents once (do NOT overwrite on each update).
+    try {
+      if (!hdr.dataset.fdvBuilt) {
+        hdr.dataset.fdvBuilt = "1";
+        hdr.innerHTML = `
+          <div><strong>Money made</strong>: <span data-auto-stat-pnl-sol>—</span> <span data-auto-stat-pnl-usd></span></div>
+          <div><strong>Status</strong>: <span data-auto-stat-status>—</span></div>
+          <div><strong>SOL</strong>: <span data-auto-stat-solbal>—</span></div>
+          <div><strong>Open</strong>: <span data-auto-stat-open>—</span></div>
+          <div><strong>Time left</strong>: <span data-auto-stat-left>—</span></div>
+          <div><strong>Last trade</strong>: <span data-auto-stat-lasttrade>—</span></div>
+        `;
+      }
+
+      if (!hdr.dataset.fdvAgentWired) {
+        hdr.dataset.fdvAgentWired = "1";
+        const root = hdr.closest?.(".fdv-auto-body") || document;
+        const enabledEl = root.querySelector("[data-auto-agent-enabled]");
+        const keyEl = root.querySelector("[data-auto-openai-key]");
+        const modelEl = root.querySelector("[data-auto-openai-model]");
+        const stateEl = root.querySelector("[data-auto-agent-state]");
+
+        if (!enabledEl && !keyEl && !modelEl && !stateEl) {
+          // noop
+        } else {
+
+        const _readAgentEnabled = () => {
+          try {
+            if (!enabledEl) return true;
+            const tag = String(enabledEl.tagName || "").toLowerCase();
+            if (tag === "select") return String(enabledEl.value || "yes") !== "no";
+            return !!enabledEl.checked;
+          } catch {
+            return true;
+          }
+        };
+
+        const _writeAgentEnabledUi = (on) => {
+          try {
+            if (!enabledEl) return;
+            const tag = String(enabledEl.tagName || "").toLowerCase();
+            if (tag === "select") { enabledEl.value = on ? "yes" : "no"; return; }
+            enabledEl.checked = !!on;
+          } catch {}
+        };
+
+        const updateAgentUi = () => {
+          try {
+            const enabledFlag = _readAgentEnabled();
+            const keyPresent = !!String(keyEl && keyEl.value || "").trim();
+            const eff = enabledFlag && keyPresent;
+            if (stateEl) {
+              if (eff) {
+                stateEl.textContent = "(active)";
+                stateEl.style.color = "#7ee787";
+              } else if (enabledFlag && !keyPresent) {
+                stateEl.textContent = "(missing key)";
+                stateEl.style.color = "#ffb86c";
+              } else {
+                stateEl.textContent = "(off)";
+                stateEl.style.color = "#9da7b3";
+              }
+            }
+          } catch {}
+        };
+
+        // Load existing values
+        try {
+          const enRaw = typeof localStorage !== "undefined" ? String(localStorage.getItem("fdv_agent_enabled") || "") : "";
+          const en = enRaw ? /^(1|true|yes|on)$/i.test(enRaw) : true;
+          _writeAgentEnabledUi(!!en);
+        } catch {}
+        try {
+          const k = typeof localStorage !== "undefined" ? String(localStorage.getItem("fdv_openai_key") || "") : "";
+          if (keyEl) keyEl.value = k;
+        } catch {}
+        try {
+          const m = typeof localStorage !== "undefined" ? String(localStorage.getItem("fdv_openai_model") || "") : "";
+          if (modelEl && m) modelEl.value = m;
+        } catch {}
+
+        try { updateAgentUi(); } catch {}
+
+        // Persist changes
+        if (enabledEl) {
+          enabledEl.addEventListener("change", () => {
+            try {
+              if (typeof localStorage === "undefined") return;
+              const on = _readAgentEnabled();
+              localStorage.setItem("fdv_agent_enabled", on ? "true" : "false");
+              try { updateAgentUi(); } catch {}
+              try {
+                const keyPresent = !!String(keyEl && keyEl.value || "").trim();
+                if (on && !keyPresent) log("Agent enabled, but inactive until OpenAI key is set.", "warn");
+                else log(`Agent ${on ? "enabled" : "disabled"}.`, "help");
+              } catch {}
+            } catch {}
+          });
+        }
+        if (keyEl) {
+          const saveKey = () => {
+            try {
+              if (typeof localStorage === "undefined") return;
+              localStorage.setItem("fdv_openai_key", String(keyEl.value || "").trim());
+              try { updateAgentUi(); } catch {}
+              try {
+                const enabledFlag = _readAgentEnabled();
+                const keyPresent = !!String(keyEl.value || "").trim();
+                if (enabledFlag && keyPresent) log("Agent key set; AI mode can run on buy/sell decisions.", "help");
+              } catch {}
+            } catch {}
+          };
+          keyEl.addEventListener("change", saveKey);
+          keyEl.addEventListener("blur", saveKey);
+        }
+        if (modelEl) {
+          modelEl.addEventListener("change", () => {
+            try {
+              if (typeof localStorage === "undefined") return;
+              localStorage.setItem("fdv_openai_model", String(modelEl.value || "gpt-4o-mini"));
+              try { updateAgentUi(); } catch {}
+              try { log(`Agent model set to ${String(modelEl.value || "").trim()}.`, "help"); } catch {}
+            } catch {}
+          });
+        }
+
+        }
+      }
+    } catch {}
+
     return hdr;
   } catch { return null; }
 }
@@ -7305,14 +7861,21 @@ function updateStatsHeader() {
       const lastTradeAgo = Number(state.lastTradeTs || 0) ? Math.max(0, Math.floor((now() - state.lastTradeTs) / 1000)) : null;
       const lastTradeStr = lastTradeAgo === null ? "—" : `${lastTradeAgo}s`;
 
-      hdr.innerHTML = `
-        <div><strong>Money made</strong>: ${pnlSol.toFixed(6)} SOL${pnlUsd !== null ? ` (${fmtUsd(pnlUsd)})` : ""}</div>
-        <div><strong>Status</strong>: ${status}</div>
-        <div><strong>SOL</strong>: ${solBal ? solBal.toFixed(6) : "—"}</div>
-        <div><strong>Open</strong>: ${open}</div>
-        <div><strong>Time left</strong>: ${left}</div>
-        <div><strong>Last trade</strong>: ${lastTradeStr}</div>
-      `;
+      const pnlSolEl = hdr.querySelector("[data-auto-stat-pnl-sol]");
+      const pnlUsdEl = hdr.querySelector("[data-auto-stat-pnl-usd]");
+      const statusEl = hdr.querySelector("[data-auto-stat-status]");
+      const solEl = hdr.querySelector("[data-auto-stat-solbal]");
+      const openEl = hdr.querySelector("[data-auto-stat-open]");
+      const leftEl = hdr.querySelector("[data-auto-stat-left]");
+      const lastEl = hdr.querySelector("[data-auto-stat-lasttrade]");
+
+      if (pnlSolEl) pnlSolEl.textContent = `${pnlSol.toFixed(6)} SOL`;
+      if (pnlUsdEl) pnlUsdEl.textContent = pnlUsd !== null ? ` (${fmtUsd(pnlUsd)})` : "";
+      if (statusEl) statusEl.textContent = status;
+      if (solEl) solEl.textContent = solBal ? solBal.toFixed(6) : "—";
+      if (openEl) openEl.textContent = String(open);
+      if (leftEl) leftEl.textContent = left;
+      if (lastEl) lastEl.textContent = lastTradeStr;
     } catch {}
   });
 }
@@ -7379,9 +7942,9 @@ export function initTraderWidget(container = document.body) {
         </select>
       </label>
     </div>
-    <details class="fdv-advanced" data-auto-adv style="margin:8px 0;">
-      <summary style="cursor:pointer; user-select:none;margin-bottom:25px;">Advanced</summary>
-      <div class="fdv-grid" style="margin-top:8px;">
+    <details class="fdv-advanced" data-auto-adv>
+      <summary class="fdv-advanced-summary">Advanced</summary>
+      <div class="fdv-grid fdv-advanced-grid">
         <label>Warming min profit (%) <input data-auto-warm-minp type="number" step="0.1" min="-50" max="50" placeholder="2"/></label>
         <label>Warming floor (%) <input data-auto-warm-floor type="number" step="0.1" min="-50" max="50" placeholder="-2"/></label>
         <label>Decay delay (s) <input data-auto-warm-delay type="number" step="1" min="0" max="600" placeholder="15"/></label>
@@ -7432,11 +7995,33 @@ export function initTraderWidget(container = document.body) {
         </label>
       </div>
       <div class="fdv-hold-time-slider"></div>
+
+      <div class="fdv-agent-bar" data-auto-agent-bar>
+        <label class="fdv-agent-item fdv-agent-toggle">
+          Agent Gary <span data-auto-agent-state class="fdv-agent-state fdv-hidden"></span>
+          <select data-auto-agent-enabled>
+            <option value="yes">On</option>
+            <option value="no">Off</option>
+          </select>
+        </label>
+        <label class="fdv-agent-item fdv-agent-key">
+          OpenAI key
+          <input type="password" data-auto-openai-key placeholder="sk-…" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="fdv-agent-item fdv-agent-model">
+          Model
+          <select data-auto-openai-model>
+            <option value="gpt-4o-mini">gpt-4o-mini</option>
+            <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+            <option value="gpt-4o">gpt-4o</option>
+          </select>
+        </label>
+      </div>
     </details>
     <div class="fdv-tool-row">
       <button class="btn tool-btn" data-auto-gen>Generate</button>
       <button class="btn tool-btn" data-auto-ledger title="Open in Ledger Explorer">Ledger</button>
-      <button class="btn tool-btn" data-auto-copy style="display:none;">Address</button>
+      <button class="btn tool-btn fdv-hidden" data-auto-copy>Address</button>
       <button class="btn tool-btn" data-auto-snapshot title="Download latest sell snapshot">Snapshot</button>
       <button class="btn tool-btn" data-auto-unwind>Return</button>
       <button class="btn tool-btn" data-auto-wallet>Wallet</button>
@@ -7448,11 +8033,11 @@ export function initTraderWidget(container = document.body) {
           </div>
           <div class="fdv-modal-body fdv-wallet-modal-body">
             <div class="fdv-wallet-actions">
-              <button data-auto-dump style="background:#7f1d1d;color:#fff;border:1px solid #a11;padding:6px 10px;border-radius:6px;">Dump Wallet</button>
+              <button class="fdv-wallet-dump" data-auto-dump>Dump Wallet</button>
             </div>
             <div data-auto-wallet-sol class="fdv-wallet-sol">SOL: …</div>
             <div data-auto-wallet-list class="fdv-wallet-list">
-              <div style="opacity:0.7;">Loading…</div>
+              <div class="fdv-mutedline">Loading…</div>
             </div>
             <div data-auto-wallet-totals class="fdv-wallet-totals">Total: …</div>
           </div>
@@ -7460,7 +8045,7 @@ export function initTraderWidget(container = document.body) {
       </div>
     </div>
     <div class="fdv-log" data-auto-log>
-    <button class="btn" data-auto-log-expand title="Expand log" style="display: none;">Expand</button>
+    <button class="btn fdv-hidden" data-auto-log-expand title="Expand log">Expand</button>
     </div>
     <div class="fdv-actions">
     <div class="fdv-actions-left">
@@ -7476,12 +8061,12 @@ export function initTraderWidget(container = document.body) {
     </div>
     </div>
     </div>
-    <div data-main-tab-panel="volume" class="tab-panel" style="display:none;">
+    <div data-main-tab-panel="volume" class="tab-panel fdv-hidden">
     <div id="volume-container"></div>
     </div>
     <div class="fdv-bot-footer" style="display:flex;justify-content:space-between;margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
       <a href="https://t.me/fdvlolgroup" target="_blank" data-auto-help-tg>t.me/fdvlolgroup</a>
-      <span>Version: 0.0.4.9</span>
+      <span>Version: 0.0.6.3</span>
     </div>
   `;
 
@@ -7983,13 +8568,13 @@ export function initTraderWidget(container = document.body) {
     if (cur !== state.maxHoldSecs) { state.maxHoldSecs = cur; save(); }
 
     holdTimeWrap.innerHTML = `
-      <div style="display:flex; align-items:center; gap:10px; padding:6px 0;">
-        <label style="width:110px;">Hold</label>
-        <input type="range" data-auto-holdtime min="${MIN_HOLD}" max="${MAX_HOLD}" step="1" value="${cur}" style="width: 100%;" />
-        <div data-auto-holdtime-val style="width:56px; text-align:right;">${cur}s</div>
-        <label style="display:flex; align-items:center; gap:6px; margin-left:8px; white-space:nowrap;">
+      <div class="fdv-holdtime-row">
+        <label class="fdv-holdtime-label">Hold</label>
+        <input class="fdv-holdtime-range fdv-range" type="range" data-auto-holdtime min="${MIN_HOLD}" max="${MAX_HOLD}" step="1" value="${cur}" />
+        <div class="fdv-holdtime-val" data-auto-holdtime-val>${cur}s</div>
+        <label class="fdv-holdtime-dyn">
           <input type="checkbox" data-auto-dynhold />
-          <span style="opacity:.9;">∞</span>
+          <span class="fdv-holdtime-infty">∞</span>
         </label>
       </div>
     `;
@@ -8625,5 +9210,65 @@ async function _tryLightTopUp(kp) {
     }
   } catch {
     return false;
+  }
+}
+
+function _summarizePastCandlesForMint(mint, maxCandles = 24) {
+  try {
+    const now = Date.now();
+    const cache = _summarizePastCandlesForMint._cache || (_summarizePastCandlesForMint._cache = new Map());
+    const key = `${String(mint || "").trim()}|${Number(maxCandles || 24) | 0}`;
+    const hit = cache.get(key);
+    if (hit && (now - (hit.ts || 0)) < 15000) return hit.value;
+
+    const sig = (x) => {
+      const n = Number(x || 0);
+      if (!Number.isFinite(n) || n === 0) return 0;
+      // Compact for token/cost without losing sign.
+      return Number(n.toPrecision(6));
+    };
+
+    const ticks = getPumpHistoryForMint(mint, { limit: Math.max(6, Math.min(96, Number(maxCandles || 24) * 2)) }) || [];
+    if (!Array.isArray(ticks) || !ticks.length) return null;
+
+    const out = [];
+    const want = Math.max(6, Math.min(48, Number(maxCandles || 24) | 0));
+    const tail = ticks.slice(Math.max(0, ticks.length - want));
+
+    for (const t of tail) {
+      const ts = Number(t?.ts || 0);
+      const c = Number(t?.priceUsd || 0);
+      if (!(ts > 0) || !(c > 0)) continue;
+      const chg5m = Number(t?.change5m || 0);
+      const denom = 1 + (chg5m / 100);
+      const o = (Number.isFinite(denom) && Math.abs(denom) > 1e-9) ? (c / denom) : c;
+      const h = Math.max(o, c);
+      const l = Math.min(o, c);
+      const v = Math.max(0, Number(t?.v5mUsd || 0));
+
+      // Use seconds to reduce payload size.
+      out.push([
+        Math.floor(ts / 1000),
+        sig(o),
+        sig(h),
+        sig(l),
+        sig(c),
+        sig(v),
+      ]);
+    }
+
+    if (!out.length) return null;
+    const value = {
+      source: "pump_history_v1",
+      timeframe: "5m",
+      tsUnit: "s",
+      format: ["ts", "oUsd", "hUsd", "lUsd", "cUsd", "v5mUsd"],
+      candles: out,
+      note: "o derived from change5m; h/l are max/min(o,c)",
+    };
+    cache.set(key, { ts: now, value });
+    return value;
+  } catch {
+    return null;
   }
 }

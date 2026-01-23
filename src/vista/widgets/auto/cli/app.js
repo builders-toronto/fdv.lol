@@ -194,6 +194,7 @@ async function _nodeConnection({ rpcUrl, rpcHeaders } = {}) {
   return new web3.Connection(url, {
     commitment: "confirmed",
     confirmTransactionInitialTimeout: 60_000,
+    disableRetryOnRateLimit: true,
     httpHeaders: rpcHeaders && typeof rpcHeaders === "object" ? rpcHeaders : undefined,
   });
 }
@@ -1223,6 +1224,7 @@ async function getSolBalanceUi({ rpcUrl, rpcHeaders, pubkey }) {
   const conn = new web3.Connection(rpcUrl, {
     commitment: "confirmed",
     confirmTransactionInitialTimeout: 60_000,
+    disableRetryOnRateLimit: true,
     httpHeaders: rpcHeaders && typeof rpcHeaders === "object" ? rpcHeaders : undefined,
   });
 
@@ -1297,6 +1299,7 @@ async function waitForFunding({ rpcUrl, rpcHeaders, pubkey }) {
 }
 
 async function startBotWithDefaults({ bot, rpcUrl, rpcHeaders, autoWalletSecret, logToConsole, profileSink }) {
+  ensureNodeShims();
   const name = String(bot || "").trim().toLowerCase();
   if (!name) throw new Error("Missing bot name");
 
@@ -1685,6 +1688,7 @@ async function getWalletStatusSnapshot({ rpcUrl, rpcHeaders, autoWalletSecret } 
   const conn = new web3.Connection(String(rpcUrl || "").trim(), {
     commitment: "confirmed",
     confirmTransactionInitialTimeout: 60_000,
+    disableRetryOnRateLimit: true,
     httpHeaders: rpcHeaders && typeof rpcHeaders === "object" ? rpcHeaders : undefined,
   });
 

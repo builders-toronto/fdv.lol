@@ -24,6 +24,8 @@ export function createConnectionGetter({
 		const conn = new Connection(url, {
 			commitment,
 			wsEndpoint: undefined,
+			disableRetryOnRateLimit: true,
+			confirmTransactionInitialTimeout: 60_000,
 			httpHeaders: headers && typeof headers === "object" && Object.keys(headers).length ? headers : undefined,
 		});
 		connPromise = Promise.resolve(conn);

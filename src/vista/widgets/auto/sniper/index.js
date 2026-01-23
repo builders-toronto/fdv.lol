@@ -46,6 +46,7 @@ import { createPosCacheStore } from "../lib/stores/posCacheStore.js";
 import { createBuySeedStore } from "../lib/stores/buySeedStore.js";
 import { createMintLockStore } from "../lib/stores/mintLockStore.js";
 import { createUrgentSellStore } from "../lib/stores/urgentSellStore.js";
+import { createRoundtripEdgeEstimator } from "../lib/honeypot.js";
 
 import { createPreflightSellPolicy } from "../lib/sell/policies/preflight.js";
 import { createLeaderModePolicy } from "../lib/sell/policies/leaderMode.js";
@@ -201,6 +202,17 @@ function logObj(label, obj) {
 		log(`${label}: (unserializable)`);
 	}
 }
+
+const estimateRoundtripEdgePct = createRoundtripEdgeEstimator({
+	solMint: SOL_MINT,
+	quoteGeneric: (...args) => _getDex().quoteGeneric(...args),
+	requiredAtaLamportsForSwap,
+	platformFeeBps: Number(FDV_PLATFORM_FEE_BPS || 0),
+	txFeeEstimateLamports: EDGE_TX_FEE_ESTIMATE_LAMPORTS,
+	smallSellFeeFloorSol: SMALL_SELL_FEE_FLOOR,
+	log,
+	logObj,
+});
 
 function sentryVerbose() {
 	try {
@@ -2507,6 +2519,18 @@ async function mirrorBuy(mint, opts = null) {
 		});
 		if (!chk?.ok) {
 			log(`Buy blocked (liquidity): ${chk?.reason || "no-route"}`, "warn");
+			setMintBlacklist(mint, MINT_BLACKLIST_STAGES_MS?.[0] || 2 * 60 * 1000);
+			return { ok: false };
+		}
+
+		// Honeypot/unsellable protection: ensure a viable SOL round-trip quote exists.
+		const edge = await estimateRoundtripEdgePct(ownerStr, mint, buySol, {
+			slippageBps: slip,
+			dynamicFee: true,
+			ataRentLamports,
+		});
+		if (!edge) {
+			log(`Buy blocked (edge): no round-trip quote for ${mint.slice(0, 6)}…`, "warn");
 			setMintBlacklist(mint, MINT_BLACKLIST_STAGES_MS?.[0] || 2 * 60 * 1000);
 			return { ok: false };
 		}

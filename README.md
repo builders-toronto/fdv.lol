@@ -22,6 +22,7 @@ Note: This project is for research/education. Nothing here is financial advice.
 - 'Hot PnL' animation highlights outsized movers
 - The Flamebar 'HODL' button can open the Hold bot for that mint
 - Hold bot supports up to 3 parallel tabs and smarter tab replacement when full
+- Trader (Auto) supports Agent Gary: optional AI buy/sell decisions + safe runtime tuning
 
 ---
 
@@ -327,10 +328,13 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-feat(cli): simplify curl-pipe CLI w/ quick-start + auto base detection
+feat(agent-gary): enrich buy/sell context + safe runtime tuning; agent gary born;
 
-Add stdin-friendly bootstrap so curl -fsSL https://fdv.lol/cli.mjs | node - quick-start
-Support quick-start (and other) positional subcommands via node 
-Auto-detect local repo checkout and run local modules; allow --base-url / FDV_BASE_URL override
-Make splash asset optional; keep vendored Solana web3 shim required for remote runs
-Update README with the new one-liner usage and stdin-arg notes
+Expand Gary prompt to reflect richer market/safety inputs and document optional tune block
+Validate/clamp tune in agent driver and attach to validated decisions (buy + sell)
+Enrich buy payload with summarized rug signal, leader-series snapshot, roundtrip edge/route friction summary, wallet/position constraints, and buy cost estimate
+Enrich sell payload via ctx.agentSignals and forward optional agent tuning suggestions back to Trader
+Add Trader-side _applyAgentTune with confidence gate + cooldown + state persistence
+Fix minor payload bloat by summarizing rug-signal objects; resolve duplicate rug declaration and accidental stray insertion during tuning work
+
+feat/agent-gary-richer-signals-tuning

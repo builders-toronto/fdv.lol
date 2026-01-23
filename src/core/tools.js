@@ -1,6 +1,8 @@
 import { MEME_REGEX, CACHE_KEY, nz } from '../config/env.js';
 import { swrFetch } from './fetcher.js';
 
+const IS_NODE = (typeof process !== 'undefined') && !!(process.versions && process.versions.node);
+
 class RateLimiter {
   constructor({ rps = 1.5, burst = 6, minRps = 0.5, maxRps = 2.5 } = {}) {
     this.capacity = burst;
@@ -72,6 +74,7 @@ export async function getJSON(
     ttl = 15000,
     cache = true,
     mustFresh = false,
+    headers,
     tag = 'json'
   } = {}
 ){
@@ -79,7 +82,7 @@ export async function getJSON(
     const ctrl = new AbortController();
     const id = setTimeout(()=>ctrl.abort(), timeout);
     try{
-      const r = await fetch(url, { signal: ctrl.signal });
+      const r = await fetch(url, { signal: ctrl.signal, headers });
       if(!r.ok) throw new Error(`HTTP ${r.status}`);
       return await r.json();
     } finally {
@@ -112,7 +115,7 @@ export async function getJSON(
 
 export async function fetchDS(url, { signal, ttl, priority = false } = {}) {
   const key = `${CACHE_VERSION}|dex:${url}`;
-  const fetcher = priority
+  const fetcher = (priority && IS_NODE)
     ? () => getJSON(url, { signal, headers: { accept: 'application/json' } })
     : () => fetchWithRetries(url, { signal });
 

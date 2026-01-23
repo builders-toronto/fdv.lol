@@ -1,8 +1,4 @@
 #!/usr/bin/env node
-// NOTE: This file is designed to run when piped into plain `node`.
-// That means: no static `import ...` and no top-level `await`.
-// Everything is loaded via dynamic `import()` inside an async main.
-
 const DEFAULT_BASE_URL = "https://fdv.lol";
 const DEFAULT_ENTRY = "/src/vista/widgets/auto/cli/app.js";
 

@@ -138,6 +138,7 @@ Key groups in `state`:
 
 ## 11. Edge Gating (Round-Trip)
 `estimateRoundtripEdgePct(owner, mint, buySol)`:
+- Implemented in `../lib/honeypot.js` and used by trader/hold/follow/sniper buy gating.
 - Quote forward and backward.
 - Separate recurring costs (fees/tx) vs one-time (ATA rent).
 - Compute `pct` and `pctNoOnetime`.

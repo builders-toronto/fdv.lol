@@ -379,6 +379,31 @@ export function getRugSignalForMint(mint, nowTs = Date.now()) {
   }
 }
 
+export function getPumpHistoryForMint(mint, { limit = 48, nowTs = Date.now() } = {}) {
+  try {
+    const id = String(mint || "").trim();
+    if (!id) return [];
+    const h = prunePumpHistory(loadPumpHistory());
+    const recs = (h?.byMint && h.byMint[id]) ? h.byMint[id] : [];
+    const n = Math.max(0, Math.min(240, Number(limit || 0) || 0));
+    const tail = n ? recs.slice(Math.max(0, recs.length - n)) : recs.slice();
+    return tail.map((e) => {
+      const kp = e?.kp || {};
+      return {
+        ts: Number(e?.ts || nowTs) || nowTs,
+        priceUsd: Number(kp?.priceUsd ?? kp?.priceUSD ?? 0) || 0,
+        liqUsd: Number(kp?.liqUsd ?? kp?.liquidityUsd ?? kp?.liquidityUSD ?? 0) || 0,
+        v5mUsd: Number(kp?.v5mTotal ?? kp?.vol5mUsd ?? kp?.vol5mUSD ?? 0) || 0,
+        v1hUsd: Number(kp?.v1hTotal ?? kp?.vol1hUsd ?? kp?.vol1hUSD ?? 0) || 0,
+        change5m: Number(kp?.change5m ?? kp?.chg5m ?? 0) || 0,
+        change1h: Number(kp?.change1h ?? kp?.chg1h ?? 0) || 0,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
 export async function focusMint(mint, { refresh = true, ttlMs = 2000, signal } = {}) {
   const id = String(mint || '').trim();
   if (!id) return { ok: false, error: 'Missing mint' };
