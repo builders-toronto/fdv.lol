@@ -100,14 +100,14 @@ export function initAutoWidget(container = document.body) {
       <button class="fdv-tab-btn" data-main-tab="follow">Follow</button>
       <button class="fdv-tab-btn" data-main-tab="sniper">Sentry</button>
       <button class="fdv-tab-btn" data-main-tab="hold">Hold</button>
-      <button class="fdv-tab-btn" data-main-tab="volume">Volume</button>
+      <button class="fdv-tab-btn" data-main-tab="volume" disabled>Volume</button>
     </div>
 
     <div data-main-tab-panel="auto" class="tab-panel active">
       <div id="trader-container"></div>
     </div>
 
-    <div data-main-tab-panel="volume" class="tab-panel" style="display:none;">
+    <div data-main-tab-panel="volume" class="tab-panel" style="display:none;" disabled>
       <div id="volume-container"></div>
     </div>
 

@@ -24,6 +24,8 @@ Note: This project is for research/education. Nothing here is financial advice.
 - Hold bot supports up to 3 parallel tabs and smarter tab replacement when full
 - Trader (Auto) supports Agent Gary: optional AI buy/sell decisions + safe runtime tuning
 
+![agentGary.png](agentGary.png)
+
 ---
 
 ## What It Does

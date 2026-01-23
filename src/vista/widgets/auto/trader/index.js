@@ -91,6 +91,7 @@ import { createRoundtripEdgeEstimator } from "../lib/honeypot.js";
 import { createDustCacheStore } from "../lib/stores/dustCacheStore.js";
 import { createPosCacheStore } from "../lib/stores/posCacheStore.js";
 import { createBuySeedStore } from "../lib/stores/buySeedStore.js";
+import { createAgentOutcomesStore } from "../lib/evolve/agentOutcomes.js";
 
 function now() {
   try {
@@ -129,6 +130,23 @@ let log = (msg, type) => {
 let logObj = (label, obj) => {
   try { log(`${label}: ${JSON.stringify(obj)}`); } catch {}
 };
+
+const agentOutcomes = createAgentOutcomesStore({
+  storageKey: "fdv_agent_outcomes_v1",
+  maxEntries: 120,
+  cacheMs: 5000,
+  nowFn: () => Date.now(),
+  getSessionPnlSol: () => {
+    try { return getSessionPnlSol(); } catch { return null; }
+  },
+  getAgentRisk: () => {
+    try {
+      const agent = getAutoTraderAgent();
+      const cfg = agent?.getConfigFromRuntime ? agent.getConfigFromRuntime() : null;
+      return String(cfg?.riskLevel || "safe");
+    } catch { return "safe"; }
+  },
+});
 
 let _autoTraderAgent;
 function getAutoTraderAgent() {
@@ -269,7 +287,7 @@ function _summarizePumpTickNowForMint(mint) {
   }
 }
 
-function _shouldRunGaryBuyProspect({ mint, kpiPick, entrySim, finalGate, minWinProb = 0.55 }) {
+function _shouldRunGaryBuyProspect({ mint, kpiPick, entrySim, finalGate, minWinProb = 0.55, riskLevel = "safe" }) {
   try {
     const score01 = Number(kpiPick?.score01 ?? NaN);
     const alpha01 = Number(kpiPick?.alpha01 ?? NaN);
@@ -277,15 +295,24 @@ function _shouldRunGaryBuyProspect({ mint, kpiPick, entrySim, finalGate, minWinP
     const pHit = Number(entrySim?.pHit ?? NaN);
     const intensity = Number(finalGate?.intensity ?? NaN);
 
+    const riskRaw = String(riskLevel || "safe").trim().toLowerCase();
+    const risk = (riskRaw === "safe" || riskRaw === "medium" || riskRaw === "degen") ? riskRaw : "safe";
+
+    const kpiStrongThr = risk === "degen" ? 0.52 : (risk === "medium" ? 0.58 : 0.62);
+    const alphaThr = risk === "degen" ? 0.58 : (risk === "medium" ? 0.60 : 0.62);
+    const qualityThr = risk === "degen" ? 0.35 : (risk === "medium" ? 0.40 : 0.45);
+    const gateThr = risk === "degen" ? 0.85 : (risk === "medium" ? 0.95 : 1.00);
+
     // Cheap “prospect” heuristics (math gates):
     // - strong KPI pick (pipeline snapshot)
     // - strong final-pump-gate momentum
     // - strong sim probability
-    const strongKpi = (Number.isFinite(score01) && score01 >= 0.62) ||
-      ((Number.isFinite(alpha01) && alpha01 >= 0.62) && (Number.isFinite(quality01) && quality01 >= 0.45));
-    const strongGate = Number.isFinite(intensity) && intensity >= 1.0;
+    const strongKpi = (Number.isFinite(score01) && score01 >= kpiStrongThr) ||
+      ((Number.isFinite(alpha01) && alpha01 >= alphaThr) && (Number.isFinite(quality01) && quality01 >= qualityThr));
+    const strongGate = Number.isFinite(intensity) && intensity >= gateThr;
     const minP = Math.max(0, Math.min(1, Number(minWinProb || 0.55)));
-    const strongSim = Number.isFinite(pHit) && pHit >= Math.min(0.95, minP + 0.03);
+    const bump = risk === "degen" ? 0.00 : (risk === "medium" ? 0.02 : 0.03);
+    const strongSim = Number.isFinite(pHit) && pHit >= Math.min(0.95, minP + bump);
 
     if (strongKpi) return { ok: true, why: "kpi" };
     if (strongGate) return { ok: true, why: "finalGate" };
@@ -751,6 +778,7 @@ const executeSellDecisionPolicy = createExecuteSellDecisionPolicy({
   executeSwapWithConfirm,
   waitForTokenDebit,
   addRealizedPnl: _addRealizedPnl,
+  onRealizedPnl: (evt) => { try { agentOutcomes.record(evt); } catch {} },
   maybeStealthRotate,
   clearRouteDustFails,
 });
@@ -5611,6 +5639,11 @@ async function evalAndMaybeSellPositions() {
           // Do not share object references between `leaderNow` and `leaderSeries`.
           const leaderNow = (series && series.length) ? { ...(series[series.length - 1] || {}) } : null;
           ctx.agentSignals = {
+            outcomes: {
+              sessionPnlSol: getSessionPnlSol(),
+              recent: (() => { try { return agentOutcomes.summarize(8); } catch { return []; } })(),
+              lastForMint: (() => { try { return agentOutcomes.lastForMint(mint); } catch { return null; } })(),
+            },
             finalGate: (() => { try { return computeFinalGateIntensity(mint); } catch { return null; } })(),
             tickNow: _summarizePumpTickNowForMint(mint),
             badge,
@@ -5981,8 +6014,33 @@ async function tick() {
       ? 1
       : (state.allowMultiBuy ? Math.max(desiredBuyCount, Math.min(24, desiredBuyCount * 4 + 2)) : 1);
 
-    const minLiqUsd = Number(state.kpiSelectMinLiqUsd || 2500);
-    const minVol24 = Number(state.kpiSelectMinVol24 || 250);
+    const _agentRisk = (() => {
+      try {
+        const agent = getAutoTraderAgent();
+        const cfg = agent?.getConfigFromRuntime ? agent.getConfigFromRuntime() : null;
+        const enabledFlag = cfg && (cfg.enabled !== false);
+        const keyPresent = !!String(cfg?.openaiApiKey || "").trim();
+        if (!(enabledFlag && keyPresent)) return null;
+
+        const raw = String(cfg?.riskLevel || "safe").trim().toLowerCase();
+        return (raw === "safe" || raw === "medium" || raw === "degen") ? raw : "safe";
+      } catch { return null; }
+    })();
+
+    const _riskDefaults = (() => {
+      // IMPORTANT: only apply risk defaults when Agent Gary is active.
+      // Otherwise, keep existing selection behavior.
+      if (!_agentRisk) return { minLiqUsd: 2500, minVol24: 250, rugSevSkip: 2 };
+      if (_agentRisk === "degen") return { minLiqUsd: 4_000, minVol24: 15_000, rugSevSkip: 4 };
+      if (_agentRisk === "medium") return { minLiqUsd: 10_000, minVol24: 30_000, rugSevSkip: 3 };
+      return { minLiqUsd: 20_000, minVol24: 50_000, rugSevSkip: 2 }; // safe
+    })();
+
+    const _stateMinLiqUsd = Number(state.kpiSelectMinLiqUsd);
+    const _stateMinVol24 = Number(state.kpiSelectMinVol24);
+    const minLiqUsd = (Number.isFinite(_stateMinLiqUsd) && _stateMinLiqUsd > 0) ? _stateMinLiqUsd : _riskDefaults.minLiqUsd;
+    const minVol24 = (Number.isFinite(_stateMinVol24) && _stateMinVol24 > 0) ? _stateMinVol24 : _riskDefaults.minVol24;
+    const rugSevSkip = _riskDefaults.rugSevSkip;
 
     const pumpLeaders = computePumpingLeaders(Math.max(12, Number(state.kpiSelectPumpTopN || 30))) || [];
     const rows = selectTradeCandidatesFromKpis({
@@ -5990,6 +6048,7 @@ async function tick() {
       pumpLeaders,
       topN: poolN,
       rugFn: getRugSignalForMint,
+      rugSevSkip,
       minLiqUsd,
       minVol24,
     });
@@ -6019,7 +6078,7 @@ async function tick() {
           const sig = (() => { try { return getRugSignalForMint(pumpTopMint); } catch { return null; } })();
           const sev = Number(sig?.severity ?? sig?.sev ?? 0);
 
-          if (Number.isFinite(sev) && sev >= 2) {
+          if (Number.isFinite(sev) && sev >= rugSevSkip) {
             log(`Pump pick ${pumpTopMint.slice(0,4)}… rejected by rug filter (sev=${sev.toFixed(2)}).`);
           } else if (!Number.isFinite(liq) || liq < minLiqUsd) {
             log(`Pump pick ${pumpTopMint.slice(0,4)}… rejected by KPI liq gate (${fmtUsd(liq)} < ${fmtUsd(minLiqUsd)}).`);
@@ -6623,6 +6682,8 @@ async function tick() {
           const agent = getAutoTraderAgent();
           const cfg = agent?.getConfigFromRuntime ? agent.getConfigFromRuntime() : null;
           if (cfg && cfg.enabled !== false && String(cfg.openaiApiKey || "").trim()) {
+            const _riskRaw = String(cfg?.riskLevel || "safe").trim().toLowerCase();
+            const _riskLevel = (_riskRaw === "safe" || _riskRaw === "medium" || _riskRaw === "degen") ? _riskRaw : "safe";
             try { entryKpiPick = _kpiPickByMint.get(mint) || null; } catch { entryKpiPick = null; }
             try { entryFinalGate = computeFinalGateIntensity(mint); } catch { entryFinalGate = null; }
 
@@ -6635,6 +6696,7 @@ async function tick() {
               entrySim,
               finalGate: entryFinalGate,
               minWinProb: _minWinProbForProspect,
+              riskLevel: _riskLevel,
             });
             if (!prospect?.ok) {
               try {
@@ -6668,6 +6730,12 @@ async function tick() {
               proposedBuySolUi: buySol,
               proposedSlippageBps: dynSlip,
               signals: {
+                agentRisk: _riskLevel,
+                outcomes: {
+                  sessionPnlSol: getSessionPnlSol(),
+                  recent: (() => { try { return agentOutcomes.summarize(8); } catch { return []; } })(),
+                  lastForMint: (() => { try { return agentOutcomes.lastForMint(mint); } catch { return null; } })(),
+                },
                 kpiPick: entryKpiPick,
                 finalGate: entryFinalGate,
                 tickNow: _summarizePumpTickNowForMint(mint),
@@ -6716,6 +6784,10 @@ async function tick() {
             });
             if (adec?.ok && adec.decision) {
               const d = adec.decision;
+
+              try {
+                if (d && d.evolve) agentOutcomes.applyEvolve(d.evolve);
+              } catch {}
 
               try {
                 if (d.tune) _applyAgentTune(d.tune, { source: "buy", mint, confidence: d.confidence, reason: d.reason });
@@ -7546,11 +7618,12 @@ function _ensureStatsHeader() {
         hdr.dataset.fdvAgentWired = "1";
         const root = hdr.closest?.(".fdv-auto-body") || document;
         const enabledEl = root.querySelector("[data-auto-agent-enabled]");
+        const riskEl = root.querySelector("[data-auto-agent-risk]");
         const keyEl = root.querySelector("[data-auto-openai-key]");
         const modelEl = root.querySelector("[data-auto-openai-model]");
         const stateEl = root.querySelector("[data-auto-agent-state]");
 
-        if (!enabledEl && !keyEl && !modelEl && !stateEl) {
+        if (!enabledEl && !riskEl && !keyEl && !modelEl && !stateEl) {
           // noop
         } else {
 
@@ -7601,6 +7674,12 @@ function _ensureStatsHeader() {
           _writeAgentEnabledUi(!!en);
         } catch {}
         try {
+          const raw = typeof localStorage !== "undefined" ? String(localStorage.getItem("fdv_agent_risk") || "") : "";
+          const v = String(raw || "safe").trim().toLowerCase();
+          const risk = (v === "safe" || v === "medium" || v === "degen") ? v : "safe";
+          if (riskEl) riskEl.value = risk;
+        } catch {}
+        try {
           const k = typeof localStorage !== "undefined" ? String(localStorage.getItem("fdv_openai_key") || "") : "";
           if (keyEl) keyEl.value = k;
         } catch {}
@@ -7624,6 +7703,18 @@ function _ensureStatsHeader() {
                 if (on && !keyPresent) log("Agent enabled, but inactive until OpenAI key is set.", "warn");
                 else log(`Agent ${on ? "enabled" : "disabled"}.`, "help");
               } catch {}
+            } catch {}
+          });
+        }
+        if (riskEl) {
+          riskEl.addEventListener("change", () => {
+            try {
+              if (typeof localStorage === "undefined") return;
+              const v = String(riskEl.value || "safe").trim().toLowerCase();
+              const risk = (v === "safe" || v === "medium" || v === "degen") ? v : "safe";
+              localStorage.setItem("fdv_agent_risk", risk);
+              try { updateAgentUi(); } catch {}
+              try { log(`Agent risk set to ${risk.toUpperCase()}.`, "help"); } catch {}
             } catch {}
           });
         }
@@ -7832,6 +7923,14 @@ export function initTraderWidget(container = document.body) {
           <select data-auto-agent-enabled>
             <option value="yes">On</option>
             <option value="no">Off</option>
+          </select>
+        </label>
+        <label class="fdv-agent-item fdv-agent-risk">
+          Risk
+          <select data-auto-agent-risk>
+            <option value="safe">Safe</option>
+            <option value="medium">Medium</option>
+            <option value="degen">Degen</option>
           </select>
         </label>
         <label class="fdv-agent-item fdv-agent-key">

@@ -1,8 +1,21 @@
+import { createAgentOutcomesStore } from "../../evolve/agentOutcomes.js";
+
 export function createAgentDecisionPolicy({
   log,
   getState,
   getAgent,
 } = {}) {
+  let _evolveOutcomes;
+  const _getEvolveOutcomes = () => {
+    try {
+      if (_evolveOutcomes) return _evolveOutcomes;
+      // Use the shared evolve store (same localStorage key).
+      _evolveOutcomes = createAgentOutcomesStore({ storageKey: "fdv_agent_outcomes_v1" });
+      return _evolveOutcomes;
+    } catch {
+      return null;
+    }
+  };
   const _rawLog = typeof log === "function" ? log : () => {};
   const _log = (msg, type) => {
     try { _rawLog(`[AGENT GARY] ${String(msg ?? "")}`, type); } catch { try { _rawLog(String(msg ?? ""), type); } catch {} }
@@ -17,7 +30,19 @@ export function createAgentDecisionPolicy({
 
       const state = _getState();
 
+      const cfg = (() => {
+        try {
+          return agent && typeof agent.getConfigFromRuntime === "function" ? agent.getConfigFromRuntime() : {};
+        } catch {
+          return {};
+        }
+      })();
+
+      const _riskRaw = String(cfg?.riskLevel || "safe").trim().toLowerCase();
+      const _riskLevel = (_riskRaw === "safe" || _riskRaw === "medium" || _riskRaw === "degen") ? _riskRaw : "safe";
+
       const payloadCtx = {
+        agentRisk: _riskLevel,
         nowTs: Number(ctx?.nowTs || 0),
         ownerStr: String(ctx?.ownerStr || ""),
 
@@ -61,6 +86,15 @@ export function createAgentDecisionPolicy({
       const res = await agent.decideSell({ mint: ctx?.mint, pos: ctx?.pos || {}, ctx: payloadCtx });
       if (!res?.ok || !res?.decision) return;
       const d = res.decision;
+
+    // Optional evolve feedback: annotate recent outcomes with self-critique/lesson.
+    try {
+      const ev = d && d.evolve;
+      if (ev && typeof ev === "object") {
+        const store = _getEvolveOutcomes();
+        if (store && typeof store.applyEvolve === "function") store.applyEvolve(ev);
+      }
+    } catch {}
 
     // Allow agent to suggest runtime knob tuning (handled by Trader after pipeline).
     if (d && d.tune && typeof d.tune === "object") {
