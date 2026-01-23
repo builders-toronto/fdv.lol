@@ -4,6 +4,7 @@ export function createStealthTools({
   save,
   getState,
   getAutoKeypair,
+  rotateWallet,
   loadDeps,
   getConn,
   unwrapWsolIfAny,
@@ -15,6 +16,7 @@ export function createStealthTools({
   const _log = typeof log === "function" ? log : () => {};
   const _save = typeof save === "function" ? save : () => {};
   const _getState = typeof getState === "function" ? getState : () => ({});
+  const _rotateWallet = typeof rotateWallet === "function" ? rotateWallet : null;
 
   function addOldWalletRecord(rec = {}) {
     try {
@@ -49,6 +51,13 @@ export function createStealthTools({
       if (openPosCount > 0) {
         _log(`Stealth: deferring wallet rotation (open positions=${openPosCount}).`);
         return false;
+      }
+
+
+      // Preferred: delegate to the main Trader wallet-rotate (same behavior as Generate/Rotate).
+      if (_rotateWallet) {
+        const ok = await _rotateWallet(tag);
+        return !!ok;
       }
 
       const { Keypair, bs58, SystemProgram, Transaction } = await loadDeps();

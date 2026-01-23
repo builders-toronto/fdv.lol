@@ -149,21 +149,42 @@ const agentOutcomes = createAgentOutcomesStore({
 
 let _autoTraderAgent;
 function getAutoTraderAgent() {
-  if (_autoTraderAgent) return _autoTraderAgent;
-  _autoTraderAgent = createAutoTraderAgentDriver({
-    log,
-    getState: () => state,
-    getConfig: () => {
-      try {
-        // Prefer explicit runtime getters.
-        if (_autoTraderAgent && typeof _autoTraderAgent.getConfigFromRuntime === "function") {
-          return _autoTraderAgent.getConfigFromRuntime();
-        }
-      } catch {}
-      return { enabled: false, openaiApiKey: "" };
-    },
-  });
-  return _autoTraderAgent;
+	if (_autoTraderAgent) return _autoTraderAgent;
+	_autoTraderAgent = createAutoTraderAgentDriver({
+		log,
+		getState: () => state,
+		getConfig: () => {
+			try {
+				// Let the driver read runtime config from overrides/localStorage.
+				if (_autoTraderAgent && typeof _autoTraderAgent.getConfigFromRuntime === "function") {
+					return _autoTraderAgent.getConfigFromRuntime();
+				}
+			} catch {}
+			return { enabled: false, openaiApiKey: "" };
+		},
+	});
+	return _autoTraderAgent;
+}
+
+function _getAgentRuntimeCfgSafe() {
+	try {
+		const agent = getAutoTraderAgent();
+		const cfg = agent && typeof agent.getConfigFromRuntime === "function" ? agent.getConfigFromRuntime() : null;
+		return (cfg && typeof cfg === "object") ? cfg : {};
+	} catch {
+		return {};
+	}
+}
+
+function _isAgentGaryEffective() {
+	try {
+		const cfg = _getAgentRuntimeCfgSafe();
+		const enabledFlag = cfg && (cfg.enabled !== false);
+		const keyPresent = !!String(cfg?.openaiApiKey || "").trim();
+		return !!(enabledFlag && keyPresent);
+	} catch {
+		return false;
+	}
 }
 
 let _flamebarMissLastMint = "";
@@ -804,6 +825,14 @@ const { maybeStealthRotate } = createStealthTools({
   save,
   getState: () => state,
   getAutoKeypair,
+  rotateWallet: async (tag = "stealth") => {
+    const res = await rotateAutoWalletLikeGenerate({
+      tag: `stealth:${String(tag || "rotate")}`,
+      allowWhileEnabled: true,
+      requireStopped: false,
+    });
+    return !!res?.ok;
+  },
   loadDeps,
   getConn,
   unwrapWsolIfAny,
@@ -811,6 +840,91 @@ const { maybeStealthRotate } = createStealthTools({
   SOL_MINT,
   TX_FEE_BUFFER_LAMPORTS,
 });
+
+async function rotateAutoWalletLikeGenerate({ tag = "rotate", requireStopped = true, allowWhileEnabled = false } = {}) {
+  try {
+    if (requireStopped && state.enabled) {
+      log("Stop the bot before generating/rotating the auto wallet.", "warn");
+      return { ok: false, reason: "bot_running" };
+    }
+
+    if (!allowWhileEnabled && state.enabled) {
+      log("Wallet rotation blocked while running (safety). Stop the bot first.", "warn");
+      return { ok: false, reason: "bot_running" };
+    }
+
+    const g = (typeof window !== "undefined") ? window : globalThis;
+    if (!g._fdvAutoWalletRotateInflight) g._fdvAutoWalletRotateInflight = false;
+    if (g._fdvAutoWalletRotateInflight) {
+      log("Wallet rotation already in progress…", "warn");
+      return { ok: false, reason: "inflight" };
+    }
+    g._fdvAutoWalletRotateInflight = true;
+
+    const hadWallet = !!(state.autoWalletPub && state.autoWalletSecret);
+    if (!hadWallet) {
+      await ensureAutoWallet();
+      try { if (depAddrEl) depAddrEl.value = state.autoWalletPub; } catch {}
+      log("New auto wallet generated. Send SOL to begin: " + state.autoWalletPub);
+      try { logObj("Auto wallet", { publicKey: state.autoWalletPub, secretKey: state.autoWalletSecret }); } catch {}
+      save();
+      return { ok: true, generated: true, publicKey: state.autoWalletPub };
+    }
+
+    const oldPub = state.autoWalletPub;
+    const oldSecret = state.autoWalletSecret;
+    const oldKp = await getAutoKeypair();
+    if (!oldKp) {
+      log("Current auto wallet secret key is invalid; cannot rotate.", "err");
+      return { ok: false, reason: "invalid_secret" };
+    }
+
+    const gen = await _generateAutoWalletKeypair();
+    log(`Rotating auto wallet (${String(tag || "rotate")})…`);
+    log(`From: ${oldPub}`);
+    log(`To:   ${gen.publicKey}`);
+
+    const res = await _migrateWalletFunds({ fromSigner: oldKp, toSigner: gen.kp });
+    if (!res?.ok) {
+      log("Wallet rotate failed; keeping existing wallet.", "err");
+      return { ok: false, reason: "migrate_failed" };
+    }
+
+    // Migrate caches so sync logic doesn't prune positions on the next tick.
+    _migrateOwnerCaches(oldPub, gen.publicKey);
+
+    // Archive the old wallet in state.
+    try {
+      if (!Array.isArray(state.oldWallets)) state.oldWallets = [];
+      state.oldWallets.unshift({ publicKey: oldPub, secretKey: oldSecret, rotatedAt: Date.now(), tag: String(tag || "rotate") });
+      if (state.oldWallets.length > 25) state.oldWallets.length = 25;
+    } catch {}
+
+    state.autoWalletPub = gen.publicKey;
+    state.autoWalletSecret = gen.secretKey;
+    save();
+
+    // Best-effort: publish this new wallet to the public FDV ledger.
+    try {
+      const { bs58 } = await loadDeps();
+      await registerFdvWallet({ pubkey: state.autoWalletPub, keypair: gen.kp, bs58 });
+    } catch {}
+
+    try { if (depAddrEl) depAddrEl.value = state.autoWalletPub; } catch {}
+    log("Wallet rotation complete. New auto wallet is ready.");
+    try { logObj("Auto wallet (NEW)", { publicKey: state.autoWalletPub, secretKey: state.autoWalletSecret }); } catch {}
+
+    return { ok: true, rotated: true, publicKey: state.autoWalletPub };
+  } catch (e) {
+    log(`Wallet rotate failed: ${e?.message || e}`, "err");
+    return { ok: false, reason: "exception", error: String(e?.message || e || "") };
+  } finally {
+    try {
+      const g = (typeof window !== "undefined") ? window : globalThis;
+      g._fdvAutoWalletRotateInflight = false;
+    } catch {}
+  }
+}
 
 const executeSellDecisionPolicy = createExecuteSellDecisionPolicy({
   log,
@@ -1214,8 +1328,12 @@ let state = {
   entrySimMode: "enforce",
   entrySimHorizonSecs: 120,
   entrySimMinWinProb: 0.55,
+  entrySimMinTerminalProb: 0.60,
   entrySimSigmaFloorPct: 0.75,
   entrySimMuLevelWeight: 0.35,
+
+  // Entry friction cap (primarily for Agent Gary medium/safe gating)
+  maxEntryCostPct: 1.5,
 };
 
 export function getAutoTraderState() {
@@ -1235,6 +1353,7 @@ let advBoxEl, warmMinPEl, warmFloorEl, warmDelayEl, warmReleaseEl, warmMaxLossEl
 let reboundScoreEl, reboundLookbackEl;
 let finalGateEnabledEl, finalGateMinStartEl, finalGateDeltaEl, finalGateWindowEl;
 let entrySimModeEl, entrySimHorizonEl, entrySimMinProbEl, entrySimSigmaFloorEl, entrySimMuLevelWeightEl;
+let maxEntryCostEl, entrySimMinTermEl;
 
 let _logQueue = [];
 let _logRaf = 0;
@@ -1492,8 +1611,12 @@ const CONFIG_SCHEMA = {
   entrySimMode:             { type: "string",  def: "enforce" }, // off | warn | enforce
   entrySimHorizonSecs:      { type: "number",  def: 120, min: 30, max: 600 },
   entrySimMinWinProb:       { type: "number",  def: 0.55, min: 0, max: 1 },
+  entrySimMinTerminalProb:  { type: "number",  def: 0.60, min: 0, max: 1 },
   entrySimSigmaFloorPct:    { type: "number",  def: 0.75, min: 0, max: 10 },
   entrySimMuLevelWeight:    { type: "number",  def: 0.35, min: 0, max: 1 },
+
+  // Entry friction cap
+  maxEntryCostPct:          { type: "number",  def: 1.5, min: 0, max: 10 },
 };
 
 function coerceNumber(v, def, opts = {}) {
@@ -6646,10 +6769,16 @@ async function tick() {
 
       try {
         let agentActiveForBuy = false;
+        let agentRiskForBuy = null;
         try {
           const agent = getAutoTraderAgent();
           const cfg = agent?.getConfigFromRuntime ? agent.getConfigFromRuntime() : null;
           agentActiveForBuy = !!(cfg && cfg.enabled !== false && String(cfg.openaiApiKey || "").trim());
+
+          if (cfg) {
+            const raw = String(cfg?.riskLevel || "safe").trim().toLowerCase();
+            agentRiskForBuy = (raw === "safe" || raw === "medium" || raw === "degen") ? raw : "safe";
+          }
         } catch {}
 
         const simMode = String(state.entrySimMode || "enforce").toLowerCase();
@@ -6657,6 +6786,7 @@ async function tick() {
         const horizonSecsBase = Math.max(30, Math.min(600, Number(state.entrySimHorizonSecs || 120)));
         const horizonCapHold = Math.max(30, Math.min(600, Number(state.maxHoldSecs || HOLD_MAX_SECS)));
         const minWinProb = Math.max(0, Math.min(1, Number(state.entrySimMinWinProb || 0.55)));
+        const minTerminalProb = Math.max(0, Math.min(1, Number(state.entrySimMinTerminalProb ?? 0.60)));
 
         entryRugSignal = (() => {
           try { return _summarizeRugSignal(getRugSignalForMint(mint)) || null; } catch { return null; }
@@ -6704,6 +6834,23 @@ async function tick() {
           }
 
         entryEdgeCostPct = Math.max(0, -excl);
+
+        // Entry-cost hard gate for Agent Gary safe/medium risk: avoid deeply negative entries.
+        // (In degen risk, allow higher friction by design.)
+        try {
+          if (agentActiveForBuy) {
+            const risk = agentRiskForBuy || "safe";
+            const maxCost = Number(state.maxEntryCostPct ?? 1.5);
+            const gateOn = Number.isFinite(maxCost) && maxCost > 0;
+            const enforceForRisk = (risk === "safe" || risk === "medium");
+            if (gateOn && enforceForRisk && Number.isFinite(entryEdgeCostPct) && entryEdgeCostPct > maxCost) {
+              log(
+                `Skip ${mint.slice(0,4)}… (entry cost gate: edgeCost=${entryEdgeCostPct.toFixed(2)}% > maxEntryCostPct=${maxCost.toFixed(2)}% for risk=${risk})`
+              );
+              continue;
+            }
+          }
+        } catch {}
         const buffer   = Math.max(0, Number(state.edgeSafetyBufferPct || 0.1));
         entryTpBumpPct = entryEdgeCostPct + buffer;
 
@@ -6779,7 +6926,7 @@ async function tick() {
               `mu≈${Number(sim.muPct).toFixed(2)}% σ≈${Number(sim.sigmaPct).toFixed(2)}% ` +
               `P(hit≥${requiredGrossTp.toFixed(2)}%)≈${(Number(sim.pHit) * 100).toFixed(1)}% ` +
               `P(term≥${requiredGrossTp.toFixed(2)}%)≈${(Number(sim.pTerminal) * 100).toFixed(1)}% ` +
-              `(min ${(minWinProb * 100).toFixed(0)}%)`
+              `(minHit ${(minWinProb * 100).toFixed(0)}%, minTerm ${(minTerminalProb * 100).toFixed(0)}%)`
             );
 
             if (!(Number(sim.pHit) >= minWinProb)) {
@@ -6787,6 +6934,14 @@ async function tick() {
                 `Skip ${mint.slice(0,4)}… sim P(hit goal) ${(Number(sim.pHit) * 100).toFixed(1)}% < ${(minWinProb * 100).toFixed(0)}% ` +
                 `(goal≈${requiredGrossTp.toFixed(2)}% = baseGoal + edgeCost + buf)`;
               // Enforce means enforce (do not allow agent overrides here).
+              if (simMode === "enforce") { log(msg); continue; }
+              log(msg.replace(/^Skip /, "Sim warn "));
+            }
+
+            if (Number.isFinite(minTerminalProb) && minTerminalProb > 0 && !(Number(sim.pTerminal) >= minTerminalProb)) {
+              const msg =
+                `Skip ${mint.slice(0,4)}… sim P(terminal goal) ${(Number(sim.pTerminal) * 100).toFixed(1)}% < ${(minTerminalProb * 100).toFixed(0)}% ` +
+                `(goal≈${requiredGrossTp.toFixed(2)}%)`;
               if (simMode === "enforce") { log(msg); continue; }
               log(msg.replace(/^Skip /, "Sim warn "));
             }
@@ -6935,9 +7090,11 @@ async function tick() {
                     takeProfitPct: state.takeProfitPct,
                     stopLossPct: state.stopLossPct,
                     trailPct: state.trailPct,
+                    maxEntryCostPct: state.maxEntryCostPct,
                     entrySimMode: state.entrySimMode,
                     entrySimHorizonSecs: state.entrySimHorizonSecs,
                     entrySimMinWinProb: state.entrySimMinWinProb,
+                    entrySimMinTerminalProb: state.entrySimMinTerminalProb,
                   },
                 },
               });
@@ -7249,6 +7406,23 @@ async function startAutoAsync() {
       save();
       try { renderStatusLed(); } catch {}
       return;
+    }
+
+
+    // Always enable stealth while Agent Gary mode is effective.
+    // If stealth was off, rotate once at start (same behavior as Generate/Rotate) before trading begins.
+    const agentEff = _isAgentGaryEffective();
+    if (agentEff) {
+      const wasOff = !state.stealthMode;
+      if (wasOff) {
+        state.stealthMode = true;
+        save();
+        try { if (stealthEl) stealthEl.value = "yes"; } catch {}
+        log("Stealth forced ON (Agent Gary mode).", "help");
+      }
+      if (wasOff) {
+        try { await rotateAutoWalletLikeGenerate({ tag: "agent-start", requireStopped: false, allowWhileEnabled: true }); } catch {}
+      }
     }
 
     log("Join us on telegram: https://t.me/fdvlolgroup for community discussions!"); 
@@ -7821,6 +7995,18 @@ function _ensureStatsHeader() {
             const enabledFlag = _readAgentEnabled();
             const keyPresent = !!String(keyEl && keyEl.value || "").trim();
             const eff = enabledFlag && keyPresent;
+
+			// When Agent Gary is effectively active, always keep stealth enabled.
+			// (Stealth rotation behaves like Generate/Rotate and is also invoked on start.)
+			try {
+				if (eff && !state.stealthMode) {
+					state.stealthMode = true;
+					save();
+					try { if (stealthEl) stealthEl.value = "yes"; } catch {}
+					log("Stealth forced ON (Agent Gary mode).", "help");
+				}
+			} catch {}
+
             if (stateEl) {
               if (eff) {
                 stateEl.textContent = "(active)";
@@ -8071,11 +8257,17 @@ export function initTraderWidget(container = document.body) {
             <option value="enforce">Enforce</option>
           </select>
         </label>
+        <label>Max entry cost (%) (med/safe)
+          <input data-auto-max-entry-cost type="number" step="0.1" min="0" max="10" placeholder="1.5"/>
+        </label>
         <label>Sim horizon (s)
           <input data-auto-entry-sim-horizon type="number" step="1" min="30" max="600" placeholder="120"/>
         </label>
         <label>Sim min win P (0-1)
           <input data-auto-entry-sim-minprob type="number" step="0.01" min="0" max="1" placeholder="0.55"/>
+        </label>
+        <label>Sim min terminal P (0-1)
+          <input data-auto-entry-sim-minterm type="number" step="0.01" min="0" max="1" placeholder="0.60"/>
         </label>
         <label>Sigma floor (%)
           <input data-auto-entry-sim-sigmafloor type="number" step="0.05" min="0" max="10" placeholder="0.75"/>
@@ -8260,8 +8452,10 @@ export function initTraderWidget(container = document.body) {
   finalGateWindowEl    = wrap.querySelector("[data-auto-final-gate-window]");
 
   entrySimModeEl     = wrap.querySelector("[data-auto-entry-sim-mode]");
+  maxEntryCostEl     = wrap.querySelector("[data-auto-max-entry-cost]");
   entrySimHorizonEl  = wrap.querySelector("[data-auto-entry-sim-horizon]");
   entrySimMinProbEl  = wrap.querySelector("[data-auto-entry-sim-minprob]");
+  entrySimMinTermEl  = wrap.querySelector("[data-auto-entry-sim-minterm]");
   entrySimSigmaFloorEl    = wrap.querySelector("[data-auto-entry-sim-sigmafloor]");
   entrySimMuLevelWeightEl = wrap.querySelector("[data-auto-entry-sim-mulevelw]");
 
@@ -8356,8 +8550,10 @@ export function initTraderWidget(container = document.body) {
   if (finalGateWindowEl)    finalGateWindowEl.value   = String(Number.isFinite(state.finalPumpGateWindowMs) ? state.finalPumpGateWindowMs : 10000);
 
   if (entrySimModeEl)    entrySimModeEl.value    = String(state.entrySimMode || "enforce");
+  if (maxEntryCostEl)    maxEntryCostEl.value    = String(Number.isFinite(Number(state.maxEntryCostPct)) ? Number(state.maxEntryCostPct) : 1.5);
   if (entrySimHorizonEl) entrySimHorizonEl.value = String(Number.isFinite(Number(state.entrySimHorizonSecs)) ? Number(state.entrySimHorizonSecs) : 120);
   if (entrySimMinProbEl) entrySimMinProbEl.value = String(Number.isFinite(Number(state.entrySimMinWinProb)) ? Number(state.entrySimMinWinProb) : 0.55);
+  if (entrySimMinTermEl) entrySimMinTermEl.value = String(Number.isFinite(Number(state.entrySimMinTerminalProb)) ? Number(state.entrySimMinTerminalProb) : 0.60);
   if (entrySimSigmaFloorEl) entrySimSigmaFloorEl.value = String(Number.isFinite(Number(state.entrySimSigmaFloorPct)) ? Number(state.entrySimSigmaFloorPct) : 0.75);
   if (entrySimMuLevelWeightEl) entrySimMuLevelWeightEl.value = String(Number.isFinite(Number(state.entrySimMuLevelWeight)) ? Number(state.entrySimMuLevelWeight) : 0.35);
 
@@ -8742,76 +8938,9 @@ export function initTraderWidget(container = document.body) {
 
   wrap.querySelector("[data-auto-gen]").addEventListener("click", async () => {
     try {
-      if (state.enabled) {
-        log("Stop the bot before generating/rotating the auto wallet.", "warn");
-        return;
-      }
-
-      if (!window._fdvAutoWalletRotateInflight) window._fdvAutoWalletRotateInflight = false;
-      if (window._fdvAutoWalletRotateInflight) {
-        log("Wallet generation already in progress…", "warn");
-        return;
-      }
-      window._fdvAutoWalletRotateInflight = true;
-
-      const hadWallet = !!(state.autoWalletPub && state.autoWalletSecret);
-
-      if (!hadWallet) {
-        await ensureAutoWallet();
-        depAddrEl.value = state.autoWalletPub;
-        log("New auto wallet generated. Send SOL to begin: " + state.autoWalletPub);
-        logObj("Auto wallet", { publicKey: state.autoWalletPub, secretKey: state.autoWalletSecret });
-        save();
-        return;
-      }
-
-      const oldPub = state.autoWalletPub;
-      const oldSecret = state.autoWalletSecret;
-      const oldKp = await getAutoKeypair();
-      if (!oldKp) {
-        log("Current auto wallet secret key is invalid; cannot rotate.", "err");
-        return;
-      }
-
-      const gen = await _generateAutoWalletKeypair();
-      log(`Rotating auto wallet (bot must be stopped)…`);
-      log(`From: ${oldPub}`);
-      log(`To:   ${gen.publicKey}`);
-
-      const res = await _migrateWalletFunds({ fromSigner: oldKp, toSigner: gen.kp });
-      if (!res?.ok) {
-        log("Wallet rotate failed; keeping existing wallet.", "err");
-        return;
-      }
-
-      // Migrate caches so sync logic doesn't prune positions on the next tick.
-      _migrateOwnerCaches(oldPub, gen.publicKey);
-
-      // Archive the old wallet in state.
-      try {
-        if (!Array.isArray(state.oldWallets)) state.oldWallets = [];
-        state.oldWallets.unshift({ publicKey: oldPub, secretKey: oldSecret, rotatedAt: Date.now() });
-        // Keep the archive bounded.
-        if (state.oldWallets.length > 25) state.oldWallets.length = 25;
-      } catch {}
-
-      state.autoWalletPub = gen.publicKey;
-      state.autoWalletSecret = gen.secretKey;
-      save();
-
-      // Best-effort: publish this new wallet to the public FDV ledger.
-      try {
-        const { bs58 } = await loadDeps();
-        await registerFdvWallet({ pubkey: state.autoWalletPub, keypair: gen.kp, bs58 });
-      } catch {}
-
-      depAddrEl.value = state.autoWalletPub;
-      log("Wallet rotation complete. New auto wallet is ready.");
-      logObj("Auto wallet (NEW)", { publicKey: state.autoWalletPub, secretKey: state.autoWalletSecret });
+      await rotateAutoWalletLikeGenerate({ tag: "manual", requireStopped: true, allowWhileEnabled: false });
     } catch (e) {
       log(`Generate/rotate failed: ${e?.message || e}`, "err");
-    } finally {
-      try { window._fdvAutoWalletRotateInflight = false; } catch {}
     }
   });
   wrap.querySelector("[data-auto-ledger]").addEventListener("click", async () => {
@@ -8855,9 +8984,32 @@ export function initTraderWidget(container = document.body) {
     log(`Multi-buy: ${state.allowMultiBuy ? "ON" : "OFF"}`);
   });
   stealthEl.addEventListener("change", () => {
-    state.stealthMode = (stealthEl.value === "yes");
-    save();
-    log(`Stealth mode: ${state.stealthMode ? "ON" : "OFF"}`);
+    (async () => {
+      try {
+    const requestedOn = (stealthEl.value === "yes");
+    // Never allow stealth OFF while Agent Gary mode is effective.
+    if (!requestedOn && _isAgentGaryEffective()) {
+      state.stealthMode = true;
+      save();
+      try { stealthEl.value = "yes"; } catch {}
+      log("Stealth must remain ON while Agent Gary mode is active.", "warn");
+      return;
+    }
+
+    const on = requestedOn;
+        state.stealthMode = on;
+        save();
+        log(`Stealth mode: ${state.stealthMode ? "ON" : "OFF"}`);
+
+        // Behave like Generate/Rotate when stealth is activated.
+        if (on) {
+          // For safety, require bot stopped when toggled from UI.
+          await rotateAutoWalletLikeGenerate({ tag: "stealth-on", requireStopped: true, allowWhileEnabled: false });
+        }
+      } catch (e) {
+        log(`Stealth toggle failed: ${e?.message || e}`, "err");
+      }
+    })();
   });
   startBtn.addEventListener("click", () => onToggle(true));
   stopBtn.addEventListener("click", () => onToggle(false));
@@ -9002,11 +9154,17 @@ export function initTraderWidget(container = document.body) {
       const m = String(entrySimModeEl.value || "enforce").toLowerCase();
       state.entrySimMode = (m === "off" || m === "warn" || m === "enforce") ? m : "enforce";
     }
+    if (maxEntryCostEl) {
+      state.maxEntryCostPct = clamp(n(maxEntryCostEl.value), 0, 10, 1.5);
+    }
     if (entrySimHorizonEl) {
       state.entrySimHorizonSecs = clamp(n(entrySimHorizonEl.value), 30, 600, 120);
     }
     if (entrySimMinProbEl) {
       state.entrySimMinWinProb = clamp(n(entrySimMinProbEl.value), 0, 1, 0.55);
+    }
+    if (entrySimMinTermEl) {
+      state.entrySimMinTerminalProb = clamp(n(entrySimMinTermEl.value), 0, 1, 0.60);
     }
     if (entrySimSigmaFloorEl) {
       state.entrySimSigmaFloorPct = clamp(n(entrySimSigmaFloorEl.value), 0, 10, 0.75);
@@ -9045,8 +9203,10 @@ export function initTraderWidget(container = document.body) {
     if (finalGateWindowEl)    finalGateWindowEl.value   = String(state.finalPumpGateWindowMs);
 
     if (entrySimModeEl)    entrySimModeEl.value    = String(state.entrySimMode || "enforce");
+    if (maxEntryCostEl)    maxEntryCostEl.value    = String(state.maxEntryCostPct);
     if (entrySimHorizonEl) entrySimHorizonEl.value = String(state.entrySimHorizonSecs);
     if (entrySimMinProbEl) entrySimMinProbEl.value = String(state.entrySimMinWinProb);
+    if (entrySimMinTermEl) entrySimMinTermEl.value = String(state.entrySimMinTerminalProb);
     if (entrySimSigmaFloorEl) entrySimSigmaFloorEl.value = String(state.entrySimSigmaFloorPct);
     if (entrySimMuLevelWeightEl) entrySimMuLevelWeightEl.value = String(state.entrySimMuLevelWeight);
 
@@ -9055,7 +9215,7 @@ export function initTraderWidget(container = document.body) {
 
   [warmMinPEl, warmFloorEl, warmDelayEl, warmReleaseEl, warmMaxLossEl, warmMaxWindowEl, warmConsecEl, warmEdgeEl,
    reboundScoreEl, reboundLookbackEl, fricSnapEl, finalGateEnabledEl, finalGateMinStartEl, finalGateDeltaEl, finalGateWindowEl,
-   entrySimModeEl, entrySimHorizonEl, entrySimMinProbEl, entrySimSigmaFloorEl, entrySimMuLevelWeightEl]
+   entrySimModeEl, maxEntryCostEl, entrySimHorizonEl, entrySimMinProbEl, entrySimMinTermEl, entrySimSigmaFloorEl, entrySimMuLevelWeightEl]
     .filter(Boolean)
     .forEach(el => {
       el.addEventListener("input", saveAdvanced);
