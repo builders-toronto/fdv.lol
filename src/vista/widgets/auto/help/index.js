@@ -148,8 +148,38 @@ function _buildHelpInlineCard() {
 				</div>
 			</div>
 
+			<details style="border:1px solid var(--fdv-border); border-radius:12px; padding:12px; background:color-mix(in srgb, var(--fdv-bg) 70%, transparent);">
+				<summary style="cursor:pointer; user-select:none; display:flex; align-items:center; gap:8px; font-weight:700;">
+					Step 4 (optional) - Agent Gary (AI mode)
+					<span style="font-size:12px; font-weight:600; color:var(--fdv-muted);">(recommended once comfortable)</span>
+				</summary>
+				<div style="margin-top:10px; color:var(--fdv-muted); font-size:13px; line-height:1.45;">
+					<div style="margin-bottom:8px;">
+						Agent Gary can tune your config on startup and must explicitly approve buys while enabled.
+					</div>
+					<div style="border:1px solid var(--fdv-border); border-radius:10px; padding:10px; background:color-mix(in srgb, var(--fdv-surface) 80%, transparent);">
+						<div style="font-weight:700; margin-bottom:6px; color:var(--fdv-fg);">Walkthrough</div>
+						<ol style="margin:0; padding-left:18px; display:flex; flex-direction:column; gap:6px;">
+							<li>Open <b>Advanced</b> and find <b>Agent Gary</b>.</li>
+							<li>Set <b>Agent Gary</b> to <b>On</b>, paste your <b>OpenAI key</b>, pick a <b>Model</b>, and choose <b>Risk</b> (Safe/Medium/Degen).</li>
+							<li>Keep <b>Stealth mode</b> ON while Agent Gary is active.</li>
+							<li>Click <b>Start</b>. When AI mode is enabled, the bot runs an initial market scan and applies a tuned config before trading.</li>
+							<li>Watch the log for <b>[AGENT GARY]</b> messages; buys require explicit agent approval.</li>
+						</ol>
+					</div>
+					<div style="margin-top:10px; font-size:12px; line-height:1.35;">
+						<div style="color:var(--fdv-muted);">
+							Notes: You still need a working <b>CORS RPC</b>. If the key is missing/invalid, AI mode won’t be effective.
+						</div>
+						<div style="color:var(--fdv-muted); margin-top:6px;">
+							Security: treat API keys like passwords. Don’t paste seed phrases.
+						</div>
+					</div>
+				</div>
+			</details>
+
 			<div style="border:1px solid var(--fdv-border); border-radius:12px; padding:12px; background:color-mix(in srgb, var(--fdv-bg) 70%, transparent);">
-				<div style="font-weight:700; margin-bottom:6px;">Step 4 (optional) - Import Auto Wallet into Phantom</div>
+				<div style="font-weight:700; margin-bottom:6px;">Step 5 (optional) - Import Auto Wallet into Phantom</div>
 				<div style="color:var(--fdv-muted); font-size:13px; line-height:1.45;">
 					You can export your Auto Wallet secret/key and import it into Phantom. Keep the Phantom extension open beside the bot while operating.
 					This gives full control over funds and transfers.
@@ -160,7 +190,7 @@ function _buildHelpInlineCard() {
 			</div>
 
 			<div style="font-size:12px; color:var(--fdv-muted); line-height:1.35;">
-				Safety note: Never paste seed phrases. RPC headers may contain API keys-treat them like passwords.
+				Safety note: Never paste seed phrases. RPC headers and AI API keys may contain secrets-treat them like passwords.
 			</div>
 		</div>
 	`;

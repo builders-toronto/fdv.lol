@@ -377,41 +377,41 @@ function _summarizePumpTickNowForMint(mint) {
   }
 }
 
-function _shouldRunGaryBuyProspect({ mint, kpiPick, entrySim, finalGate, minWinProb = 0.55, riskLevel = "safe" }) {
-  try {
-    const score01 = Number(kpiPick?.score01 ?? NaN);
-    const alpha01 = Number(kpiPick?.alpha01 ?? NaN);
-    const quality01 = Number(kpiPick?.quality01 ?? NaN);
-    const pHit = Number(entrySim?.pHit ?? NaN);
-    const intensity = Number(finalGate?.intensity ?? NaN);
+// function _shouldRunGaryBuyProspect({ mint, kpiPick, entrySim, finalGate, minWinProb = 0.55, riskLevel = "safe" }) {
+//   try {
+//     const score01 = Number(kpiPick?.score01 ?? NaN);
+//     const alpha01 = Number(kpiPick?.alpha01 ?? NaN);
+//     const quality01 = Number(kpiPick?.quality01 ?? NaN);
+//     const pHit = Number(entrySim?.pHit ?? NaN);
+//     const intensity = Number(finalGate?.intensity ?? NaN);
 
-    const riskRaw = String(riskLevel || "safe").trim().toLowerCase();
-    const risk = (riskRaw === "safe" || riskRaw === "medium" || riskRaw === "degen") ? riskRaw : "safe";
+//     const riskRaw = String(riskLevel || "safe").trim().toLowerCase();
+//     const risk = (riskRaw === "safe" || riskRaw === "medium" || riskRaw === "degen") ? riskRaw : "safe";
 
-    const kpiStrongThr = risk === "degen" ? 0.52 : (risk === "medium" ? 0.58 : 0.62);
-    const alphaThr = risk === "degen" ? 0.58 : (risk === "medium" ? 0.60 : 0.62);
-    const qualityThr = risk === "degen" ? 0.35 : (risk === "medium" ? 0.40 : 0.45);
-    const gateThr = risk === "degen" ? 0.85 : (risk === "medium" ? 0.95 : 1.00);
+//     const kpiStrongThr = risk === "degen" ? 0.52 : (risk === "medium" ? 0.58 : 0.62);
+//     const alphaThr = risk === "degen" ? 0.58 : (risk === "medium" ? 0.60 : 0.62);
+//     const qualityThr = risk === "degen" ? 0.35 : (risk === "medium" ? 0.40 : 0.45);
+//     const gateThr = risk === "degen" ? 0.85 : (risk === "medium" ? 0.95 : 1.00);
 
-    // Cheap “prospect” heuristics (math gates):
-    // - strong KPI pick (pipeline snapshot)
-    // - strong final-pump-gate momentum
-    // - strong sim probability
-    const strongKpi = (Number.isFinite(score01) && score01 >= kpiStrongThr) ||
-      ((Number.isFinite(alpha01) && alpha01 >= alphaThr) && (Number.isFinite(quality01) && quality01 >= qualityThr));
-    const strongGate = Number.isFinite(intensity) && intensity >= gateThr;
-    const minP = Math.max(0, Math.min(1, Number(minWinProb || 0.55)));
-    const bump = risk === "degen" ? 0.00 : (risk === "medium" ? 0.02 : 0.03);
-    const strongSim = Number.isFinite(pHit) && pHit >= Math.min(0.95, minP + bump);
+//     // Cheap “prospect” heuristics (math gates):
+//     // - strong KPI pick (pipeline snapshot)
+//     // - strong final-pump-gate momentum
+//     // - strong sim probability
+//     const strongKpi = (Number.isFinite(score01) && score01 >= kpiStrongThr) ||
+//       ((Number.isFinite(alpha01) && alpha01 >= alphaThr) && (Number.isFinite(quality01) && quality01 >= qualityThr));
+//     const strongGate = Number.isFinite(intensity) && intensity >= gateThr;
+//     const minP = Math.max(0, Math.min(1, Number(minWinProb || 0.55)));
+//     const bump = risk === "degen" ? 0.00 : (risk === "medium" ? 0.02 : 0.03);
+//     const strongSim = Number.isFinite(pHit) && pHit >= Math.min(0.95, minP + bump);
 
-    if (strongKpi) return { ok: true, why: "kpi" };
-    if (strongGate) return { ok: true, why: "finalGate" };
-    if (strongSim) return { ok: true, why: "sim" };
-    return { ok: false, why: "no-prospect" };
-  } catch {
-    return { ok: true, why: "fallback" };
-  }
-}
+//     if (strongKpi) return { ok: true, why: "kpi" };
+//     if (strongGate) return { ok: true, why: "finalGate" };
+//     if (strongSim) return { ok: true, why: "sim" };
+//     return { ok: false, why: "no-prospect" };
+//   } catch {
+//     return { ok: true, why: "fallback" };
+//   }
+// }
 
 function _summarizeEdge(edge) {
   try {
@@ -1332,6 +1332,14 @@ let state = {
   entrySimSigmaFloorPct: 0.75,
   entrySimMuLevelWeight: 0.35,
 
+  // Light-entry settings
+  lightEntryEnabled: true,
+  lightEntryFraction: 1 / 3,
+  lightTopUpArmMs: 7000,
+  lightTopUpMinChg5m: 0.8,
+  lightTopUpMinChgSlope: 6,
+  lightTopUpMinScSlope: 3,
+
   // Entry friction cap (primarily for Agent Gary medium/safe gating)
   maxEntryCostPct: 1.5,
 };
@@ -1354,6 +1362,9 @@ let reboundScoreEl, reboundLookbackEl;
 let finalGateEnabledEl, finalGateMinStartEl, finalGateDeltaEl, finalGateWindowEl;
 let entrySimModeEl, entrySimHorizonEl, entrySimMinProbEl, entrySimSigmaFloorEl, entrySimMuLevelWeightEl;
 let maxEntryCostEl, entrySimMinTermEl;
+
+let grossBaseGoalEl, edgeBufEl;
+let lightEnabledEl, lightFracEl, lightArmEl, lightMinChgEl, lightMinChgSlopeEl, lightMinScSlopeEl;
 
 let _logQueue = [];
 let _logRaf = 0;
@@ -1507,6 +1518,243 @@ function traceOnce(key, msg, everyMs = 8000, type = "info") {
 
 let _starting = false;
 
+let _agentConfigScanDone = false;
+
+const AGENT_CONFIG_SCAN_KEYS = [
+  // sizing / friction
+  "buyPct",
+  "minBuySol",
+  "maxBuySol",
+  "slippageBps",
+  "minSecsBetween",
+
+  // entry edge / profit-goal components
+  "minNetEdgePct",
+  "edgeSafetyBufferPct",
+  "minProfitToTrailPct",
+  "maxEntryCostPct",
+
+  // entry simulation knobs
+  "entrySimMode",
+  "entrySimHorizonSecs",
+  "entrySimMinWinProb",
+  "entrySimMinTerminalProb",
+  "entrySimSigmaFloorPct",
+  "entrySimMuLevelWeight",
+
+  // warming / rebound / filters
+  "rideWarming",
+  "warmingMinProfitPct",
+  "warmingMinProfitFloorPct",
+  "warmingDecayPctPerMin",
+  "warmingDecayDelaySecs",
+  "warmingAutoReleaseSecs",
+  "warmingMaxLossPct",
+  "warmingMaxLossWindowSecs",
+  "warmingPrimedConsec",
+  "reboundGateEnabled",
+  "reboundLookbackSecs",
+  "reboundMinScore",
+  "reboundMinChgSlope",
+  "reboundMinScSlope",
+
+  // light-entry knobs
+  "lightEntryEnabled",
+  "lightEntryFraction",
+  "lightTopUpArmMs",
+  "lightTopUpMinChg5m",
+  "lightTopUpMinChgSlope",
+  "lightTopUpMinScSlope",
+];
+
+function _agentConfigScanKeyHints(keys = AGENT_CONFIG_SCAN_KEYS) {
+  try {
+    const out = {};
+    for (const k of keys) {
+      const s = CONFIG_SCHEMA?.[k];
+      if (!s) continue;
+      out[k] = {
+        type: String(s.type || ""),
+        def: s.def,
+        min: ("min" in s) ? s.min : undefined,
+        max: ("max" in s) ? s.max : undefined,
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function _agentConfigScanStateSummary(keys = AGENT_CONFIG_SCAN_KEYS) {
+  try {
+    const s = {};
+    for (const k of keys) s[k] = state?.[k];
+    s.enabled = !!state?.enabled;
+    s.tickMs = Number(state?.tickMs || 0);
+    s.allowMultiBuy = !!state?.allowMultiBuy;
+    s.holdUntilLeaderSwitch = !!state?.holdUntilLeaderSwitch;
+    return s;
+  } catch {
+    return {};
+  }
+}
+
+function _agentConfigScanMarketSummary() {
+  try {
+    const leaders = (computePumpingLeaders(4) || []).slice(0, 4);
+    const list = leaders.map((it) => {
+      const kp = it?.kp || {};
+      return {
+        mint: String(it?.mint || "").slice(0, 44),
+        badge: String(getRugSignalForMint(it?.mint || "")?.badge || it?.badge || ""),
+        pumpScore: Number(it?.pumpScore || 0),
+        liqUsd: Number(kp?.liqUsd || 0),
+        v1hUsd: Number(kp?.v1hTotal || kp?.v1h || 0),
+        chg5m: Number(kp?.change5m || kp?.chg5m || 0),
+        chg1h: Number(kp?.change1h || kp?.chg1h || 0),
+      };
+    });
+
+    const seriesWarm = (() => {
+      try {
+        const store = window?._fdvLeaderSeries;
+        if (!store || typeof store.size !== "number") return 0;
+        return Math.min(1000, store.size | 0);
+      } catch { return 0; }
+    })();
+
+    return {
+      ts: Date.now(),
+      topLeaders: list,
+      leaderSeriesTracked: seriesWarm,
+    };
+  } catch {
+    return { ts: Date.now(), topLeaders: [] };
+  }
+}
+
+function _refreshUiFromStateSafe() {
+  try {
+    if (lifeEl) lifeEl.value = String(state.lifetimeMins);
+    if (buyPctEl) buyPctEl.value = (Number(state.buyPct || 0) * 100).toFixed(2);
+    if (minBuyEl) minBuyEl.value = String(state.minBuySol);
+    if (maxBuyEl) {
+      maxBuyEl.min = String(state.minBuySol);
+      maxBuyEl.value = String(state.maxBuySol);
+    }
+    if (minEdgeEl) minEdgeEl.value = String(Number.isFinite(state.minNetEdgePct) ? state.minNetEdgePct : -4);
+    if (warmDecayEl) warmDecayEl.value = String(Number.isFinite(state.warmingDecayPctPerMin) ? state.warmingDecayPctPerMin : 0.45);
+    if (tpEl) tpEl.value = String(state.takeProfitPct);
+    if (slEl) slEl.value = String(state.stopLossPct);
+    if (trailEl) trailEl.value = String(state.trailPct);
+    if (slipEl) slipEl.value = String(state.slippageBps);
+
+    if (grossBaseGoalEl) grossBaseGoalEl.value = String(Number.isFinite(Number(state.minProfitToTrailPct)) ? Number(state.minProfitToTrailPct) : 2);
+    if (edgeBufEl) edgeBufEl.value = String(Number.isFinite(Number(state.edgeSafetyBufferPct)) ? Number(state.edgeSafetyBufferPct) : 0.1);
+    if (lightEnabledEl) lightEnabledEl.value = (state.lightEntryEnabled === false) ? "no" : "yes";
+    if (lightFracEl) lightFracEl.value = String(Number.isFinite(Number(state.lightEntryFraction)) ? Number(state.lightEntryFraction) : (1/3));
+    if (lightArmEl) lightArmEl.value = String(Number.isFinite(Number(state.lightTopUpArmMs)) ? Number(state.lightTopUpArmMs) : 7000);
+    if (lightMinChgEl) lightMinChgEl.value = String(Number.isFinite(Number(state.lightTopUpMinChg5m)) ? Number(state.lightTopUpMinChg5m) : 0.8);
+    if (lightMinChgSlopeEl) lightMinChgSlopeEl.value = String(Number.isFinite(Number(state.lightTopUpMinChgSlope)) ? Number(state.lightTopUpMinChgSlope) : 6);
+    if (lightMinScSlopeEl) lightMinScSlopeEl.value = String(Number.isFinite(Number(state.lightTopUpMinScSlope)) ? Number(state.lightTopUpMinScSlope) : 3);
+
+    if (warmMinPEl) warmMinPEl.value = String(Number.isFinite(state.warmingMinProfitPct) ? state.warmingMinProfitPct : 2);
+    if (warmFloorEl) warmFloorEl.value = String(Number.isFinite(state.warmingMinProfitFloorPct) ? state.warmingMinProfitFloorPct : 1.0);
+    if (warmDelayEl) warmDelayEl.value = String(Number.isFinite(state.warmingDecayDelaySecs) ? state.warmingDecayDelaySecs : 20);
+    if (warmReleaseEl) warmReleaseEl.value = String(Number.isFinite(state.warmingAutoReleaseSecs) ? state.warmingAutoReleaseSecs : 45);
+    if (warmMaxLossEl) warmMaxLossEl.value = String(Number.isFinite(state.warmingMaxLossPct) ? state.warmingMaxLossPct : 2.5);
+    if (warmMaxWindowEl) warmMaxWindowEl.value = String(Number.isFinite(state.warmingMaxLossWindowSecs) ? state.warmingMaxLossWindowSecs : 60);
+    if (warmConsecEl) warmConsecEl.value = String(Number.isFinite(state.warmingPrimedConsec) ? state.warmingPrimedConsec : 1);
+
+    if (reboundScoreEl) reboundScoreEl.value = String(Number.isFinite(state.reboundMinScore) ? state.reboundMinScore : 0.45);
+    if (reboundLookbackEl) reboundLookbackEl.value = String(Number.isFinite(state.reboundLookbackSecs) ? state.reboundLookbackSecs : 35);
+
+    if (entrySimModeEl) entrySimModeEl.value = String(state.entrySimMode || "enforce");
+    if (maxEntryCostEl) maxEntryCostEl.value = String(Number.isFinite(Number(state.maxEntryCostPct)) ? Number(state.maxEntryCostPct) : 1.5);
+    if (entrySimHorizonEl) entrySimHorizonEl.value = String(Number.isFinite(Number(state.entrySimHorizonSecs)) ? Number(state.entrySimHorizonSecs) : 120);
+    if (entrySimMinProbEl) entrySimMinProbEl.value = String(Number.isFinite(Number(state.entrySimMinWinProb)) ? Number(state.entrySimMinWinProb) : 0.55);
+    if (entrySimMinTermEl) entrySimMinTermEl.value = String(Number.isFinite(Number(state.entrySimMinTerminalProb)) ? Number(state.entrySimMinTerminalProb) : 0.60);
+    if (entrySimSigmaFloorEl) entrySimSigmaFloorEl.value = String(Number.isFinite(Number(state.entrySimSigmaFloorPct)) ? Number(state.entrySimSigmaFloorPct) : 0.75);
+    if (entrySimMuLevelWeightEl) entrySimMuLevelWeightEl.value = String(Number.isFinite(Number(state.entrySimMuLevelWeight)) ? Number(state.entrySimMuLevelWeight) : 0.35);
+  } catch {}
+}
+
+function _applyAgentConfigPatch(patch = {}, { source = "agent" } = {}) {
+  try {
+    if (!patch || typeof patch !== "object") return { applied: false, keys: [] };
+    const allow = new Set(AGENT_CONFIG_SCAN_KEYS);
+    const picked = {};
+    const keys = [];
+    for (const [k, v] of Object.entries(patch)) {
+      if (!allow.has(k)) continue;
+      picked[k] = v;
+      keys.push(k);
+    }
+    if (!keys.length) return { applied: false, keys: [] };
+
+    state = normalizeState({ ...state, ...picked });
+    save();
+    _refreshUiFromStateSafe();
+    try { updateStatsHeader(); } catch {}
+    log(`[AGENT GARY] config applied (${source}) keys=[${keys.join(", ")}]`);
+    return { applied: true, keys };
+  } catch {
+    return { applied: false, keys: [] };
+  }
+}
+
+async function _maybeRunAgentConfigScanAtStart() {
+  try {
+    if (_agentConfigScanDone) return { ok: true, skipped: true, why: "already_done" };
+    if (!_isAgentGaryEffective()) return { ok: true, skipped: true, why: "agent_not_effective" };
+
+    const agent = getAutoTraderAgent();
+    if (!agent || typeof agent.scanConfig !== "function") return { ok: true, skipped: true, why: "no_agent" };
+
+    log("[AGENT GARY] market scan: requesting best config…", "info");
+
+    const allowedKeys = AGENT_CONFIG_SCAN_KEYS.slice();
+    const keyHints = _agentConfigScanKeyHints(allowedKeys);
+    const market = _agentConfigScanMarketSummary();
+    const stateSummary = _agentConfigScanStateSummary(allowedKeys);
+
+    const res = await agent.scanConfig({
+      market,
+      allowedKeys,
+      keyHints,
+      note: "Startup scan: propose a conservative, working config for the current memecoin market microstructure.",
+      stateSummary,
+    });
+
+    if (!res || !res.ok) {
+      log("[AGENT GARY] market scan failed; continuing with current config.", "warn");
+      _agentConfigScanDone = true;
+      return { ok: false, skipped: false, why: "request_failed" };
+    }
+
+    const d = res.decision || {};
+    const action = String(d.action || "").toLowerCase();
+    const conf = Number(d.confidence || 0);
+    const reason = String(d.reason || "").slice(0, 180);
+
+    if (action !== "apply" || !d.config) {
+      log(`[AGENT GARY] market scan: no apply (action=${action || "?"} conf=${conf.toFixed(2)}) ${reason}`);
+      _agentConfigScanDone = true;
+      return { ok: true, skipped: true, why: "agent_skip" };
+    }
+
+    const applied = _applyAgentConfigPatch(d.config, { source: "market-scan" });
+    log(`[AGENT GARY] market scan: ${applied.applied ? "APPLIED" : "NOOP"} conf=${conf.toFixed(2)} ${reason}`);
+    _agentConfigScanDone = true;
+    return { ok: true, skipped: false, appliedKeys: applied.keys || [] };
+  } catch (e) {
+    try { log(`[AGENT GARY] market scan error: ${e?.message || e}`, "warn"); } catch {}
+    _agentConfigScanDone = true;
+    return { ok: false, skipped: false, why: "exception" };
+  }
+}
+
 let _switchingLeader = false;
 
 let _inFlight = false;
@@ -1571,6 +1819,15 @@ const CONFIG_SCHEMA = {
   warmingNoHardStopSecs:    { type: "number",  def: 35,  min: 5, max: 180 },
   minNetEdgePct:            { type: "number",  def: -4, min: -10, max: 10 },
   edgeSafetyBufferPct:      { type: "number",  def: 0.1, min: 0, max: 2 },
+  minProfitToTrailPct:      { type: "number",  def: 2, min: 0.5, max: 200 },
+
+  // Light-entry settings
+  lightEntryEnabled:        { type: "boolean", def: true },
+  lightEntryFraction:       { type: "number",  def: 1 / 3, min: 0.1, max: 0.9 },
+  lightTopUpArmMs:          { type: "number",  def: 7000, min: 1000, max: 60000 },
+  lightTopUpMinChg5m:       { type: "number",  def: 0.8, min: 0, max: 50 },
+  lightTopUpMinChgSlope:    { type: "number",  def: 6, min: 0, max: 50 },
+  lightTopUpMinScSlope:     { type: "number",  def: 3, min: 0, max: 50 },
   reboundGateEnabled:       { type: "boolean", def: true },
   reboundLookbackSecs:      { type: "number",  def: 35,  min: 5, max: 180 },
   reboundMaxDeferSecs:      { type: "number",  def: 12,  min: 4, max: 120 },
@@ -6399,9 +6656,35 @@ async function tick() {
   if (state.lastTradeTs && (now() - state.lastTradeTs)/1000 < state.minSecsBetween && !withinBatch && !ignoreCooldownForLeaderBuy) return;
 
 
-  if (!tryAcquireBuyLock(BUY_LOCK_MS)) {
-    log("Buy lock held; skipping buys this tick.");
-    return;
+  const agentBypassNonEdgeGates = _isAgentGaryEffective();
+  let haveBuyLock = false;
+  if (agentBypassNonEdgeGates) {
+    haveBuyLock = tryAcquireBuyLock(BUY_LOCK_MS);
+    if (!haveBuyLock) {
+      try {
+        const t = now();
+        const until = Number(window._fdvBuyLockUntil || 0);
+        const remMs = Math.max(0, until - t);
+        log(`Buy lock held (AI bypass); continuing buy evaluation (rem ${(remMs / 1000).toFixed(2)}s).`);
+      } catch {
+        log("Buy lock held (AI bypass); continuing buy evaluation.");
+      }
+      // Safety: if something is already in-flight, do not overlap buys.
+      if (_buyInFlight || _inFlight || _switchingLeader) return;
+    }
+  } else {
+    if (!tryAcquireBuyLock(BUY_LOCK_MS)) {
+      try {
+        const t = now();
+        const until = Number(window._fdvBuyLockUntil || 0);
+        const remMs = Math.max(0, until - t);
+        log(`Buy lock held; skipping buys this tick (rem ${(remMs / 1000).toFixed(2)}s).`);
+      } catch {
+        log("Buy lock held; skipping buys this tick.");
+      }
+      return;
+    }
+    haveBuyLock = true;
   }
 
   try {
@@ -6484,7 +6767,7 @@ async function tick() {
       const carryPrev = Math.max(0, Number(state.carrySol || 0));
       state.carrySol = Math.min(Number(state.maxBuySol || 0.05), carryPrev + Number(desired || 0));
       save();
-      log(`Accumulating. Carry=${state.carrySol.toFixed(6)} SOL (< ${minThreshold} min or spend ceiling).`);
+      log(`Accumulating. Carry=${state.carrySol.toFixed(6)} SOL (< ${minThreshold} min or spend ceiling). You do not have enough SOL to run the auto bot. Trying using Hold mode to generate more SOL.`);
       return;
     }
 
@@ -6523,15 +6806,15 @@ async function tick() {
           continue;
         }
       }
-      // Final uncoditional check?
+      // Final unconditional check?
       try { ensureFinalPumpGateTracking(mint); } catch {}
-      if (!isFinalPumpGateReady(mint)) {
+      if (!agentBypassNonEdgeGates && !isFinalPumpGateReady(mint)) {
         log(`Final gate: not ready to buy ${mint.slice(0,4)}… waiting for pump score up Δ.`, 'warn');
         continue;
       }
 
       try {
-        if (state.buyAnalysisEnabled !== false) {
+        if (!agentBypassNonEdgeGates && state.buyAnalysisEnabled !== false) {
           const st = _noteBuyCandidateAndCheckReady(mint);
           if (!st?.ready) {
             // Avoid log spam: at most once per ~2s per mint.
@@ -6576,10 +6859,11 @@ async function tick() {
       // const left = Math.max(1, loopN - i);
       const target = Math.min(plannedTotal, remaining);
 
-      try {
-        const leadersNow = computePumpingLeaders(3) || [];
-        const itNow = leadersNow.find(x => x?.mint === mint);
-        if (itNow) {
+      if (!agentBypassNonEdgeGates) {
+        try {
+          const leadersNow = computePumpingLeaders(3) || [];
+          const itNow = leadersNow.find(x => x?.mint === mint);
+          if (itNow) {
           const kpNow = itNow.kp || {};
           const metaNow = itNow.meta || {};
           const warm = detectWarmingUptick({ kp: { ...kpNow, mint }, meta: metaNow }, state);
@@ -6664,8 +6948,9 @@ async function tick() {
           }
 
 
-        }
-      } catch {}
+          }
+        } catch {}
+      }
 
       const reqRent = await requiredAtaLamportsForSwap(kp.publicKey.toBase58(), SOL_MINT, mint);
       if (reqRent > 0 && solBal < AVOID_NEW_ATA_SOL_FLOOR) {
@@ -6730,8 +7015,16 @@ async function tick() {
         const prevCost = Number(prevPos?.costSol || 0);
         const isFreshEntry = !(prevSz > 0 || prevCost > 0);
         if (isFreshEntry) {
+          const lightEnabled = (state.lightEntryEnabled !== false);
+          const lightFrac = (() => {
+            const x = Number(state.lightEntryFraction);
+            if (Number.isFinite(x) && x > 0 && x < 1) return Math.max(0.1, Math.min(0.9, x));
+            return LIGHT_ENTRY_FRACTION;
+          })();
+          if (!lightEnabled) throw new Error("light-off");
+
           const fullL = Math.floor(buyLamports);
-          const lightL = Math.floor(fullL * LIGHT_ENTRY_FRACTION);
+          const lightL = Math.floor(fullL * lightFrac);
           const remL = Math.max(0, fullL - lightL);
           if (lightL >= minPerOrderLamports && remL >= minPerOrderLamports) {
             buyLamports = lightL;
@@ -6741,7 +7034,7 @@ async function tick() {
             );
           } else {
             log(
-              `Light entry skipped ${mint.slice(0,4)}…: buy ${(fullL/1e9).toFixed(6)} SOL cannot split into two legs >= ${(minPerOrderLamports/1e9).toFixed(6)} SOL.`
+              `Light entry skipped ${mint.slice(0,4)}…: buy ${(fullL/1e9).toFixed(6)} SOL cannot split into two legs >= ${(minPerOrderLamports/1e9).toFixed(6)} SOL (continuing with full-size entry eval).`
             );
           }
         }
@@ -6782,7 +7075,7 @@ async function tick() {
         } catch {}
 
         const simMode = String(state.entrySimMode || "enforce").toLowerCase();
-        const simEnabled = simMode !== "off";
+        let simEnabled = simMode !== "off";
         const horizonSecsBase = Math.max(30, Math.min(600, Number(state.entrySimHorizonSecs || 120)));
         const horizonCapHold = Math.max(30, Math.min(600, Number(state.maxHoldSecs || HOLD_MAX_SECS)));
         const minWinProb = Math.max(0, Math.min(1, Number(state.entrySimMinWinProb || 0.55)));
@@ -6838,7 +7131,7 @@ async function tick() {
         // Entry-cost hard gate for Agent Gary safe/medium risk: avoid deeply negative entries.
         // (In degen risk, allow higher friction by design.)
         try {
-          if (agentActiveForBuy) {
+          if (agentActiveForBuy && !agentBypassNonEdgeGates) {
             const risk = agentRiskForBuy || "safe";
             const maxCost = Number(state.maxEntryCostPct ?? 1.5);
             const gateOn = Number.isFinite(maxCost) && maxCost > 0;
@@ -6871,7 +7164,8 @@ async function tick() {
               // Hard requirement: do not buy without enough samples.
               const msg = `Skip ${mint.slice(0,4)}… (need leader series >=3; have ${_seriesN}/3)`;
               log(msg);
-              continue;
+              if (!agentBypassNonEdgeGates) continue;
+              simEnabled = false;
             }
           }
 
@@ -6919,7 +7213,7 @@ async function tick() {
             // Agent Gary can tune sizing/slippage and veto, but cannot override missing data.
             const msg = `Skip ${mint.slice(0,4)}… (sim: insufficient leader series)`;
             log(msg);
-            continue;
+            if (!agentBypassNonEdgeGates) continue;
           } else {
             log(
               `Sim gate ${mint.slice(0,4)}… horizon=${sim.horizonSecs}s ` +
@@ -6934,16 +7228,16 @@ async function tick() {
                 `Skip ${mint.slice(0,4)}… sim P(hit goal) ${(Number(sim.pHit) * 100).toFixed(1)}% < ${(minWinProb * 100).toFixed(0)}% ` +
                 `(goal≈${requiredGrossTp.toFixed(2)}% = baseGoal + edgeCost + buf)`;
               // Enforce means enforce (do not allow agent overrides here).
-              if (simMode === "enforce") { log(msg); continue; }
-              log(msg.replace(/^Skip /, "Sim warn "));
+              if (simMode === "enforce" && !agentBypassNonEdgeGates) { log(msg); continue; }
+              log(msg.replace(/^Skip /, agentBypassNonEdgeGates ? "Sim bypass " : "Sim warn "));
             }
 
             if (Number.isFinite(minTerminalProb) && minTerminalProb > 0 && !(Number(sim.pTerminal) >= minTerminalProb)) {
               const msg =
                 `Skip ${mint.slice(0,4)}… sim P(terminal goal) ${(Number(sim.pTerminal) * 100).toFixed(1)}% < ${(minTerminalProb * 100).toFixed(0)}% ` +
                 `(goal≈${requiredGrossTp.toFixed(2)}%)`;
-              if (simMode === "enforce") { log(msg); continue; }
-              log(msg.replace(/^Skip /, "Sim warn "));
+              if (simMode === "enforce" && !agentBypassNonEdgeGates) { log(msg); continue; }
+              log(msg.replace(/^Skip /, agentBypassNonEdgeGates ? "Sim bypass " : "Sim warn "));
             }
           }
         }
@@ -7266,7 +7560,7 @@ async function tick() {
           lightEntry: !!lightPlan,
           lightPlannedSol: lightPlan ? (Number(lightPlan.fullLamports || 0) / 1e9) : undefined,
           lightRemainingSol: lightPlan ? (Number(lightPlan.remainingLamports || 0) / 1e9) : 0,
-          lightTopUpArmedAt: lightPlan ? (now() + LIGHT_TOPUP_ARM_MS) : undefined,
+          lightTopUpArmedAt: lightPlan ? (now() + Math.max(1000, Number(state.lightTopUpArmMs || LIGHT_TOPUP_ARM_MS))) : undefined,
           lightTopUpTries: lightPlan ? 0 : undefined,
         };
         try {
@@ -7372,7 +7666,7 @@ async function tick() {
     log(`Buy failed: ${e.message||e}`);
   } finally {
     _buyInFlight = false;
-    releaseBuyLock();
+    if (haveBuyLock) releaseBuyLock();
   }
 }
 
@@ -7426,6 +7720,14 @@ async function startAutoAsync() {
     }
 
     log("Join us on telegram: https://t.me/fdvlolgroup for community discussions!"); 
+
+    // Agent Gary startup: scan market and apply best config once per page load.
+    // Must happen before the trading timer starts so gates use the new settings.
+    try {
+      if (_isAgentGaryEffective()) {
+        await _maybeRunAgentConfigScanAtStart();
+      }
+    } catch {}
 
     const kp = await getAutoKeypair();
     if (kp) await syncPositionsFromChain(kp.publicKey.toBase58());
@@ -8212,7 +8514,7 @@ export function initTraderWidget(container = document.body) {
         </select>
       </label>
       <label>Stealth
-        <select data-auto-stealth disabled>
+        <select data-auto-stealth>
           <option value="no">No</option>
           <option value="yes">Yes</option>
         </select>
@@ -8221,6 +8523,35 @@ export function initTraderWidget(container = document.body) {
     <details class="fdv-advanced" data-auto-adv>
       <summary class="fdv-advanced-summary">Advanced</summary>
       <div class="fdv-grid fdv-advanced-grid">
+        <label>Gross TP base goal (%)
+          <input data-auto-gross-basegoal type="number" step="0.1" min="0.5" max="200" placeholder="2"/>
+        </label>
+        <label>Edge buffer (%)
+          <input data-auto-edge-buf type="number" step="0.05" min="0" max="2" placeholder="0.10"/>
+        </label>
+
+        <label>Light entry
+          <select data-auto-light-enabled>
+            <option value="yes">On</option>
+            <option value="no">Off</option>
+          </select>
+        </label>
+        <label>Light fraction (0-1)
+          <input data-auto-light-frac type="number" step="0.05" min="0.1" max="0.9" placeholder="0.33"/>
+        </label>
+        <label>Light top-up arm (ms)
+          <input data-auto-light-arm type="number" step="100" min="1000" max="60000" placeholder="7000"/>
+        </label>
+        <label>Light top-up min chg5m (%)
+          <input data-auto-light-minchg type="number" step="0.1" min="0" max="50" placeholder="0.8"/>
+        </label>
+        <label>Light top-up min chg slope (/m)
+          <input data-auto-light-minchgslope type="number" step="0.5" min="0" max="50" placeholder="6"/>
+        </label>
+        <label>Light top-up min slope (/m)
+          <input data-auto-light-minscslope type="number" step="0.5" min="0" max="50" placeholder="3"/>
+        </label>
+
         <label>Warming min profit (%) <input data-auto-warm-minp type="number" step="0.1" min="-50" max="50" placeholder="2"/></label>
         <label>Warming floor (%) <input data-auto-warm-floor type="number" step="0.1" min="-50" max="50" placeholder="-2"/></label>
         <label>Decay delay (s) <input data-auto-warm-delay type="number" step="1" min="0" max="600" placeholder="15"/></label>
@@ -8304,7 +8635,8 @@ export function initTraderWidget(container = document.body) {
             <option value="gpt-4o-mini">gpt-4o-mini</option>
             <option value="gpt-4.1-mini">gpt-4.1-mini</option>
             <option value="gpt-4o">gpt-4o</option>
-            <option value="gpt-5-nano">gpt-5-nano</option>
+            <option value="gpt-5-nano" disabled>gpt-5-nano(coming soon)</option>
+            <option value="grok-elon" disabled>grok(coming soon)</option>
           </select>
         </label>
       </div>
@@ -8312,9 +8644,27 @@ export function initTraderWidget(container = document.body) {
     <div class="fdv-tool-row">
       <button class="btn tool-btn" data-auto-gen>Generate</button>
       <button class="btn tool-btn" data-auto-ledger title="Open in Ledger Explorer">Ledger</button>
-      <button class="btn tool-btn fdv-hidden" data-auto-copy>Address</button>
+      <button class="btn tool-btn fdv-hidden" data-auto-copy>Replace me with AI feature</button>
       <button class="btn tool-btn" data-auto-snapshot title="Download latest sell snapshot">Snapshot</button>
       <button class="btn tool-btn" data-auto-unwind>Return</button>
+      <div data-auto-unwind-menu class="fdv-modal-backdrop">
+        <div class="fdv-modal fdv-unwind-modal" data-auto-unwind-modal role="dialog" aria-modal="true" aria-label="Confirm Return">
+          <div class="fdv-modal-header">
+            <strong>Confirm Return</strong>
+            <button class="fdv-close" data-auto-unwind-close aria-label="Close">×</button>
+          </div>
+          <div class="fdv-modal-body fdv-unwind-modal-body">
+            <div data-auto-unwind-summary style="opacity:.9; font-size:12px; line-height:1.35;">
+              This sells all SPL tokens in the Auto Wallet and sends SOL to your Recipient address.
+            </div>
+            <div data-auto-unwind-warnings style="margin-top:10px; font-size:12px;"></div>
+            <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
+              <button class="btn tool-btn" data-auto-unwind-cancel>Cancel</button>
+              <button class="btn tool-btn" data-auto-unwind-confirm>Return</button>
+            </div>
+          </div>
+        </div>
+      </div>
       <button class="btn tool-btn" data-auto-wallet>Wallet</button>
       <div data-auto-wallet-menu class="fdv-modal-backdrop">
         <div class="fdv-modal fdv-wallet-modal" data-auto-wallet-modal role="dialog" aria-modal="true" aria-label="Auto Wallet">
@@ -8323,9 +8673,6 @@ export function initTraderWidget(container = document.body) {
             <button class="fdv-close" data-auto-wallet-close aria-label="Close">×</button>
           </div>
           <div class="fdv-modal-body fdv-wallet-modal-body">
-            <div class="fdv-wallet-actions">
-              <button class="fdv-wallet-dump" data-auto-dump>Dump Wallet</button>
-            </div>
             <div data-auto-wallet-sol class="fdv-wallet-sol">SOL: …</div>
             <div data-auto-wallet-list class="fdv-wallet-list">
               <div class="fdv-mutedline">Loading…</div>
@@ -8357,7 +8704,7 @@ export function initTraderWidget(container = document.body) {
     </div>
     <div class="fdv-bot-footer" style="display:flex;justify-content:space-between;margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
       <a href="https://t.me/fdvlolgroup" target="_blank" data-auto-help-tg>t.me/fdvlolgroup</a>
-      <span>Version: 0.0.6.3</span>
+      <span>Version: 0.0.6.5</span>
     </div>
   `;
 
@@ -8435,6 +8782,14 @@ export function initTraderWidget(container = document.body) {
 
   //advancced
   advBoxEl        = wrap.querySelector("[data-auto-adv]");
+  grossBaseGoalEl = wrap.querySelector("[data-auto-gross-basegoal]");
+  edgeBufEl       = wrap.querySelector("[data-auto-edge-buf]");
+  lightEnabledEl  = wrap.querySelector("[data-auto-light-enabled]");
+  lightFracEl     = wrap.querySelector("[data-auto-light-frac]");
+  lightArmEl      = wrap.querySelector("[data-auto-light-arm]");
+  lightMinChgEl   = wrap.querySelector("[data-auto-light-minchg]");
+  lightMinChgSlopeEl = wrap.querySelector("[data-auto-light-minchgslope]");
+  lightMinScSlopeEl  = wrap.querySelector("[data-auto-light-minscslope]");
   warmMinPEl      = wrap.querySelector("[data-auto-warm-minp]");
   warmFloorEl     = wrap.querySelector("[data-auto-warm-floor]");
   warmDelayEl     = wrap.querySelector("[data-auto-warm-delay]");
@@ -8489,7 +8844,18 @@ export function initTraderWidget(container = document.body) {
   const walletListEl   = wrap.querySelector("[data-auto-wallet-list]");
   const walletTotalsEl = wrap.querySelector("[data-auto-wallet-totals]");
   const walletSolEl    = wrap.querySelector("[data-auto-wallet-sol]");
-  const dumpBtn        = wrap.querySelector("[data-auto-dump]");
+
+  const unwindBtn = wrap.querySelector("[data-auto-unwind]");
+  const unwindMenuEl = wrap.querySelector("[data-auto-unwind-menu]");
+  const unwindModalEl = unwindMenuEl?.querySelector?.("[data-auto-unwind-modal]") || null;
+  const unwindSummaryEl = unwindMenuEl?.querySelector?.("[data-auto-unwind-summary]") || null;
+  const unwindWarningsEl = unwindMenuEl?.querySelector?.("[data-auto-unwind-warnings]") || null;
+  const unwindCancelBtn = unwindMenuEl?.querySelector?.("[data-auto-unwind-cancel]") || null;
+  const unwindConfirmBtn = unwindMenuEl?.querySelector?.("[data-auto-unwind-confirm]") || null;
+  // const dumpBtn        = wrap.querySelector("[data-auto-dump]");
+            //   <div class="fdv-wallet-actions">
+            //   <button class="fdv-wallet-dump" data-auto-dump>Dump Wallet</button>
+            // </div>
 
   rpcEl.value   = currentRpcUrl();
   try { rpchEl.value = JSON.stringify(currentRpcHeaders() || {}); } catch { rpchEl.value = "{}"; }
@@ -8528,6 +8894,15 @@ export function initTraderWidget(container = document.body) {
   slEl.value    = String(state.stopLossPct);
   trailEl.value = String(state.trailPct);
   slipEl.value  = String(state.slippageBps);
+
+  if (grossBaseGoalEl) grossBaseGoalEl.value = String(Number.isFinite(Number(state.minProfitToTrailPct)) ? Number(state.minProfitToTrailPct) : 2);
+  if (edgeBufEl)       edgeBufEl.value       = String(Number.isFinite(Number(state.edgeSafetyBufferPct)) ? Number(state.edgeSafetyBufferPct) : 0.1);
+  if (lightEnabledEl)  lightEnabledEl.value  = (state.lightEntryEnabled === false) ? "no" : "yes";
+  if (lightFracEl)     lightFracEl.value     = String(Number.isFinite(Number(state.lightEntryFraction)) ? Number(state.lightEntryFraction) : (1/3));
+  if (lightArmEl)      lightArmEl.value      = String(Number.isFinite(Number(state.lightTopUpArmMs)) ? Number(state.lightTopUpArmMs) : 7000);
+  if (lightMinChgEl)   lightMinChgEl.value   = String(Number.isFinite(Number(state.lightTopUpMinChg5m)) ? Number(state.lightTopUpMinChg5m) : 0.8);
+  if (lightMinChgSlopeEl) lightMinChgSlopeEl.value = String(Number.isFinite(Number(state.lightTopUpMinChgSlope)) ? Number(state.lightTopUpMinChgSlope) : 6);
+  if (lightMinScSlopeEl)  lightMinScSlopeEl.value  = String(Number.isFinite(Number(state.lightTopUpMinScSlope)) ? Number(state.lightTopUpMinScSlope) : 3);
 
   if (warmMinPEl)      warmMinPEl.value      = String(Number.isFinite(state.warmingMinProfitPct) ? state.warmingMinProfitPct : 2);
   if (warmFloorEl)     warmFloorEl.value     = String(Number.isFinite(state.warmingMinProfitFloorPct) ? state.warmingMinProfitFloorPct : 0);
@@ -8841,19 +9216,178 @@ export function initTraderWidget(container = document.body) {
     }
   });
 
-  dumpBtn.addEventListener("click", async (e) => {
-    e.preventDefault(); e.stopPropagation();
-    if (!state.recipientPub) {
-      log("Set Recipient before dumping wallet.");
-      return;
-    }
+  let unwindOpen = false;
+  let unwindBusy = false;
+
+  function closeUnwindMenu() {
+    unwindOpen = false;
+    try { unwindMenuEl?.classList?.remove?.("show"); } catch {}
+    try { if (unwindModalEl) unwindModalEl.style.display = "none"; } catch {}
+  }
+
+  // Ensure it starts hidden even if CSS changes.
+  closeUnwindMenu();
+
+  async function renderUnwindMenu() {
+    const issues = [];
+    const notes = [];
+
     try {
-      await sweepAllToSolAndReturn();
-      closeWalletMenu();
-    } catch (err) {
-      log(`Dump failed: ${err.message || err}`);
+      if (state.enabled) issues.push("Bot is running. Stop it before returning.");
+
+      const rpc = currentRpcUrl();
+      if (!rpc) issues.push("No RPC connected. Set an RPC URL first.");
+
+      const recipient = String(state.recipientPub || "").trim();
+      if (!recipient) issues.push("Recipient is missing. Set Recipient first.");
+      else {
+        const ok = await isValidPubkeyStr(recipient).catch(() => false);
+        if (!ok) issues.push("Recipient address looks invalid.");
+      }
+
+      const kp = await getAutoKeypair().catch(() => null);
+      if (!kp) issues.push("Auto wallet not ready. Click Generate first.");
+
+      const owner = kp ? kp.publicKey.toBase58() : String(state.autoWalletPub || "").trim();
+
+      let solBal = 0;
+      if (owner && rpc) solBal = await fetchSolBalance(owner).catch(() => NaN);
+      if (!Number.isFinite(solBal)) {
+        issues.push("Unable to fetch SOL balance (RPC/CORS issue?).");
+        solBal = 0;
+      }
+
+      const rentReserveSol = 0.001;
+      const returnableSolNow = Math.max(0, solBal - rentReserveSol);
+
+      let hasCoins = false;
+      try {
+        const set = new Set();
+        for (const m of Object.keys(state.positions || {})) if (m && m !== SOL_MINT) set.add(m);
+        if (owner) {
+          try {
+            const cached = cacheToList(owner) || [];
+            for (const it of cached) if (it?.mint && it.mint !== SOL_MINT && Number(it.sizeUi || 0) > 0) set.add(it.mint);
+          } catch {}
+          try {
+            const dust = dustCacheToList(owner) || [];
+            for (const it of dust) if (it?.mint && it.mint !== SOL_MINT && Number(it.sizeUi || 0) > 0) set.add(it.mint);
+          } catch {}
+        }
+        hasCoins = set.size > 0;
+      } catch {}
+
+      const minFeeSol = Math.max(0.002, Number(FEE_RESERVE_MIN || 0), Number(MIN_OPERATING_SOL || 0));
+      if (hasCoins && solBal < minFeeSol) {
+        issues.push(`Insufficient SOL for unwind fees (have ${solBal.toFixed(4)} SOL; need ~${minFeeSol.toFixed(4)} SOL).`);
+      }
+
+      if (!hasCoins && returnableSolNow <= 0) {
+        issues.push("No SOL to return (balance is empty after rent reserve).");
+      }
+
+      notes.push(`Auto wallet: ${owner ? owner.slice(0, 4) + "…" + owner.slice(-4) : "(missing)"}`);
+      notes.push(`Recipient: ${recipient ? recipient.slice(0, 4) + "…" + recipient.slice(-4) : "(missing)"}`);
+      notes.push(`SOL balance: ${solBal.toFixed(6)} (returnable now ~${returnableSolNow.toFixed(6)} SOL)`);
+      if (hasCoins) notes.push("Also returns value from selling all held SPL tokens.");
+      notes.push("This action cannot be undone.");
+    } catch (e) {
+      issues.push(`Unable to prepare Return prompt: ${e?.message || e}`);
     }
-  });
+
+    try {
+      if (unwindSummaryEl) {
+        unwindSummaryEl.innerHTML = `
+          <div style="font-weight:600; margin-bottom:6px;">What happens</div>
+          <div style="opacity:.9;">Sells all SPL tokens in the Auto Wallet and transfers SOL to your Recipient.</div>
+          <div style="opacity:.85; margin-top:10px;">${notes.map(x => `<div>${x}</div>`).join("")}</div>
+        `;
+      }
+    } catch {}
+
+    const canConfirm = issues.length === 0 && !unwindBusy;
+
+    try {
+      if (unwindWarningsEl) {
+        if (issues.length) {
+          unwindWarningsEl.innerHTML = `
+            <div style="color:#f66; font-weight:600; margin-bottom:6px;">Blocked</div>
+            ${issues.map(x => `<div style=\"color:#f66;\">• ${x}</div>`).join("")}
+          `;
+        } else {
+          unwindWarningsEl.innerHTML = `<div style="opacity:.85;">You’re good to go.</div>`;
+        }
+      }
+    } catch {}
+
+    try {
+      if (unwindConfirmBtn) {
+        unwindConfirmBtn.disabled = !canConfirm;
+        unwindConfirmBtn.textContent = unwindBusy ? "Returning…" : "Return";
+      }
+      if (unwindCancelBtn) unwindCancelBtn.disabled = !!unwindBusy;
+    } catch {}
+  }
+
+  if (unwindBtn && unwindMenuEl) {
+    unwindBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      unwindOpen = !unwindOpen;
+      if (unwindOpen) {
+        await renderUnwindMenu();
+        try { unwindMenuEl.classList.add("show"); } catch {}
+        try { if (unwindModalEl) unwindModalEl.style.display = "flex"; } catch {}
+      } else {
+        closeUnwindMenu();
+      }
+    });
+
+    unwindMenuEl.addEventListener("click", (e) => {
+      if (!unwindOpen || unwindBusy) return;
+      const t = e.target;
+      if (t === unwindMenuEl || (t && t.closest && t.closest("[data-auto-unwind-close],[data-auto-unwind-cancel]"))) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeUnwindMenu();
+      }
+    });
+
+    unwindConfirmBtn?.addEventListener?.("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (unwindBusy) return;
+      unwindBusy = true;
+      await renderUnwindMenu();
+
+      try {
+        await sweepAllToSolAndReturn();
+        save();
+        closeUnwindMenu();
+      } catch (err) {
+        log(`Unwind failed: ${err?.message || err}`, "err");
+        unwindBusy = false;
+        await renderUnwindMenu();
+        return;
+      }
+
+      unwindBusy = false;
+    });
+  }
+
+  // dumpBtn.addEventListener("click", async (e) => {
+  //   e.preventDefault(); e.stopPropagation();
+  //   if (!state.recipientPub) {
+  //     log("Set Recipient before dumping wallet.");
+  //     return;
+  //   }
+  //   try {
+  //     await sweepAllToSolAndReturn();
+  //     closeWalletMenu();
+  //   } catch (err) {
+  //     log(`Dump failed: ${err.message || err}`);
+  //   }
+  // });
 
   const holdTimeWrap = wrap.querySelector(".fdv-hold-time-slider");
   if (holdTimeWrap) {
@@ -8955,12 +9489,8 @@ export function initTraderWidget(container = document.body) {
     navigator.clipboard.writeText(state.autoWalletPub).catch(()=>{});
     log("Address copied");
   });
-  wrap.querySelector("[data-auto-unwind]").addEventListener("click", async () => {
-    try { 
-      await sweepAllToSolAndReturn();
-      save();
-    } catch(e){ log(`Unwind failed: ${e.message||e}`); }
-  });
+
+  // NOTE: Return/Unwind is handled by the confirmation modal wired above.
 
   if (toggleEl) toggleEl.addEventListener("change", () => onToggle(toggleEl.value === "yes"));
   holdEl.addEventListener("change", () => {
@@ -9173,6 +9703,20 @@ export function initTraderWidget(container = document.body) {
       state.entrySimMuLevelWeight = clamp(n(entrySimMuLevelWeightEl.value), 0, 1, 0.35);
     }
 
+    if (grossBaseGoalEl) {
+      state.minProfitToTrailPct = clamp(n(grossBaseGoalEl.value), 0.5, 200, 2);
+    }
+    if (edgeBufEl) {
+      state.edgeSafetyBufferPct = clamp(n(edgeBufEl.value), 0, 2, 0.1);
+    }
+
+    if (lightEnabledEl) state.lightEntryEnabled = lightEnabledEl.value === "yes";
+    if (lightFracEl) state.lightEntryFraction = clamp(n(lightFracEl.value), 0.1, 0.9, 1/3);
+    if (lightArmEl) state.lightTopUpArmMs = clamp(n(lightArmEl.value), 1000, 60000, 7000);
+    if (lightMinChgEl) state.lightTopUpMinChg5m = clamp(n(lightMinChgEl.value), 0, 50, 0.8);
+    if (lightMinChgSlopeEl) state.lightTopUpMinChgSlope = clamp(n(lightMinChgSlopeEl.value), 0, 50, 6);
+    if (lightMinScSlopeEl) state.lightTopUpMinScSlope = clamp(n(lightMinScSlopeEl.value), 0, 50, 3);
+
     const rawEdgeStr = (warmEdgeEl?.value ?? "").toString().trim();
     if (rawEdgeStr.length > 0) {
       const edgeVal = Number(rawEdgeStr);
@@ -9210,10 +9754,20 @@ export function initTraderWidget(container = document.body) {
     if (entrySimSigmaFloorEl) entrySimSigmaFloorEl.value = String(state.entrySimSigmaFloorPct);
     if (entrySimMuLevelWeightEl) entrySimMuLevelWeightEl.value = String(state.entrySimMuLevelWeight);
 
+    if (grossBaseGoalEl) grossBaseGoalEl.value = String(state.minProfitToTrailPct);
+    if (edgeBufEl) edgeBufEl.value = String(state.edgeSafetyBufferPct);
+    if (lightEnabledEl) lightEnabledEl.value = state.lightEntryEnabled ? "yes" : "no";
+    if (lightFracEl) lightFracEl.value = String(state.lightEntryFraction);
+    if (lightArmEl) lightArmEl.value = String(state.lightTopUpArmMs);
+    if (lightMinChgEl) lightMinChgEl.value = String(state.lightTopUpMinChg5m);
+    if (lightMinChgSlopeEl) lightMinChgSlopeEl.value = String(state.lightTopUpMinChgSlope);
+    if (lightMinScSlopeEl) lightMinScSlopeEl.value = String(state.lightTopUpMinScSlope);
+
     save();
   }
 
-  [warmMinPEl, warmFloorEl, warmDelayEl, warmReleaseEl, warmMaxLossEl, warmMaxWindowEl, warmConsecEl, warmEdgeEl,
+  [grossBaseGoalEl, edgeBufEl, lightEnabledEl, lightFracEl, lightArmEl, lightMinChgEl, lightMinChgSlopeEl, lightMinScSlopeEl,
+   warmMinPEl, warmFloorEl, warmDelayEl, warmReleaseEl, warmMaxLossEl, warmMaxWindowEl, warmConsecEl, warmEdgeEl,
    reboundScoreEl, reboundLookbackEl, fricSnapEl, finalGateEnabledEl, finalGateMinStartEl, finalGateDeltaEl, finalGateWindowEl,
    entrySimModeEl, maxEntryCostEl, entrySimHorizonEl, entrySimMinProbEl, entrySimMinTermEl, entrySimSigmaFloorEl, entrySimMuLevelWeightEl]
     .filter(Boolean)
@@ -9331,11 +9885,24 @@ function _shouldLightTopUpMint(mint, pos, nowTs = now()) {
     const chgSlope = slope3pm(series3, "chg5m");
     const scSlope = slope3pm(series3, "pumpScore");
 
+    const minChg = (() => {
+      const x = Number(state.lightTopUpMinChg5m);
+      return Number.isFinite(x) ? Math.max(0, Math.min(50, x)) : LIGHT_TOPUP_MIN_CHG5M;
+    })();
+    const minChgSlope = (() => {
+      const x = Number(state.lightTopUpMinChgSlope);
+      return Number.isFinite(x) ? Math.max(0, Math.min(50, x)) : LIGHT_TOPUP_MIN_CHG_SLOPE;
+    })();
+    const minScSlope = (() => {
+      const x = Number(state.lightTopUpMinScSlope);
+      return Number.isFinite(x) ? Math.max(0, Math.min(50, x)) : LIGHT_TOPUP_MIN_SC_SLOPE;
+    })();
+
     // Simple "starts to go up" trigger (either level or slope-based).
     const ok =
-      (Number.isFinite(chg5m) && chg5m >= LIGHT_TOPUP_MIN_CHG5M) ||
-      (Number.isFinite(chgSlope) && chgSlope >= LIGHT_TOPUP_MIN_CHG_SLOPE) ||
-      (Number.isFinite(scSlope) && scSlope >= LIGHT_TOPUP_MIN_SC_SLOPE);
+      (Number.isFinite(chg5m) && chg5m >= minChg) ||
+      (Number.isFinite(chgSlope) && chgSlope >= minChgSlope) ||
+      (Number.isFinite(scSlope) && scSlope >= minScSlope);
     return !!ok;
   } catch {
     return false;
@@ -9402,7 +9969,8 @@ async function _tryLightTopUp(kp) {
           buyLamports = minPerOrderLamports;
         } else {
           // Not enough spendable right now; try again later.
-          pos.lightTopUpArmedAt = nowTs + Math.max(2500, LIGHT_TOPUP_ARM_MS);
+          const armMs = Math.max(1000, Number(state.lightTopUpArmMs || LIGHT_TOPUP_ARM_MS));
+          pos.lightTopUpArmedAt = nowTs + Math.max(2500, armMs);
           save();
           return false;
         }
@@ -9436,7 +10004,10 @@ async function _tryLightTopUp(kp) {
       try { _noteDexTx("buy", mint, res, { solUi: buySol, slippageBps: dynSlip }); } catch {}
       if (!res.ok) {
         log(`Light top-up not confirmed for ${mint.slice(0,4)}… will retry later.`, "warn");
-        pos.lightTopUpArmedAt = nowTs + Math.max(2500, LIGHT_TOPUP_ARM_MS);
+        {
+          const armMs = Math.max(1000, Number(state.lightTopUpArmMs || LIGHT_TOPUP_ARM_MS));
+          pos.lightTopUpArmedAt = nowTs + Math.max(2500, armMs);
+        }
         save();
         return false;
       }
@@ -9459,7 +10030,8 @@ async function _tryLightTopUp(kp) {
         pos.lightRemainingSol = 0;
         pos.lightEntry = false;
       } else {
-        pos.lightTopUpArmedAt = now() + Math.max(2500, LIGHT_TOPUP_ARM_MS);
+        const armMs = Math.max(1000, Number(state.lightTopUpArmMs || LIGHT_TOPUP_ARM_MS));
+        pos.lightTopUpArmedAt = now() + Math.max(2500, armMs);
       }
       save();
       return true;

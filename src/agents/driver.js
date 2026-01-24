@@ -162,6 +162,33 @@ function _validateSellDecision(obj) {
 	return out;
 }
 
+function _validateConfigScanDecision(obj) {
+	try {
+		if (!obj || typeof obj !== "object") return null;
+		const action = String(obj.action || "").toLowerCase();
+		if (action !== "apply" && action !== "skip") return null;
+		const confidence = _clampNum(obj.confidence, 0, 1);
+		const reason = String(obj.reason || "").slice(0, 220);
+		const out = { kind: "config_scan", action, confidence, reason };
+		if (obj.config && typeof obj.config === "object") {
+			const cfg = {};
+			let n = 0;
+			for (const [k, v] of Object.entries(obj.config)) {
+				n++;
+				if (n > 120) break;
+				const key = String(k || "").slice(0, 80);
+				if (!key) continue;
+				const t = typeof v;
+				if (t === "number" || t === "boolean" || t === "string") cfg[key] = v;
+			}
+			if (Object.keys(cfg).length) out.config = cfg;
+		}
+		return out;
+	} catch {
+		return null;
+	}
+}
+
 function _readLs(key, fallback = "") {
 	try {
 		if (typeof localStorage === "undefined") return fallback;
@@ -247,16 +274,18 @@ export function createAutoTraderAgentDriver({
 		});
 	}
 
-	async function _run(kind, payload) {
+	async function _run(kind, payload, opts = null) {
 		if (!_enabled()) return { ok: false, disabled: true };
 		const client = _getClient();
 		if (!client) return { ok: false, disabled: true };
 		const body = _redactDeep(payload);
+		const options = (opts && typeof opts === "object") ? opts : {};
 
 		const key = (() => {
 			try {
 				const mint = String(payload?.mint || payload?.targetMint || "");
-				return `${kind}:${mint}`;
+				const ck = String(payload?.cacheKey || options?.cacheKey || "");
+				return `${kind}:${mint || ck || "global"}`;
 			} catch {
 				return `${kind}:unknown`;
 			}
@@ -284,7 +313,9 @@ export function createAutoTraderAgentDriver({
 			if (js) _log(`payload ${js}`, "info");
 		} catch {}
 
-		const state = _redactDeep(_getState());
+		const state = options.omitState
+			? {}
+			: _redactDeep(("stateOverride" in options) ? options.stateOverride : _getState());
 		const userMsg = {
 			source: "fdv_auto_trader",
 			kind,
@@ -306,13 +337,25 @@ export function createAutoTraderAgentDriver({
 			: GARY_SYSTEM_PROMPT;
 
 		let text = "";
+		let meta = null;
 		try {
-			text = await client.chatJson({
+			const req = {
 				system: systemPrompt,
 				user: JSON.stringify(userMsg),
-				temperature: 0.15,
-				maxTokens: Math.max(120, Number((_getConfig() || {}).maxTokens || 350)),
-			});
+				temperature: Number.isFinite(Number(options.temperature)) ? Number(options.temperature) : 0.15,
+				maxTokens: Math.max(
+					120,
+					Number.isFinite(Number(options.maxTokens))
+						? Number(options.maxTokens)
+						: Number((_getConfig() || {}).maxTokens || 350)
+				),
+			};
+			if (client && typeof client.chatJsonWithMeta === "function") {
+				meta = await client.chatJsonWithMeta(req);
+				text = String(meta?.text || "");
+			} else {
+				text = await client.chatJson(req);
+			}
 		} catch (e) {
 			try { _log(`request failed: ${String(e?.message || e || "")}` , "warn"); } catch {}
 			const res = { ok: false, err: String(e?.message || e || "") };
@@ -320,8 +363,30 @@ export function createAutoTraderAgentDriver({
 			return res;
 		}
 
+		try {
+			if (meta && typeof meta === "object") {
+				const est = Number(meta.estPromptTokens || 0);
+				const u = meta.usage || null;
+				const pt = u && Number.isFinite(Number(u.promptTokens)) ? Number(u.promptTokens) : null;
+				const ct = u && Number.isFinite(Number(u.completionTokens)) ? Number(u.completionTokens) : null;
+				const tt = u && Number.isFinite(Number(u.totalTokens)) ? Number(u.totalTokens) : null;
+				const parts = [];
+				if (est > 0) parts.push(`estPrompt≈${est}`);
+				if (pt !== null) parts.push(`prompt=${pt}`);
+				if (ct !== null) parts.push(`completion=${ct}`);
+				if (tt !== null) parts.push(`total=${tt}`);
+				if (parts.length) _log(`tokens ${parts.join(" ")}`, "info");
+			}
+		} catch {}
+
 		const parsed = _safeJsonParse(text);
-		const validated = (kind === "buy") ? _validateBuyDecision(parsed) : _validateSellDecision(parsed);
+		const validated = (kind === "buy")
+			? _validateBuyDecision(parsed)
+			: (kind === "sell")
+				? _validateSellDecision(parsed)
+				: (kind === "config_scan")
+					? _validateConfigScanDecision(parsed)
+					: null;
 		const res = validated
 			? { ok: true, decision: validated }
 			: { ok: false, err: "invalid_json" };
@@ -380,6 +445,40 @@ export function createAutoTraderAgentDriver({
 				ctx: ctx && typeof ctx === "object" ? ctx : {},
 			};
 			return await _run("sell", payload);
+		},
+
+		async scanConfig({ market, allowedKeys, keyHints, note, stateSummary } = {}) {
+			const payload = {
+				cacheKey: "startup",
+				market: market && typeof market === "object" ? market : {},
+				allowedKeys: Array.isArray(allowedKeys) ? allowedKeys.slice(0, 80).map(String) : [],
+				// Keep request cheap: omit keyHints by default unless explicitly provided.
+				keyHints: (keyHints && typeof keyHints === "object" && Object.keys(keyHints).length) ? keyHints : undefined,
+				note: String(note || "").slice(0, 500),
+			};
+			const first = await _run("config_scan", payload, {
+				cacheKey: "startup",
+				temperature: 0.1,
+				maxTokens: 650,
+				stateOverride: stateSummary && typeof stateSummary === "object" ? stateSummary : {},
+			});
+
+			// Retry once if the model produced truncated/invalid JSON.
+			if (first && first.ok === false && String(first.err || "") === "invalid_json") {
+				const payload2 = {
+					cacheKey: "startup_retry",
+					market: market && typeof market === "object" ? market : {},
+					allowedKeys: Array.isArray(allowedKeys) ? allowedKeys.slice(0, 80).map(String) : [],
+					note: (String(note || "").slice(0, 380) + "\nRetry: return minimal JSON, only keys you would change. No prose.").slice(0, 500),
+				};
+				return await _run("config_scan", payload2, {
+					cacheKey: "startup_retry",
+					temperature: 0.05,
+					maxTokens: 950,
+					stateOverride: stateSummary && typeof stateSummary === "object" ? stateSummary : {},
+				});
+			}
+			return first;
 		},
 	};
 }

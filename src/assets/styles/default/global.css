@@ -341,7 +341,8 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
   display:inline-flex;
   align-items:center;
   justify-content:center;
-  border:1px solid rgba(122,222,255,.18);
+  /* border:1px solid rgba(122,222,255,.18); */
+  border: none;
   background:rgba(0,0,0,.15);
   color:var(--muted);
   cursor:pointer;
@@ -1120,6 +1121,12 @@ input[type="checkbox"]:disabled{
   filter:brightness(1.12);
   border-color:rgba(26,255,213,.45)
 }
+
+.cards .iconbtn {
+  background: none !important;
+  border: none !important;
+}
+
 .iconbtn:active{transform:scale(.97)}
 .iconbtn svg{display:block}
 .iconbtn[data-tooltip]{position:relative}
@@ -1442,15 +1449,15 @@ input[type="checkbox"]:disabled{
 }
 .micro .pct.up {
   color: var(--green, #19c37d);
-  background: rgba(25,195,125,.16); /* fallback */
-  background: color-mix(in srgb, var(--green, #19c37d) 16%, transparent);
+  /* background: rgba(25,195,125,.16); /* fallback */
+  /* background: color-mix(in srgb, var(--green, #19c37d) 16%, transparent); */
   border-color: rgba(25,195,125,.30); /* fallback */
   border-color: color-mix(in srgb, var(--green, #19c37d) 30%, transparent);
 }
 .micro .pct.down {
   color: var(--red, #ff5b5b);
-  background: rgba(255,91,91,.16); /* fallback */
-  background: color-mix(in srgb, var(--red, #ff5b5b) 16%, transparent);
+  /* background: rgba(255,91,91,.16); /* fallback */
+  /* background: color-mix(in srgb, var(--red, #ff5b5b) 16%, transparent); */
   border-color: rgba(255,91,91,.30); /* fallback */
   border-color: color-mix(in srgb, var(--red, #ff5b5b) 30%, transparent);
 }
@@ -1954,6 +1961,13 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 .fdv-wallet-modal{
   width: min(720px, 92vw);
   max-height: min(80vh, 720px);
+}
+
+.fdv-unwind-modal{
+  width: min(520px, 92vw);
+  max-height: min(80vh, 520px);
+  margin-top: 0;
+  align-self: center;
 }
 
 .fdv-wallet-modal-body{
@@ -2718,7 +2732,8 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 
 /* Inputs */
 .fdv-grid input{
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  /* background: color-mix(in srgb, var(--bg) 88%, transparent); */
+  background: #000;
   border: 1px solid var(--fdv-border);
   border-radius: 10px;
   padding: 10px 12px;
