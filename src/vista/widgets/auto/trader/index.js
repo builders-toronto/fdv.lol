@@ -8699,8 +8699,6 @@ export function initTraderWidget(container = document.body) {
     </div>
     </div>
     </div>
-    <div data-main-tab-panel="volume" class="tab-panel fdv-hidden">
-    <div id="volume-container"></div>
     </div>
     <div class="fdv-bot-footer" style="display:flex;justify-content:space-between;margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
       <a href="https://t.me/fdvlolgroup" target="_blank" data-auto-help-tg>t.me/fdvlolgroup</a>
@@ -10052,50 +10050,254 @@ function _summarizePastCandlesForMint(mint, maxCandles = 24) {
     const hit = cache.get(key);
     if (hit && (now - (hit.ts || 0)) < 15000) return hit.value;
 
+    const BUCKET_MS = 5 * 60 * 1000;
+
     const sig = (x) => {
       const n = Number(x || 0);
       if (!Number.isFinite(n) || n === 0) return 0;
+
+
+
+
+
       // Compact for token/cost without losing sign.
       return Number(n.toPrecision(6));
     };
 
-    const ticks = getPumpHistoryForMint(mint, { limit: Math.max(6, Math.min(96, Number(maxCandles || 24) * 2)) }) || [];
+    const ticks = getPumpHistoryForMint(mint, { limit: Math.max(12, Math.min(240, Number(maxCandles || 24) * 6)) }) || [];
     if (!Array.isArray(ticks) || !ticks.length) return null;
 
-    const out = [];
-    const want = Math.max(6, Math.min(48, Number(maxCandles || 24) | 0));
-    const tail = ticks.slice(Math.max(0, ticks.length - want));
 
-    for (const t of tail) {
-      const ts = Number(t?.ts || 0);
-      const c = Number(t?.priceUsd || 0);
-      if (!(ts > 0) || !(c > 0)) continue;
-      const chg5m = Number(t?.change5m || 0);
-      const denom = 1 + (chg5m / 100);
-      const o = (Number.isFinite(denom) && Math.abs(denom) > 1e-9) ? (c / denom) : c;
+
+
+
+
+
+    // gary reads better candlesticks from here
+    // Bucketize: bucketStartMs -> { tsMs, close, v5mUsd }
+    const buckets = new Map();
+    for (const t of ticks) {
+      const tsMs = Number(t?.ts || 0);
+      const close = Number(t?.priceUsd || 0);
+      if (!(tsMs > 0) || !(close > 0) || !Number.isFinite(close)) continue;
+      const bucketStartMs = Math.floor(tsMs / BUCKET_MS) * BUCKET_MS;
+      if (!(bucketStartMs > 0)) continue;
+      const v = Math.max(0, Number(t?.v5mUsd || 0));
+      const prev = buckets.get(bucketStartMs);
+      if (!prev || tsMs >= prev.tsMs) {
+        buckets.set(bucketStartMs, {
+          tsMs,
+          close,
+          // v5m is a rolling 5m stat from the source; keep the last observed value in bucket.
+          v5mUsd: Number.isFinite(v) ? v : 0,
+        });
+      }
+    }
+
+    if (!buckets.size) return null;
+
+    const want = Math.max(6, Math.min(48, Number(maxCandles || 24) | 0));
+    const ordered = Array.from(buckets.entries())
+      .sort((a, b) => a[0] - b[0])
+      .slice(Math.max(0, buckets.size - want));
+
+    const out = [];
+    let prevClose = null;
+    for (const [bucketStartMs, rec] of ordered) {
+      const c = Number(rec?.close || 0);
+      if (!(c > 0) || !Number.isFinite(c)) continue;
+      const o = (Number.isFinite(prevClose) && prevClose > 0) ? Number(prevClose) : c;
       const h = Math.max(o, c);
       const l = Math.min(o, c);
-      const v = Math.max(0, Number(t?.v5mUsd || 0));
+      const v = Math.max(0, Number(rec?.v5mUsd || 0));
 
-      // Use seconds to reduce payload size.
+      // Use seconds to reduce payload size; use bucket start time for consistent spacing.
       out.push([
-        Math.floor(ts / 1000),
+        Math.floor(bucketStartMs / 1000),
         sig(o),
         sig(h),
         sig(l),
         sig(c),
         sig(v),
       ]);
+      prevClose = c;
     }
 
     if (!out.length) return null;
+
+    const stats = (() => {
+      try {
+        const n = out.length;
+        const firstTs = Number(out?.[0]?.[0] ?? 0);
+        const lastTs = Number(out?.[n - 1]?.[0] ?? 0);
+        const spanMins = (firstTs > 0 && lastTs > firstTs) ? ((lastTs - firstTs) / 60) : 0;
+        const expectedStepS = 300;
+        let gapCount = 0;
+        for (let i = 1; i < n; i++) {
+          const prev = Number(out?.[i - 1]?.[0] ?? 0);
+          const cur = Number(out?.[i]?.[0] ?? 0);
+          const d = cur - prev;
+          if (Number.isFinite(d) && d > expectedStepS * 1.75) gapCount++;
+        }
+        const firstOpen = Number(out?.[0]?.[1] ?? 0);
+        const lastClose = Number(out?.[n - 1]?.[4] ?? 0);
+        const chgPct = (firstOpen > 0 && lastClose > 0) ? ((lastClose / firstOpen) - 1) * 100 : 0;
+        return {
+          n,
+          firstTs,
+          lastTs,
+          spanMins: Number(spanMins.toFixed(1)),
+          gapCount,
+          chgPct: Number(chgPct.toFixed(2)),
+        };
+      } catch {
+        return null;
+      }
+    })();
+
+    const features = (() => {
+      try {
+        const n = out.length;
+        if (n < 3) return null;
+
+        const closes = out.map((r) => Number(r?.[4] ?? 0));
+        const vols = out.map((r) => Number(r?.[5] ?? 0));
+        if (!closes.every((x) => Number.isFinite(x) && x > 0)) return null;
+
+        const returnsPct = [];
+        for (let i = 1; i < closes.length; i++) {
+          const prev = closes[i - 1];
+          const cur = closes[i];
+          const r = (prev > 0) ? ((cur / prev) - 1) * 100 : 0;
+          returnsPct.push(Number.isFinite(r) ? r : 0);
+        }
+
+        const last3RetPct = returnsPct.slice(-3).map((x) => Number(x.toFixed(2)));
+
+        // Average % change per 5m candle (simple slope proxy).
+        const firstClose = closes[0];
+        const lastClose = closes[closes.length - 1];
+        const slopePctPer5m = (firstClose > 0 && lastClose > 0)
+          ? (((lastClose / firstClose) - 1) * 100) / Math.max(1, closes.length - 1)
+          : 0;
+
+        // Volatility proxy: stdev of 5m returns over last ~1h (12 candles => 11 returns).
+        const volWindow = Math.max(3, Math.min(11, returnsPct.length));
+        const volTail = returnsPct.slice(-volWindow);
+        const mean = volTail.reduce((a, b) => a + b, 0) / Math.max(1, volTail.length);
+        const variance = volTail.reduce((a, b) => a + (b - mean) * (b - mean), 0) / Math.max(1, volTail.length);
+        const volStdPct1h = Math.sqrt(Math.max(0, variance));
+
+        // Max drawdown % from closes.
+        let peak = closes[0];
+        let maxDd = 0;
+        for (const c of closes) {
+          if (c > peak) peak = c;
+          const dd = (peak > 0) ? ((c / peak) - 1) * 100 : 0;
+          if (dd < maxDd) maxDd = dd;
+        }
+
+        // Volume trend: last 3 avg vs previous 3 avg.
+        const vN = vols.filter((x) => Number.isFinite(x) && x >= 0);
+        let volTrendPct = 0;
+        if (vN.length >= 6) {
+          const a = vN.slice(-3);
+          const b = vN.slice(-6, -3);
+          const ma = a.reduce((s, x) => s + x, 0) / 3;
+          const mb = b.reduce((s, x) => s + x, 0) / 3;
+          volTrendPct = (mb > 0) ? ((ma / mb) - 1) * 100 : 0;
+        }
+
+        // 1h change (12 candles => 60m)
+        let chg1hPct = 0;
+        if (closes.length >= 12) {
+          const base = closes[closes.length - 12];
+          chg1hPct = (base > 0) ? ((lastClose / base) - 1) * 100 : 0;
+        }
+
+        return {
+          slopePctPer5m: Number(slopePctPer5m.toFixed(3)),
+          volStdPct1h: Number(volStdPct1h.toFixed(2)),
+          maxDrawdownPct: Number(maxDd.toFixed(2)),
+          chg1hPct: Number(chg1hPct.toFixed(2)),
+          last3RetPct,
+          volTrendPct: Number(volTrendPct.toFixed(2)),
+        };
+      } catch {
+        return null;
+      }
+    })();
+
+    const quality = (() => {
+      try {
+        if (!stats) return null;
+        const n = Number(stats.n || 0);
+        const gapCount = Number(stats.gapCount || 0);
+        const hasGaps = gapCount > 0;
+        const sparse = n < 12;
+        const ok = (n >= 6) && !hasGaps;
+        return { ok, n, gapCount, hasGaps, sparse };
+      } catch {
+        return null;
+      }
+    })();
+
+    const regime = (() => {
+      try {
+        if (!features || !stats) return null;
+        const n = Number(stats.n || 0);
+        if (n < 6) return "unknown";
+        if (Number(stats.gapCount || 0) > 0) return "gappy";
+
+        const slope = Number(features.slopePctPer5m || 0);
+        const vol = Number(features.volStdPct1h || 0);
+        const dd = Number(features.maxDrawdownPct || 0); // negative when drawdown exists
+
+        const absSlope = Math.abs(slope);
+        const isVolatile = (vol >= 3.0) || (dd <= -12);
+        if (isVolatile) {
+          if (slope > 0.12) return "volatile_up";
+          if (slope < -0.12) return "volatile_down";
+          return "volatile";
+        }
+        if (slope >= 0.15) return "trend_up";
+        if (slope <= -0.15) return "trend_down";
+        if (absSlope <= 0.05 && vol <= 0.8) return "flat";
+        return "choppy";
+      } catch {
+        return null;
+      }
+    })();
+
+    try {
+      const g = (typeof window !== "undefined") ? window : globalThis;
+      if (g && g._fdvDebugPastCandles && stats) {
+        const m = String(mint || "").slice(0, 4);
+        traceOnce(
+          `pastCandles:${String(mint || "")}`,
+          `[PAST] ${m}… n=${stats.n} span=${stats.spanMins}m gaps=${stats.gapCount} chg=${stats.chgPct}%` +
+            (features ? ` slope5m=${features.slopePctPer5m}% vol1h=${features.volStdPct1h}% dd=${features.maxDrawdownPct}%` : "") +
+            (regime ? ` regime=${regime}` : "") +
+            ` ts=[${stats.firstTs}..${stats.lastTs}]`,
+          15000,
+          "info"
+        );
+        // Useful for quick inspection from the console without parsing log history.
+        try { g._fdvLastPastCandles = { mint: String(mint || ""), stats, features, quality, regime, at: Date.now() }; } catch {}
+      }
+    } catch {}
+
     const value = {
       source: "pump_history_v1",
       timeframe: "5m",
       tsUnit: "s",
       format: ["ts", "oUsd", "hUsd", "lUsd", "cUsd", "v5mUsd"],
       candles: out,
-      note: "o derived from change5m; h/l are max/min(o,c)",
+      stats,
+      features,
+      quality,
+      regime,
+      note: "bucketed 5m; o=prev close; h/l=max/min(o,c)",
     };
     cache.set(key, { ts: now, value });
     return value;
