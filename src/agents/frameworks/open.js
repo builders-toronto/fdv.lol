@@ -84,11 +84,6 @@ export function createOpenAIChatClient({
 				if (!choice.text.trim()) return { text: "", why: "choice_text_empty" };
 				return { text: choice.text, why: "choice_text" };
 			}
-			const delta = choice?.delta;
-			if (typeof delta?.content === "string") {
-				if (!delta.content.trim()) return { text: "", why: "delta_content_empty" };
-				return { text: delta.content, why: "delta_content" };
-			}
 			const msg = choice?.message || null;
 			if (typeof msg?.output_text === "string") {
 				if (!msg.output_text.trim()) return { text: "", why: "msg_output_text_empty" };
@@ -111,6 +106,13 @@ export function createOpenAIChatClient({
 				if (parts.length) return { text: parts.join(""), why: "content_parts" };
 			}
 
+			// Only consult delta *after* message.content to avoid returning a partial fragment.
+			const delta = choice?.delta;
+			if (typeof delta?.content === "string") {
+				if (!delta.content.trim()) return { text: "", why: "delta_content_empty" };
+				return { text: delta.content, why: "delta_content" };
+			}
+
 			const toolArgs = msg?.tool_calls?.[0]?.function?.arguments;
 			if (typeof toolArgs === "string") {
 				if (!toolArgs.trim()) return { text: "", why: "tool_call_args_empty" };
@@ -123,6 +125,34 @@ export function createOpenAIChatClient({
 			return { text: "", why: "no_content" };
 		} catch {
 			return { text: "", why: "extract_err" };
+		}
+	}
+
+	function estimateTokensForText(text) {
+		// Practical heuristic: ~1 token per ~4 chars for typical English, ~1 per ~3-5 chars for JSON.
+		try {
+			const s = String(text || "");
+			if (!s) return 0;
+			return Math.max(0, Math.ceil(s.length / 4));
+		} catch {
+			return 0;
+		}
+	}
+
+	function _extractUsageFromResponse(json) {
+		try {
+			const u = json?.usage;
+			if (!u || typeof u !== "object") return null;
+			const promptTokens = Number(u.prompt_tokens ?? u.input_tokens ?? NaN);
+			const completionTokens = Number(u.completion_tokens ?? u.output_tokens ?? NaN);
+			const totalTokens = Number(u.total_tokens ?? NaN);
+			return {
+				promptTokens: Number.isFinite(promptTokens) ? Math.floor(promptTokens) : null,
+				completionTokens: Number.isFinite(completionTokens) ? Math.floor(completionTokens) : null,
+				totalTokens: Number.isFinite(totalTokens) ? Math.floor(totalTokens) : null,
+			};
+		} catch {
+			return null;
 		}
 	}
 
@@ -151,13 +181,18 @@ export function createOpenAIChatClient({
 		return body;
 	}
 
-	async function chatJson({ system, user, temperature = 0.15, maxTokens = 950, verbosity = "low" } = {}) {
+	async function chatJsonWithMeta({ system, user, temperature = 0.15, maxTokens = 950, verbosity = "low" } = {}) {
 		const ctl = new AbortController();
 		const to = setTimeout(() => {
 			try { ctl.abort(); } catch {}
 		}, Math.max(2000, _safeNum(timeoutMs, 12_000)));
 
 		try {
+			const estPromptTokens =
+				estimateTokensForText(system) +
+				estimateTokensForText(user) +
+				60; // overhead (roles, JSON, etc.)
+
 			const endpoint = `${urlBase.replace(/\/$/, "")}/chat/completions`;
 			const baseReq = {
 				method: "POST",
@@ -225,10 +260,19 @@ export function createOpenAIChatClient({
 
 			const json = await resp.json();
 			if (json?.error?.message) throw new Error(`OpenAI error: ${String(json.error.message).slice(0, 220)}`);
+			const usage = _extractUsageFromResponse(json);
 
 			const ext = _extractTextFromResponse(json);
 			const out = String(ext?.text || "");
-			if (out && out.trim()) return out;
+			if (out && out.trim()) {
+				return {
+					text: out,
+					usage,
+					requestId: reqId || "",
+					model: String(json?.model || m || ""),
+					estPromptTokens,
+				};
+			}
 
 			try {
 				const finish0 = String(json?.choices?.[0]?.finish_reason || "").toLowerCase();
@@ -250,7 +294,15 @@ export function createOpenAIChatClient({
 						if (jsonL?.error?.message) throw new Error(`OpenAI error: ${String(jsonL.error.message).slice(0, 220)}`);
 						const extL = _extractTextFromResponse(jsonL);
 						const outL = String(extL?.text || "");
-						if (outL && outL.trim()) return outL;
+						if (outL && outL.trim()) {
+							return {
+								text: outL,
+								usage: _extractUsageFromResponse(jsonL) || usage,
+								requestId: reqId || "",
+								model: String(jsonL?.model || json?.model || m || ""),
+								estPromptTokens,
+							};
+						}
 					}
 				}
 			} catch {
@@ -273,7 +325,15 @@ export function createOpenAIChatClient({
 				if (json2?.error?.message) throw new Error(`OpenAI error: ${String(json2.error.message).slice(0, 220)}`);
 				const ext2 = _extractTextFromResponse(json2);
 				const out2 = String(ext2?.text || "");
-				if (out2 && out2.trim()) return out2;
+				if (out2 && out2.trim()) {
+					return {
+						text: out2,
+						usage: _extractUsageFromResponse(json2) || usage,
+						requestId: reqId || "",
+						model: String(json2?.model || json?.model || m || ""),
+						estPromptTokens,
+					};
+				}
 			}
 
 			const finish = (() => {
@@ -297,5 +357,10 @@ export function createOpenAIChatClient({
 		}
 	}
 
-	return { chatJson };
+	async function chatJson({ system, user, temperature = 0.15, maxTokens = 950, verbosity = "low" } = {}) {
+		const res = await chatJsonWithMeta({ system, user, temperature, maxTokens, verbosity });
+		return String(res?.text || "");
+	}
+
+	return { chatJson, chatJsonWithMeta, estimateTokensForText };
 }

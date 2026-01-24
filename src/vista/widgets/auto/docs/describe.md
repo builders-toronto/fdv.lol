@@ -49,6 +49,7 @@ Automates SOL↔token trading around short-lived “pump” leaders:
 - Monitors leaders and rug signals.
 - Scores candidates via observer and warming heuristics.
 - Applies edge and risk gates.
+- Optional AI decision layer (Agent Gary) can be required for buys and can influence sells.
 - Executes buys with optimistic seeding then reconciles on-chain.
 - Manages exits: rug/observer deterioration, warming profit gate, fast-exit momentum decay, TP/SL/trailing, max-hold, rotation.
 - Handles dust, partial fills, ATAs/rent, router cooldowns.
@@ -71,6 +72,10 @@ Key groups in `state`:
 - Wallet: `autoWalletPub/Secret`, `recipientPub`.
 - Accounting: `moneyMadeSol`, `solSessionStartLamports`, `hideMoneyMade`.
 - RPC/UI: `rpcUrl`, `rpcHeaders`, collapsed panels, advanced values.
+
+Agent Gary runtime configuration is intentionally *not* stored inside `state`:
+- It is read from runtime overrides or `localStorage` (e.g. `fdv_agent_enabled`, `fdv_agent_risk`, `fdv_openai_key`, `fdv_openai_model`, `fdv_openai_base_url`, `fdv_openai_timeout_ms`).
+- Evolve/outcomes storage uses `fdv_agent_outcomes_v1` (local persistence) plus an optional summary string at `fdv_agent_evolve_summary_v1`.
 
 ## 3. Time & Scheduling
 - Main loop `tick()` every `tickMs` (≥1200ms).
@@ -130,6 +135,15 @@ Key groups in `state`:
 - Produces: none | sell_all | sell_partial + reason.
 - Overrides: rug, pump→calm ban, observer forced drop, early fade, fast exit, rebound deferral, warming suppression.
 
+Sell evaluation is implemented as a policy pipeline (a set of small decision modules) that can annotate context, set force flags, and/or produce a sell decision. Newer extracted policies include:
+- `volatilityGuardPolicy`: blocks/defers sells during extreme volatility windows (avoid selling into transient spikes/shocks unless overridden by higher-priority safety triggers).
+- `quoteAndEdgePolicy`: re-quotes token→SOL and detects quote shock / edge collapse; can flag urgent sells when the route/edge deteriorates quickly.
+- `profitLockPolicy`: persists stateful “profit lock” signals to reduce churn and keep exits consistent across ticks.
+- `forceFlagDecisionPolicy`: consolidates force flags (rug, pump drop, observer drop, expiry, momentum) into a consistent, explainable decision surface.
+- `agentDecisionPolicy` (Agent Gary sell layer): optional agent call that can map system decisions to hold/sell_all/sell_partial while respecting min-hold and profit-floor constraints.
+- `reboundGatePolicy`: defers sells when rebound conditions are met, with strict caps.
+- `executeSellDecisionPolicy`: executes the chosen sell with locking, slippage escalation, split-sell fallbacks, dust promotion, debit checks, and optional stealth rotation.
+
 ## 10. Rug Detection & Blacklisting
 - External `getRugSignalForMint` (rugged, sev, badge).
 - High severity ≥ threshold (higher if warming): immediate sell + long blacklist.
@@ -146,6 +160,11 @@ Key groups in `state`:
 - Threshold: base `minNetEdgePct` ± adjustments + `edgeSafetyBufferPct`. Optional `warmingEdgeMinExclPct` override.
 - If edge below threshold → skip.
 - Small sells only fee if profitable; otherwise no fee.
+
+Related pre-buy gates that frequently interact with edge:
+- Entry simulation gating (`entrySimMode` off|warn|enforce) computes odds of hitting a required gross goal (base goal + friction/edge cost + buffer) within a horizon derived from leader-series behavior. In `enforce`, insufficient series or insufficient odds hard-skips the buy.
+- Entry-cost cap (`maxEntryCostPct`) is applied for Agent Gary safe/medium risk when the agent is enabled, preventing high-friction entries even if the manual edge gate is permissive.
+- Agent Gary buy approval is downstream of these gates: the agent can veto or downsize, but it cannot override hard requirements like “no round-trip quote” or “insufficient leader series for sim.”
 
 ## 12. Quoting & Swap Pipeline
 - `quoteGeneric`, `quoteOutSol`: Jupiter (lite/standard) with rate-limit backoff; fallback toggles `restrictIntermediateTokens`.
@@ -202,6 +221,11 @@ Key groups in `state`:
   - `LS_KEY` main state.
   - `POSCACHE_KEY_PREFIX` owner→{mint:{sizeUi,decimals}}.
   - `DUSTCACHE_KEY_PREFIX` similar for dust.
+- Agent-related storage:
+  - `fdv_agent_enabled`, `fdv_agent_risk` for toggles.
+  - `fdv_openai_key`, `fdv_openai_model`, `fdv_openai_base_url`, `fdv_openai_timeout_ms`, `fdv_openai_max_tokens` for runtime agent config.
+  - `fdv_agent_outcomes_v1` for realized outcome summaries used by the agent.
+  - Optional `fdv_agent_evolve_summary_v1` (short text) appended to the agent system prompt.
 - Every mutation → `save()`; robust `load()` clamps defaults and hardens schema.
 
 ## 20. RPC & Rate Limiting
@@ -217,6 +241,10 @@ Key groups in `state`:
 - Pending credit grace avoids premature prune.
 - Router cooldown on repeated route failures.
 - Blacklist staging escalates: short → longer → longest.
+- Agent safety notes:
+  - Agent calls redact secrets from payloads (RPC headers, wallet secrets, keys) and short-cache responses to avoid duplicate calls.
+  - If Agent Gary is enabled for buy approvals, missing OpenAI key hard-blocks buys (no silent fallback).
+  - Agent sell decisions are constrained: respect min-hold unless specific force flags are present, ignore partial sells when PnL ≤ 0, and enforce profit-floor constraints unless safety bypass applies.
 
 ## 22. Position Data Fields (Selected)
 - Size/cost: `sizeUi`, `decimals`, `costSol`, `hwmSol`, `hwmPx`.
@@ -298,6 +326,7 @@ Key groups in `state`:
 - Wallet secret (base58) stored locally (intended local-only).
 - Export JSON: `{ publicKey, secretKey }`.
 - No remote transmission of secrets.
+- Agent Gary integration: the OpenAI API key is stored locally for runtime use and is never included in agent payloads; agent requests apply deep redaction to prevent accidental leakage of secrets in strings/objects.
 
 ## 35. Extensibility Notes
 - External feeds: `computePumpingLeaders`, `getRugSignalForMint`.
@@ -311,6 +340,7 @@ Key groups in `state`:
 - Pre-buy seeding keeps UI responsive.
 - Warming/rebound override generic exits to capture sustained trends.
 - One-time rent excluded from net-edge gate.
+- When Agent Gary is effectively active (enabled + key present), stealth mode is forced on and buy decisions require explicit agent approval.
 
 ## 37. Potential Pitfalls (Operational)
 - Underfunded wallet: frequent skip logs (edge/min-notional).

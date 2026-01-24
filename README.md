@@ -270,6 +270,8 @@ Example commands:
 
 ---
 
+![v0.0.6.4.png](v0.0.6.4.png)
+
 ## 📚 Learn More in the Wiki
 Our Wiki is the best place to start:  
 - Home - About the project, FAQ, and how it works  
@@ -298,4 +300,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-Fix Agent Gary trading guardrails + GPT‑5 nano integration
+feat: Agent Gary(fungus learns) help + token usage logging; Return confirm modal + centered styling
