@@ -1,6 +1,0 @@
-/* Compatibility shim.
-   Some pages reference /src/assets/styles/global.css.
-   Keep this file tiny and forward to the canonical stylesheet.
-*/
-
-@import url("./default/global.css");
