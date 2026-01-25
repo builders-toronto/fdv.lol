@@ -428,6 +428,7 @@ export function createAutoTraderAgentDriver({
 						const s = String(modelName || "").trim().toLowerCase();
 						if (!s) return "openai";
 						if (s.startsWith("gemini-")) return "gemini";
+						if (s === "deepseek-chat" || s === "deepseek-reasoner" || s.startsWith("deepseek-")) return "deepseek";
 						if (s.startsWith("grok-")) return "grok";
 						return "openai";
 					} catch {
@@ -445,7 +446,7 @@ export function createAutoTraderAgentDriver({
 						: _readLs("fdv_llm_model", _readLs("fdv_openai_model", "gpt-4o-mini"))
 				).trim() || "gpt-4o-mini";
 
-				const provider = (llmProvider === "gemini" || llmProvider === "openai")
+				const provider = (llmProvider === "gemini" || llmProvider === "grok" || llmProvider === "deepseek" || llmProvider === "openai")
 					? llmProvider
 					: _inferProviderForModel(llmModel);
 
@@ -461,6 +462,10 @@ export function createAutoTraderAgentDriver({
 					? String(o.grokApiKey || o.grokKey || o.apiKey || o.llmApiKey)
 					: _readLs("fdv_grok_key", "");
 
+				const deepseekKey = (o && (o.deepseekApiKey || o.deepseekKey || (provider === "deepseek" ? (o.apiKey || o.llmApiKey) : "")))
+					? String(o.deepseekApiKey || o.deepseekKey || o.apiKey || o.llmApiKey)
+					: _readLs("fdv_deepseek_key", "");
+
 				const llmApiKey = String(
 					(o && (o.llmApiKey || o.apiKey))
 						? (o.llmApiKey || o.apiKey)
@@ -468,6 +473,8 @@ export function createAutoTraderAgentDriver({
 							? geminiKey
 							: (provider === "grok")
 								? grokKey
+								: (provider === "deepseek")
+									? deepseekKey
 								: openaiKey
 				).trim();
 
@@ -480,6 +487,10 @@ export function createAutoTraderAgentDriver({
 					? (o.grokBaseUrl || o.llmBaseUrl || o.baseUrl)
 					: _readLs("fdv_grok_base_url", "https://api.x.ai/v1")
 				).trim() || "https://api.x.ai/v1";
+				const deepseekBaseUrl = String((o && (o.deepseekBaseUrl || o.llmBaseUrl || o.baseUrl))
+					? (o.deepseekBaseUrl || o.llmBaseUrl || o.baseUrl)
+					: _readLs("fdv_deepseek_base_url", "https://api.deepseek.com")
+				).trim() || "https://api.deepseek.com";
 
 				const llmBaseUrl = String(
 					(o && (o.llmBaseUrl || o.baseUrl))
@@ -488,6 +499,8 @@ export function createAutoTraderAgentDriver({
 							? geminiBaseUrl
 							: (provider === "grok")
 								? grokBaseUrl
+								: (provider === "deepseek")
+									? deepseekBaseUrl
 								: openaiBaseUrl
 				).trim();
 
