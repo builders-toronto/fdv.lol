@@ -45,6 +45,15 @@ export function createPreflightSellPolicy({
 
     ctx.inSellGuard = Number(pos.sellGuardUntil || 0) > nowTs;
 
+    if (!ctx.forceExpire && !urgentHard && (ctx.inMinHold || ctx.inSellGuard)) {
+      const reasons = [
+        ctx.inMinHold ? `min-hold ${Math.max(0, Math.ceil((ctx.minHoldMs - ctx.ageMs) / 1000))}s left` : null,
+        ctx.inSellGuard ? `sell-guard ${(Math.max(0, Math.ceil((Number(pos.sellGuardUntil || 0) - nowTs) / 1000)))}s left` : null,
+      ].filter(Boolean);
+      _log(`Sell skip ${mint.slice(0, 4)}… (${reasons.join(", ")}).`);
+      return { stop: true };
+    }
+
     // Verify chain balance to avoid phantom exits
     const vr = verifyRealTokenBalance
       ? await verifyRealTokenBalance(ctx.ownerStr, mint, pos)

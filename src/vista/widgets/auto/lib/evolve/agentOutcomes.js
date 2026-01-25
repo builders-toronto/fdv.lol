@@ -1,3 +1,5 @@
+import { createEvolveRulesStore } from "./evolveRules.js";
+
 function _safeNum(v, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
@@ -16,6 +18,11 @@ function _normRisk(v) {
 export function createAgentOutcomesStore({
   storageKey = "fdv_agent_outcomes_v1",
   summaryKey = "fdv_agent_evolve_summary_v1",
+  rulesKey = "fdv_agent_evolve_rules_v1",
+  rulesPromoteEveryMs = 10 * 60_000,
+  rulesMinRepeats = 3,
+  rulesMaxPromote = 2,
+  rulesMaxLines = 6,
   summaryWindow = 30,
   maxEntries = 120,
   cacheMs = 5000,
@@ -25,11 +32,34 @@ export function createAgentOutcomesStore({
 } = {}) {
   const key = _safeStr(storageKey, "fdv_agent_outcomes_v1");
   const sumKey = _safeStr(summaryKey, "fdv_agent_evolve_summary_v1");
+  const rulesStoreKey = _safeStr(rulesKey, "fdv_agent_evolve_rules_v1");
   const sumWindow = Math.max(10, Math.min(200, Math.floor(_safeNum(summaryWindow, 30))));
   const cap = Math.max(10, Math.min(1000, Math.floor(_safeNum(maxEntries, 120))));
   const cacheTtl = Math.max(250, Math.min(60_000, Math.floor(_safeNum(cacheMs, 5000))));
+  const promoteEveryMs = Math.max(0, Math.min(7 * 24 * 60 * 60_000, Math.floor(_safeNum(rulesPromoteEveryMs, 10 * 60_000))));
+  const promoteMinRepeats = Math.max(2, Math.min(10, Math.floor(_safeNum(rulesMinRepeats, 3))));
+  const promoteMaxN = Math.max(1, Math.min(5, Math.floor(_safeNum(rulesMaxPromote, 2))));
+  const promptMaxLines = Math.max(0, Math.min(12, Math.floor(_safeNum(rulesMaxLines, 6))));
+
+  const rules = createEvolveRulesStore({ storageKey: rulesStoreKey });
+  const rulesPromoteAtKey = `fdv_agent_evolve_rules_promote_at_v1:${rulesStoreKey}`;
 
   let _cache = { ts: 0, list: [] };
+
+  function _readPromoteAt() {
+    try {
+      const raw = localStorage.getItem(rulesPromoteAtKey);
+      return _safeNum(raw, 0);
+    } catch {
+      return 0;
+    }
+  }
+
+  function _writePromoteAt(ts) {
+    try {
+      localStorage.setItem(rulesPromoteAtKey, String(_safeNum(ts, 0)));
+    } catch {}
+  }
 
   function _readRaw() {
     const ts = nowFn();
@@ -66,7 +96,7 @@ export function createAgentOutcomesStore({
     } catch {}
   }
 
-  function _buildRollingSummary(list) {
+  function _buildRollingSummary(list, rulesText = "") {
     try {
       const arr = Array.isArray(list) ? list : [];
       const win = (x) => {
@@ -89,6 +119,9 @@ export function createAgentOutcomesStore({
       let best = -Infinity;
       let worst = Infinity;
       const crits = [];
+      const lessons = [];
+      let todo = null;
+      let todoCount = 0;
       for (const it of take) {
         const pnl = _safeNum(it?.pnlSol, 0);
         sum += pnl;
@@ -97,17 +130,52 @@ export function createAgentOutcomesStore({
         if (pnl < worst) worst = pnl;
         const sc = _safeStr(it?.selfCritique, "");
         if (sc) crits.push(sc);
+
+        const ls = _safeStr(it?.lesson, "");
+        if (ls) lessons.push(ls);
+
+        // Pick ONE concrete reflection TODO to avoid per-trade reflection cost.
+        // This is intentionally biased toward negative agent outcomes.
+        const needsCritique = (
+          _safeStr(it?.decisionSource, "") === "agent" &&
+          !sc &&
+          _safeNum(it?.pnlSol, 0) < 0
+        );
+        if (needsCritique) {
+          todoCount++;
+          if (!todo) {
+            todo = {
+              outcomeTs: _safeNum(it?.ts, 0),
+              mint: _safeStr(it?.mint, ""),
+              kind: _safeStr(it?.kind, ""),
+              pnlSol: _safeNum(it?.pnlSol, 0),
+              decisionAction: _safeStr(it?.decisionAction, ""),
+              reason: _safeStr(it?.reason, ""),
+            };
+          }
+        }
       }
       const winRate = wins / Math.max(1, n);
       const avgPnlSol = sum / Math.max(1, n);
 
       const recentCr = crits.slice(0, 4).map(s => `- ${s.slice(0, 140)}`);
+      const recentLs = lessons.slice(0, 4).map(s => `- ${s.slice(0, 140)}`);
+
+      const todoLine = todo
+        ? `EVOLVE TODO: outcomeTs=${todo.outcomeTs} mint=${todo.mint.slice(0, 8)}… kind=${todo.kind} pnlSol=${todo.pnlSol.toFixed(4)} action=${todo.decisionAction || "?"} reason=${String(todo.reason || "").slice(0, 120)}`
+        : null;
 
       const text = [
         `EVOLVE: last ${n} outcomes: winRate=${(100 * winRate).toFixed(0)}% avgPnlSol=${avgPnlSol.toFixed(4)} best=${Number.isFinite(best) ? best.toFixed(4) : "0.0000"} worst=${Number.isFinite(worst) ? worst.toFixed(4) : "0.0000"}`,
+        (todoCount > 0) ? `EVOLVE: pendingCritiques=${todoCount} (batch; do not reflect every trade)` : `EVOLVE: pendingCritiques=0`,
+        todoLine || "EVOLVE TODO: none",
         recentCr.length ? "EVOLVE (recent self-critiques):" : "EVOLVE: no self-critiques yet.",
         ...recentCr,
-        "EVOLVE RULES: prioritize patterns that improve future risk-adjusted PnL; keep changes stable.",
+        recentLs.length ? "EVOLVE (recent lessons):" : "EVOLVE: no lessons yet.",
+        ...recentLs,
+        "EVOLVE OUTPUT (optional): you may include { evolve: { outcomeTs, selfCritique, lesson } } ONLY for the EVOLVE TODO outcomeTs.",
+        rulesText ? String(rulesText) : "EVOLVE RULES: none yet (auto-promotes from repeated lessons).",
+        "EVOLVE RULES META: prefer stable, high-leverage constraints; avoid overfitting.",
       ].join("\n");
 
       return {
@@ -117,7 +185,7 @@ export function createAgentOutcomesStore({
         avgPnlSol,
         best,
         worst,
-        text: String(text || "").slice(0, 1200),
+        text: String(text || "").slice(0, 1600),
       };
     } catch {
       return { ts: Date.now(), n: 0, winRate: null, avgPnlSol: null, text: "EVOLVE: summary unavailable." };
@@ -127,7 +195,21 @@ export function createAgentOutcomesStore({
   function refreshSummary() {
     try {
       const list = _readRaw();
-      const summary = _buildRollingSummary(list);
+
+      // Local-only: periodically promote repeated lessons into stable rules.
+      try {
+        const t = nowFn();
+        if (promoteEveryMs > 0) {
+          const last = _readPromoteAt();
+          if (!last || (t - last) >= promoteEveryMs) {
+            rules.promoteFromOutcomes(list, { minRepeats: promoteMinRepeats, maxPromote: promoteMaxN });
+            _writePromoteAt(t);
+          }
+        }
+      } catch {}
+
+      const rulesText = rules.toPromptText({ maxLines: promptMaxLines });
+      const summary = _buildRollingSummary(list, rulesText);
       _writeSummary(summary);
       return summary;
     } catch {
