@@ -1,17 +1,20 @@
 import { createOpenAIChatClient } from "./open.js";
 import { createGeminiChatClient } from "./gemini.js";
 import { createGrokChatClient } from "./grok.js";
+import { createDeepSeekChatClient } from "./deepseek.js";
 
 function _inferProvider({ provider, baseUrl, model } = {}) {
 	try {
 		const p = String(provider || "").trim().toLowerCase();
 		if (p) return p;
 		const mn = String(model || "").trim().toLowerCase();
+		if (mn === "deepseek-chat" || mn === "deepseek-reasoner" || mn.startsWith("deepseek-")) return "deepseek";
 		if (mn.startsWith("grok-")) return "grok";
 		const u = String(baseUrl || "").trim().toLowerCase();
 		if (!u) return "openai";
 		if (u.includes("generativelanguage.googleapis.com")) return "gemini";
 		if (u.includes("api.x.ai")) return "grok";
+		if (u.includes("api.deepseek.com")) return "deepseek";
 		// Default: OpenAI-compatible chat/completions endpoint.
 		return "openai";
 	} catch {
@@ -32,11 +35,15 @@ export function normalizeLlmConfig(cfg = {}) {
 			? "https://generativelanguage.googleapis.com/v1beta"
 			: (provider === "grok")
 				? "https://api.x.ai/v1"
+				: (provider === "deepseek")
+					? "https://api.deepseek.com"
 				: "https://api.openai.com/v1";
 		const defaultModel = (provider === "gemini")
 			? "gemini-2.5-flash-lite"
 			: (provider === "grok")
 				? "grok-3-mini"
+				: (provider === "deepseek")
+					? "deepseek-chat"
 				: "gpt-4o-mini";
 		return {
 			provider,
@@ -73,6 +80,9 @@ export function createChatClient({ provider, apiKey, baseUrl, model, timeoutMs, 
 	}
 	if (p === "grok" || p === "xai" || p === "x-ai") {
 		return createGrokChatClient({ apiKey, baseUrl, model, timeoutMs, fetchFn });
+	}
+	if (p === "deepseek") {
+		return createDeepSeekChatClient({ apiKey, baseUrl, model, timeoutMs, fetchFn });
 	}
 	throw new Error(`Unsupported LLM provider: ${String(p)}`);
 }
