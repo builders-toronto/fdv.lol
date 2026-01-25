@@ -270,7 +270,7 @@ Example commands:
 
 ---
 
-![v0.0.6.4.png](v0.0.6.4.png)
+![v0.0.6.5.png](v0.0.6.5.png)
 
 ## 📚 Learn More in the Wiki
 Our Wiki is the best place to start:  
@@ -300,9 +300,10 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-Agent Gary Sees Candlesticks Better;
+feat(evolve): local agent rules + periodic config regen
 
-Bucket pump-history snapshots into real 5m candles (open=prev close)
-Add compact past.stats + past.features + past.quality + past.regime for better trend/volatility context
-Add live debug toggle (window._fdvDebugPastCandles) and console snapshot for quick validation
-Update Gary prompt to reflect new candle construction and helpers
+Add local-only evolve rules store that promotes repeated lessons into stable “rules” and injects them into the evolve summary for Gary to follow
+Keep reflection cheap by batching: single EVOLVE TODO + rolling lessons/critiques (no extra LLM calls)
+In Agent Gary mode, periodically re-run config scan to refresh trading config over time instead of only at startup
+Allow config scans to set key release/cadence timers (cooldown + hold windows) so “auto release times” adapt to market conditions
+Add safety gates to avoid rescans while trades/sell-evals are in flight (non-blocking background scan)

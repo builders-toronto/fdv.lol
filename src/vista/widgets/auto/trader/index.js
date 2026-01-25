@@ -1868,6 +1868,9 @@ function traceOnce(key, msg, everyMs = 8000, type = "info") {
 let _starting = false;
 
 let _agentConfigScanDone = false;
+let _agentConfigScanInFlight = false;
+let _agentConfigScanLastAt = 0;
+let _agentConfigScanNextAt = 0;
 
 const AGENT_CONFIG_SCAN_KEYS = [
   // sizing / friction
@@ -1876,6 +1879,11 @@ const AGENT_CONFIG_SCAN_KEYS = [
   "maxBuySol",
   "slippageBps",
   "minSecsBetween",
+
+  // release timing / cadence
+  "coolDownSecsAfterBuy",
+  "minHoldSecs",
+  "maxHoldSecs",
 
   // entry edge / profit-goal components
   "minNetEdgePct",
@@ -2053,6 +2061,32 @@ function _applyAgentConfigPatch(patch = {}, { source = "agent" } = {}) {
   }
 }
 
+function _getAgentConfigRescanEveryMs() {
+  try {
+    const g = (typeof window !== "undefined") ? window : globalThis;
+    const raw = (
+      g && Number.isFinite(Number(g._fdvAgentConfigRescanMs))
+        ? Number(g._fdvAgentConfigRescanMs)
+        : Number(localStorage.getItem("fdv_agent_config_rescan_ms") || 0)
+    );
+    const def = 20 * 60_000;
+    const n = Number.isFinite(raw) && raw > 0 ? raw : def;
+    return Math.max(5 * 60_000, Math.min(4 * 60 * 60_000, Math.floor(n)));
+  } catch {
+    return 20 * 60_000;
+  }
+}
+
+function _scheduleNextAgentConfigScan(nowTs) {
+  try {
+    const base = _getAgentConfigRescanEveryMs();
+    const jitter = base * (0.15 * (Math.random() * 2 - 1));
+    _agentConfigScanNextAt = Math.max(0, nowTs + base + jitter);
+  } catch {
+    _agentConfigScanNextAt = Math.max(0, nowTs + 20 * 60_000);
+  }
+}
+
 async function _maybeRunAgentConfigScanAtStart() {
   try {
     if (_agentConfigScanDone) return { ok: true, skipped: true, why: "already_done" };
@@ -2079,6 +2113,8 @@ async function _maybeRunAgentConfigScanAtStart() {
     if (!res || !res.ok) {
       log("[AGENT GARY] market scan failed; continuing with current config.", "warn");
       _agentConfigScanDone = true;
+      _agentConfigScanLastAt = now();
+      _scheduleNextAgentConfigScan(_agentConfigScanLastAt);
       return { ok: false, skipped: false, why: "request_failed" };
     }
 
@@ -2090,17 +2126,90 @@ async function _maybeRunAgentConfigScanAtStart() {
     if (action !== "apply" || !d.config) {
       log(`[AGENT GARY] market scan: no apply (action=${action || "?"} conf=${conf.toFixed(2)}) ${reason}`);
       _agentConfigScanDone = true;
+      _agentConfigScanLastAt = now();
+      _scheduleNextAgentConfigScan(_agentConfigScanLastAt);
       return { ok: true, skipped: true, why: "agent_skip" };
     }
 
     const applied = _applyAgentConfigPatch(d.config, { source: "market-scan" });
     log(`[AGENT GARY] market scan: ${applied.applied ? "APPLIED" : "NOOP"} conf=${conf.toFixed(2)} ${reason}`);
     _agentConfigScanDone = true;
+    _agentConfigScanLastAt = now();
+    _scheduleNextAgentConfigScan(_agentConfigScanLastAt);
     return { ok: true, skipped: false, appliedKeys: applied.keys || [] };
   } catch (e) {
     try { log(`[AGENT GARY] market scan error: ${e?.message || e}`, "warn"); } catch {}
     _agentConfigScanDone = true;
+    _agentConfigScanLastAt = now();
+    _scheduleNextAgentConfigScan(_agentConfigScanLastAt);
     return { ok: false, skipped: false, why: "exception" };
+  }
+}
+
+async function _maybeRunAgentConfigScanPeriodic({ force = false } = {}) {
+  try {
+    if (!_isAgentGaryEffective()) return { ok: true, skipped: true, why: "agent_not_effective" };
+    if (_agentConfigScanInFlight) return { ok: true, skipped: true, why: "in_flight" };
+    if (_inFlight || _buyInFlight || _sellEvalRunning) return { ok: true, skipped: true, why: "trading_busy" };
+
+    const nowTs = now();
+    if (!_agentConfigScanNextAt) _scheduleNextAgentConfigScan(nowTs);
+    if (!force && _agentConfigScanNextAt && nowTs < _agentConfigScanNextAt) return { ok: true, skipped: true, why: "too_soon" };
+
+    const agent = getAutoTraderAgent();
+    if (!agent || typeof agent.scanConfig !== "function") return { ok: true, skipped: true, why: "no_agent" };
+
+    _agentConfigScanInFlight = true;
+    log("[AGENT GARY] periodic config scan: refreshing config + auto-release timers…", "info");
+
+    const allowedKeys = AGENT_CONFIG_SCAN_KEYS.slice();
+    const keyHints = _agentConfigScanKeyHints(allowedKeys);
+    const market = _agentConfigScanMarketSummary();
+    const stateSummary = _agentConfigScanStateSummary(allowedKeys);
+    const recentOutcomes = (() => {
+      try { return agentOutcomes && typeof agentOutcomes.summarize === "function" ? agentOutcomes.summarize(8) : []; } catch { return []; }
+    })();
+
+    const res = await agent.scanConfig({
+      market,
+      allowedKeys,
+      keyHints,
+      note: "Periodic scan: update config for current conditions. Also pick good auto-release timings (coolDownSecsAfterBuy, minHoldSecs/maxHoldSecs, warmingAutoReleaseSecs) to reduce churn while staying responsive.",
+      stateSummary,
+      recentOutcomes,
+    });
+
+    if (!res || !res.ok) {
+      log("[AGENT GARY] periodic config scan failed; keeping current config.", "warn");
+      _agentConfigScanLastAt = nowTs;
+      _scheduleNextAgentConfigScan(_agentConfigScanLastAt);
+      return { ok: false, skipped: false, why: "request_failed" };
+    }
+
+    const d = res.decision || {};
+    const action = String(d.action || "").toLowerCase();
+    const conf = Number(d.confidence || 0);
+    const reason = String(d.reason || "").slice(0, 180);
+
+    if (action !== "apply" || !d.config) {
+      log(`[AGENT GARY] periodic config scan: no apply (action=${action || "?"} conf=${conf.toFixed(2)}) ${reason}`);
+      _agentConfigScanLastAt = nowTs;
+      _scheduleNextAgentConfigScan(_agentConfigScanLastAt);
+      return { ok: true, skipped: true, why: "agent_skip" };
+    }
+
+    const applied = _applyAgentConfigPatch(d.config, { source: "periodic-scan" });
+    log(`[AGENT GARY] periodic config scan: ${applied.applied ? "APPLIED" : "NOOP"} conf=${conf.toFixed(2)} ${reason}`);
+    _agentConfigScanLastAt = nowTs;
+    _scheduleNextAgentConfigScan(_agentConfigScanLastAt);
+    return { ok: true, skipped: false, appliedKeys: applied.keys || [] };
+  } catch (e) {
+    try { log(`[AGENT GARY] periodic config scan error: ${e?.message || e}`, "warn"); } catch {}
+    _agentConfigScanLastAt = now();
+    _scheduleNextAgentConfigScan(_agentConfigScanLastAt);
+    return { ok: false, skipped: false, why: "exception" };
+  } finally {
+    _agentConfigScanInFlight = false;
   }
 }
 
@@ -6255,6 +6364,7 @@ async function runSellPipelineForPosition(ctx) {
         { name: "preflight", fn: (c) => preflightSellPolicy(c) },
         { name: "quoteAndEdge", fn: (c) => quoteAndEdgePolicy(c) },
         { name: "agentDecision", fn: (c) => agentDecisionPolicy(c) },
+        { name: "warmingHook", fn: (c) => warmingPolicyHook(c) },
         ...(() => {
           const skip = _getAutoBotOverride("skipExecute");
           if (skip) return [];
@@ -6739,6 +6849,8 @@ async function tick() {
     log("RPC backoff active; skipping tick.");
     return;
   }
+
+  try { if (_isAgentGaryEffective()) _maybeRunAgentConfigScanPeriodic().catch(() => {}); } catch {}
 
   try {
     const leaders = computePumpingLeaders(3) || [];
