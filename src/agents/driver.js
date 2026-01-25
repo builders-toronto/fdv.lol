@@ -1,4 +1,4 @@
-import { createOpenAIChatClient } from "./frameworks/open.js";
+import { createChatClientFromConfig, normalizeLlmConfig } from "./frameworks/index.js";
 
 function now() {
 	return Date.now();
@@ -18,6 +18,22 @@ function _safeJsonParse(s) {
 	try {
 		return JSON.parse(String(s || ""));
 	} catch {
+		// Heuristic recovery: strip code fences / surrounding prose and parse the first JSON object/array.
+		try {
+			let t = String(s || "");
+			// ```json ... ``` or ``` ... ```
+			t = t.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "");
+			const firstObj = t.indexOf("{");
+			const lastObj = t.lastIndexOf("}");
+			if (firstObj >= 0 && lastObj > firstObj) {
+				return JSON.parse(t.slice(firstObj, lastObj + 1));
+			}
+			const firstArr = t.indexOf("[");
+			const lastArr = t.lastIndexOf("]");
+			if (firstArr >= 0 && lastArr > firstArr) {
+				return JSON.parse(t.slice(firstArr, lastArr + 1));
+			}
+		} catch {}
 		return null;
 	}
 }
@@ -63,7 +79,7 @@ function _redactDeep(obj, { maxDepth = 6, maxKeys = 200 } = {}, _depth = 0, _see
 	}
 }
 
-import { GARY_SYSTEM_PROMPT } from "./agent.gary.js";
+import { GARY_SYSTEM_PROMPT } from "./personas/agent.gary.js";
 
 function _validateTune(tune) {
 	try {
@@ -244,8 +260,9 @@ export function createAutoTraderAgentDriver({
 		try {
 			const cfg = _getConfig() || {};
 			if (cfg.enabled === false) return false;
-			// Only enable if an API key is present.
-			const k = String(cfg.openaiApiKey || "").trim();
+			// Enable if any supported key is present (OpenAI or Gemini via normalized config).
+			const c = normalizeLlmConfig(cfg);
+			const k = String(c.apiKey || cfg.llmApiKey || cfg.apiKey || cfg.openaiApiKey || "").trim();
 			return !!k;
 		} catch {
 			return false;
@@ -264,20 +281,13 @@ export function createAutoTraderAgentDriver({
 
 	function _getClient() {
 		const cfg = _getConfig() || {};
-		const apiKey = String(cfg.openaiApiKey || "").trim();
-		if (!apiKey) return null;
-		return createOpenAIChatClient({
-			apiKey,
-			baseUrl: String(cfg.openaiBaseUrl || "https://api.openai.com/v1").trim() || "https://api.openai.com/v1",
-			model: String(cfg.openaiModel || "gpt-4o-mini").trim() || "gpt-4o-mini",
-			timeoutMs: Math.max(5000, Number(cfg.timeoutMs || 12_000)),
-		});
+		return createChatClientFromConfig(cfg);
 	}
 
 	async function _run(kind, payload, opts = null) {
-		if (!_enabled()) return { ok: false, disabled: true };
+		if (!_enabled()) return { ok: false, disabled: true, err: "disabled" };
 		const client = _getClient();
-		if (!client) return { ok: false, disabled: true };
+		if (!client) return { ok: false, disabled: true, err: "disabled" };
 		const body = _redactDeep(payload);
 		const options = (opts && typeof opts === "object") ? opts : {};
 
@@ -293,8 +303,8 @@ export function createAutoTraderAgentDriver({
 		const prev = cache.get(key);
 		if (prev && (now() - prev.at) < CACHE_TTL_MS) {
 			try {
-				const cfg = _getConfig() || {};
-				const model = String(cfg.openaiModel || "gpt-4o-mini").trim() || "gpt-4o-mini";
+				const cfg = normalizeLlmConfig(_getConfig() || {});
+				const model = String(cfg.model || "gpt-4o-mini").trim() || "gpt-4o-mini";
 				const mint = String(payload?.mint || payload?.targetMint || "").slice(0, 8);
 				_log(`call kind=${String(kind)} mint=${mint} model=${model} (cache-hit)`, "info");
 				const js = _fmtShortJson(body);
@@ -305,8 +315,8 @@ export function createAutoTraderAgentDriver({
 		}
 
 		try {
-			const cfg = _getConfig() || {};
-			const model = String(cfg.openaiModel || "gpt-4o-mini").trim() || "gpt-4o-mini";
+			const cfg = normalizeLlmConfig(_getConfig() || {});
+			const model = String(cfg.model || "gpt-4o-mini").trim() || "gpt-4o-mini";
 			const mint = String(payload?.mint || payload?.targetMint || "").slice(0, 8);
 			_log(`call kind=${String(kind)} mint=${mint} model=${model}`, "info");
 			const js = _fmtShortJson(body);
@@ -412,12 +422,90 @@ export function createAutoTraderAgentDriver({
 				const lsEnabled = _readBoolLs("fdv_agent_enabled", true);
 				const riskRaw = String((o && o.riskLevel) ? o.riskLevel : _readLs("fdv_agent_risk", "safe")).trim().toLowerCase();
 				const riskLevel = (riskRaw === "safe" || riskRaw === "medium" || riskRaw === "degen") ? riskRaw : "safe";
+
+				const _inferProviderForModel = (modelName) => {
+					try {
+						const s = String(modelName || "").trim().toLowerCase();
+						if (!s) return "openai";
+						if (s.startsWith("gemini-")) return "gemini";
+						if (s.startsWith("grok-")) return "grok";
+						return "openai";
+					} catch {
+						return "openai";
+					}
+				};
+
+				const llmProvider = String(
+					(o && (o.llmProvider || o.provider)) ? (o.llmProvider || o.provider) : _readLs("fdv_llm_provider", "")
+				).trim().toLowerCase();
+
+				const llmModel = String(
+					(o && (o.llmModel || o.model || o.openaiModel))
+						? (o.llmModel || o.model || o.openaiModel)
+						: _readLs("fdv_llm_model", _readLs("fdv_openai_model", "gpt-4o-mini"))
+				).trim() || "gpt-4o-mini";
+
+				const provider = (llmProvider === "gemini" || llmProvider === "openai")
+					? llmProvider
+					: _inferProviderForModel(llmModel);
+
+				const openaiKey = (o && (o.openaiApiKey || o.apiKey || o.llmApiKey) && provider === "openai")
+					? String(o.openaiApiKey || o.apiKey || o.llmApiKey)
+					: _readLs("fdv_openai_key", "");
+
+				const geminiKey = (o && (o.geminiApiKey || o.geminiKey || (provider === "gemini" ? (o.apiKey || o.llmApiKey) : "")))
+					? String(o.geminiApiKey || o.geminiKey || o.apiKey || o.llmApiKey)
+					: _readLs("fdv_gemini_key", "");
+
+				const grokKey = (o && (o.grokApiKey || o.grokKey || (provider === "grok" ? (o.apiKey || o.llmApiKey) : "")))
+					? String(o.grokApiKey || o.grokKey || o.apiKey || o.llmApiKey)
+					: _readLs("fdv_grok_key", "");
+
+				const llmApiKey = String(
+					(o && (o.llmApiKey || o.apiKey))
+						? (o.llmApiKey || o.apiKey)
+						: (provider === "gemini")
+							? geminiKey
+							: (provider === "grok")
+								? grokKey
+								: openaiKey
+				).trim();
+
+				const openaiBaseUrl = String((o && o.openaiBaseUrl) ? o.openaiBaseUrl : _readLs("fdv_openai_base_url", "https://api.openai.com/v1")).trim() || "https://api.openai.com/v1";
+				const geminiBaseUrl = String((o && (o.geminiBaseUrl || o.llmBaseUrl || o.baseUrl))
+					? (o.geminiBaseUrl || o.llmBaseUrl || o.baseUrl)
+					: _readLs("fdv_gemini_base_url", "https://generativelanguage.googleapis.com/v1beta")
+				).trim() || "https://generativelanguage.googleapis.com/v1beta";
+				const grokBaseUrl = String((o && (o.grokBaseUrl || o.llmBaseUrl || o.baseUrl))
+					? (o.grokBaseUrl || o.llmBaseUrl || o.baseUrl)
+					: _readLs("fdv_grok_base_url", "https://api.x.ai/v1")
+				).trim() || "https://api.x.ai/v1";
+
+				const llmBaseUrl = String(
+					(o && (o.llmBaseUrl || o.baseUrl))
+						? (o.llmBaseUrl || o.baseUrl)
+						: (provider === "gemini")
+							? geminiBaseUrl
+							: (provider === "grok")
+								? grokBaseUrl
+								: openaiBaseUrl
+				).trim();
+
 				return {
 					enabled: o && ("enabled" in o) ? !!o.enabled : lsEnabled,
 					riskLevel,
-					openaiApiKey: (o && o.openaiApiKey) ? String(o.openaiApiKey) : _readLs("fdv_openai_key", ""),
-					openaiModel: (o && o.openaiModel) ? String(o.openaiModel) : _readLs("fdv_openai_model", "gpt-4o-mini"),
-					openaiBaseUrl: (o && o.openaiBaseUrl) ? String(o.openaiBaseUrl) : _readLs("fdv_openai_base_url", "https://api.openai.com/v1"),
+					// Provider-agnostic keys used by the framework factory.
+					llmProvider: provider,
+					llmApiKey,
+					llmModel,
+					llmBaseUrl,
+					llmTimeoutMs: _safeNum((o && o.llmTimeoutMs) ? o.llmTimeoutMs : _readLs("fdv_llm_timeout_ms", _readLs("fdv_openai_timeout_ms", "12000")), 12000),
+
+					// Back-compat: older fields expected by legacy paths/logging.
+					openaiApiKey: provider === "openai" ? openaiKey : "",
+					openaiModel: provider === "openai" ? llmModel : "",
+					openaiBaseUrl: provider === "openai" ? llmBaseUrl : openaiBaseUrl,
+
 					timeoutMs: _safeNum((o && o.timeoutMs) ? o.timeoutMs : _readLs("fdv_openai_timeout_ms", "12000"), 12000),
 					maxTokens: _safeNum((o && o.maxTokens) ? o.maxTokens : _readLs("fdv_openai_max_tokens", "350"), 350),
 				};
@@ -481,4 +569,134 @@ export function createAutoTraderAgentDriver({
 			return first;
 		},
 	};
+}
+
+export function createAgentJsonRunner({
+	log,
+	getConfig,
+	fetchFn,
+	prefix = "AGENT",
+	cacheTtlMs = 2500,
+} = {}) {
+	const _rawLog = typeof log === "function" ? log : () => {};
+	const _log = (msg, type) => {
+		try {
+			const p = String(prefix || "").trim();
+			_rawLog(p ? `[${p}] ${String(msg ?? "")}` : String(msg ?? ""), type);
+		} catch {
+			try { _rawLog(String(msg ?? ""), type); } catch {}
+		}
+	};
+	const _getConfig = typeof getConfig === "function" ? getConfig : () => ({});
+
+	const cache = new Map();
+
+	function _getCfgSafe() {
+		try {
+			return normalizeLlmConfig(_getConfig() || {});
+		} catch {
+			return { enabled: false, apiKey: "" };
+		}
+	}
+
+	function _enabled(cfg) {
+		try {
+			if (!cfg || cfg.enabled === false) return false;
+			return !!String(cfg.apiKey || "").trim();
+		} catch {
+			return false;
+		}
+	}
+
+	function _getClient(cfg) {
+		try {
+			const c = cfg && typeof cfg === "object" ? cfg : {};
+			return createChatClientFromConfig(c, { fetchFn });
+		} catch {
+			return null;
+		}
+	}
+
+	function _cacheGet(key) {
+		try {
+			const rec = cache.get(key);
+			if (!rec) return null;
+			if ((now() - rec.at) > cacheTtlMs) { cache.delete(key); return null; }
+			return rec.res;
+		} catch {
+			return null;
+		}
+	}
+
+	function _cacheSet(key, res) {
+		try { cache.set(key, { at: now(), res }); } catch {}
+	}
+
+	async function chatJsonWithMeta({
+		system,
+		user,
+		temperature = 0.1,
+		maxTokens = null,
+		cacheKey = "",
+		logRequest = false,
+	} = {}) {
+		const cfg = _getCfgSafe();
+		if (!_enabled(cfg)) return { ok: false, disabled: true };
+		const client = _getClient(cfg);
+		if (!client) return { ok: false, disabled: true };
+
+		const ck = String(cacheKey || "");
+		if (ck) {
+			const prev = _cacheGet(ck);
+			if (prev) return prev;
+		}
+
+		try {
+			if (logRequest) {
+				const model = String(cfg.model || "");
+				_log(`call model=${model}`, "info");
+			}
+		} catch {}
+
+		let meta = null;
+		let text = "";
+		try {
+			const req = {
+				system: String(system || ""),
+				user: String(user || ""),
+				temperature: Number.isFinite(Number(temperature)) ? Number(temperature) : 0.1,
+				maxTokens: Math.max(120, Number.isFinite(Number(maxTokens)) ? Number(maxTokens) : Number(cfg.maxTokens || 350)),
+			};
+			meta = await client.chatJsonWithMeta(req);
+			text = String(meta?.text || "");
+		} catch (e) {
+			try { _log(`request failed: ${String(e?.message || e || "")}`, "warn"); } catch {}
+			const res = { ok: false, err: String(e?.message || e || "") };
+			if (ck) _cacheSet(ck, res);
+			return res;
+		}
+
+		try {
+			if (meta && typeof meta === "object") {
+				const est = Number(meta.estPromptTokens || 0);
+				const u = meta.usage || null;
+				const pt = u && Number.isFinite(Number(u.promptTokens)) ? Number(u.promptTokens) : null;
+				const ct = u && Number.isFinite(Number(u.completionTokens)) ? Number(u.completionTokens) : null;
+				const tt = u && Number.isFinite(Number(u.totalTokens)) ? Number(u.totalTokens) : null;
+				const parts = [];
+				if (est > 0) parts.push(`estPrompt≈${est}`);
+				if (pt !== null) parts.push(`prompt=${pt}`);
+				if (ct !== null) parts.push(`completion=${ct}`);
+				if (tt !== null) parts.push(`total=${tt}`);
+				if (parts.length) _log(`tokens ${parts.join(" ")}`, "info");
+			}
+		} catch {}
+
+		const parsed = _safeJsonParse(text);
+		const res = { ok: true, text, parsed, meta };
+		if (ck) _cacheSet(ck, res);
+		return res;
+	}
+
+	return { chatJsonWithMeta };
 }
