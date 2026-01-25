@@ -8545,7 +8545,7 @@ export function initTraderWidget(container = document.body) {
         <label>Light top-up min chg5m (%)
           <input data-auto-light-minchg type="number" step="0.1" min="0" max="50" placeholder="0.8"/>
         </label>
-        <label>Light top-up min chg slope (/m)
+        <label>Light top-up min lope (/m)
           <input data-auto-light-minchgslope type="number" step="0.5" min="0" max="50" placeholder="6"/>
         </label>
         <label>Light top-up min slope (/m)

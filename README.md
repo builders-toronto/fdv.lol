@@ -300,7 +300,7 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-Agent Gary Sees Candlesticks Better
+Agent Gary Sees Candlesticks Better;
 
 Bucket pump-history snapshots into real 5m candles (open=prev close)
 Add compact past.stats + past.features + past.quality + past.regime for better trend/volatility context
