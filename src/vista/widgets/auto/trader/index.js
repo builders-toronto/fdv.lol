@@ -85,6 +85,8 @@ import { loadSplToken } from "../../../../core/solana/splToken.js";
 import { createAgentDecisionPolicy } from "../lib/sell/policies/agentDecision.js";
 import { createAutoTraderAgentDriver } from "../../../../agents/driver.js";
 
+import { createAgentGarySentry } from "../../../../agents/sentry.js";
+
 import { createRoundtripEdgeEstimator } from "../lib/honeypot.js";
 
 import { createDustCacheStore } from "../lib/stores/dustCacheStore.js";
@@ -166,6 +168,321 @@ function getAutoTraderAgent() {
 	return _autoTraderAgent;
 }
 
+let _garySentry;
+function getGarySentry() {
+  if (_garySentry) return _garySentry;
+  _garySentry = createAgentGarySentry({
+    log,
+    getConfig: () => {
+      try {
+        const a = getAutoTraderAgent();
+        return a?.getConfigFromRuntime ? a.getConfigFromRuntime() : {};
+      } catch {
+        return {};
+      }
+    },
+    cacheTtlMs: 30_000,
+  });
+  return _garySentry;
+}
+
+try {
+  const g = (typeof window !== "undefined") ? window : globalThis;
+  if (g && !g.__fdvDebug_runSentry) {
+    g.__fdvDebug_runSentry = async (mint, opts = {}) => {
+      const m = String(mint || "").trim();
+      if (!m) throw new Error("mint required");
+      if (!_isAgentGaryEffective()) {
+        const cfg = _getAgentRuntimeCfgSafe();
+        const enabledFlag = !!(cfg && cfg.enabled !== false);
+        const keyPresent = !!String(cfg?.apiKey || cfg?.llmApiKey || cfg?.openaiApiKey || "").trim();
+        return { ok: false, skipped: true, why: "not_effective", enabledFlag, keyPresent };
+      }
+      const stage = String(opts?.stage || "manual");
+      const signals = opts?.signals || {
+        rugSignal: (() => { try { return getRugSignalForMint(m) || null; } catch { return null; } })(),
+        leaderNow: (() => { try { const s = _summarizeLeaderSeries(m, 1); return (s && s.length) ? s[s.length - 1] : null; } catch { return null; } })(),
+        leaderSeries: (() => { try { return _summarizeLeaderSeries(m, 6) || []; } catch { return []; } })(),
+        past: (() => { try { return _summarizePastCandlesForMint(m, 24) || null; } catch { return null; } })(),
+        tickNow: (() => { try { return _summarizePumpTickNowForMint(m) || null; } catch { return null; } })(),
+        held: (() => { try { return !!(state.positions && state.positions[m]); } catch { return false; } })(),
+      };
+
+      const res = await getGarySentry().assessMint({ mint: m, stage, signals });
+      if (res?.ok && res.decision) _applySentryAction(m, res.decision, { stage });
+      return res;
+    };
+  }
+} catch {}
+
+function _getQuarantineStore() {
+  try {
+    const g = (typeof window !== "undefined") ? window : globalThis;
+    if (!g._fdvQuarantine) g._fdvQuarantine = { byMint: new Map() };
+    return g._fdvQuarantine;
+  } catch {
+    return { byMint: new Map() };
+  }
+}
+
+function _peekQuarantine(mint) {
+  try {
+    const s = _getQuarantineStore();
+    const rec = s.byMint.get(mint);
+    if (!rec) return null;
+    if (rec.until && now() > rec.until) { s.byMint.delete(mint); return null; }
+    return rec;
+  } catch {
+    return null;
+  }
+}
+
+function _isMintQuarantined(mint, { allowHeld = true } = {}) {
+  try {
+    const m = String(mint || "").trim();
+    if (!m) return false;
+    if (allowHeld) {
+      try {
+        const held = !!(state.positions && state.positions[m] && ((Number(state.positions[m]?.sizeUi || 0) > 0) || (Number(state.positions[m]?.costSol || 0) > 0)));
+        if (held) return false;
+      } catch {}
+    }
+    return !!_peekQuarantine(m);
+  } catch {
+    return false;
+  }
+}
+
+function _setMintQuarantine(mint, ms, reason = "", source = "quarantine") {
+  try {
+    const m = String(mint || "").trim();
+    if (!m) return false;
+    const durMs = Math.max(5_000, Math.min(6 * 60 * 60_000, Math.floor(Number(ms || 0) || 0)));
+    const until = now() + durMs;
+    const why = String(reason || "").trim().slice(0, 180);
+
+    const s = _getQuarantineStore();
+    s.byMint.set(m, { at: now(), until, reason: why, source: String(source || "").slice(0, 40) });
+
+    try {
+      traceOnce(
+        `quarantine:set:${m}`,
+        `[QUAR] quarantined ${m.slice(0,4)}… ${(durMs/1000).toFixed(0)}s ${why ? `(${why})` : ""}`.trim(),
+        8000,
+        "warn"
+      );
+    } catch {}
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+try {
+  const g = (typeof window !== "undefined") ? window : globalThis;
+  if (g && !g.__fdvDebug_quarantineMint) {
+    g.__fdvDebug_quarantineMint = (mint, ms = 10 * 60_000, reason = "manual") => {
+      return _setMintQuarantine(String(mint || "").trim(), ms, String(reason || "manual"), "manual");
+    };
+    g.__fdvDebug_isQuarantined = (mint) => {
+      const m = String(mint || "").trim();
+      return _peekQuarantine(m);
+    };
+  }
+} catch {}
+
+function _getSentryStore() {
+  try {
+    const g = (typeof window !== "undefined") ? window : globalThis;
+    if (!g._fdvSentry) g._fdvSentry = { byMint: new Map(), lastScanAt: 0, inFlight: false, cursor: 0 };
+    return g._fdvSentry;
+  } catch {
+    return { byMint: new Map(), lastScanAt: 0, inFlight: false, cursor: 0 };
+  }
+}
+
+function _peekSentryDecision(mint) {
+  try {
+    const s = _getSentryStore();
+    const rec = s.byMint.get(mint);
+    if (!rec) return null;
+    if (rec.until && now() > rec.until) { s.byMint.delete(mint); return null; }
+    return rec;
+  } catch {
+    return null;
+  }
+}
+
+function _applySentryAction(mint, decision, { stage = "scan" } = {}) {
+  try {
+    const d = decision || {};
+    const action = String(d.action || "allow").toLowerCase();
+    const conf = Number(d.confidence || 0);
+    const risk = Number(d.riskScore || 0);
+    const why = String(d.reason || "").trim();
+
+    // Pipeline quarantine: for "implicitly bad" mints that are suspicious but not an absolute rug.
+    // This blocks the mint from being selected as a buy candidate and from non-held focus/ingest.
+    try {
+      const implicit = (action === "allow") && (
+        (risk >= 55 && conf >= 0.55) ||
+        (risk >= 70 && conf >= 0.40)
+      );
+      if (implicit) {
+        const qMs = 12 * 60_000;
+        _setMintQuarantine(mint, qMs, `sentry risk=${Math.floor(risk)} conf=${conf.toFixed(2)} ${why}`.trim(), "sentry");
+      }
+    } catch {}
+
+    if (action === "blacklist" || action === "exit_and_blacklist") {
+      const ms = Number.isFinite(Number(d.blacklistMs)) ? Math.floor(Number(d.blacklistMs)) : MINT_RUG_BLACKLIST_MS;
+      try { setMintBlacklist(mint, ms); } catch {}
+      try {
+        log(
+          `[SENTRY] ${action} ${mint.slice(0,4)}… risk=${Math.floor(risk)} conf=${conf.toFixed(2)} ${why}`.trim(),
+          "warn"
+        );
+      } catch {}
+    }
+
+    // Only force an exit if this is a held mint.
+    if (action === "exit_and_blacklist") {
+      try {
+        const hasPos = !!(state.positions && state.positions[mint]);
+        if (hasPos) {
+          const sev = Math.max(0, Math.min(1, Math.max(conf, risk / 100)));
+          flagUrgentSell(mint, `SENTRY: ${why || "high anomaly risk"}`.slice(0, 160), sev);
+        }
+      } catch {}
+    }
+
+    try {
+      const s = _getSentryStore();
+      const ttlMs = (action === "allow")
+        ? 45_000
+        : (action === "blacklist")
+          ? 10 * 60_000
+          : 20 * 60_000;
+      s.byMint.set(mint, {
+        at: now(),
+        until: now() + ttlMs,
+        stage,
+        decision: { ...d, action },
+      });
+    } catch {}
+  } catch {}
+}
+
+async function _maybeRunGarySentryBackground() {
+  // Only operate when Agent Gary is effectively active.
+  if (!_isAgentGaryEffective()) {
+    try {
+      const cfg = _getAgentRuntimeCfgSafe();
+      const enabledFlag = !!(cfg && cfg.enabled !== false);
+      const keyPresent = !!String(cfg?.apiKey || cfg?.llmApiKey || cfg?.openaiApiKey || "").trim();
+      traceOnce(
+        "sentry:bg:inactive",
+        `[SENTRY] inactive (enabled=${enabledFlag ? 1 : 0}, key=${keyPresent ? 1 : 0})`,
+        30000,
+        "info"
+      );
+    } catch {}
+    return;
+  }
+
+  const store = _getSentryStore();
+  const SCAN_MIN_MS = 25_000;
+  const nowTs = now();
+  if (store.inFlight) return;
+  if (store.lastScanAt && (nowTs - store.lastScanAt) < SCAN_MIN_MS) return;
+
+  store.inFlight = true;
+  store.lastScanAt = nowTs;
+
+  try {
+    // Candidate mints: held positions + current leaders + flamebar leader.
+    const held = (() => {
+      try { return Object.keys(state.positions || {}).filter(m => m && m !== SOL_MINT); } catch { return []; }
+    })();
+    const leaders = (() => {
+      try { return (computePumpingLeaders(5) || []).map(x => x?.mint).filter(Boolean); } catch { return []; }
+    })();
+    const flame = (() => {
+      try { return _getFlamebarLeaderPick()?.mint || ""; } catch { return ""; }
+    })();
+    const uniq = [];
+    const seen = new Set();
+    for (const m of [...held, ...leaders, flame]) {
+      if (!m || seen.has(m)) continue;
+      seen.add(m);
+      uniq.push(m);
+    }
+    if (!uniq.length) {
+      try { traceOnce("sentry:bg:none", "[SENTRY] background: no candidates", 45000); } catch {}
+      return;
+    }
+
+    // Scan at most one mint per cycle to keep latency low.
+    const idx = Math.max(0, Math.floor(store.cursor || 0)) % uniq.length;
+    store.cursor = idx + 1;
+    const mint = uniq[idx];
+    if (!mint || isMintBlacklisted(mint) || isPumpDropBanned(mint)) return;
+
+    try { traceOnce("sentry:bg:consider", `[SENTRY] background: considering ${mint.slice(0,4)}…`, 20000); } catch {}
+
+    // Skip if we already have a fresh decision.
+    {
+      const cached = _peekSentryDecision(mint);
+      if (cached) {
+        try {
+          const act = String(cached?.decision?.action || "allow").toLowerCase();
+          traceOnce(
+            `sentry:bg:cached:${mint}`,
+            `[SENTRY] background: cached ${mint.slice(0,4)}… action=${act}`,
+            45000
+          );
+        } catch {}
+        return;
+      }
+    }
+
+    const sentrySignals = {
+      rugSignal: (() => { try { return getRugSignalForMint(mint) || null; } catch { return null; } })(),
+      leaderNow: (() => { try { const s = _summarizeLeaderSeries(mint, 1); return (s && s.length) ? s[s.length - 1] : null; } catch { return null; } })(),
+      leaderSeries: (() => { try { return _summarizeLeaderSeries(mint, 6) || []; } catch { return []; } })(),
+      past: (() => { try { return _summarizePastCandlesForMint(mint, 24) || null; } catch { return null; } })(),
+      tickNow: (() => { try { return _summarizePumpTickNowForMint(mint) || null; } catch { return null; } })(),
+      held: held.includes(mint),
+    };
+
+    const res = await getGarySentry().assessMint({ mint, stage: "scan", signals: sentrySignals });
+
+    try {
+      const act = String(res?.decision?.action || "allow").toLowerCase();
+      const risk = Number(res?.decision?.riskScore ?? NaN);
+      const conf = Number(res?.decision?.confidence ?? NaN);
+      const skipped = !!res?.skipped;
+      const why = String(res?.why || "").trim();
+      traceOnce(
+        `sentry:bg:result:${mint}`,
+        `[SENTRY] background: result ${mint.slice(0,4)}… action=${act}`
+          + (Number.isFinite(risk) ? ` risk=${Math.floor(risk)}` : "")
+          + (Number.isFinite(conf) ? ` conf=${conf.toFixed(2)}` : "")
+          + (skipped ? ` skipped=1${why ? ` why=${why}` : ""}` : ""),
+        45000
+      );
+    } catch {}
+
+    if (res?.ok && res.decision) {
+      _applySentryAction(mint, res.decision, { stage: "scan" });
+    }
+  } catch (e) {
+    try { log(`[SENTRY] background scan error: ${e?.message || e}`, "warn"); } catch {}
+  } finally {
+    store.inFlight = false;
+  }
+}
+
 function _getAgentRuntimeCfgSafe() {
 	try {
 		const agent = getAutoTraderAgent();
@@ -180,11 +497,22 @@ function _isAgentGaryEffective() {
 	try {
 		const cfg = _getAgentRuntimeCfgSafe();
 		const enabledFlag = cfg && (cfg.enabled !== false);
-		const keyPresent = !!String(cfg?.openaiApiKey || "").trim();
+    const keyPresent = !!String(cfg?.apiKey || cfg?.llmApiKey || cfg?.openaiApiKey || "").trim();
 		return !!(enabledFlag && keyPresent);
 	} catch {
 		return false;
 	}
+}
+
+function _isFullAiControlEnabled() {
+  try {
+    if (!_isAgentGaryEffective()) return false;
+    if (typeof localStorage === "undefined") return false;
+    const raw = String(localStorage.getItem("fdv_agent_full_control") || "");
+    return /^(1|true|yes|on)$/i.test(raw);
+  } catch {
+    return false;
+  }
 }
 
 let _flamebarMissLastMint = "";
@@ -372,6 +700,27 @@ function _summarizePumpTickNowForMint(mint) {
       v1hUsd: Number(t.v1hUsd ?? 0),
       v24hUsd: Number(t.v24hUsd ?? 0),
     };
+  } catch {
+    return null;
+  }
+}
+
+function _summarizePumpTickSeriesForMint(mint, n = 8) {
+  try {
+    const lim = Math.max(1, Math.min(24, Math.floor(Number(n || 8))));
+    const ticks = getPumpHistoryForMint(mint, { limit: lim }) || [];
+    const tail = ticks.slice(Math.max(0, ticks.length - lim));
+    return tail.map((t) => ({
+      ts: Number(t?.ts || 0),
+      priceUsd: Number(t?.priceUsd ?? 0),
+      liqUsd: Number(t?.liqUsd ?? 0),
+      change5m: Number(t?.change5m ?? 0),
+      change1h: Number(t?.change1h ?? 0),
+      change24h: Number(t?.change24h ?? 0),
+      v5mUsd: Number(t?.v5mUsd ?? 0),
+      v1hUsd: Number(t?.v1hUsd ?? 0),
+      v24hUsd: Number(t?.v24hUsd ?? 0),
+    }));
   } catch {
     return null;
   }
@@ -4862,6 +5211,12 @@ function ensureFinalPumpGateTracking(mint, nowTs = now()) {
 async function focusMintAndRecord(mint, { refresh = true, ttlMs = 2000, signal } = {}) {
   try {
     if (!mint) return null;
+
+    // Quarantine cuts off supply-chain ingestion for non-held mints.
+    try {
+      if (_isMintQuarantined(mint, { allowHeld: true })) return null;
+    } catch {}
+
     if (!window._fdvFocusLast) window._fdvFocusLast = new Map();
     const nowTs = now();
     const last = Number(window._fdvFocusLast.get(mint) || 0);
@@ -4889,6 +5244,12 @@ async function focusMintAndRecord(mint, { refresh = true, ttlMs = 2000, signal }
 
 async function observeMintOnce(mint, opts = {}) {
   if (!mint) return { ok: false, passes: 0 };
+
+  try {
+    if (_isMintQuarantined(mint, { allowHeld: true })) {
+      return { ok: false, passes: 0, canBuy: false, unavailable: true, reason: "quarantined" };
+    }
+  } catch {}
 
   const windowMs = Number.isFinite(opts.windowMs) ? opts.windowMs : Math.max(1800, Math.floor((state.tickMs || 2000) * 1.1));
   const sampleMs = Number.isFinite(opts.sampleMs) ? opts.sampleMs : Math.max(500, Math.floor(windowMs / 3.2));
@@ -5609,6 +5970,11 @@ function applyWarmingPolicy({ mint, pos, nowTs, pnlNetPct, pnlPct, curSol, decis
     if (!warmingActive) return result;
 
     const pnl = Number.isFinite(pnlNetPct) ? pnlNetPct : pnlPct;
+    // For the *early* max-loss guard, prefer the less-pessimistic PnL when both are available.
+    // This reduces false triggers from one-time entry overhead (ATA rent, fees) right after entry.
+    const pnlForMaxLoss = (Number.isFinite(pnlNetPct) && Number.isFinite(pnlPct))
+      ? Math.max(pnlNetPct, pnlPct)
+      : pnl;
 
     if (!shouldApplyWarmingHold(mint, pos, nowTs)) {
       pos.warmingHold = false;
@@ -5623,8 +5989,8 @@ function applyWarmingPolicy({ mint, pos, nowTs, pnlNetPct, pnlPct, curSol, decis
     const maxLossPctCfg = Math.max(1, Number(state.warmingMaxLossPct || 6));
     const maxLossWindowMs = Math.max(5_000, Number(state.warmingMaxLossWindowSecs || 60) * 1000);
     if (warmAgeMs <= maxLossWindowMs) {
-      if (Number.isFinite(pnl) && pnl <= -maxLossPctCfg) {
-        const msg = `WARMING MAX LOSS ${pnl.toFixed(2)}% <= -${maxLossPctCfg}%`;
+      if (Number.isFinite(pnlForMaxLoss) && pnlForMaxLoss <= -maxLossPctCfg) {
+        const msg = `WARMING MAX LOSS ${pnlForMaxLoss.toFixed(2)}% <= -${maxLossPctCfg}%`;
         log(`Warming max-loss hit for ${mint.slice(0,4)}… (${msg}). Selling now.`);
         pos.warmingHold = false;
         pos.warmingClearedAt = now();
@@ -5713,6 +6079,7 @@ function _mkSellCtx({ kp, mint, pos, nowTs }) {
     rugSev: 0,
     forcePumpDrop: false,
     forceObserverDrop: false,
+    forceEarlyFade: false,
     earlyReason: "",
     obsPasses: null,
     curSol: 0,
@@ -5866,6 +6233,15 @@ async function runPipeline(ctx, steps = []) {
 }
 
 async function runSellPipelineForPosition(ctx) {
+  const fullAiControl = (() => {
+    try {
+      if (ctx?.agentSignals && typeof ctx.agentSignals === "object") {
+        if (ctx.agentSignals.fullAiControl === true) return true;
+      }
+    } catch {}
+    return _isFullAiControlEnabled();
+  })();
+
   const skipPolicies = (() => {
     const v = _getAutoBotOverride("skipPolicies");
     if (!v) return new Set();
@@ -5874,31 +6250,47 @@ async function runSellPipelineForPosition(ctx) {
     return new Set();
   })();
 
-  const steps = [
-    { name: "preflight", fn: (c) => preflightSellPolicy(c) },
-    { name: "leaderMode", fn: (c) => leaderModePolicy(c) },
-    { name: "urgent", fn: (c) => urgentSellPolicy(c) },
-    { name: "rugPumpDrop", fn: (c) => rugPumpDropPolicy(c) },
-    { name: "earlyFade", fn: (c) => earlyFadePolicy(c) },
-    { name: "observer", fn: (c) => observerPolicy(c) },
-    { name: "volatilityGuard", fn: (c) => volatilityGuardPolicy(c) },
-    { name: "quoteAndEdge", fn: (c) => quoteAndEdgePolicy(c) },
-    { name: "fastExit", fn: (c) => fastExitPolicy(c) },
-    { name: "warmingHook", fn: (c) => warmingPolicyHook(c) },
-    { name: "profitLock", fn: (c) => profitLockPolicy(c) },
-    { name: "observerThree", fn: (c) => observerThreePolicy(c) },
-    { name: "fallback", fn: (c) => fallbackSellPolicy(c) },
-    { name: "forceFlagDecision", fn: (c) => forceFlagDecisionPolicy(c) },
-    { name: "reboundGate", fn: (c) => reboundGatePolicy(c) },
-    { name: "momentumForce", fn: (c) => momentumForcePolicy(c) },
-    { name: "profitFloor", fn: (c) => profitFloorGatePolicy(c) },
-    { name: "agentDecision", fn: (c) => agentDecisionPolicy(c) },
-    ...(() => {
-      const skip = _getAutoBotOverride("skipExecute");
-      if (skip) return [];
-      return [{ name: "execute", fn: (c) => executeSellDecisionPolicy(c) }];
-    })(),
-  ].filter((s) => !skipPolicies.has(String(s?.name || "")));
+  const steps = (fullAiControl
+    ? [
+        { name: "preflight", fn: (c) => preflightSellPolicy(c) },
+        { name: "quoteAndEdge", fn: (c) => quoteAndEdgePolicy(c) },
+        { name: "agentDecision", fn: (c) => agentDecisionPolicy(c) },
+        ...(() => {
+          const skip = _getAutoBotOverride("skipExecute");
+          if (skip) return [];
+          return [{ name: "execute", fn: (c) => executeSellDecisionPolicy(c) }];
+        })(),
+      ]
+    : [
+        { name: "preflight", fn: (c) => preflightSellPolicy(c) },
+        { name: "leaderMode", fn: (c) => leaderModePolicy(c) },
+        { name: "urgent", fn: (c) => urgentSellPolicy(c) },
+        { name: "rugPumpDrop", fn: (c) => rugPumpDropPolicy(c) },
+        { name: "earlyFade", fn: (c) => earlyFadePolicy(c) },
+        { name: "observer", fn: (c) => observerPolicy(c) },
+        { name: "volatilityGuard", fn: (c) => volatilityGuardPolicy(c) },
+        { name: "quoteAndEdge", fn: (c) => quoteAndEdgePolicy(c) },
+        { name: "fastExit", fn: (c) => fastExitPolicy(c) },
+        { name: "warmingHook", fn: (c) => warmingPolicyHook(c) },
+        { name: "profitLock", fn: (c) => profitLockPolicy(c) },
+        { name: "observerThree", fn: (c) => observerThreePolicy(c) },
+        { name: "fallback", fn: (c) => fallbackSellPolicy(c) },
+        { name: "forceFlagDecision", fn: (c) => forceFlagDecisionPolicy(c) },
+        { name: "reboundGate", fn: (c) => reboundGatePolicy(c) },
+        { name: "momentumForce", fn: (c) => momentumForcePolicy(c) },
+        { name: "profitFloor", fn: (c) => profitFloorGatePolicy(c) },
+        { name: "agentDecision", fn: (c) => agentDecisionPolicy(c) },
+        ...(() => {
+          const skip = _getAutoBotOverride("skipExecute");
+          if (skip) return [];
+          return [{ name: "execute", fn: (c) => executeSellDecisionPolicy(c) }];
+        })(),
+      ])
+    .filter((s) => !skipPolicies.has(String(s?.name || "")));
+
+  if (fullAiControl) {
+    try { ctx.agentSignals = { ...(ctx.agentSignals || {}), fullAiControl: true }; } catch {}
+  }
 
   await runPipeline(ctx, steps);
 
@@ -6059,6 +6451,14 @@ async function evalAndMaybeSellPositions() {
           // Do not share object references between `leaderNow` and `leaderSeries`.
           const leaderNow = (series && series.length) ? { ...(series[series.length - 1] || {}) } : null;
           ctx.agentSignals = {
+            fullAiControl: _isFullAiControlEnabled(),
+            urgent: (() => {
+              try {
+                const u = typeof peekUrgentSell === "function" ? peekUrgentSell(mint) : null;
+                if (!u) return null;
+                return { reason: String(u.reason || ""), sev: Number(u.sev || 0) };
+              } catch { return null; }
+            })(),
             outcomes: {
               sessionPnlSol: getSessionPnlSol(),
               recent: (() => { try { return agentOutcomes.summarize(8); } catch { return []; } })(),
@@ -6345,6 +6745,9 @@ async function tick() {
     for (const it of leaders) {
       const kp = it?.kp || {};
       if (it?.mint) {
+        try {
+          if (_isMintQuarantined(it.mint, { allowHeld: true })) continue;
+        } catch {}
         recordLeaderSample(it.mint, {
           pumpScore: Number(it?.pumpScore || 0),
           liqUsd:    safeNum(kp.liqUsd, 0),
@@ -6362,6 +6765,9 @@ async function tick() {
       await focusMintAndRecord(m, { refresh: true, ttlMs: 2000 }).catch(()=>{});
     }
   } catch {}
+
+  // Agent Gary Sentry: background anomaly scan (non-blocking).
+  try { _maybeRunGarySentryBackground().catch(()=>{}); } catch {}
   if (state.endAt && now() >= state.endAt) {
     log("Lifetime ended. Unwinding…");
     try { await sweepAllToSolAndReturn(); } catch(e){ log(`Unwind failed: ${e.message||e}`); }
@@ -6449,7 +6855,7 @@ async function tick() {
         const agent = getAutoTraderAgent();
         const cfg = agent?.getConfigFromRuntime ? agent.getConfigFromRuntime() : null;
         const enabledFlag = cfg && (cfg.enabled !== false);
-        const keyPresent = !!String(cfg?.openaiApiKey || "").trim();
+        const keyPresent = !!String(cfg?.apiKey || cfg?.llmApiKey || cfg?.openaiApiKey || "").trim();
         if (!(enabledFlag && keyPresent)) return null;
 
         const raw = String(cfg?.riskLevel || "safe").trim().toLowerCase();
@@ -6463,7 +6869,7 @@ async function tick() {
       if (!_agentRisk) return { minLiqUsd: 2500, minVol24: 250, rugSevSkip: 2 };
       if (_agentRisk === "degen") return { minLiqUsd: 4_000, minVol24: 15_000, rugSevSkip: 4 };
       if (_agentRisk === "medium") return { minLiqUsd: 10_000, minVol24: 30_000, rugSevSkip: 3 };
-      return { minLiqUsd: 20_000, minVol24: 50_000, rugSevSkip: 2 }; // safe
+      return { minLiqUsd: 10_000, minVol24: 50_000, rugSevSkip: 2 }; // safe
     })();
 
     const _stateMinLiqUsd = Number(state.kpiSelectMinLiqUsd);
@@ -6472,7 +6878,16 @@ async function tick() {
     const minVol24 = (Number.isFinite(_stateMinVol24) && _stateMinVol24 > 0) ? _stateMinVol24 : _riskDefaults.minVol24;
     const rugSevSkip = _riskDefaults.rugSevSkip;
 
-    const pumpLeaders = computePumpingLeaders(Math.max(12, Number(state.kpiSelectPumpTopN || 30))) || [];
+    const pumpLeadersRaw = computePumpingLeaders(Math.max(12, Number(state.kpiSelectPumpTopN || 30))) || [];
+    const pumpLeaders = (pumpLeadersRaw || []).filter((x) => {
+      try {
+        const m = String(x?.mint || "").trim();
+        if (!m) return false;
+        return !_isMintQuarantined(m, { allowHeld: true });
+      } catch {
+        return false;
+      }
+    });
     const rows = selectTradeCandidatesFromKpis({
       snapshot: kpiSnapshot,
       pumpLeaders,
@@ -6500,21 +6915,45 @@ async function tick() {
       );
 
       if (pumpTopMint && snapshotMintSet.has(pumpTopMint)) {
+        if (_isMintQuarantined(pumpTopMint, { allowHeld: true })) {
+          log(`Pump pick ${pumpTopMint.slice(0,4)}… rejected by quarantine.`);
+        } else {
         const pumpItem = snap.find(it => normMint(kpiGetMint(it)) === pumpTopMint) || null;
         if (pumpItem) {
+          const fullAi = _isFullAiControlEnabled();
           const liq = Number(kpiGetLiqUsd(pumpItem) || 0);
           const vol = Number(kpiGetVol24(pumpItem) || 0);
 
           const sig = (() => { try { return getRugSignalForMint(pumpTopMint); } catch { return null; } })();
           const sev = Number(sig?.severity ?? sig?.sev ?? 0);
 
+          let blocked = false;
           if (Number.isFinite(sev) && sev >= rugSevSkip) {
-            log(`Pump pick ${pumpTopMint.slice(0,4)}… rejected by rug filter (sev=${sev.toFixed(2)}).`);
-          } else if (!Number.isFinite(liq) || liq < minLiqUsd) {
-            log(`Pump pick ${pumpTopMint.slice(0,4)}… rejected by KPI liq gate (${fmtUsd(liq)} < ${fmtUsd(minLiqUsd)}).`);
-          } else if (!Number.isFinite(vol) || vol < minVol24) {
-            log(`Pump pick ${pumpTopMint.slice(0,4)}… rejected by KPI vol gate (${fmtUsd(vol)} < ${fmtUsd(minVol24)}).`);
-          } else {
+            if (!fullAi) {
+              log(`Pump pick ${pumpTopMint.slice(0,4)}… rejected by rug filter (sev=${sev.toFixed(2)}).`);
+              blocked = true;
+            } else {
+              log(`Pump pick ${pumpTopMint.slice(0,4)}… rug filter bypassed (Full AI; sev=${sev.toFixed(2)}).`);
+            }
+          }
+          if (!Number.isFinite(liq) || liq < minLiqUsd) {
+            if (!fullAi) {
+              log(`Pump pick ${pumpTopMint.slice(0,4)}… rejected by KPI liq gate (${fmtUsd(liq)} < ${fmtUsd(minLiqUsd)}).`);
+              blocked = true;
+            } else {
+              log(`Pump pick ${pumpTopMint.slice(0,4)}… KPI liq gate bypassed (Full AI; ${fmtUsd(liq)} < ${fmtUsd(minLiqUsd)}).`);
+            }
+          }
+          if (!Number.isFinite(vol) || vol < minVol24) {
+            if (!fullAi) {
+              log(`Pump pick ${pumpTopMint.slice(0,4)}… rejected by KPI vol gate (${fmtUsd(vol)} < ${fmtUsd(minVol24)}).`);
+              blocked = true;
+            } else {
+              log(`Pump pick ${pumpTopMint.slice(0,4)}… KPI vol gate bypassed (Full AI; ${fmtUsd(vol)} < ${fmtUsd(minVol24)}).`);
+            }
+          }
+
+          if (!blocked) {
             const ctx = buildKpiScoreContext(kpiSnapshot);
             const pumpRow = scoreKpiItem(pumpItem, ctx);
             if (pumpRow?.mint && !merged.some(r => r?.mint === pumpRow.mint)) {
@@ -6531,6 +6970,7 @@ async function tick() {
             log(`Pump leader ${pumpTopMint.slice(0, 4)}… missing from KPI snapshot; skipping compare.`, "warn");
           }
         }
+        }
       } else if (pumpTopMint) {
         // Leader not present in the current snapshot; don't spam logs.
         const ts = now();
@@ -6544,22 +6984,46 @@ async function tick() {
       // Flamebar: inject the current leader mint as an eligible KPI candidate 
       const flame = normMint(flameMint);
       if (flame) {
+        if (_isMintQuarantined(flame, { allowHeld: true })) {
+          log(`Flamebar pick ${flame.slice(0,4)}… rejected by quarantine (mode=${flameMode||"?"}).`);
+        } else {
         if (snapshotMintSet.has(flame)) {
           const flameItem = snap.find(it => normMint(kpiGetMint(it)) === flame) || null;
           if (flameItem) {
+            const fullAi = _isFullAiControlEnabled();
             const liq = Number(kpiGetLiqUsd(flameItem) || 0);
             const vol = Number(kpiGetVol24(flameItem) || 0);
 
             const sig = (() => { try { return getRugSignalForMint(flame); } catch { return null; } })();
             const sev = Number(sig?.severity ?? sig?.sev ?? 0);
 
+            let blocked = false;
             if (Number.isFinite(sev) && sev >= rugSevSkip) {
-              log(`Flamebar pick ${flame.slice(0,4)}… rejected by rug filter (sev=${sev.toFixed(2)}; mode=${flameMode||"?"}).`);
-            } else if (!Number.isFinite(liq) || liq < minLiqUsd) {
-              log(`Flamebar pick ${flame.slice(0,4)}… rejected by KPI liq gate (${fmtUsd(liq)} < ${fmtUsd(minLiqUsd)}; mode=${flameMode||"?"}).`);
-            } else if (!Number.isFinite(vol) || vol < minVol24) {
-              log(`Flamebar pick ${flame.slice(0,4)}… rejected by KPI vol gate (${fmtUsd(vol)} < ${fmtUsd(minVol24)}; mode=${flameMode||"?"}).`);
-            } else {
+              if (!fullAi) {
+                log(`Flamebar pick ${flame.slice(0,4)}… rejected by rug filter (sev=${sev.toFixed(2)}; mode=${flameMode||"?"}).`);
+                blocked = true;
+              } else {
+                log(`Flamebar pick ${flame.slice(0,4)}… rug filter bypassed (Full AI; sev=${sev.toFixed(2)}; mode=${flameMode||"?"}).`);
+              }
+            }
+            if (!Number.isFinite(liq) || liq < minLiqUsd) {
+              if (!fullAi) {
+                log(`Flamebar pick ${flame.slice(0,4)}… rejected by KPI liq gate (${fmtUsd(liq)} < ${fmtUsd(minLiqUsd)}; mode=${flameMode||"?"}).`);
+                blocked = true;
+              } else {
+                log(`Flamebar pick ${flame.slice(0,4)}… KPI liq gate bypassed (Full AI; ${fmtUsd(liq)} < ${fmtUsd(minLiqUsd)}; mode=${flameMode||"?"}).`);
+              }
+            }
+            if (!Number.isFinite(vol) || vol < minVol24) {
+              if (!fullAi) {
+                log(`Flamebar pick ${flame.slice(0,4)}… rejected by KPI vol gate (${fmtUsd(vol)} < ${fmtUsd(minVol24)}; mode=${flameMode||"?"}).`);
+                blocked = true;
+              } else {
+                log(`Flamebar pick ${flame.slice(0,4)}… KPI vol gate bypassed (Full AI; ${fmtUsd(vol)} < ${fmtUsd(minVol24)}; mode=${flameMode||"?"}).`);
+              }
+            }
+
+            if (!blocked) {
               const ctx = buildKpiScoreContext(kpiSnapshot);
               const flameRow = scoreKpiItem(flameItem, ctx);
               if (flameRow?.mint && !merged.some(r => r?.mint === flameRow.mint)) {
@@ -6575,6 +7039,7 @@ async function tick() {
             _flamebarMissLastAt = ts;
             log(`Flamebar leader ${flame.slice(0, 4)}… not in current KPI snapshot (mode=${flameMode||"?"}); skipping KPI compare.`, "info");
           }
+        }
         }
       }
     } catch {}
@@ -6604,15 +7069,15 @@ async function tick() {
       }
     } catch {}
 
-    // Apply existing blacklist / pump-drop bans.
-    picks = picks.filter(m => m && !isMintBlacklisted(m) && !isPumpDropBanned(m));
+    // Apply existing blacklist / pump-drop bans + quarantine.
+    picks = picks.filter(m => m && !isMintBlacklisted(m) && !isPumpDropBanned(m) && !_isMintQuarantined(m, { allowHeld: true }));
   }
 
   // Legacy selection fallback.
   if (!picks.length) {
     // Flamebar fallback: if Flamebar is actively pumping, try it as a candidate before legacy pump picks.
     if (flamebarEnabled && flamebarPreferPick && flameMint && (!flamebarRequirePump || flamePumping)) {
-      if (!isMintBlacklisted(flameMint) && !isPumpDropBanned(flameMint)) {
+      if (!isMintBlacklisted(flameMint) && !isPumpDropBanned(flameMint) && !_isMintQuarantined(flameMint, { allowHeld: true })) {
         picks = [flameMint];
       }
     }
@@ -6621,7 +7086,7 @@ async function tick() {
       // Simple mode: always take the top KPI leader
       const leadersTop = computePumpingLeaders(1) || [];
       const top = leadersTop[0]?.mint || "";
-      if (top && !isMintBlacklisted(top) && !isPumpDropBanned(top)) picks = [top];
+      if (top && !isMintBlacklisted(top) && !isPumpDropBanned(top) && !_isMintQuarantined(top, { allowHeld: true })) picks = [top];
     } else if (state.allowMultiBuy) {
       const primary = await pickTopPumper(); // requires >=4/5 internally
       const rest = pickPumpCandidates(Math.max(1, state.multiBuyTopN|0), 3)
@@ -6637,7 +7102,7 @@ async function tick() {
   // If Flamebar is enabled, ensure it is at least considered when we have other picks.
   try {
     if (flamebarEnabled && flameMint && (!flamebarRequirePump || flamePumping)) {
-      if (!picks.includes(flameMint) && !isMintBlacklisted(flameMint) && !isPumpDropBanned(flameMint)) {
+      if (!picks.includes(flameMint) && !isMintBlacklisted(flameMint) && !isPumpDropBanned(flameMint) && !_isMintQuarantined(flameMint, { allowHeld: true })) {
         picks = [flameMint, ...picks].filter(Boolean);
         // Keep picks list reasonably sized.
         const lim = leaderMode ? 1 : Math.max(1, Math.min(24, desiredBuyCount * 6));
@@ -6656,6 +7121,7 @@ async function tick() {
   if (state.lastTradeTs && (now() - state.lastTradeTs)/1000 < state.minSecsBetween && !withinBatch && !ignoreCooldownForLeaderBuy) return;
 
 
+  const fullAiControl = _isFullAiControlEnabled();
   const agentBypassNonEdgeGates = _isAgentGaryEffective();
   let haveBuyLock = false;
   if (agentBypassNonEdgeGates) {
@@ -6742,6 +7208,7 @@ async function tick() {
 
 
     let buyCandidates = picks.filter(m => {
+      if (_isMintQuarantined(m, { allowHeld: true })) return false;
       const pos = state.positions[m];
       const allowRebuy = !!pos?.allowRebuy;
       const eligibleSize = allowRebuy || Number(pos?.sizeUi || 0) <= 0;
@@ -6793,6 +7260,14 @@ async function tick() {
     } catch {}
     for (let i = 0; i < loopN; i++) {
       const mint = buyCandidates[i];
+
+      const agentGates = { fullAiControl: !!fullAiControl };
+
+      if (_isMintQuarantined(mint, { allowHeld: true })) {
+        log(`Skip buy: quarantined ${mint.slice(0,4)}…`, "warn");
+        continue;
+      }
+
       {
         const existing = state.positions[mint];
         if (existing && existing.awaitingSizeSync) {
@@ -6801,21 +7276,38 @@ async function tick() {
         }
         const recentAgeMs = existing ? (now() - Number(existing.lastBuyAt || existing.acquiredAt || 0)) : Infinity;
         const minRebuyMs = Math.max(8_000, Number(state.coolDownSecsAfterBuy || 8) * 1000);
+        try {
+          agentGates.cooldown = { ok: !(recentAgeMs < minRebuyMs), recentAgeMs, minRebuyMs };
+        } catch {}
         if (recentAgeMs < minRebuyMs) {
           log(`Skip buy: cooldown (${(recentAgeMs/1000).toFixed(1)}s < ${(minRebuyMs/1000)|0}s) for ${mint.slice(0,4)}…`);
-          continue;
+          if (!fullAiControl) continue;
         }
       }
       // Final unconditional check?
       try { ensureFinalPumpGateTracking(mint); } catch {}
+      try { agentGates.finalGateReady = !!isFinalPumpGateReady(mint); } catch {}
       if (!agentBypassNonEdgeGates && !isFinalPumpGateReady(mint)) {
         log(`Final gate: not ready to buy ${mint.slice(0,4)}… waiting for pump score up Δ.`, 'warn');
-        continue;
+        if (!fullAiControl) continue;
       }
 
       try {
-        if (!agentBypassNonEdgeGates && state.buyAnalysisEnabled !== false) {
+        // Data readiness gate: always require a few observations + leader-series points before buying.
+        // Agent Gary can tune sizing/slippage and veto, but should not bypass missing-data gates.
+        if (state.buyAnalysisEnabled !== false) {
           const st = _noteBuyCandidateAndCheckReady(mint);
+          try {
+            agentGates.buyWarmup = {
+              ready: !!st?.ready,
+              ageMs: Number(st?.ageMs ?? 0),
+              minMs: Number(st?.minMs ?? 0),
+              seen: Number(st?.seen ?? 0),
+              minSeen: Number(st?.minSeen ?? 0),
+              seriesN: Number(st?.seriesN ?? 0),
+              minSeries: Number(st?.minSeries ?? 0),
+            };
+          } catch {}
           if (!st?.ready) {
             // Avoid log spam: at most once per ~2s per mint.
             const t = now();
@@ -6831,7 +7323,7 @@ async function tick() {
                 `seen ${st.seen}/${st.minSeen}, series ${st.seriesN}/${st.minSeries})`
               );
             }
-            continue;
+            if (!fullAiControl) continue;
           }
         }
       } catch {}
@@ -6846,13 +7338,14 @@ async function tick() {
             minPasses: 4,
             adjustHold: !!state.dynamicHoldEnabled
           });
+          try { agentGates.observer = { ok: !!obs?.canBuy, reason: String(obs?.reason || "") }; } catch {}
           if (!obs.canBuy) {
             log(`Observer gate: ${obs.reason || "conditions not met"} for ${mint.slice(0,4)}… Skipping buy.`);
-            continue;
+            if (!fullAiControl) continue;
           }
         } catch {
           log(`Observer gate failed for ${mint.slice(0,4)}… Skipping buy.`);
-          continue;
+          if (!fullAiControl) continue;
         }
       }
 
@@ -7066,7 +7559,7 @@ async function tick() {
         try {
           const agent = getAutoTraderAgent();
           const cfg = agent?.getConfigFromRuntime ? agent.getConfigFromRuntime() : null;
-          agentActiveForBuy = !!(cfg && cfg.enabled !== false && String(cfg.openaiApiKey || "").trim());
+          agentActiveForBuy = !!(cfg && cfg.enabled !== false && String(cfg.apiKey || cfg.llmApiKey || cfg.openaiApiKey || "").trim());
 
           if (cfg) {
             const raw = String(cfg?.riskLevel || "safe").trim().toLowerCase();
@@ -7120,27 +7613,60 @@ async function tick() {
           // Edge is a first-pass gate: if it fails, we do not proceed further.
           const manualMinEdgePct = Number.isFinite(Number(state.minNetEdgePct)) ? Number(state.minNetEdgePct) : null;
           if (Number.isFinite(manualMinEdgePct) && Number.isFinite(excl) && excl < manualMinEdgePct) {
+            try {
+              agentGates.manualEdge = {
+                ok: false,
+                edgeExclPct: excl,
+                minNetEdgePct: manualMinEdgePct,
+              };
+            } catch {}
             log(
               `Skip ${mint.slice(0,4)}… (manual edge gate: edgeExcl=${excl.toFixed(2)}% < minNetEdgePct=${manualMinEdgePct.toFixed(2)}%)`
             );
-            continue;
+            if (!fullAiControl) continue;
           }
+
+          try {
+            if (!agentGates.manualEdge && Number.isFinite(manualMinEdgePct) && Number.isFinite(excl)) {
+              agentGates.manualEdge = { ok: true, edgeExclPct: excl, minNetEdgePct: manualMinEdgePct };
+            }
+          } catch {}
 
         entryEdgeCostPct = Math.max(0, -excl);
 
-        // Entry-cost hard gate for Agent Gary safe/medium risk: avoid deeply negative entries.
-        // (In degen risk, allow higher friction by design.)
+
+
+
+
+
+
+
+
+
+
+
+
+        
         try {
-          if (agentActiveForBuy && !agentBypassNonEdgeGates) {
+          if (agentActiveForBuy) {
             const risk = agentRiskForBuy || "safe";
             const maxCost = Number(state.maxEntryCostPct ?? 1.5);
             const gateOn = Number.isFinite(maxCost) && maxCost > 0;
             const enforceForRisk = (risk === "safe" || risk === "medium");
+            try {
+              agentGates.entryCost = {
+                on: !!gateOn,
+                enforceForRisk: !!enforceForRisk,
+                risk,
+                edgeCostPct: Number.isFinite(entryEdgeCostPct) ? entryEdgeCostPct : null,
+                maxEntryCostPct: Number.isFinite(maxCost) ? maxCost : null,
+              };
+            } catch {}
             if (gateOn && enforceForRisk && Number.isFinite(entryEdgeCostPct) && entryEdgeCostPct > maxCost) {
               log(
                 `Skip ${mint.slice(0,4)}… (entry cost gate: edgeCost=${entryEdgeCostPct.toFixed(2)}% > maxEntryCostPct=${maxCost.toFixed(2)}% for risk=${risk})`
               );
-              continue;
+              if (!fullAiControl) continue;
             }
           }
         } catch {}
@@ -7164,8 +7690,11 @@ async function tick() {
               // Hard requirement: do not buy without enough samples.
               const msg = `Skip ${mint.slice(0,4)}… (need leader series >=3; have ${_seriesN}/3)`;
               log(msg);
-              if (!agentBypassNonEdgeGates) continue;
-              simEnabled = false;
+              try {
+                agentGates.sim = { ready: false, seriesN: _seriesN, needSeriesN: 3, mode: String(simMode || "").toLowerCase() };
+              } catch {}
+              if (!fullAiControl) continue;
+              simEnabled = false; // proceed without sim gating
             }
           }
 
@@ -7213,8 +7742,22 @@ async function tick() {
             // Agent Gary can tune sizing/slippage and veto, but cannot override missing data.
             const msg = `Skip ${mint.slice(0,4)}… (sim: insufficient leader series)`;
             log(msg);
-            if (!agentBypassNonEdgeGates) continue;
+            try {
+              agentGates.sim = { ready: false, mode: String(simMode || "").toLowerCase(), why: "insufficient leader series" };
+            } catch {}
+            if (!fullAiControl) continue;
           } else {
+            try {
+              agentGates.sim = {
+                ready: true,
+                mode: String(simMode || "").toLowerCase(),
+                horizonSecs: Number(sim?.horizonSecs ?? horizonSecs),
+                pHit: Number(sim?.pHit ?? NaN),
+                pTerminal: Number(sim?.pTerminal ?? NaN),
+                minWinProb,
+                minTerminalProb,
+              };
+            } catch {}
             log(
               `Sim gate ${mint.slice(0,4)}… horizon=${sim.horizonSecs}s ` +
               `mu≈${Number(sim.muPct).toFixed(2)}% σ≈${Number(sim.sigmaPct).toFixed(2)}% ` +
@@ -7228,16 +7771,16 @@ async function tick() {
                 `Skip ${mint.slice(0,4)}… sim P(hit goal) ${(Number(sim.pHit) * 100).toFixed(1)}% < ${(minWinProb * 100).toFixed(0)}% ` +
                 `(goal≈${requiredGrossTp.toFixed(2)}% = baseGoal + edgeCost + buf)`;
               // Enforce means enforce (do not allow agent overrides here).
-              if (simMode === "enforce" && !agentBypassNonEdgeGates) { log(msg); continue; }
-              log(msg.replace(/^Skip /, agentBypassNonEdgeGates ? "Sim bypass " : "Sim warn "));
+              if (simMode === "enforce") { log(msg); if (!fullAiControl) continue; }
+              log(msg.replace(/^Skip /, "Sim warn "));
             }
 
             if (Number.isFinite(minTerminalProb) && minTerminalProb > 0 && !(Number(sim.pTerminal) >= minTerminalProb)) {
               const msg =
                 `Skip ${mint.slice(0,4)}… sim P(terminal goal) ${(Number(sim.pTerminal) * 100).toFixed(1)}% < ${(minTerminalProb * 100).toFixed(0)}% ` +
                 `(goal≈${requiredGrossTp.toFixed(2)}%)`;
-              if (simMode === "enforce" && !agentBypassNonEdgeGates) { log(msg); continue; }
-              log(msg.replace(/^Skip /, agentBypassNonEdgeGates ? "Sim bypass " : "Sim warn "));
+              if (simMode === "enforce") { log(msg); if (!fullAiControl) continue; }
+              log(msg.replace(/^Skip /, "Sim warn "));
             }
           }
         }
@@ -7287,7 +7830,7 @@ async function tick() {
             agent = getAutoTraderAgent();
             cfg = agent?.getConfigFromRuntime ? agent.getConfigFromRuntime() : null;
             enabledFlag = !!(cfg && cfg.enabled !== false);
-            keyPresent = !!String(cfg?.openaiApiKey || "").trim();
+            keyPresent = !!String(cfg?.apiKey || cfg?.llmApiKey || cfg?.openaiApiKey || "").trim();
           } catch {}
 
           const requireApproval = enabledFlag;
@@ -7324,12 +7867,54 @@ async function tick() {
 
             let adec;
             try {
+              // Sentry pre-check: consult cached risk decisions; only run an on-demand check if signals already look ruggy.
+              try {
+                const cached = _peekSentryDecision(mint);
+                const cachedAction = String(cached?.decision?.action || "").toLowerCase();
+                if (cachedAction === "blacklist" || cachedAction === "exit_and_blacklist") {
+                  _applySentryAction(mint, cached.decision, { stage: "buy" });
+                  continue;
+                }
+
+                const looksRuggy = !!(entryRugSignal && (entryRugSignal.trigger === true || Number(entryRugSignal.sev || entryRugSignal.severity || 0) >= 0.65));
+                if (looksRuggy && _isAgentGaryEffective()) {
+                  try { traceOnce(`sentry:buy:run:${mint}`, `[SENTRY] buy-check: looksRuggy=1 for ${mint.slice(0,4)}…`, 30000, "warn"); } catch {}
+                  const sentryRes = await getGarySentry().assessMint({
+                    mint,
+                    stage: "buy",
+                    signals: {
+                      rugSignal: entryRugSignal,
+                      leaderNow: entryLeaderNow,
+                      leaderSeries: entryLeaderSeries,
+                      past: _summarizePastCandlesForMint(mint, 24),
+                      tickNow: _summarizePumpTickNowForMint(mint),
+                      tickSeries: _summarizePumpTickSeriesForMint(mint, 8),
+                      liqUsd: Number.isFinite(liqUsdHint) ? liqUsdHint : null,
+                      solUsd: Number.isFinite(solUsdHint) ? solUsdHint : null,
+                      priceImpactProxy,
+                      proposed: { buySolUi: buySol, slippageBps: dynSlip },
+                    },
+                  });
+                  if (sentryRes?.ok && sentryRes.decision) {
+                    try {
+                      const act = String(sentryRes.decision.action || "allow").toLowerCase();
+                      traceOnce(`sentry:buy:result:${mint}`, `[SENTRY] buy-check result ${mint.slice(0,4)}… action=${act}`, 30000, act === "allow" ? "info" : "warn");
+                    } catch {}
+                    _applySentryAction(mint, sentryRes.decision, { stage: "buy" });
+                    const act = String(sentryRes.decision.action || "allow").toLowerCase();
+                    if (act === "blacklist" || act === "exit_and_blacklist") continue;
+                  }
+                }
+              } catch {}
+
               adec = await agent.decideBuy({
                 mint,
                 proposedBuySolUi: buySol,
                 proposedSlippageBps: dynSlip,
                 signals: {
                   agentRisk: _riskLevel,
+                  fullAiControl: !!fullAiControl,
+                  gates: agentGates,
                   targets: {
                     sessionPnlSol: getSessionPnlSol(),
                     minNetEdgePct: Number(state.minNetEdgePct),
@@ -7347,6 +7932,7 @@ async function tick() {
                   kpiPick: entryKpiPick,
                   finalGate: entryFinalGate,
                   tickNow: _summarizePumpTickNowForMint(mint),
+                  tickSeries: _summarizePumpTickSeriesForMint(mint, 8),
                   badge: entryBadge,
                   rugSignal: entryRugSignal,
                   leaderNow: entryLeaderNow,
@@ -7743,9 +8329,9 @@ async function startAutoAsync() {
         const agent = getAutoTraderAgent();
         const cfg = agent && typeof agent.getConfigFromRuntime === "function" ? agent.getConfigFromRuntime() : {};
         const enabledFlag = cfg && (cfg.enabled !== false);
-        const keyPresent = !!String(cfg?.openaiApiKey || "").trim();
+        const keyPresent = !!String(cfg?.llmApiKey || cfg?.openaiApiKey || "").trim();
         const eff = enabledFlag && keyPresent;
-        const model = String(cfg?.openaiModel || "gpt-4o-mini").trim() || "gpt-4o-mini";
+        const model = String(cfg?.llmModel || cfg?.openaiModel || "gpt-4o-mini").trim() || "gpt-4o-mini";
         log(`Agent Gary Mode: ${eff ? "ACTIVE" : (enabledFlag ? "INACTIVE (missing key)" : "OFF")} (model=${model})`);
       } catch {}
     }
@@ -8263,7 +8849,9 @@ function _ensureStatsHeader() {
         hdr.dataset.fdvAgentWired = "1";
         const root = hdr.closest?.(".fdv-auto-body") || document;
         const enabledEl = root.querySelector("[data-auto-agent-enabled]");
+        const fullEl = root.querySelector("[data-auto-agent-full-control]");
         const riskEl = root.querySelector("[data-auto-agent-risk]");
+        const keyLabelEl = root.querySelector("[data-auto-llm-key-label]");
         const keyEl = root.querySelector("[data-auto-openai-key]");
         const modelEl = root.querySelector("[data-auto-openai-model]");
         const stateEl = root.querySelector("[data-auto-agent-state]");
@@ -8283,6 +8871,26 @@ function _ensureStatsHeader() {
           }
         };
 
+        const _readFullAiControl = () => {
+          try {
+            if (!fullEl) return false;
+            const tag = String(fullEl.tagName || "").toLowerCase();
+            if (tag === "select") return String(fullEl.value || "no") !== "no";
+            return !!fullEl.checked;
+          } catch {
+            return false;
+          }
+        };
+
+        const _writeFullAiControlUi = (on) => {
+          try {
+            if (!fullEl) return;
+            const tag = String(fullEl.tagName || "").toLowerCase();
+            if (tag === "select") { fullEl.value = on ? "yes" : "no"; return; }
+            fullEl.checked = !!on;
+          } catch {}
+        };
+
         const _writeAgentEnabledUi = (on) => {
           try {
             if (!enabledEl) return;
@@ -8292,9 +8900,40 @@ function _ensureStatsHeader() {
           } catch {}
         };
 
+        const _inferProviderForModel = (modelName) => {
+          try {
+            const s = String(modelName || "").trim().toLowerCase();
+            if (!s) return "openai";
+            if (s.startsWith("gemini-")) return "gemini";
+            if (s.startsWith("grok-")) return "grok";
+            return "openai";
+          } catch {
+            return "openai";
+          }
+        };
+
+        const _lsKeyForProvider = (provider) => {
+          const p = String(provider || "").trim().toLowerCase();
+          if (p === "gemini") return "fdv_gemini_key";
+          if (p === "grok") return "fdv_grok_key";
+          return "fdv_openai_key";
+        };
+
+        const _applyKeyUiForProvider = (provider) => {
+          try {
+            const p = String(provider || "openai").trim().toLowerCase();
+            const isGemini = p === "gemini";
+            const isGrok = p === "grok";
+            if (keyLabelEl) keyLabelEl.textContent = isGemini ? "Gemini key" : (isGrok ? "xAI key" : "OpenAI key");
+            if (keyEl) keyEl.placeholder = isGemini ? "AIza…" : (isGrok ? "xai-…" : "sk-…");
+          } catch {}
+        };
+
         const updateAgentUi = () => {
           try {
             const enabledFlag = _readAgentEnabled();
+            const provider = _inferProviderForModel(modelEl && modelEl.value);
+            _applyKeyUiForProvider(provider);
             const keyPresent = !!String(keyEl && keyEl.value || "").trim();
             const eff = enabledFlag && keyPresent;
 
@@ -8314,7 +8953,8 @@ function _ensureStatsHeader() {
                 stateEl.textContent = "(active)";
                 stateEl.style.color = "#7ee787";
               } else if (enabledFlag && !keyPresent) {
-                stateEl.textContent = "(missing key)";
+                const who = (String(provider) === "gemini") ? "Gemini" : ((String(provider) === "grok") ? "xAI" : "OpenAI");
+                stateEl.textContent = `(missing ${who} key)`;
                 stateEl.style.color = "#ffb86c";
               } else {
                 stateEl.textContent = "(off)";
@@ -8331,18 +8971,28 @@ function _ensureStatsHeader() {
           _writeAgentEnabledUi(!!en);
         } catch {}
         try {
+          const raw = typeof localStorage !== "undefined" ? String(localStorage.getItem("fdv_agent_full_control") || "") : "";
+          const on = /^(1|true|yes|on)$/i.test(raw);
+          _writeFullAiControlUi(!!on);
+        } catch {}
+        try {
           const raw = typeof localStorage !== "undefined" ? String(localStorage.getItem("fdv_agent_risk") || "") : "";
           const v = String(raw || "safe").trim().toLowerCase();
           const risk = (v === "safe" || v === "medium" || v === "degen") ? v : "safe";
           if (riskEl) riskEl.value = risk;
         } catch {}
         try {
-          const k = typeof localStorage !== "undefined" ? String(localStorage.getItem("fdv_openai_key") || "") : "";
-          if (keyEl) keyEl.value = k;
+          const m = typeof localStorage !== "undefined"
+            ? String(localStorage.getItem("fdv_llm_model") || localStorage.getItem("fdv_openai_model") || "")
+            : "";
+          if (modelEl && m) modelEl.value = m;
         } catch {}
         try {
-          const m = typeof localStorage !== "undefined" ? String(localStorage.getItem("fdv_openai_model") || "") : "";
-          if (modelEl && m) modelEl.value = m;
+          const provider = _inferProviderForModel(modelEl && modelEl.value);
+          _applyKeyUiForProvider(provider);
+          const lsKey = _lsKeyForProvider(provider);
+          const k = typeof localStorage !== "undefined" ? String(localStorage.getItem(lsKey) || "") : "";
+          if (keyEl) keyEl.value = k;
         } catch {}
 
         try { updateAgentUi(); } catch {}
@@ -8356,10 +9006,23 @@ function _ensureStatsHeader() {
               localStorage.setItem("fdv_agent_enabled", on ? "true" : "false");
               try { updateAgentUi(); } catch {}
               try {
+                const provider = _inferProviderForModel(modelEl && modelEl.value);
                 const keyPresent = !!String(keyEl && keyEl.value || "").trim();
-                if (on && !keyPresent) log("Agent enabled, but inactive until OpenAI key is set.", "warn");
+                const who = (String(provider) === "gemini") ? "Gemini" : ((String(provider) === "grok") ? "xAI" : "OpenAI");
+                if (on && !keyPresent) log(`Agent enabled, but inactive until ${who} key is set.`, "warn");
                 else log(`Agent ${on ? "enabled" : "disabled"}.`, "help");
               } catch {}
+            } catch {}
+          });
+        }
+        if (fullEl) {
+          fullEl.addEventListener("change", () => {
+            try {
+              if (typeof localStorage === "undefined") return;
+              const on = _readFullAiControl();
+              localStorage.setItem("fdv_agent_full_control", on ? "true" : "false");
+              try { updateAgentUi(); } catch {}
+              try { log(`Full AI control ${on ? "enabled" : "disabled"}.`, on ? "warn" : "help"); } catch {}
             } catch {}
           });
         }
@@ -8379,7 +9042,9 @@ function _ensureStatsHeader() {
           const saveKey = () => {
             try {
               if (typeof localStorage === "undefined") return;
-              localStorage.setItem("fdv_openai_key", String(keyEl.value || "").trim());
+              const provider = _inferProviderForModel(modelEl && modelEl.value);
+              const lsKey = _lsKeyForProvider(provider);
+              localStorage.setItem(lsKey, String(keyEl.value || "").trim());
               try { updateAgentUi(); } catch {}
               try {
                 const enabledFlag = _readAgentEnabled();
@@ -8395,9 +9060,23 @@ function _ensureStatsHeader() {
           modelEl.addEventListener("change", () => {
             try {
               if (typeof localStorage === "undefined") return;
-              localStorage.setItem("fdv_openai_model", String(modelEl.value || "gpt-4o-mini"));
+              const mv = String(modelEl.value || "gpt-4o-mini");
+              localStorage.setItem("fdv_llm_model", mv);
+              // Back-compat: older code reads fdv_openai_model.
+              localStorage.setItem("fdv_openai_model", mv);
+
+              // Switch the key box to the correct provider's key.
+              const provider = _inferProviderForModel(mv);
+              _applyKeyUiForProvider(provider);
+              const lsKey = _lsKeyForProvider(provider);
+              const k = String(localStorage.getItem(lsKey) || "");
+              if (keyEl) keyEl.value = k;
+
               try { updateAgentUi(); } catch {}
-              try { log(`Agent model set to ${String(modelEl.value || "").trim()}.`, "help"); } catch {}
+              try {
+                const who = (String(provider) === "gemini") ? "Gemini" : ((String(provider) === "grok") ? "xAI" : "OpenAI");
+                log(`Agent model set to ${String(mv).trim()} (${who}).`, "help");
+              } catch {}
             } catch {}
           });
         }
@@ -8617,6 +9296,13 @@ export function initTraderWidget(container = document.body) {
             <option value="no">Off</option>
           </select>
         </label>
+        <label class="fdv-agent-item fdv-agent-full">
+          Full AI
+          <select data-auto-agent-full-control>
+            <option value="yes">On</option>
+            <option value="no">Off</option>
+          </select>
+        </label>
         <label class="fdv-agent-item fdv-agent-risk">
           Risk
           <select data-auto-agent-risk>
@@ -8626,7 +9312,7 @@ export function initTraderWidget(container = document.body) {
           </select>
         </label>
         <label class="fdv-agent-item fdv-agent-key">
-          OpenAI key
+          <span data-auto-llm-key-label>OpenAI key</span>
           <input type="password" data-auto-openai-key placeholder="sk-…" autocomplete="off" spellcheck="false" />
         </label>
         <label class="fdv-agent-item fdv-agent-model">
@@ -8635,8 +9321,11 @@ export function initTraderWidget(container = document.body) {
             <option value="gpt-4o-mini">gpt-4o-mini</option>
             <option value="gpt-4.1-mini">gpt-4.1-mini</option>
             <option value="gpt-4o">gpt-4o</option>
-            <option value="gpt-5-nano" disabled>gpt-5-nano(coming soon)</option>
-            <option value="grok-elon" disabled>grok(coming soon)</option>
+            <option value="gpt-5-nano">gpt-5-nano</option>
+            <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
+            <option value="grok-3-mini">grok-3-mini</option>
+            <option value="gpt-7-nano" disabled>gpt-67-nano(coming soon)</option>
+            <option value="grok-elon" disabled>grok-9(coming soon)</option>
           </select>
         </label>
       </div>

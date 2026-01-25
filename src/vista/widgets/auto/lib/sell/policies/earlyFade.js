@@ -13,16 +13,22 @@ export function createEarlyFadePolicy({ log, clamp, getState, getLeaderSeries, s
       const entryChg = Number(ctx.pos.entryChg5m || NaN);
       if (Number.isFinite(entryChg) && entryChg > 0) {
         const dropFrac = (entryChg - curChg5m) / Math.max(1e-6, entryChg);
-        if (dropFrac >= Math.max(0.30, Number(state.earlyExitChgDropFrac || 0.4))) {
-          ctx.forceObserverDrop = true;
-          ctx.earlyReason = `FAST_FADE chg5m -${(dropFrac*100).toFixed(1)}%`;
+        const thrDrop = Math.max(0.30, Number(state.earlyExitChgDropFrac || 0.4));
+        const thrNeg = Math.min(-5, Number(state.earlyExitChg5mBearPct ?? -12));
+        if (dropFrac >= thrDrop) {
+          ctx.earlyReason = `MOMENTUM_FADE chg5m ${entryChg.toFixed(2)}%→${curChg5m.toFixed(2)}% (-${(dropFrac * 100).toFixed(1)}%)`;
+          if (curChg5m <= thrNeg) {
+            ctx.forceEarlyFade = true;
+          }
         }
       }
 
       if (!ctx.forceObserverDrop) {
         const needConsec = Math.max(1, Number(state.earlyExitConsec || 2));
         if (Number(ctx.pos.earlyNegScCount || 0) >= needConsec) {
-          ctx.forceObserverDrop = true;
+          // Treat sustained pumpScore decay as a stronger fade signal, but still keep it separate
+          // from observer-drop (which is used for hard overrides).
+          ctx.forceEarlyFade = true;
           ctx.earlyReason = `FAST_FADE scSlope ${scSlopeMin.toFixed(2)}/m x${ctx.pos.earlyNegScCount}`;
         }
       }
@@ -41,6 +47,7 @@ export function createEarlyFadePolicy({ log, clamp, getState, getLeaderSeries, s
 
         if (!ctx.forceObserverDrop && changes >= 2 && scSlopeMin > -2) {
           ctx.pos.earlyNegScCount = 0;
+          ctx.forceEarlyFade = false;
           ctx.earlyReason = "";
           log(`Jiggle hold: ${ctx.mint.slice(0,4)}… direction changes=${changes} scSlope=${scSlopeMin.toFixed(2)}/m`);
         }
@@ -53,13 +60,13 @@ export function createEarlyFadePolicy({ log, clamp, getState, getLeaderSeries, s
             }
           }
           if (allDown && scSlopeMin < 0) {
-            ctx.forceObserverDrop = true;
+            ctx.forceEarlyFade = true;
             ctx.earlyReason = `DOWN_SLOPE_5 scSlope ${scSlopeMin.toFixed(2)}/m`;
           }
         }
       }
 
-      if (ctx.forceObserverDrop) {
+      if (ctx.forceEarlyFade) {
         log(`Early-exit: ${ctx.mint.slice(0,4)}… ${ctx.earlyReason} — overriding warming sell guard.`);
       }
     } catch {}

@@ -30,7 +30,24 @@ export function createAgentDecisionPolicy({
 
       const state = _getState();
 
-      const _isSystemPnlExit = (decision) => {
+      const fullAiControl = !!(ctx?.agentSignals && ctx.agentSignals.fullAiControl === true);
+
+      const _isSystemHardExit = (decision) => {
+        try {
+          if (!decision || decision.action === "none") return false;
+          const rsn = String(decision.reason || "");
+          return (
+            /^WARMING\s+MAX\s+LOSS\b/i.test(rsn) ||
+            /^WARMING_TARGET\b/i.test(rsn) ||
+            /^WARMING\b/i.test(rsn) ||
+            /\bURGENT:/i.test(rsn)
+          );
+        } catch {
+          return false;
+        }
+      };
+
+      const _isSystemSoftExit = (decision) => {
         try {
           if (!decision || decision.action === "none") return false;
           const rsn = String(decision.reason || "");
@@ -38,9 +55,7 @@ export function createAgentDecisionPolicy({
             /^SL\b/i.test(rsn) ||
             /^TP\b/i.test(rsn) ||
             /^Trail\b/i.test(rsn) ||
-            /^FAST_/i.test(rsn) ||
-            /^WARMING/i.test(rsn) ||
-			/\bURGENT:/i.test(rsn)
+            /^FAST_/i.test(rsn)
           );
         } catch {
           return false;
@@ -107,60 +122,65 @@ export function createAgentDecisionPolicy({
       if (!res?.ok || !res?.decision) return;
       const d = res.decision;
 
-      try {
-        const allowDuringMinHold = !!(
-          ctx?.forceRug ||
-          ctx?.forcePumpDrop ||
-          ctx?.forceObserverDrop ||
-          ctx?.isFastExit
-        );
-        if (ctx?.inMinHold && !allowDuringMinHold) {
-          if (String(d.action || "").toLowerCase() !== "hold") {
-            try { _log(`sell ignored (min-hold)`); } catch {}
+      if (!fullAiControl) {
+        try {
+          const allowDuringMinHold = !!(
+            ctx?.forceRug ||
+            ctx?.forcePumpDrop ||
+            ctx?.isFastExit ||
+            ctx?.forceExpire
+          );
+          if (ctx?.inMinHold && !allowDuringMinHold) {
+            if (String(d.action || "").toLowerCase() !== "hold") {
+              try { _log(`sell ignored (min-hold)`); } catch {}
+            }
+            return;
           }
-          return;
-        }
-      } catch {}
+        } catch {}
+      }
 
-      try {
-        const action = String(d.action || "").toLowerCase();
-        const wantsSell = (action === "sell_all" || action === "sell_partial");
-        if (wantsSell) {
-          const pnl = Number.isFinite(ctx?.pnlNetPct) ? Number(ctx?.pnlNetPct) : Number(ctx?.pnlPct);
-          if (Number.isFinite(pnl)) {
-            const floor = Math.max(0, Number(state?.warmingMinProfitFloorPct ?? 0));
-            const lossBypass = Math.min(0, Number(state?.warmingProfitFloorLossBypassPct ?? -60));
+      if (!fullAiControl) {
+        try {
+          const action = String(d.action || "").toLowerCase();
+          const wantsSell = (action === "sell_all" || action === "sell_partial");
+          if (wantsSell) {
+            const pnl = Number.isFinite(ctx?.pnlNetPct) ? Number(ctx?.pnlNetPct) : Number(ctx?.pnlPct);
+            if (Number.isFinite(pnl)) {
+              const floor = Math.max(0, Number(state?.warmingMinProfitFloorPct ?? 0));
+              const lossBypass = Math.min(0, Number(state?.warmingProfitFloorLossBypassPct ?? -60));
 
-            const allowBypass = !!(
-              ctx?.forceRug ||
-              ctx?.forceExpire ||
-              ctx?.forcePumpDrop ||
-              ctx?.forceObserverDrop ||
-              ctx?.isFastExit
-            );
+              const allowBypass = !!(
+                ctx?.forceRug ||
+                ctx?.forceExpire ||
+                ctx?.forcePumpDrop ||
+                ctx?.isFastExit
+              );
 
-            // Allow severe losses to exit (avoid being trapped).
-            if (!allowBypass && pnl > lossBypass && pnl < floor) {
-              ctx.decision = {
-                action: "none",
-                reason: `agent-ignored (profit-floor ${floor.toFixed(2)}% pnl=${pnl.toFixed(2)}%)`,
-              };
-              try { _log(`sell ignored (profit-floor floor=${floor.toFixed(2)} pnl=${pnl.toFixed(2)})`); } catch {}
-              return;
+              // Allow severe losses to exit (avoid being trapped).
+              if (!allowBypass && pnl > lossBypass && pnl < floor) {
+                ctx.decision = {
+                  action: "none",
+                  reason: `agent-ignored (profit-floor ${floor.toFixed(2)}% pnl=${pnl.toFixed(2)}%)`,
+                };
+                try { _log(`sell ignored (profit-floor floor=${floor.toFixed(2)} pnl=${pnl.toFixed(2)})`); } catch {}
+                return;
+              }
             }
           }
-        }
-      } catch {}
+        } catch {}
+      }
 
-      try {
-        const action = String(d.action || "").toLowerCase();
-        const pnlNet = Number(ctx?.pnlNetPct ?? ctx?.pnlPct ?? NaN);
-        if (action === "sell_partial" && !(Number.isFinite(pnlNet) && pnlNet > 0)) {
-          ctx.decision = { action: "none", reason: `agent-partial-ignored pnl=${Number.isFinite(pnlNet) ? pnlNet.toFixed(2) : "?"}%` };
-          try { _log(`sell_partial ignored (pnl<=0)`); } catch {}
-          return;
-        }
-      } catch {}
+      if (!fullAiControl) {
+        try {
+          const action = String(d.action || "").toLowerCase();
+          const pnlNet = Number(ctx?.pnlNetPct ?? ctx?.pnlPct ?? NaN);
+          if (action === "sell_partial" && !(Number.isFinite(pnlNet) && pnlNet > 0)) {
+            ctx.decision = { action: "none", reason: `agent-partial-ignored pnl=${Number.isFinite(pnlNet) ? pnlNet.toFixed(2) : "?"}%` };
+            try { _log(`sell_partial ignored (pnl<=0)`); } catch {}
+            return;
+          }
+        } catch {}
+      }
 
     // Optional evolve feedback: annotate recent outcomes with self-critique/lesson.
     try {
@@ -183,10 +203,44 @@ export function createAgentDecisionPolicy({
       } catch {}
 
       if (d.action === "hold") {
-        if (_isSystemPnlExit(ctx?.decision)) {
-          try { _log(`hold ignored (system PnL exit active)`); } catch {}
-          return;
+        // Agent HOLD veto: in volatile regimes, allow Gary to suppress some system exits
+        // (e.g., SL / Trail / FAST_ fades) within bounded risk.
+        if (!fullAiControl) {
+          try {
+            const decision = ctx?.decision;
+            const hardExit = !!(
+              ctx?.forceRug ||
+              ctx?.forcePumpDrop ||
+              ctx?.forceExpire ||
+              ctx?.isFastExit ||
+              _isSystemHardExit(decision)
+            );
+            if (hardExit) {
+              try { _log(`hold ignored (hard exit active)`); } catch {}
+              return;
+            }
+
+            const softExit = _isSystemSoftExit(decision);
+            if (softExit) {
+              const enabled = (state?.agentHoldVetoEnabled !== false);
+              const minConf = Math.max(0, Math.min(1, Number(state?.agentHoldVetoMinConfidence ?? 0.72)));
+              const maxLossPct = Math.max(1, Number(state?.agentHoldVetoMaxLossPct ?? 18));
+              const conf = Number(d.confidence || 0);
+              const pnl = Number.isFinite(ctx?.pnlNetPct) ? Number(ctx?.pnlNetPct) : Number(ctx?.pnlPct);
+
+              const withinLossBand = Number.isFinite(pnl) ? (pnl > -maxLossPct) : false;
+              if (!enabled || conf < minConf || !withinLossBand) {
+                try {
+                  _log(
+                    `hold ignored (soft exit active; veto=${enabled ? "on" : "off"} conf=${conf.toFixed(2)}>=${minConf.toFixed(2)} pnl=${Number.isFinite(pnl) ? pnl.toFixed(2) : "?"}% > -${maxLossPct}%)`
+                  );
+                } catch {}
+                return;
+              }
+            }
+          } catch {}
         }
+
         ctx.decision = { action: "none", reason: `agent-hold ${String(d.reason || "")}`.trim() };
         try { _log(`sell mapped -> none (hold)`); } catch {}
         return;

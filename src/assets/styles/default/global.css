@@ -2804,7 +2804,7 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
 /* Auto Trader: Agent Gary config */
 .fdv-agent-bar{
   display:grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
   gap: clamp(10px, 1.6vw, 14px);
   align-items: end;
   padding-top: 8px;

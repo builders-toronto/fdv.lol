@@ -11,7 +11,7 @@ export function createWarmingPolicyHook({ applyWarmingPolicy, log }) {
       forceRug: ctx.forceRug,
       forcePumpDrop: ctx.forcePumpDrop,
       forceObserverDrop: ctx.forceObserverDrop,
-      forceEarlyFade: !!ctx.earlyReason,
+      forceEarlyFade: !!ctx.forceEarlyFade,
     });
     ctx.decision = res.decision || ctx.decision;
     ctx.forceObserverDrop = res.forceObserverDrop;
