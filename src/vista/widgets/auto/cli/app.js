@@ -129,9 +129,9 @@ function _envFlag(name, defaultValue = false) {
   return !!defaultValue;
 }
 
-async function _cliGetWalletSnap({ rpcUrl, rpcHeaders, autoWalletSecret, maxAgeMs = 3500 } = {}) {
+async function _cliGetWalletSnap({ rpcUrl, rpcHeaders, autoWalletSecret, maxAgeMs = 3500, forceFresh = false } = {}) {
   const now = Date.now();
-  if (_cliLastWalletSnap && (now - Number(_cliLastWalletSnapAt || 0)) <= Math.max(250, Number(maxAgeMs || 0))) {
+  if (!forceFresh && _cliLastWalletSnap && (now - Number(_cliLastWalletSnapAt || 0)) <= Math.max(250, Number(maxAgeMs || 0))) {
     return _cliLastWalletSnap;
   }
 
@@ -162,34 +162,80 @@ function _installHeadlessAutoOverridesForCliRecon({ autoMod, rpcUrl, rpcHeaders,
       : {};
     const next = { ...prev, headless: true };
 
-    if (typeof next.pruneZeroBalancePositions !== "function") {
+    // In headless CLI, we do our own on-chain reconciliation (including Token-2022).
+    // The browser module's prune can mistakenly delete real positions when it can't
+    // resolve the right token program (or when scans intermittently fail).
+    const allowPrune = _envFlag("FDV_CLI_ALLOW_PRUNE", false);
+    if (!allowPrune) {
       next.pruneZeroBalancePositions = async () => {};
     }
 
-    if (typeof next.verifyRealTokenBalance !== "function") {
+    // Avoid purge-on-verify in headless mode, but still provide sizeUi so sell preflight
+    // doesn't stall at "no on-chain size".
+    const keepVerify = _envFlag("FDV_CLI_KEEP_VERIFY", false);
+    if (!keepVerify) {
       next.verifyRealTokenBalance = async (ownerStr, mint, pos) => {
         const mintStr = String(mint || "").trim();
         const fallbackPosSize = Number(pos?.sizeUi || 0);
 
+        const debugVerify = _envFlag("FDV_CLI_VERIFY_DEBUG", false);
+        const _dbg = (msg) => {
+          if (!debugVerify) return;
+          try { console.log(`[CLI verify] ${msg}`); } catch {}
+        };
+
+        // Try a couple times; RPC scans can be intermittently incomplete.
+        // We only fall back to the cached position size when the scan isn't known-good.
+        const attempts = fallbackPosSize > 0 ? 3 : 1;
+
         try {
-          const snap = await _cliGetWalletSnap({ rpcUrl, rpcHeaders, autoWalletSecret }).catch(() => null);
-          const owner = String(snap?.owner || "").trim();
-          if (snap && owner && ownerStr && String(ownerStr) !== owner) {
-            return { ok: true, sizeUi: fallbackPosSize, purged: false, unverified: true, reason: "owner_mismatch" };
+          let lastReason = "";
+          for (let i = 0; i < attempts; i++) {
+            const forceFresh = i > 0;
+            const snap = await _cliGetWalletSnap({ rpcUrl, rpcHeaders, autoWalletSecret, maxAgeMs: forceFresh ? 0 : 900, forceFresh }).catch(() => null);
+
+            const owner = String(snap?.owner || "").trim();
+            const scanOk = !!snap?.tokenScanOk;
+            const snapAge = snap ? (Date.now() - Number(_cliLastWalletSnapAt || 0)) : -1;
+
+            if (snap && owner && ownerStr && String(ownerStr) !== owner) {
+              lastReason = "owner_mismatch";
+              _dbg(`mint=${mintStr.slice(0, 4)}… owner mismatch (snap=${owner.slice(0, 4)}… wanted=${String(ownerStr).slice(0, 4)}…)`);
+              return { ok: true, sizeUi: fallbackPosSize, purged: false, unverified: true, reason: lastReason };
+            }
+
+            const balances = Array.isArray(snap?.balances) ? snap.balances : [];
+            const hit = balances.find((b) => String(b?.mint || "").trim() === mintStr);
+            const chainSizeUi = Number(hit?.uiAmt || 0);
+
+            if (Number.isFinite(chainSizeUi) && chainSizeUi > 1e-9) {
+              _dbg(`mint=${mintStr.slice(0, 4)}… chain size=${chainSizeUi} (scanOk=${scanOk ? 1 : 0} age=${snapAge}ms)`);
+              return { ok: true, sizeUi: chainSizeUi, purged: false, unverified: !scanOk, program: hit?.program };
+            }
+
+            if (scanOk) {
+              // scanOk=true and still not found/zero: treat as true zero; let preflight skip.
+              lastReason = hit ? "scan_ok_zero" : "scan_ok_miss";
+              _dbg(`mint=${mintStr.slice(0, 4)}… chain size=0 (scanOk=1 age=${snapAge}ms reason=${lastReason})`);
+              return { ok: true, sizeUi: 0, purged: false, unverified: false, reason: lastReason };
+            }
+
+            // scanOk=false: retry a couple times before falling back.
+            lastReason = hit ? "scan_incomplete_hit_zero" : "scan_incomplete_miss";
+            if (i < attempts - 1) {
+              _dbg(`mint=${mintStr.slice(0, 4)}… retrying (scanOk=0 age=${snapAge}ms reason=${lastReason})`);
+              await _sleep(200 + 300 * i);
+              continue;
+            }
+
+            if (fallbackPosSize > 1e-9) {
+              _dbg(`mint=${mintStr.slice(0, 4)}… fallback size=${fallbackPosSize} (scanOk=0 age=${snapAge}ms reason=${lastReason})`);
+              return { ok: true, sizeUi: fallbackPosSize, purged: false, unverified: true, reason: lastReason };
+            }
           }
 
-          const balances = Array.isArray(snap?.balances) ? snap.balances : [];
-          const hit = balances.find((b) => String(b?.mint || "").trim() === mintStr);
-          const sizeUi = Number(hit?.uiAmt || 0);
-          return {
-            ok: true,
-            sizeUi: Number.isFinite(sizeUi) ? sizeUi : 0,
-            purged: false,
-            unverified: false,
-            program: hit?.program,
-          };
+          return { ok: true, sizeUi: fallbackPosSize, purged: false, unverified: true, reason: lastReason || "retries_exhausted" };
         } catch {
-          // Last resort: keep behavior non-blocking (previous headless override always returned ok).
           return { ok: true, sizeUi: fallbackPosSize, purged: false, unverified: true, reason: "snap_failed" };
         }
       };
@@ -210,10 +256,15 @@ function _startCliMintReconciler({ rpcUrl, rpcHeaders, autoWalletSecret, interva
   const reconEnabled = _envFlag("FDV_CLI_RECON", true);
   if (!reconEnabled) return;
 
-  const { updatePosCache } = createPosCacheStore({
+  const { updatePosCache, cacheToList, removeFromPosCache } = createPosCacheStore({
     keyPrefix: "fdv_pos_",
     log: debug ? (m) => { try { console.log(`[CLI recon] ${m}`); } catch {} } : () => {},
   });
+
+  // Conservative "confirmed zero" cleanup (non-destructive):
+  // only remove a cached mint after several consecutive *scanOk* snapshots show it at zero.
+  const zeroConfirmNeeded = Math.max(2, Number(process?.env?.FDV_CLI_RECON_ZERO_CONFIRM || 3));
+  const zeroStreak = new Map();
 
   let stopped = false;
   let running = false;
@@ -230,6 +281,14 @@ function _startCliMintReconciler({ rpcUrl, rpcHeaders, autoWalletSecret, interva
 
       const owner = String(snap?.owner || "").trim();
       const balances = Array.isArray(snap?.balances) ? snap.balances : [];
+      const scanOk = !!snap?.tokenScanOk;
+
+      const onChainNonZero = new Set(
+        balances
+          .filter((x) => Number(x?.uiAmt || 0) > 0)
+          .map((x) => String(x?.mint || "").trim())
+          .filter(Boolean)
+      );
 
       // Update-only: never delete here (deletes are what burned us).
       if (owner) {
@@ -239,6 +298,34 @@ function _startCliMintReconciler({ rpcUrl, rpcHeaders, autoWalletSecret, interva
           const uiAmt = Number(b?.uiAmt || 0);
           if (!Number.isFinite(uiAmt) || uiAmt <= 0) continue;
           updatePosCache(owner, mint, uiAmt, Number(b?.decimals || 0));
+        }
+
+        // Confirmed-zero cleanup: only when scanOk=true.
+        if (scanOk) {
+          const cachedList = cacheToList(owner);
+          const cached = Array.isArray(cachedList) ? cachedList : [];
+          for (const p of cached) {
+            const mint = String(p?.mint || "").trim();
+            if (!mint || mint === SOL_MINT) continue;
+
+            if (onChainNonZero.has(mint)) {
+              zeroStreak.delete(mint);
+              continue;
+            }
+
+            const nextCount = Number(zeroStreak.get(mint) || 0) + 1;
+            zeroStreak.set(mint, nextCount);
+
+            if (nextCount >= zeroConfirmNeeded) {
+              try {
+                removeFromPosCache(owner, mint);
+              } catch {}
+              zeroStreak.delete(mint);
+              if (debug) {
+                try { console.log(`[CLI recon] Confirmed-zero purge mint=${mint.slice(0, 4)}… after ${zeroConfirmNeeded} scans`); } catch {}
+              }
+            }
+          }
         }
       }
 
