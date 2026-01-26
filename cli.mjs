@@ -269,6 +269,10 @@ async function main() {
 	const opts = parseBootstrapArgs(process.argv.slice(2));
 	opts.passthrough = normalizePassthroughArgs(opts.passthrough);
 
+	if (!Array.isArray(opts.passthrough) || opts.passthrough.length === 0) {
+		opts.passthrough = ["--quick-start"];
+	}
+
 	// If the user didn't explicitly pass --base-url, allow an env override.
 	if (!opts.explicitBaseUrl) {
 		const envBase = String(process?.env?.FDV_BASE_URL || process?.env?.FDV_CLI_BASE_URL || "").trim();

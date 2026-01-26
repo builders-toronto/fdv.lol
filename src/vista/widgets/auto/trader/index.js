@@ -3070,7 +3070,7 @@ export async function loadWeb3() {
   if (_isNodeLike()) {
     if (_web3NodePromise) return _web3NodePromise;
     _web3NodePromise = (async () => {
-      const { loadSolanaWeb3FromWeb } = await import("./cli/helpers/web3.node.js");
+      const { loadSolanaWeb3FromWeb } = await import("../cli/helpers/web3.node.js");
       return await loadSolanaWeb3FromWeb();
     })();
     const web3 = await _web3NodePromise;
@@ -3088,7 +3088,7 @@ export async function loadBs58() {
   if (_isNodeLike()) {
     if (_bs58NodePromise) return _bs58NodePromise;
     _bs58NodePromise = (async () => {
-      const mod = await import("./cli/helpers/bs58.node.js");
+      const mod = await import("../cli/helpers/bs58.node.js");
       return mod?.default || mod?.bs58 || mod;
     })();
     const bs58 = await _bs58NodePromise;
@@ -8472,7 +8472,7 @@ async function __fdvCli_startKpiFeeder() {
     const intervalMs = Math.max(2000, Number(state.kpiFeedIntervalMs || 10_000));
     const topN = Math.max(12, Number(state.kpiFeedTopN || 60));
 
-    const { startKpiFeeder } = await import("./cli/helpers/kpiFeeder.node.js");
+    const { startKpiFeeder } = await import("../cli/helpers/kpiFeeder.node.js");
     _cliKpiFeederStop = startKpiFeeder({ log, intervalMs, topN });
     return true;
   } catch (e) {
