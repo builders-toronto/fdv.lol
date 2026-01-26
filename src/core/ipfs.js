@@ -380,10 +380,11 @@ function _installLogoDomReleaseObserver() {
     });
 
     const root = document.documentElement || document.body;
-            try { _releaseImgLogoBinding(imgEl); } catch {}
     if (root) mo.observe(root, { childList: true, subtree: true });
   } catch {}
 }
+
+const _inflightLogoByCid = new Map(); // cid -> Promise<string(blobUrl)>
 
 const _cidGatewayHint = new Map();
 let _preferredGatewayIndex = 0;
@@ -406,10 +407,10 @@ function _canUseCacheStorage() {
 
 function _cacheKeyUrlForCid(cid) {
   try {
-    const origin = (typeof location !== 'undefined' && location.origin) ? location.origin : 'https://fdv.local';
+    const origin = (typeof location !== 'undefined' && location.origin) ? location.origin : 'https://fdv.lol';
     return origin + LOGO_CACHE_PATH + encodeURIComponent(cid) + '.img';
   } catch {
-    return 'https://fdv.local' + LOGO_CACHE_PATH + encodeURIComponent(cid) + '.img';
+    return 'https://fdv.lol' + LOGO_CACHE_PATH + encodeURIComponent(cid) + '.img';
   }
 }
 
@@ -606,6 +607,69 @@ async function _fetchBlobWithTimeout(url, timeoutMs) {
   }
 }
 
+async function _ensureLogoObjectUrlForCid(cid, opts = {}) {
+  try {
+    if (!cid) return '';
+
+    const existing = _getCachedObjectUrlForCid(cid);
+    if (existing) return existing;
+
+    if (shouldSilenceIpfs()) return '';
+    if (_blocked.has(cid)) return '';
+
+    const inflight = _inflightLogoByCid.get(cid);
+    if (inflight) return await inflight;
+
+    const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : DEFAULT_FETCH_TIMEOUT_MS;
+
+    const p = (async () => {
+      // 1) CacheStorage
+      try {
+        const cached = await _cacheGetLogoBlob(cid);
+        if (cached && cached.size) {
+          return _cacheObjectUrlFromBlob(cid, cached) || '';
+        }
+      } catch {}
+
+      // 2) Gateways
+      const order = _gatewayOrderForCid(cid);
+      for (const gwIndex of order) {
+        const url = buildGatewayUrl(cid, gwIndex);
+        try {
+          const blob = await _fetchBlobWithTimeout(url, timeoutMs);
+          if (!blob || !blob.size) throw new Error('EMPTY');
+
+          _preferredGatewayIndex = gwIndex;
+          _cidGatewayHint.set(cid, gwIndex);
+
+          try {
+            await _cachePutLogoBlob(cid, blob);
+            _maybeScheduleCompressionAndOverwriteCache(cid, blob);
+          } catch {}
+
+          return _cacheObjectUrlFromBlob(cid, blob) || '';
+        } catch {
+          try { markGatewayFailure(url); } catch {}
+          continue;
+        }
+      }
+
+      // 3) Give up
+      try { _blocked.add(cid); } catch {}
+      return '';
+    })();
+
+    _inflightLogoByCid.set(cid, p);
+    try {
+      return await p;
+    } finally {
+      if (_inflightLogoByCid.get(cid) === p) _inflightLogoByCid.delete(cid);
+    }
+  } catch {
+    return '';
+  }
+}
+
 export function getTokenLogoPlaceholder(raw, sym = '') {
   try {
     if (!raw || shouldSilenceIpfs()) return fallbackLogo(sym);
@@ -639,6 +703,7 @@ export function queueTokenLogoLoad(imgEl, raw, sym = '', opts = {}) {
     // Non-IPFS URL: just assign directly.
     const cid = extractCid(desiredRaw);
     if (!cid) {
+      try { _releaseImgLogoBinding(imgEl); } catch {}
       if (!desiredRaw) {
         const fb = fallbackLogo(desiredSym);
         if (imgEl.getAttribute('src') !== fb) imgEl.setAttribute('src', fb);
@@ -685,56 +750,15 @@ export function queueTokenLogoLoad(imgEl, raw, sym = '', opts = {}) {
     const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : DEFAULT_FETCH_TIMEOUT_MS;
 
     (async () => {
-      // Cache hit: avoid any gateway fetch.
-      try {
-        const cached = await _cacheGetLogoBlob(cid);
-        if (cached && cached.size) {
-          if (imgEl.__fdvLogoReqId !== reqId) return;
-
-          const objUrl = _cacheObjectUrlFromBlob(cid, cached);
-          if (objUrl) {
-            imgEl.setAttribute('src', objUrl);
-            try { _bindImgToCidIfNeeded(imgEl, cid); } catch {}
-          }
-          return;
-        }
-      } catch {}
-
-      const order = _gatewayOrderForCid(cid);
-      for (const gwIndex of order) {
-        const url = buildGatewayUrl(cid, gwIndex);
-        try {
-          const blob = await _fetchBlobWithTimeout(url, timeoutMs);
-          if (imgEl.__fdvLogoReqId !== reqId) return;
-          if (!blob || !blob.size) throw new Error('EMPTY');
-
-          // Update gateway preference/hints on success.
-          _preferredGatewayIndex = gwIndex;
-          _cidGatewayHint.set(cid, gwIndex);
-
-          // Replace prior object URL.
-          const objUrl = _cacheObjectUrlFromBlob(cid, blob);
-          if (objUrl) {
-            imgEl.setAttribute('src', objUrl);
-            try { _bindImgToCidIfNeeded(imgEl, cid); } catch {}
-          }
-
-          // Persist in CacheStorage for future loads, and optionally overwrite
-          // with a compressed WebP later (scheduled at idle to avoid UI jank).
-          try {
-            await _cachePutLogoBlob(cid, blob);
-            _maybeScheduleCompressionAndOverwriteCache(cid, blob);
-          } catch {}
-          return;
-        } catch {
-          try { markGatewayFailure(url); } catch {}
-          continue;
-        }
+      const objUrl = await _ensureLogoObjectUrlForCid(cid, { timeoutMs });
+      if (imgEl.__fdvLogoReqId !== reqId) return;
+      if (objUrl) {
+        imgEl.setAttribute('src', objUrl);
+        try { _bindImgToCidIfNeeded(imgEl, cid); } catch {}
+        return;
       }
 
-      // Everything failed: block CID and show fallback.
-      if (imgEl.__fdvLogoReqId !== reqId) return;
-      try { _blocked.add(cid); } catch {}
+      // Failed: show fallback.
       try { _releaseImgLogoBinding(imgEl); } catch {}
       const fb = fallbackLogo(desiredSym);
       if (imgEl.getAttribute('src') !== fb) imgEl.setAttribute('src', fb);
