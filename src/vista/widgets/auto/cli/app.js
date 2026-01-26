@@ -13,6 +13,8 @@ import { SOLANA_RPC_URL as DEFAULT_SOLANA_RPC_URL } from "../../../../config/env
 
 import { runPipeline } from "../lib/pipeline.js";
 
+import { createPosCacheStore } from "../lib/stores/posCacheStore.js";
+
 import { createPreflightSellPolicy } from "../lib/sell/policies/preflight.js";
 import { createUrgentSellPolicy } from "../lib/sell/policies/urgent.js";
 import { createQuoteAndEdgePolicy } from "../lib/sell/policies/quoteAndEdge.js";
@@ -26,6 +28,12 @@ import { createFallbackSellPolicy } from "../lib/sell/policies/fallbackSell.js";
 import { createExecuteSellDecisionPolicy } from "../lib/sell/policies/executeSellDecision.js";
 
 const AUTO_LS_KEY = "fdv_auto_bot_v1";
+
+const CLI_RECON_LS_KEY = "fdv_cli_recon_v1";
+let _cliMintReconStop = null;
+let _cliLastWalletSnap = null;
+let _cliLastWalletSnapAt = 0;
+let _cliWalletSnapInFlight = null;
 
 function ensureWindowShim() {
   if (typeof globalThis.window === "undefined") globalThis.window = globalThis;
@@ -111,6 +119,157 @@ function _isNodeLike() {
 
 function _sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function _envFlag(name, defaultValue = false) {
+  const raw = String(process?.env?.[name] ?? "").trim();
+  if (!raw) return !!defaultValue;
+  if (/^(1|true|yes|y|on)$/i.test(raw)) return true;
+  if (/^(0|false|no|n|off)$/i.test(raw)) return false;
+  return !!defaultValue;
+}
+
+async function _cliGetWalletSnap({ rpcUrl, rpcHeaders, autoWalletSecret, maxAgeMs = 3500 } = {}) {
+  const now = Date.now();
+  if (_cliLastWalletSnap && (now - Number(_cliLastWalletSnapAt || 0)) <= Math.max(250, Number(maxAgeMs || 0))) {
+    return _cliLastWalletSnap;
+  }
+
+  if (_cliWalletSnapInFlight) {
+    try { return await _cliWalletSnapInFlight; } catch { return null; }
+  }
+
+  _cliWalletSnapInFlight = (async () => {
+    const snap = await __fdvCli_nodeWalletStatusSnapshot({ rpcUrl, rpcHeaders, autoWalletSecret });
+    _cliLastWalletSnap = snap;
+    _cliLastWalletSnapAt = Date.now();
+    return snap;
+  })();
+
+  try {
+    return await _cliWalletSnapInFlight;
+  } catch {
+    return null;
+  } finally {
+    _cliWalletSnapInFlight = null;
+  }
+}
+
+function _installHeadlessAutoOverridesForCliRecon({ autoMod, rpcUrl, rpcHeaders, autoWalletSecret } = {}) {
+  try {
+    const prev = (globalThis.__fdvAutoBotOverrides && typeof globalThis.__fdvAutoBotOverrides === "object")
+      ? globalThis.__fdvAutoBotOverrides
+      : {};
+    const next = { ...prev, headless: true };
+
+    if (typeof next.pruneZeroBalancePositions !== "function") {
+      next.pruneZeroBalancePositions = async () => {};
+    }
+
+    if (typeof next.verifyRealTokenBalance !== "function") {
+      next.verifyRealTokenBalance = async (ownerStr, mint, pos) => {
+        const mintStr = String(mint || "").trim();
+        const fallbackPosSize = Number(pos?.sizeUi || 0);
+
+        try {
+          const snap = await _cliGetWalletSnap({ rpcUrl, rpcHeaders, autoWalletSecret }).catch(() => null);
+          const owner = String(snap?.owner || "").trim();
+          if (snap && owner && ownerStr && String(ownerStr) !== owner) {
+            return { ok: true, sizeUi: fallbackPosSize, purged: false, unverified: true, reason: "owner_mismatch" };
+          }
+
+          const balances = Array.isArray(snap?.balances) ? snap.balances : [];
+          const hit = balances.find((b) => String(b?.mint || "").trim() === mintStr);
+          const sizeUi = Number(hit?.uiAmt || 0);
+          return {
+            ok: true,
+            sizeUi: Number.isFinite(sizeUi) ? sizeUi : 0,
+            purged: false,
+            unverified: false,
+            program: hit?.program,
+          };
+        } catch {
+          // Last resort: keep behavior non-blocking (previous headless override always returned ok).
+          return { ok: true, sizeUi: fallbackPosSize, purged: false, unverified: true, reason: "snap_failed" };
+        }
+      };
+    }
+
+    autoMod.__fdvDebug_setOverrides?.(next);
+  } catch {}
+}
+
+function _stopCliMintReconciler() {
+  try { if (typeof _cliMintReconStop === "function") _cliMintReconStop(); } catch {}
+  _cliMintReconStop = null;
+}
+
+function _startCliMintReconciler({ rpcUrl, rpcHeaders, autoWalletSecret, intervalMs = 2000, debug = false } = {}) {
+  _stopCliMintReconciler();
+
+  const reconEnabled = _envFlag("FDV_CLI_RECON", true);
+  if (!reconEnabled) return;
+
+  const { updatePosCache } = createPosCacheStore({
+    keyPrefix: "fdv_pos_",
+    log: debug ? (m) => { try { console.log(`[CLI recon] ${m}`); } catch {} } : () => {},
+  });
+
+  let stopped = false;
+  let running = false;
+
+  const runOnce = async () => {
+    if (stopped || running) return;
+    running = true;
+    try {
+      const snap = await __fdvCli_nodeWalletStatusSnapshot({ rpcUrl, rpcHeaders, autoWalletSecret });
+
+      // Make latest snapshot available to the headless verify override.
+      _cliLastWalletSnap = snap;
+      _cliLastWalletSnapAt = Date.now();
+
+      const owner = String(snap?.owner || "").trim();
+      const balances = Array.isArray(snap?.balances) ? snap.balances : [];
+
+      // Update-only: never delete here (deletes are what burned us).
+      if (owner) {
+        for (const b of balances) {
+          const mint = String(b?.mint || "").trim();
+          if (!mint || mint === SOL_MINT) continue;
+          const uiAmt = Number(b?.uiAmt || 0);
+          if (!Number.isFinite(uiAmt) || uiAmt <= 0) continue;
+          updatePosCache(owner, mint, uiAmt, Number(b?.decimals || 0));
+        }
+      }
+
+      try {
+        localStorage.setItem(
+          CLI_RECON_LS_KEY,
+          JSON.stringify({
+            at: Date.now(),
+            owner,
+            ok: !!snap?.tokenScanOk,
+            mints: balances.filter((x) => Number(x?.uiAmt || 0) > 0).map((x) => String(x?.mint || "")),
+          })
+        );
+      } catch {}
+    } catch (e) {
+      if (debug) {
+        try { console.error(`[CLI recon] scan failed: ${e?.message || e}`); } catch {}
+      }
+    } finally {
+      running = false;
+    }
+  };
+
+  // Kick once immediately to populate cache before first sell-eval.
+  runOnce().catch(() => {});
+  const timer = setInterval(() => { runOnce().catch(() => {}); }, Math.max(500, Number(intervalMs || 0) || 2000));
+
+  _cliMintReconStop = () => {
+    stopped = true;
+    try { clearInterval(timer); } catch {}
+  };
 }
 
 const SOL_MINT = "So11111111111111111111111111111111111111112";
@@ -927,6 +1086,229 @@ async function promptNumber(question, { defaultValue = 0, min = -Infinity, max =
   }
 }
 
+async function promptChoice(question, choices = [], { defaultIndex = 0, allowCancel = true } = {}) {
+  const list = Array.isArray(choices) ? choices.filter(Boolean) : [];
+  if (!list.length) throw new Error("promptChoice: missing choices");
+
+  const norm = (v) => String(v || "").trim().toLowerCase();
+  while (true) {
+    console.log(String(question || "").trim());
+    for (let i = 0; i < list.length; i++) {
+      console.log(`  ${i + 1}) ${String(list[i])}`);
+    }
+    if (allowCancel) console.log("  q) cancel");
+
+    const dv = (Number.isFinite(Number(defaultIndex)) && defaultIndex >= 0 && defaultIndex < list.length)
+      ? String(defaultIndex + 1)
+      : "";
+    const raw = await promptLine("Select", { defaultValue: dv });
+    const v = norm(raw);
+    if (allowCancel && (v === "q" || v === "quit" || v === "cancel")) return null;
+
+    const n = Number(v);
+    if (Number.isFinite(n) && n >= 1 && n <= list.length) return list[n - 1];
+
+    // Allow direct string match too.
+    const hit = list.find((x) => norm(x) === v);
+    if (hit) return hit;
+
+    console.log("Invalid choice. Try again.");
+  }
+}
+
+function _maskSecret(s) {
+  try {
+    const v = String(s || "").trim();
+    if (!v) return "";
+    if (v.length <= 8) return "***";
+    return `${v.slice(0, 3)}…${v.slice(-4)}`;
+  } catch {
+    return "";
+  }
+}
+
+function _getEnvKeyForProvider(provider) {
+  try {
+    const p = String(provider || "").trim().toLowerCase();
+    const env = (typeof process !== "undefined" && process && process.env) ? process.env : {};
+    const pick = (...names) => {
+      for (const n of names) {
+        const v = String(env?.[n] || "").trim();
+        if (v) return v;
+      }
+      return "";
+    };
+    if (p === "gemini") return pick("GEMINI_API_KEY", "FDV_GEMINI_KEY");
+    if (p === "grok") return pick("GROK_API_KEY", "XAI_API_KEY", "FDV_GROK_KEY");
+    if (p === "deepseek") return pick("DEEPSEEK_API_KEY", "FDV_DEEPSEEK_KEY");
+    return pick("OPENAI_API_KEY", "FDV_OPENAI_KEY");
+  } catch {
+    return "";
+  }
+}
+
+function _lsKeyForProvider(provider) {
+  const p = String(provider || "").trim().toLowerCase();
+  if (p === "gemini") return "fdv_gemini_key";
+  if (p === "grok") return "fdv_grok_key";
+  if (p === "deepseek") return "fdv_deepseek_key";
+  return "fdv_openai_key";
+}
+
+function applyAgentGaryFullAiToStorage({ provider, model, riskLevel, apiKey } = {}) {
+  try {
+    if (typeof localStorage === "undefined") return false;
+    const p = String(provider || "").trim().toLowerCase() || "openai";
+    const m = String(model || "").trim() || (p === "gemini" ? "gemini-1.5-flash" : (p === "deepseek" ? "deepseek-chat" : (p === "grok" ? "grok-beta" : "gpt-4o-mini")));
+    const r = String(riskLevel || "safe").trim().toLowerCase();
+    const rl = (r === "safe" || r === "medium" || r === "degen") ? r : "safe";
+    const k = String(apiKey || "").trim();
+
+    localStorage.setItem("fdv_agent_enabled", "true");
+    localStorage.setItem("fdv_agent_risk", rl);
+    localStorage.setItem("fdv_llm_provider", p);
+    localStorage.setItem("fdv_llm_model", m);
+    localStorage.setItem("fdv_agent_full_control", "true");
+    if (k) localStorage.setItem(_lsKeyForProvider(p), k);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function applyAgentGaryFullAiOverrides({ provider, model, riskLevel, apiKey } = {}) {
+  try {
+    const p = String(provider || "").trim().toLowerCase() || "openai";
+    const m = String(model || "").trim();
+    const r = String(riskLevel || "safe").trim().toLowerCase();
+    const rl = (r === "safe" || r === "medium" || r === "degen") ? r : "safe";
+    const k = String(apiKey || "").trim();
+
+    if (!globalThis.__fdvAgentOverrides || typeof globalThis.__fdvAgentOverrides !== "object") {
+      globalThis.__fdvAgentOverrides = {};
+    }
+
+    // Keep this provider-agnostic; the agent driver will normalize.
+    globalThis.__fdvAgentOverrides = {
+      ...(globalThis.__fdvAgentOverrides || {}),
+      enabled: true,
+      riskLevel: rl,
+      llmProvider: p,
+      llmModel: m,
+      llmApiKey: k,
+      apiKey: k,
+      openaiApiKey: p === "openai" ? k : "",
+    };
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function configureAutoProfileForRisk(riskLevel, existing = {}) {
+  const out = existing && typeof existing === "object" ? { ...existing } : {};
+  out.enabled = true;
+  const r = String(riskLevel || "safe").trim().toLowerCase();
+  const rl = (r === "safe" || r === "medium" || r === "degen") ? r : "safe";
+
+  if (rl === "safe") {
+    out.buyPct = 0.15;
+    out.maxBuySol = 0.18;
+    out.slippageBps = 220;
+    out.takeProfitPct = 10;
+    out.stopLossPct = 4;
+    out.coolDownSecsAfterBuy = 5;
+    out.minHoldSecs = 60;
+    out.maxHoldSecs = 120;
+  } else if (rl === "medium") {
+    out.buyPct = 0.22;
+    out.maxBuySol = 0.28;
+    out.slippageBps = 300;
+    out.takeProfitPct = 14;
+    out.stopLossPct = 6;
+    out.coolDownSecsAfterBuy = 3;
+    out.minHoldSecs = 45;
+    out.maxHoldSecs = 90;
+  } else {
+    out.buyPct = 0.32;
+    out.maxBuySol = 0.55;
+    out.slippageBps = 450;
+    out.takeProfitPct = 22;
+    out.stopLossPct = 12;
+    out.coolDownSecsAfterBuy = 2;
+    out.minHoldSecs = 30;
+    out.maxHoldSecs = 75;
+  }
+
+  return out;
+}
+
+async function configureAgentGaryFullAiWizard(existing = {}) {
+  const ex = existing && typeof existing === "object" ? existing : {};
+
+  console.log("\nAuto mode: Agent Gary (full AI) setup (required)");
+  console.log("You will pick: model, risk, and API key.\n");
+
+  const supportedModels = [
+    "gpt-4o-mini",
+    "gpt-4.1-mini",
+    "gpt-4o",
+    "gpt-5-nano",
+    "gemini-2.5-flash-lite",
+    "grok-3-mini",
+    "deepseek-chat",
+  ];
+
+  const modelDefault = String(ex.llmModel || ex.model || ex.openaiModel || "gpt-4o-mini").trim();
+  const defaultIndex = Math.max(0, supportedModels.indexOf(modelDefault));
+  const modelPick = await promptChoice(
+    "Select model:",
+    supportedModels,
+    { defaultIndex, allowCancel: true }
+  );
+  if (!modelPick) return { canceled: true };
+  const model = String(modelPick).trim();
+
+  const inferProvider = (m) => {
+    const mm = String(m || "").trim().toLowerCase();
+    if (mm.startsWith("gemini-")) return "gemini";
+    if (mm.startsWith("grok-")) return "grok";
+    if (mm.startsWith("deepseek-")) return "deepseek";
+    return "openai";
+  };
+  const provider = inferProvider(model);
+
+  const riskDefault = String(ex.riskLevel || "safe").trim().toLowerCase();
+  const riskPick = await promptChoice(
+    "Select risk preset:",
+    ["safe", "medium", "degen"],
+    { defaultIndex: Math.max(0, ["safe", "medium", "degen"].indexOf(riskDefault)), allowCancel: true }
+  );
+  if (!riskPick) return { canceled: true };
+  const riskLevel = String(riskPick).trim().toLowerCase();
+
+  let apiKey = "";
+  while (true) {
+    const raw = await promptLine(`${provider} API key (paste; input hidden not supported)`, { defaultValue: "" });
+    const v = String(raw || "").trim();
+    if (!v) {
+      console.log("API key is required to start auto mode. Paste it or type 'q' to cancel.");
+      continue;
+    }
+    if (v.toLowerCase() === "q" || v.toLowerCase() === "quit" || v.toLowerCase() === "cancel") {
+      return { canceled: true };
+    }
+    apiKey = v;
+    break;
+  }
+
+  return {
+    canceled: false,
+    agent: { enabled: true, llmProvider: provider, llmModel: model, riskLevel },
+    apiKey,
+  };
+}
+
 async function configureAutoProfileInteractive(existing = {}) {
   // Auto bot is powerful; force an explicit config pass.
   const out = existing && typeof existing === "object" ? { ...existing } : {};
@@ -1322,21 +1704,62 @@ async function startBotWithDefaults({ bot, rpcUrl, rpcHeaders, autoWalletSecret,
 
   if (name === "auto" || name === "trader") {
     const autoMod = await import("../trader/index.js");
-    try { autoMod.__fdvDebug_setOverrides?.({ ...(globalThis.__fdvAutoBotOverrides || {}), headless: true }); } catch {}
+    _installHeadlessAutoOverridesForCliRecon({ autoMod, rpcUrl, rpcHeaders, autoWalletSecret });
 
-    // Force an explicit profile config pass for auto.
-    const configured = await configureAutoProfileInteractive({ ...(profile.auto || {}), ...(profile.trader || {}) });
+    try {
+      const g = (typeof window !== "undefined") ? window : globalThis;
+      if (g && !g._fdvLogToConsole) g._fdvLogToConsole = true;
+    } catch {}
+
+    // Auto mode: strictly Agent Gary full AI wizard (model + risk + API key), then apply risk preset.
+    const existingAgent = (profileSink && typeof profileSink === "object" && profileSink.agent && typeof profileSink.agent === "object")
+      ? profileSink.agent
+      : (profile && typeof profile === "object" && profile.agent && typeof profile.agent === "object")
+        ? profile.agent
+        : {};
+    const wiz = await configureAgentGaryFullAiWizard(existingAgent);
+    if (wiz?.canceled) return { status: "menu" };
+
+    // Persist non-secret selections in the temp profile (provider/model/risk). Do NOT persist API keys.
+    try {
+      if (profileSink && typeof profileSink === "object") {
+        profileSink.agent = { ...(profileSink.agent && typeof profileSink.agent === "object" ? profileSink.agent : {}), ...(wiz.agent || {}) };
+      }
+    } catch {}
+
+    // Apply to runtime (agent driver reads overrides/localStorage).
+    applyAgentGaryFullAiOverrides({ ...(wiz.agent || {}), apiKey: wiz.apiKey });
+    applyAgentGaryFullAiToStorage({ ...(wiz.agent || {}), apiKey: wiz.apiKey });
+
+    const configured = configureAutoProfileForRisk(wiz?.agent?.riskLevel || "safe", { ...(profile.auto || {}), ...(profile.trader || {}) });
     profile.auto = configured;
     try {
       if (profileSink && typeof profileSink === "object") {
         profileSink.auto = { ...(profileSink.auto && typeof profileSink.auto === "object" ? profileSink.auto : {}), ...configured, enabled: true };
       }
     } catch {}
+
     // Headless trader requires wallet secret in state (getAutoKeypair() uses state.autoWalletSecret).
     autoMod.__fdvCli_applyProfile({ rpcUrl, rpcHeaders, autoWalletSecret, ...configured });
+
+    // Keep position cache reconciled from chain under Node (Token-2022 included).
+    _startCliMintReconciler({
+      rpcUrl,
+      rpcHeaders,
+      autoWalletSecret,
+      intervalMs: _envFlag("FDV_CLI_RECON_FAST", false) ? 1200 : 2000,
+      debug: _envFlag("FDV_CLI_RECON_DEBUG", false),
+    });
+
     const ok = await autoMod.__fdvCli_start({ enable: true });
     if (!ok) throw new Error("AUTO_START_FAILED");
-    return { status: "running", stopFn: async () => autoMod.__fdvCli_stop?.({ runFinalSellEval: false }) };
+    return {
+      status: "running",
+      stopFn: async () => {
+        _stopCliMintReconciler();
+        return autoMod.__fdvCli_stop?.({ runFinalSellEval: false });
+      },
+    };
   }
 
   if (name === "follow") {
@@ -1524,11 +1947,10 @@ function _normalizeBotChoice(s) {
   if (v === "2") return "follow";
   if (v === "3") return "hold";
   if (v === "4") return "volume";
-  if (v === "5") return "sniper";
-  if (v === "6") return "flame";
-  if (v === "7") return "return";
-  if (v === "8") return "status";
-  if (v === "9") return "rpc";
+  if (v === "5") return "flame";
+  if (v === "6") return "return";
+  if (v === "7") return "status";
+  if (v === "8") return "rpc";
   return v;
 }
 
@@ -1547,7 +1969,7 @@ async function unwindAllHoldingsToSol({ rpcUrl, rpcHeaders, autoWalletSecret, re
     console.log("Unwind skipped: missing wallet secret.");
     return;
   }
-
+  //TODO: hide private key with a million $FDV in it
   //46LduB6z6LZD6Dg5nskq5n9gtrFvFsUCdfvdwaU6EKVqme9oHAYQ2pdz97PbQFvW5s3yqKUS7w8UnNTcKvf3tbqX
 
   console.log("Unwinding: selling all token balances -> SOL…");
@@ -1747,17 +2169,16 @@ async function quickStartMenuLoop({ rpcUrl, rpcHeaders, autoWalletSecret, logToC
   while (true) {
     try {
       console.log("\nMain menu:");
-      console.log("  1) auto    - auto trader (requires config)");
+      console.log("  1) auto    - auto trader (Full AI mode)");
       console.log("  2) follow  - follow a wallet");
       console.log("  3) hold    - hold a mint");
       console.log("  4) volume  - volume bot");
-      console.log("  5) sniper  - sniper a mint");
-      console.log("  6) flame   - sniper flame mode");
-      console.log("  7) return  - sell all -> SOL, then transfer SOL to a wallet");
-      console.log("  8) status  - show wallet SOL + token balances");
-      console.log("  9) rpc     - set RPC endpoint");
+      console.log("  5) flame   - sniper flame mode");
+      console.log("  6) return  - sell all -> SOL, then transfer SOL to a wallet");
+      console.log("  7) status  - show wallet SOL + token balances");
+      console.log("  8) rpc     - set RPC endpoint");
 
-      const raw = await promptLine("Select (1-9, name)", { defaultValue: "" });
+      const raw = await promptLine("Select (1-8, name)", { defaultValue: "" });
       const rawLower = String(raw || "").trim().toLowerCase();
       if (rawLower === "q" || rawLower === "quit" || rawLower === "exit") {
         console.log("Use Ctrl+C to exit the app.");
@@ -2316,7 +2737,44 @@ async function quickStart(argv = []) {
   const bot = String(getValue("--bot") || "auto").trim().toLowerCase();
   const profileNameArg = String(getValue("--profile-name") || "").trim();
 
-  const { rpcUrl, rpcHeaders } = await requireRpcFromArgs({ flags, getValue });
+  let { rpcUrl, rpcHeaders } = await requireRpcFromArgs({ flags, getValue });
+
+  // Quick-start RPC: prompt early so funding/balance checks use the right endpoint.
+  // Allow default/public RPC, but show a strong warning about rate limits.
+  try {
+    const explicitRpc = String(
+      getValue("--rpc-url") ||
+      process?.env?.FDV_RPC_URL ||
+      process?.env?.SOLANA_RPC_URL ||
+      ""
+    ).trim();
+
+    if (!explicitRpc) {
+      console.log("\nRPC setup (recommended):");
+      console.log(`  Current/default: ${String(rpcUrl || "").trim() || "(none)"}`);
+      console.log("\nWARNING: The default/public Solana RPC is heavily rate-limited.");
+      console.log("If you see 429 Too Many Requests, timeouts, or failed swaps, this is why.");
+      console.log("Get a private RPC from Chainstack or QuickNode and paste it here.");
+
+      while (true) {
+        const rawUrl = await promptLine("Custom RPC URL (http/https) (Enter = keep default)", { defaultValue: "" });
+        const v = String(rawUrl || "").trim();
+        if (!v) {
+          console.log("\nUsing default/public RPC. Expect rate-limit failures under load.");
+          console.log("Tip: Chainstack/QuickNode private RPC fixes most 429 issues.\n");
+          break;
+        }
+        if (!_isProbablyHttpUrl(v)) {
+          console.log("Invalid URL. Example: https://api.mainnet-beta.solana.com");
+          continue;
+        }
+        rpcUrl = v;
+        break;
+      }
+
+      try { applyGlobalRpcToStorage({ rpcUrl, rpcHeaders }); } catch {}
+    }
+  } catch {}
 
   // If the user didn't provide an RPC explicitly, call out the default being used.
   try {
@@ -2409,11 +2867,10 @@ async function quickStart(argv = []) {
   } catch {}
 
   console.log("\nBots you can start:");
-  console.log("  auto    - auto trader");
+  console.log("  auto    - auto trader (Full AI mode)");
   console.log("  follow  - follow a wallet (prompts for target)");
   console.log("  hold    - hold a mint (prompts for mint)");
   console.log("  volume  - volume bot (prompts for mint)");
-  console.log("  sniper  - sniper a mint (prompts for mint)");
   console.log("  flame   - sniper flame mode (auto-picks leader)\n");
 
   // Enter resilient main loop (never hard-exit on errors).
@@ -2722,11 +3179,26 @@ async function runProfile(argv) {
 
   if (enableAuto) {
     autoMod = await import("../trader/index.js");
-    try { autoMod.__fdvDebug_setOverrides?.({ ...(globalThis.__fdvAutoBotOverrides || {}), headless: true }); } catch {}
+    _installHeadlessAutoOverridesForCliRecon({
+      autoMod,
+      rpcUrl: profile?.rpcUrl,
+      rpcHeaders: profile?.rpcHeaders,
+      autoWalletSecret: profile?.autoWalletSecret,
+    });
     autoMod.__fdvCli_applyProfile(pickAutoProfile(profile));
+
+    _startCliMintReconciler({
+      rpcUrl: profile?.rpcUrl,
+      rpcHeaders: profile?.rpcHeaders,
+      autoWalletSecret: profile?.autoWalletSecret,
+      intervalMs: _envFlag("FDV_CLI_RECON_FAST", false) ? 1200 : 2000,
+      debug: _envFlag("FDV_CLI_RECON_DEBUG", false),
+    });
+
     const ok = await autoMod.__fdvCli_start({ enable: true });
     if (!ok) {
       console.error("Headless start failed (auto bot). See logs above.");
+      _stopCliMintReconciler();
       return 3;
     }
   }
@@ -2801,6 +3273,7 @@ async function runProfile(argv) {
       try { if (sniperMod) await sniperMod.__fdvCli_stop(); } catch {}
       try { if (followMod) await followMod.__fdvCli_stop(); } catch {}
       try { if (autoMod) await autoMod.__fdvCli_stop({ runFinalSellEval: true }); } catch {}
+      _stopCliMintReconciler();
     } finally {
       process.exit(0);
     }

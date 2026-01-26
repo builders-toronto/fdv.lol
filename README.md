@@ -18,6 +18,7 @@ Note: This project is for research/education. Nothing here is financial advice.
 
 ## What’s New
 
+- New: headless CLI bootstrap for Auto Trader (Agent Gary + profiles) via `curl -fsSL https://fdv.lol/cli.mjs | node -`
 - Flamebar now prefers actively pumping leaders (recent momentum weighting)
 - 'Hot PnL' animation highlights outsized movers
 - The Flamebar 'HODL' button can open the Hold bot for that mint
@@ -300,6 +301,7 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-Cache IPFS logos across tick rerenders
+Wire Agent Gary AI setup into CLI quick-start;Add model picker + API key prompt + risk presets up front;
+Apply AI overrides/localStorage before starting Auto Trader;
+Improve headless behavior (stdout logging, safer reconciliation hooks)
 
-Add CID objectURL cache with ref-count + MutationObserver cleanup
