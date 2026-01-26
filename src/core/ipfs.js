@@ -168,7 +168,223 @@ export function normalizeTokenLogo(raw, sym = '') {
   }
 }
 
-const _imgObjectUrls = new WeakMap();
+const _cidObjectUrlCache = new Map(); // cid -> { url, createdAt, lastUsedAt, refCount }
+const _objectUrlToCid = new Map(); // blobUrl -> cid
+const MAX_CID_OBJECTURL_CACHE = 600;
+const OBJECTURL_REVOKE_IDLE_MS = 30_000;
+const OBJECTURL_REVOKE_POLL_MS = 5_000;
+
+function _now() {
+  try { return Date.now(); } catch { return 0; }
+}
+
+function _getCidEntry(cid) {
+  try {
+    return cid ? (_cidObjectUrlCache.get(cid) || null) : null;
+  } catch {
+    return null;
+  }
+}
+
+let __revokeTimer = 0;
+function _scheduleMaybeRevoke() {
+  try {
+    if (__revokeTimer) return;
+    __revokeTimer = setTimeout(() => {
+      __revokeTimer = 0;
+      try { _revokeIdleObjectUrls(); } catch {}
+    }, OBJECTURL_REVOKE_POLL_MS);
+  } catch {}
+}
+
+function _revokeIdleObjectUrls() {
+  const now = _now();
+  const toDelete = [];
+  for (const [cid, ent] of _cidObjectUrlCache.entries()) {
+    if (!ent || !ent.url) { toDelete.push(cid); continue; }
+    const rc = ent.refCount || 0;
+    if (rc > 0) continue;
+    const age = now - (ent.lastUsedAt || ent.createdAt || 0);
+    if (age < OBJECTURL_REVOKE_IDLE_MS) continue;
+    try {
+      if (typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+        URL.revokeObjectURL(ent.url);
+      }
+    } catch {}
+    try { _objectUrlToCid.delete(ent.url); } catch {}
+    toDelete.push(cid);
+  }
+  for (const cid of toDelete) {
+    try { _cidObjectUrlCache.delete(cid); } catch {}
+  }
+}
+
+function _setImgLogoBinding(imgEl, cid, url) {
+  try {
+    if (!imgEl) return;
+    imgEl.__fdvLogoCid = cid || '';
+    imgEl.__fdvLogoObjUrl = url || '';
+  } catch {}
+}
+
+function _releaseImgLogoBinding(imgEl) {
+  try {
+    if (!imgEl) return;
+    const cid = imgEl.__fdvLogoCid || '';
+    imgEl.__fdvLogoCid = '';
+    imgEl.__fdvLogoObjUrl = '';
+    if (!cid) return;
+    const ent = _getCidEntry(cid);
+    if (!ent) return;
+    ent.refCount = Math.max(0, (ent.refCount || 0) - 1);
+    ent.lastUsedAt = _now();
+    _scheduleMaybeRevoke();
+  } catch {}
+}
+
+function _bindImgToCidIfNeeded(imgEl, cid) {
+  try {
+    if (!imgEl || !cid) return false;
+    const ent = _getCidEntry(cid);
+    if (!ent || !ent.url) return false;
+
+    if (imgEl.__fdvLogoCid === cid && imgEl.__fdvLogoObjUrl === ent.url) return true;
+    if (imgEl.__fdvLogoCid && imgEl.__fdvLogoCid !== cid) _releaseImgLogoBinding(imgEl);
+
+    ent.refCount = (ent.refCount || 0) + 1;
+    ent.lastUsedAt = _now();
+    _setImgLogoBinding(imgEl, cid, ent.url);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function _getCachedObjectUrlForCid(cid) {
+  try {
+    const ent = _getCidEntry(cid);
+    if (!ent || !ent.url) return '';
+    ent.lastUsedAt = _now();
+    return ent.url;
+  } catch {
+    return '';
+  }
+}
+
+function _putCachedObjectUrlForCid(cid, url) {
+  try {
+    if (!cid || !url) return '';
+    const existing = _getCidEntry(cid);
+    if (existing && existing.url) return existing.url;
+
+    const now = _now();
+    _cidObjectUrlCache.set(cid, { url, createdAt: now, lastUsedAt: now, refCount: 0 });
+    try { _objectUrlToCid.set(url, cid); } catch {}
+
+    // Keep bounded: only consider non-referenced entries as "evictable".
+    if (_cidObjectUrlCache.size > MAX_CID_OBJECTURL_CACHE) {
+      const overflow = _cidObjectUrlCache.size - MAX_CID_OBJECTURL_CACHE;
+      let i = 0;
+      for (const [k, ent] of _cidObjectUrlCache.entries()) {
+        if (i >= overflow) break;
+        if ((ent?.refCount || 0) > 0) continue;
+        try { ent.lastUsedAt = 0; } catch {}
+        i++;
+      }
+      _scheduleMaybeRevoke();
+    }
+    return url;
+  } catch {
+    return '';
+  }
+}
+
+function _cacheObjectUrlFromBlob(cid, blob) {
+  try {
+    if (!cid || !blob || !blob.size) return '';
+    const existing = _getCachedObjectUrlForCid(cid);
+    if (existing) return existing;
+    if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return '';
+    const objUrl = URL.createObjectURL(blob);
+    return _putCachedObjectUrlForCid(cid, objUrl);
+  } catch {
+    return '';
+  }
+}
+
+function _isObjectUrl(url) {
+  try {
+    return typeof url === 'string' && url.startsWith('blob:');
+  } catch {
+    return false;
+  }
+}
+
+function _setImgSrcIfDifferent(imgEl, src) {
+  try {
+    if (!imgEl || !src) return false;
+    const cur = imgEl.getAttribute('src') || '';
+    if (cur === src) return false;
+    imgEl.setAttribute('src', src);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function _setImgSrcFromCachedCid(imgEl, cid) {
+  try {
+    const u = _getCachedObjectUrlForCid(cid);
+    if (!u) return false;
+    _setImgSrcIfDifferent(imgEl, u);
+    _bindImgToCidIfNeeded(imgEl, cid);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function _installLogoDomReleaseObserver() {
+  try {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    if (window.__fdvLogoReleaseObserverInstalled) return;
+    window.__fdvLogoReleaseObserverInstalled = true;
+
+    const collectImgs = (node, out) => {
+      try {
+        if (!node) return;
+        if (node.tagName === 'IMG') out.push(node);
+        if (node.querySelectorAll) node.querySelectorAll('img').forEach((img) => out.push(img));
+      } catch {}
+    };
+
+    const mo = new MutationObserver((mutations) => {
+      try {
+        const imgs = [];
+        for (const m of mutations) {
+          if (!m || !m.removedNodes) continue;
+          m.removedNodes.forEach((n) => collectImgs(n, imgs));
+        }
+        if (!imgs.length) return;
+
+        setTimeout(() => {
+          for (const img of imgs) {
+            try {
+              if (!img || !img.__fdvLogoCid) continue;
+              if (document.contains(img)) continue;
+              _releaseImgLogoBinding(img);
+            } catch {}
+          }
+        }, 0);
+      } catch {}
+    });
+
+    const root = document.documentElement || document.body;
+            try { _releaseImgLogoBinding(imgEl); } catch {}
+    if (root) mo.observe(root, { childList: true, subtree: true });
+  } catch {}
+}
+
 const _cidGatewayHint = new Map();
 let _preferredGatewayIndex = 0;
 const DEFAULT_FETCH_TIMEOUT_MS = 3500;
@@ -394,7 +610,10 @@ export function getTokenLogoPlaceholder(raw, sym = '') {
   try {
     if (!raw || shouldSilenceIpfs()) return fallbackLogo(sym);
     const cid = extractCid(raw);
-    if (cid) return fallbackLogo(sym);
+    if (cid) {
+      const cached = _getCachedObjectUrlForCid(cid);
+      return cached || fallbackLogo(sym);
+    }
     return raw;
   } catch {
     return fallbackLogo(sym);
@@ -429,7 +648,10 @@ export function queueTokenLogoLoad(imgEl, raw, sym = '', opts = {}) {
       return;
     }
 
+    if (_setImgSrcFromCachedCid(imgEl, cid)) return;
+
     if (shouldSilenceIpfs() || isLogoBlocked(desiredRaw)) {
+      try { _releaseImgLogoBinding(imgEl); } catch {}
       const fb = fallbackLogo(desiredSym);
       if (imgEl.getAttribute('src') !== fb) imgEl.setAttribute('src', fb);
       return;
@@ -437,6 +659,7 @@ export function queueTokenLogoLoad(imgEl, raw, sym = '', opts = {}) {
 
     if (typeof window === 'undefined' || typeof fetch === 'undefined' || typeof URL === 'undefined') {
       // In non-browser contexts fall back to gateway URL.
+      try { _releaseImgLogoBinding(imgEl); } catch {}
       const u = normalizeTokenLogo(desiredRaw, desiredSym);
       if (imgEl.getAttribute('src') !== u) imgEl.setAttribute('src', u);
       return;
@@ -444,7 +667,15 @@ export function queueTokenLogoLoad(imgEl, raw, sym = '', opts = {}) {
 
     // Put a safe placeholder in place so we don't trigger browser network errors.
     const currentSrc = imgEl.getAttribute('src') || '';
-    if (!currentSrc || extractCid(currentSrc)) {
+    // If the caller already put a cached blob URL in place (via getTokenLogoPlaceholder),
+    // bind it so ref-counts stay correct.
+    try {
+      const cachedUrl = _getCachedObjectUrlForCid(cid);
+      if (cachedUrl && currentSrc === cachedUrl) _bindImgToCidIfNeeded(imgEl, cid);
+    } catch {}
+    // If we already have a blob/object URL (likely from a previous load), keep it.
+    // Otherwise, use the placeholder fallback.
+    if ((!currentSrc || extractCid(currentSrc)) && !_isObjectUrl(currentSrc)) {
       const fb = fallbackLogo(desiredSym);
       if (currentSrc !== fb) imgEl.setAttribute('src', fb);
     }
@@ -460,13 +691,11 @@ export function queueTokenLogoLoad(imgEl, raw, sym = '', opts = {}) {
         if (cached && cached.size) {
           if (imgEl.__fdvLogoReqId !== reqId) return;
 
-          const prevObjUrl = _imgObjectUrls.get(imgEl);
-          if (prevObjUrl) {
-            try { URL.revokeObjectURL(prevObjUrl); } catch {}
+          const objUrl = _cacheObjectUrlFromBlob(cid, cached);
+          if (objUrl) {
+            imgEl.setAttribute('src', objUrl);
+            try { _bindImgToCidIfNeeded(imgEl, cid); } catch {}
           }
-          const objUrl = URL.createObjectURL(cached);
-          _imgObjectUrls.set(imgEl, objUrl);
-          imgEl.setAttribute('src', objUrl);
           return;
         }
       } catch {}
@@ -484,16 +713,11 @@ export function queueTokenLogoLoad(imgEl, raw, sym = '', opts = {}) {
           _cidGatewayHint.set(cid, gwIndex);
 
           // Replace prior object URL.
-          const prevObjUrl = _imgObjectUrls.get(imgEl);
-          if (prevObjUrl) {
-            try { URL.revokeObjectURL(prevObjUrl); } catch {}
+          const objUrl = _cacheObjectUrlFromBlob(cid, blob);
+          if (objUrl) {
+            imgEl.setAttribute('src', objUrl);
+            try { _bindImgToCidIfNeeded(imgEl, cid); } catch {}
           }
-
-          const objUrl = URL.createObjectURL(blob);
-          _imgObjectUrls.set(imgEl, objUrl);
-
-          // Assign the blob URL (this won't emit network errors).
-          imgEl.setAttribute('src', objUrl);
 
           // Persist in CacheStorage for future loads, and optionally overwrite
           // with a compressed WebP later (scheduled at idle to avoid UI jank).
@@ -511,11 +735,13 @@ export function queueTokenLogoLoad(imgEl, raw, sym = '', opts = {}) {
       // Everything failed: block CID and show fallback.
       if (imgEl.__fdvLogoReqId !== reqId) return;
       try { _blocked.add(cid); } catch {}
+      try { _releaseImgLogoBinding(imgEl); } catch {}
       const fb = fallbackLogo(desiredSym);
       if (imgEl.getAttribute('src') !== fb) imgEl.setAttribute('src', fb);
     })();
   } catch {
     try {
+      try { _releaseImgLogoBinding(imgEl); } catch {}
       const fb = fallbackLogo(sym);
       if (imgEl.getAttribute('src') !== fb) imgEl.setAttribute('src', fb);
     } catch {}
@@ -526,6 +752,7 @@ export function queueTokenLogoLoad(imgEl, raw, sym = '', opts = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
   if (window.__fdvIpfsFallbackInstalled) return;
   window.__fdvIpfsFallbackInstalled = true;
+  try { _installLogoDomReleaseObserver(); } catch {}
   try {
     // Only install src/setAttribute interception on dev hosts (full blackout behavior)
     if (_isDevHost() && !window.__fdvIpfsSrcIntercept) {
@@ -581,6 +808,7 @@ export function queueTokenLogoLoad(imgEl, raw, sym = '', opts = {}) {
 
     if (shouldSilenceIpfs()) {
       const tag = img.getAttribute('data-sym') || '';
+      try { _releaseImgLogoBinding(img); } catch {}
       img.onerror = null;
       img.src = fallbackLogo(tag);
       return;
@@ -595,6 +823,7 @@ export function queueTokenLogoLoad(imgEl, raw, sym = '', opts = {}) {
       const cid = extractCid(currentSrc);
       if (cid) _blocked.add(cid);
       const tag = img.getAttribute('data-sym') || '';
+      try { _releaseImgLogoBinding(img); } catch {}
       img.onerror = null;
       img.src = fallbackLogo(tag);
       return;
@@ -606,6 +835,7 @@ export function queueTokenLogoLoad(imgEl, raw, sym = '', opts = {}) {
     const nextSrc = nextGatewayUrl(currentSrc);
     if (!nextSrc) {
       const tag = img.getAttribute('data-sym') || '';
+      try { _releaseImgLogoBinding(img); } catch {}
       img.onerror = null;
       img.src = fallbackLogo(tag);
       return;

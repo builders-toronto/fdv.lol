@@ -300,11 +300,6 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-feat(evolve): local agent rules + periodic config regen
+Cache IPFS logos across tick rerenders
 
-Add local-only evolve rules store that promotes repeated lessons into stable “rules” and injects them into the evolve summary for Gary to follow
-Keep reflection cheap by batching: single EVOLVE TODO + rolling lessons/critiques (no extra LLM calls)
-In Agent Gary mode, periodically re-run config scan to refresh trading config over time instead of only at startup
-Allow config scans to set key release/cadence timers (cooldown + hold windows) so '
-auto release times' adapt to market conditions
-Add safety gates to avoid rescans while trades/sell-evals are in flight (non-blocking background scan)
+Add CID objectURL cache with ref-count + MutationObserver cleanup

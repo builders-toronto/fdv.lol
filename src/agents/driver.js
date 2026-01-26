@@ -333,6 +333,8 @@ export function createAutoTraderAgentDriver({
 			payload: body,
 		};
 
+		console.log("Agent Driver User Message:", userMsg);
+
 		const evolveSummary = (() => {
 			try {
 				const s = _readLsJson("fdv_agent_evolve_summary_v1", null);
