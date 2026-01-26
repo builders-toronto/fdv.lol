@@ -99,7 +99,7 @@ export const EXPLORER   = (addr)=>`https://explorer.solana.com/address/${addr}`;
 
 
 export const FALLBACK_LOGO = (sym)=>"data:image/svg+xml;utf8,"+encodeURIComponent(
-  `<svg xmlns='http://www.w3.org/2000/svg' width='38' height='38'>
+  `<svg xmlns='http://www.w3.org/2000/svg' width='50' height='50'>
      <rect width='100%' height='100%' fill='#0b111d'/>
      <text x='50%' y='54%' dominant-baseline='middle' text-anchor='middle'
            fill='#7bd7ff' font-family='Arial' font-size='12'>${(sym||'?').slice(0,5)}</text>
