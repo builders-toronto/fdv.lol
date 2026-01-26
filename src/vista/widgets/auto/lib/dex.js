@@ -1,5 +1,6 @@
 import { FDV_PLATFORM_FEE_BPS } from "../../../../config/env.js";
 import { reportFdvStats } from "./telemetry/ledger.js";
+import { captureReferralFromUrl, getActiveReferral } from "./referral.js";
 
 export function createDex(deps = {}) {
 	const {
@@ -84,6 +85,79 @@ export function createDex(deps = {}) {
 		// Valuation helper (used for split-sell remainder handling)
 		quoteOutSol,
 	} = deps;
+
+	try { captureReferralFromUrl?.({ stripParam: true }); } catch {}
+
+	function _getReferralPendingMap() {
+		try {
+			if (typeof window === "undefined") return null;
+			if (!window._fdvReferralPayoutPending) window._fdvReferralPayoutPending = new Map();
+			return window._fdvReferralPayoutPending;
+		} catch {
+			return null;
+		}
+	}
+
+	function _armReferralPayout(sig, meta) {
+		try {
+			if (!sig || !meta) return;
+			const m = _getReferralPendingMap();
+			if (!m) return;
+			const key = String(sig);
+			const next = { ...meta, armedAt: now() };
+			m.set(key, next);
+			try {
+				if (next?.ref && next?.lamports && !next._armedLogged) {
+					next._armedLogged = true;
+					log(
+						`Referral payout queued: ${(Number(next.lamports || 0) / 1e9).toFixed(6)} SOL -> ${String(next.ref).slice(0, 4)}… (after confirm)`
+					);
+				}
+			} catch {}
+		} catch {}
+	}
+
+	function _takeReferralPayout(sig) {
+		try {
+			const m = _getReferralPendingMap();
+			if (!m) return null;
+			const k = String(sig || "");
+			const v = m.get(k) || null;
+			m.delete(k);
+			return v;
+		} catch {
+			return null;
+		}
+	}
+
+	async function _sendReferralLamports({ signer, to, lamports }) {
+		const amt = Math.floor(Number(lamports || 0));
+		if (!(amt > 0)) return { ok: false, sig: "", skipped: true, msg: "zero" };
+		try {
+			const { PublicKey, SystemProgram, Transaction } = await loadWeb3();
+			const conn = await getConn();
+			const toPk = new PublicKey(String(to));
+			const fromStr = signer?.publicKey?.toBase58?.() || "";
+			if (String(toPk.toBase58()) === String(fromStr)) return { ok: false, sig: "", skipped: true, msg: "self" };
+
+			const bal = await conn.getBalance(signer.publicKey, "processed").catch(() => 0);
+			// Keep a tiny buffer so we don't strand the account if balance is tight.
+			if (bal < amt + 10_000) return { ok: false, sig: "", skipped: true, msg: "insufficient" };
+
+			const tx = new Transaction().add(
+				SystemProgram.transfer({ fromPubkey: signer.publicKey, toPubkey: toPk, lamports: amt }),
+			);
+			tx.feePayer = signer.publicKey;
+			const bh = await conn.getLatestBlockhash("processed").catch(() => null);
+			if (bh?.blockhash) tx.recentBlockhash = bh.blockhash;
+			tx.sign(signer);
+			const sig = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: false, preflightCommitment: "processed" });
+			await safeConfirmSig(sig, { commitment: "confirmed", timeoutMs: 25_000 }).catch(() => false);
+			return { ok: true, sig };
+		} catch (e) {
+			return { ok: false, sig: "", msg: String(e?.message || e || "") };
+		}
+	}
 
 	function _isNoRouteLike(v) {
 		return /ROUTER_DUST|COULD_NOT_FIND_ANY_ROUTE|NO_ROUTE|NO_ROUTES|BELOW_MIN_NOTIONAL|0x1788|0x1789/i.test(String(v || ""));
@@ -1029,6 +1103,50 @@ export function createDex(deps = {}) {
 
 		let quoteIncludesFee = false;
 
+		function _computeReferralPayoutMeta() {
+			try {
+				// Only pay on profitable sells where the platform fee is attached.
+				if (!(inputMint !== SOL_MINT && outputMint === SOL_MINT)) return null;
+				if (!(feeAccount && appliedFeeBps > 0)) return null;
+				const ref = getActiveReferral?.(now())?.ref;
+				if (!ref) return null;
+
+				const outLamports = Math.floor(Number(quote?.outAmount || 0));
+				if (!(outLamports > 0)) return null;
+
+				const inRaw = Math.floor(Number(quote?.inAmount || amountRaw || 0));
+				const soldUi = (Number.isFinite(inDecimals) && inDecimals > 0)
+					? (inRaw / Math.pow(10, inDecimals))
+					: Number(amountUi || 0);
+				if (!(soldUi > 0)) return null;
+
+				const pos = state?.positions?.[inputMint];
+				const posSize = Math.max(0, Number(pos?.sizeUi || 0));
+				const posCost = Math.max(0, Number(pos?.costSol || 0));
+				if (!(posSize > 0) || !(posCost > 0)) return null;
+
+				const frac = Math.max(0, Math.min(1, soldUi / Math.max(1e-12, posSize)));
+				const costSoldSol = posCost * frac;
+				const profitSol = (outLamports / 1e9) - costSoldSol;
+				if (!(Number.isFinite(profitSol) && profitSol > 0)) return null;
+
+				const payLamports = Math.floor((profitSol * 0.01) * 1e9);
+				if (!(payLamports > 0)) return null;
+
+				return {
+					ref,
+					lamports: payLamports,
+					profitSol,
+					feeBps: Math.floor(appliedFeeBps) || 0,
+					inputMint,
+					soldUi,
+					outLamports,
+				};
+			} catch {
+				return null;
+			}
+		}
+
 		let _preSplitUi = 0;
 		let _decHint = await getMintDecimals(inputMint).catch(() => 6);
 		if (isSell) {
@@ -1291,6 +1409,10 @@ export function createDex(deps = {}) {
 				);
 				log(`Swap sent: ${sig}`);
 				try { log(`Explorer: https://solscan.io/tx/${sig}`); } catch {}
+				try {
+					const meta = _computeReferralPayoutMeta();
+					if (meta) _armReferralPayout(sig, meta);
+				} catch {}
 				try { if (isSell) setTimeout(() => _reconcileSplitSellRemainder(sig), 0); } catch {}
 				try {
 					if (inputMint === SOL_MINT || outputMint === SOL_MINT) {
@@ -1313,6 +1435,10 @@ export function createDex(deps = {}) {
 						);
 						log(`Swap sent (skipPreflight): ${sig2}`);
 						try { log(`Explorer: https://solscan.io/tx/${sig2}`); } catch {}
+						try {
+							const meta = _computeReferralPayoutMeta();
+							if (meta) _armReferralPayout(sig2, meta);
+						} catch {}
 						try { if (isSell) setTimeout(() => _reconcileSplitSellRemainder(sig2), 0); } catch {}
 						try {
 							if (inputMint === SOL_MINT || outputMint === SOL_MINT) {
@@ -1509,6 +1635,10 @@ export function createDex(deps = {}) {
 					}
 					log(`Swap (manual send v1) sent: ${sig}`);
 					try { log(`Explorer: https://solscan.io/tx/${sig}`); } catch {}
+					try {
+						const meta = _computeReferralPayoutMeta();
+						if (meta) _armReferralPayout(sig, meta);
+					} catch {}
 					try { if (isSell) setTimeout(() => _reconcileSplitSellRemainder(sig), 0); } catch {}
 					try {
 						if (inputMint === SOL_MINT || outputMint === SOL_MINT) {
@@ -1545,6 +1675,10 @@ export function createDex(deps = {}) {
 							if (!ok2) return { ok: false, code: "NO_CONFIRM", msg: "not confirmed" };
 							log(`Swap (manual send v1, skipPreflight) sent: ${sig2}`);
 							try { log(`Explorer: https://solscan.io/tx/${sig2}`); } catch {}
+							try {
+								const meta = _computeReferralPayoutMeta();
+								if (meta) _armReferralPayout(sig2, meta);
+							} catch {}
 							try { if (isSell) setTimeout(() => _reconcileSplitSellRemainder(sig2), 0); } catch {}
 							try {
 								if (inputMint === SOL_MINT || outputMint === SOL_MINT) {
@@ -2171,6 +2305,20 @@ export function createDex(deps = {}) {
 						requireFinalized: needFinal,
 					}).catch(() => false);
 					if (ok) {
+						try {
+							const meta = _takeReferralPayout(sig);
+							if (meta?.ref && meta?.lamports && opts?.signer) {
+								log(`Referral payout: sending ${(Number(meta.lamports || 0) / 1e9).toFixed(6)} SOL to ${String(meta.ref).slice(0, 4)}… (1% of profit≈${Number(meta.profitSol || 0).toFixed(6)} SOL)`);
+								const r = await withTimeout(
+									_sendReferralLamports({ signer: opts.signer, to: meta.ref, lamports: meta.lamports }),
+									22_000,
+									{ label: "referralPayout" },
+								).catch(() => null);
+								if (r?.ok) log(`Referral payout sent: ${String(r.sig || "").slice(0, 12)}…`);
+								else if (r?.skipped) log(`Referral payout skipped (${r.msg || "skip"}).`, "warn");
+								else log(`Referral payout failed (${r?.msg || "error"}).`, "warn");
+							}
+						} catch {}
 						const out = { ok: true, sig, slip };
 						try { noteLedgerSwap({ signer: opts?.signer, inputMint: opts?.inputMint, outputMint: opts?.outputMint, amountUi: opts?.amountUi, slippageBps: slip, res: out, stage: "confirmed" }); } catch {}
 						return out;
