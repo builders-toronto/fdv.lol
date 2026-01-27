@@ -117,6 +117,35 @@ function _validateTune(tune) {
 	}
 }
 
+function _validateForecast(forecast) {
+	try {
+		if (!forecast || typeof forecast !== "object") return null;
+		const out = {};
+
+		const horizonSecs = Math.floor(_safeNum(forecast.horizonSecs, NaN));
+		if (Number.isFinite(horizonSecs)) out.horizonSecs = _clampNum(horizonSecs, 30, 24 * 60 * 60);
+
+		const upProb = _safeNum(forecast.upProb, NaN);
+		const downProb = _safeNum(forecast.downProb, NaN);
+		if (Number.isFinite(upProb)) out.upProb = _clampNum(upProb, 0, 1);
+		if (Number.isFinite(downProb)) out.downProb = _clampNum(downProb, 0, 1);
+
+		const expectedMovePct = _safeNum(forecast.expectedMovePct, NaN);
+		if (Number.isFinite(expectedMovePct)) out.expectedMovePct = _clampNum(expectedMovePct, -250, 250);
+
+		const regime = String(forecast.regime || "").trim();
+		if (regime) out.regime = regime.slice(0, 40);
+
+		const note = String(forecast.note || "").trim();
+		if (note) out.note = note.slice(0, 160);
+
+		// If only one probability is present, allow it; consumers may infer the other.
+		return Object.keys(out).length ? out : null;
+	} catch {
+		return null;
+	}
+}
+
 function _validateBuyDecision(obj) {
 	if (!obj || typeof obj !== "object") return null;
 	const action = String(obj.action || "").toLowerCase();
@@ -133,6 +162,8 @@ function _validateBuyDecision(obj) {
 	}
 	const tune = _validateTune(obj.tune);
 	if (tune) out.tune = tune;
+	const forecast = _validateForecast(obj.forecast);
+	if (forecast) out.forecast = forecast;
 	// Optional evolve feedback (ignored by bot execution, used for long-term improvement).
 	try {
 		if (obj.evolve && typeof obj.evolve === "object") {
@@ -162,6 +193,8 @@ function _validateSellDecision(obj) {
 	}
 	const tune = _validateTune(obj.tune);
 	if (tune) out.tune = tune;
+	const forecast = _validateForecast(obj.forecast);
+	if (forecast) out.forecast = forecast;
 	// Optional evolve feedback (ignored by bot execution, used for long-term improvement).
 	try {
 		if (obj.evolve && typeof obj.evolve === "object") {
