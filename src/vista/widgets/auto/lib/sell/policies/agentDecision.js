@@ -199,7 +199,18 @@ export function createAgentDecisionPolicy({
 
       try {
         const mint = String(ctx?.mint || "").slice(0, 8);
-        _log(`sell decision mint=${mint} action=${String(d.action||"")} conf=${Number(d.confidence||0).toFixed(2)} reason=${String(d.reason||"")}`);
+        const fc = d && d.forecast && typeof d.forecast === "object" ? d.forecast : null;
+        let ftxt = "";
+        if (fc) {
+          const up = Number(fc.upProb);
+          const exp = Number(fc.expectedMovePct);
+          const hs = Number(fc.horizonSecs);
+          if (Number.isFinite(up)) ftxt += ` up=${Math.round(up * 100)}%`;
+          if (Number.isFinite(exp)) ftxt += ` exp=${exp.toFixed(1)}%`;
+          if (Number.isFinite(hs) && hs > 0) ftxt += ` h=${Math.round(hs / 60)}m`;
+          if (ftxt) ftxt = ` fcst{${ftxt.trim()}}`;
+        }
+        _log(`sell decision mint=${mint} action=${String(d.action||"")} conf=${Number(d.confidence||0).toFixed(2)} reason=${String(d.reason||"")}${ftxt}`);
       } catch {}
 
       if (d.action === "hold") {

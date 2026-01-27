@@ -301,9 +301,8 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-feat(referrals): capture ref on app load + log payouts
-
-Capture ?ref= at primary entrypoint and strip param after storing
-Add user-visible logs when referral is captured/ignored (invalid address)
-Log when referral payout is queued (pending confirmation) and keep post-confirm send logs
+feat(agent): add probabilistic forecast support and baseline signals;
+allow Agent Gary to return validated forecast on buy/sell decisions;
+pass forecastBaseline derived from past OHLCV features + tick/leader/rug context;
+log forecast fields for buy approvals and sell decisions;
 

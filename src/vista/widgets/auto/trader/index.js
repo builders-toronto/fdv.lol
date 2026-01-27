@@ -725,6 +725,82 @@ function _summarizePumpTickSeriesForMint(mint, n = 8) {
     return null;
   }
 }
+function _buildForecastBaselineForMint(mint, { past = null, tickNow = null, leaderNow = null, rugSignal = null, horizonMins = 30 } = {}) {
+  try {
+    const nowTs = Date.now();
+    const cache = _buildForecastBaselineForMint._cache || (_buildForecastBaselineForMint._cache = new Map());
+    const m = String(mint || "").trim();
+    const hm = Math.max(5, Math.min(180, Math.floor(Number(horizonMins || 30))));
+    const key = `${m}|${hm}`;
+    const hit = cache.get(key);
+    if (hit && (nowTs - Number(hit.ts || 0)) < 12_000) return hit.value;
+
+    const p = past || _summarizePastCandlesForMint(m, 24);
+    const f = p && typeof p === "object" ? (p.features || null) : null;
+    if (!f || typeof f !== "object") return null;
+
+    const slopePctPer5m = Number(f.slopePctPer5m ?? 0);
+    const volStdPct1h = Math.max(0, Number(f.volStdPct1h ?? 0));
+    const volTrendPct = Number(f.volTrendPct ?? 0);
+    const last3 = Array.isArray(f.last3RetPct) ? f.last3RetPct.map((x) => Number(x ?? 0)).slice(-3) : [];
+
+    // Basic expected move: damped linear projection of 5m slope.
+    let expectedMovePct = slopePctPer5m * (hm / 5) * 0.8;
+
+    // Convert a few signals into a probability-like score (heuristic, not trained).
+    let score = 0;
+    score += slopePctPer5m * 2.2;
+    score += (volTrendPct / 100) * 0.9;
+    if (last3.length) {
+      const m3 = last3.reduce((a, b) => a + b, 0) / Math.max(1, last3.length);
+      score += m3 * 0.5;
+    }
+
+    try {
+      const ps = Number(leaderNow?.pumpScore ?? NaN);
+      if (Number.isFinite(ps)) score += Math.max(-1.5, Math.min(1.5, ps)) * 0.25;
+    } catch {}
+
+    try {
+      const chg5m = Number(tickNow?.change5m ?? NaN);
+      if (Number.isFinite(chg5m)) score += Math.max(-15, Math.min(15, chg5m)) * 0.04;
+    } catch {}
+
+    const rugSev = Math.max(0, Math.min(1, Number(rugSignal?.sev ?? rugSignal?.severity ?? 0)));
+    if (rugSev >= 0.55) score -= (rugSev - 0.55) * 3.0;
+
+    // Penalize extreme volatility: be less confident.
+    score = score / (1 + (volStdPct1h / 4.0));
+
+    const sigmoid = (x) => 1 / (1 + Math.exp(-x));
+    let upProb = sigmoid(score);
+    upProb = Math.max(0.02, Math.min(0.98, upProb));
+
+    // If rug risk is elevated, cap positive expectation.
+    if (rugSev >= 0.7) expectedMovePct = Math.min(expectedMovePct, 0);
+
+    const out = {
+      kind: "heuristic_v1",
+      horizonSecs: hm * 60,
+      upProb: Number(upProb.toFixed(3)),
+      downProb: Number((1 - upProb).toFixed(3)),
+      expectedMovePct: Number(expectedMovePct.toFixed(2)),
+      regime: String(p?.regime || "unknown"),
+      basis: {
+        slopePctPer5m: Number(slopePctPer5m.toFixed(3)),
+        volStdPct1h: Number(volStdPct1h.toFixed(2)),
+        volTrendPct: Number(volTrendPct.toFixed(2)),
+        rugSev: Number(rugSev.toFixed(2)),
+      },
+      note: "Heuristic baseline from past.features; not a guarantee.",
+    };
+
+    cache.set(key, { ts: nowTs, value: out });
+    return out;
+  } catch {
+    return null;
+  }
+}
 
 // function _shouldRunGaryBuyProspect({ mint, kpiPick, entrySim, finalGate, minWinProb = 0.55, riskLevel = "safe" }) {
 //   try {
@@ -7931,6 +8007,13 @@ async function tick() {
         }
       } catch {}
 
+      let entryTickNow = null;
+      let entryTickSeries = null;
+      let entryPast = null;
+      try { entryTickNow = _summarizePumpTickNowForMint(mint); } catch {}
+      try { entryTickSeries = _summarizePumpTickSeriesForMint(mint, 8); } catch {}
+      try { entryPast = _summarizePastCandlesForMint(mint, 24); } catch {}
+
         // Agent gate (required when enabled): when Agent Gary is ON, do not buy unless he explicitly says "buy".
         {
           let agent = null;
@@ -7998,9 +8081,9 @@ async function tick() {
                       rugSignal: entryRugSignal,
                       leaderNow: entryLeaderNow,
                       leaderSeries: entryLeaderSeries,
-                      past: _summarizePastCandlesForMint(mint, 24),
-                      tickNow: _summarizePumpTickNowForMint(mint),
-                      tickSeries: _summarizePumpTickSeriesForMint(mint, 8),
+                      past: entryPast,
+                      tickNow: entryTickNow,
+                      tickSeries: entryTickSeries,
                       liqUsd: Number.isFinite(liqUsdHint) ? liqUsdHint : null,
                       solUsd: Number.isFinite(solUsdHint) ? solUsdHint : null,
                       priceImpactProxy,
@@ -8043,13 +8126,14 @@ async function tick() {
                   },
                   kpiPick: entryKpiPick,
                   finalGate: entryFinalGate,
-                  tickNow: _summarizePumpTickNowForMint(mint),
-                  tickSeries: _summarizePumpTickSeriesForMint(mint, 8),
+                  tickNow: entryTickNow,
+                  tickSeries: entryTickSeries,
                   badge: entryBadge,
                   rugSignal: entryRugSignal,
                   leaderNow: entryLeaderNow,
                   leaderSeries: entryLeaderSeries,
-                  past: _summarizePastCandlesForMint(mint, 24),
+                  past: entryPast,
+                  forecastBaseline: _buildForecastBaselineForMint(mint, { past: entryPast, tickNow: entryTickNow, leaderNow: entryLeaderNow, rugSignal: entryRugSignal, horizonMins: 30 }),
                   entryEdgeExclPct: Number.isFinite(entryEdgeExclPct) ? entryEdgeExclPct : null,
                   entryTpBumpPct: Number.isFinite(entryTpBumpPct) ? entryTpBumpPct : null,
                   entrySim,
@@ -8134,7 +8218,18 @@ async function tick() {
               }
               try {
                 const t = tuneBits.length ? ` tune=[${tuneBits.join(", ")}]` : "";
-                log(`[AGENT GARY] BUY ok ${mint.slice(0,4)}… conf=${Number(d.confidence||0).toFixed(2)} ${String(d.reason||"")}${t}`);
+                const fc = d && d.forecast && typeof d.forecast === "object" ? d.forecast : null;
+                let ftxt = "";
+                if (fc) {
+                  const up = Number(fc.upProb);
+                  const exp = Number(fc.expectedMovePct);
+                  const hs = Number(fc.horizonSecs);
+                  if (Number.isFinite(up)) ftxt += ` up=${Math.round(up * 100)}%`;
+                  if (Number.isFinite(exp)) ftxt += ` exp=${exp.toFixed(1)}%`;
+                  if (Number.isFinite(hs) && hs > 0) ftxt += ` h=${Math.round(hs / 60)}m`;
+                  if (ftxt) ftxt = ` fcst{${ftxt.trim()}}`;
+                }
+                log(`[AGENT GARY] BUY ok ${mint.slice(0,4)}… conf=${Number(d.confidence||0).toFixed(2)} ${String(d.reason||"")}${t}${ftxt}`);
               } catch {}
             }
           }
@@ -8226,6 +8321,15 @@ async function tick() {
           const series = getLeaderSeries(mint, 3);
           entryChg5m = Number(series?.[series.length - 1]?.chg5m || kpNow.change5m || 0);
           entryPre = Number(warm?.pre || NaN);
+          const past = (() => { try { return _summarizePastCandlesForMint(mint, 24) || null; } catch { return null; } })();
+          const tickNow = (() => { try { return _summarizePumpTickNowForMint(mint) || null; } catch { return null; } })();
+          const forecastBaseline = (() => {
+            try {
+              return _buildForecastBaselineForMint(mint, { past, tickNow, leaderNow, rugSignal: rug, horizonMins: 30 }) || null;
+            } catch {
+              return null;
+            }
+          })();
           entryPreMin = Number(warm?.preMin || NaN);
           entryScSlope = Number(slope3pm(series || [], "pumpScore") || NaN);
         } catch {}
@@ -8241,12 +8345,13 @@ async function tick() {
           awaitingSizeSync: false,
           allowRebuy: false,
           lastSplitSellAt: undefined,
-          warmingHold: warmingHold,
+            tickNow,
           warmingHoldAt: warmingHold ? now() : undefined,
           warmingMinProfitPct: Number.isFinite(Number(state.warmingMinProfitPct)) ? Number(state.warmingMinProfitPct) : 2,
           sellGuardUntil: now() + guardMs,
           entryChg5m,
-          entryPre,
+            past,
+            forecastBaseline,
           entryPreMin,
           entryScSlope,
           entryEdgeExclPct: Number.isFinite(entryEdgeExclPct) ? entryEdgeExclPct : undefined,

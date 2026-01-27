@@ -2223,6 +2223,7 @@ hr.sep{border:0; border-top:1px dashed rgba(122,222,255,.2); margin:10px 0}
   padding: 0 10px 10px 10px;
   height: clamp(140px, 32vh, 260px);
   overflow: auto;
+  resize: auto;
   font-size: .84rem;
   color: var(--fdv-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
