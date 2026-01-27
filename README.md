@@ -301,7 +301,9 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-Wire Agent Gary AI setup into CLI quick-start;Add model picker + API key prompt + risk presets up front;
-Apply AI overrides/localStorage before starting Auto Trader;
-Improve headless behavior (stdout logging, safer reconciliation hooks)
+feat(referrals): capture ref on app load + log payouts
+
+Capture ?ref= at primary entrypoint and strip param after storing
+Add user-visible logs when referral is captured/ignored (invalid address)
+Log when referral payout is queued (pending confirmation) and keep post-confirm send logs
 
