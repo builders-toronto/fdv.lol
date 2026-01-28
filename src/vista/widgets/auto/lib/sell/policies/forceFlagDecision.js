@@ -2,6 +2,15 @@ export function createForceFlagDecisionPolicy({ log, getState }) {
   return function forceFlagDecisionPolicy(ctx) {
     const state = getState();
 
+    const agentRisk = (() => {
+      try {
+        const raw = String(ctx?.agentSignals?.agentRisk || ctx?.agentRisk || "").trim().toLowerCase();
+        return (raw === "safe" || raw === "medium" || raw === "degen") ? raw : "";
+      } catch {
+        return "";
+      }
+    })();
+
     const inMinHold = (() => {
       try {
         if (ctx?.inMinHold === true) return true;
@@ -30,7 +39,17 @@ export function createForceFlagDecisionPolicy({ log, getState }) {
 
     if (ctx.forceRug) {
       const sev = Number(ctx?.rugSev ?? 0);
-      const hardRugSev = 2.0;
+      const hardRugSev = 3.0;
+
+      // DEGEN mode: allow the agent to bypass rug severity force-sells unless it's extremely severe.
+      if (agentRisk === "degen" && Number.isFinite(sev) && sev < hardRugSev) {
+        try {
+          log(`DEGEN: bypassing rug force sell for ${ctx.mint.slice(0,4)}… sev=${sev.toFixed(2)} < ${hardRugSev.toFixed(2)}`);
+        } catch {}
+        void state;
+        return;
+      }
+
       if (inMinHold && Number.isFinite(sev) && sev < hardRugSev) {
         try {
           log(`Min-hold active; suppressing rug force sell for ${ctx.mint.slice(0,4)}… sev=${sev.toFixed(2)} < ${hardRugSev.toFixed(2)}`);

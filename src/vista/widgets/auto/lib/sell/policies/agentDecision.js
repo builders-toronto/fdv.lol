@@ -30,6 +30,17 @@ export function createAgentDecisionPolicy({
 
       const state = _getState();
 
+      const cfg = (() => {
+        try {
+          return agent && typeof agent.getConfigFromRuntime === "function" ? agent.getConfigFromRuntime() : {};
+        } catch {
+          return {};
+        }
+      })();
+
+      const _riskRaw = String(cfg?.riskLevel || "safe").trim().toLowerCase();
+      const _riskLevel = (_riskRaw === "safe" || _riskRaw === "medium" || _riskRaw === "degen") ? _riskRaw : "safe";
+
       const fullAiControl = !!(ctx?.agentSignals && ctx.agentSignals.fullAiControl === true);
 
       const _getHardUrgentSignal = () => {
@@ -38,7 +49,13 @@ export function createAgentDecisionPolicy({
           if (!u || typeof u !== "object") return null;
           const reason = String(u.reason || "");
           const sev = Number(u.sev || 0);
-          const hard = (/rug/i.test(reason) || (Number.isFinite(sev) && sev >= 0.75));
+          // DEGEN bypass: allow rug severity urgents to be handled by the agent unless extremely severe.
+          // Safe/Medium retain the existing hard-urgent behavior.
+          const isRug = /rug/i.test(reason);
+          const hardRugSev = 3.0;
+          if (_riskLevel === "degen" && isRug && Number.isFinite(sev) && sev < hardRugSev) return null;
+
+          const hard = (isRug || (Number.isFinite(sev) && sev >= 0.75));
           return hard ? { reason, sev } : null;
         } catch {
           return null;
@@ -94,17 +111,6 @@ export function createAgentDecisionPolicy({
           return false;
         }
       };
-
-      const cfg = (() => {
-        try {
-          return agent && typeof agent.getConfigFromRuntime === "function" ? agent.getConfigFromRuntime() : {};
-        } catch {
-          return {};
-        }
-      })();
-
-      const _riskRaw = String(cfg?.riskLevel || "safe").trim().toLowerCase();
-      const _riskLevel = (_riskRaw === "safe" || _riskRaw === "medium" || _riskRaw === "degen") ? _riskRaw : "safe";
 
       const payloadCtx = {
         agentRisk: _riskLevel,
