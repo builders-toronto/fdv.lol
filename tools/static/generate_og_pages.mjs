@@ -174,6 +174,7 @@ const esc = (s='') => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;
 const ensureDir = (p) => fs.mkdirSync(p, { recursive: true });
 const fileExists = (p) => { try { return fs.existsSync(p) && fs.statSync(p).isFile(); } catch { return false; } };
 const loadJsonSafe = (f, fb) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return fb; } };
+const fileMtimeIso = (p) => { try { return fs.statSync(p).mtime.toISOString(); } catch { return null; } };
 
 
 async function fetchDexToken(mint) {
@@ -583,10 +584,18 @@ async function main() {
     lastmodMap[`${SITE_ORIGIN}/`] = new Date(latestTs).toISOString();
   }
 
+  // Onboarding pages (static)
+  const onboardIndex = path.join(PAGES_ROOT, 'onboard', 'index.html');
+  const onboardPolicy = path.join(PAGES_ROOT, 'onboard', 'policy.html');
+  const onboardIndexIso = fileMtimeIso(onboardIndex);
+  const onboardPolicyIso = fileMtimeIso(onboardPolicy);
+  if (onboardIndexIso) lastmodMap[`${SITE_ORIGIN}/onboard/`] = onboardIndexIso;
+  if (onboardPolicyIso) lastmodMap[`${SITE_ORIGIN}/onboard/policy.html`] = onboardPolicyIso;
+
   const sitemapPath = writeSitemap({
     base: SITE_ORIGIN,
     tokenDir: OUT_DIR,
-    extraPaths: ['/'],
+    extraPaths: ['/', '/onboard/', '/onboard/policy.html'],
     lastmodMap
   });
   console.log(`Sitemap updated → ${path.relative(PAGES_ROOT, sitemapPath)}`);
