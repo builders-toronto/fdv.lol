@@ -19,6 +19,7 @@ export function initHeader(createOpenLibraryButton, createOpenSearchButton, crea
   }
 
   ensureOpenLibraryHeaderBtn(createOpenLibraryButton);
+  ensureCoachingHeaderLink();
   // ensureFavboardHeaderBtn(createOpenFavboardButton);
   ensureSearchHeaderBtn(createOpenSearchButton); 
 }
@@ -57,6 +58,31 @@ export function ensureSearchHeaderBtn(createOpenSearchButton) {
     btn.setAttribute('data-search-open', '');
     btn.setAttribute('aria-label', 'Open search');
     header.appendChild(btn);
+  }
+}
+
+export function ensureCoachingHeaderLink() {
+  const header = document.querySelector('.header .container .superFeat');
+  if (!header) return;
+  if (document.getElementById('btnCoaching')) return;
+
+  const a = document.createElement('a');
+  a.id = 'btnCoaching';
+  a.className = 'fdv-lib-btn fdv-coaching-btn';
+  a.href = 'https://fdv.lol/onboard/';
+  a.textContent = 'Coaching';
+  a.setAttribute('role', 'button');
+  a.setAttribute('aria-label', 'Open 1:1 coaching');
+  a.setAttribute('title', '1:1 coaching');
+  a.style.marginLeft = '8px';
+  a.style.marginBottom = '15px';
+  a.style.textDecoration = 'none';
+
+  const searchBtn = document.getElementById('btnOpenSearch');
+  if (searchBtn?.parentElement === header) {
+    header.insertBefore(a, searchBtn);
+  } else {
+    header.appendChild(a);
   }
 }
 
