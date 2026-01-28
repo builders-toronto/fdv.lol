@@ -6631,12 +6631,25 @@ async function evalAndMaybeSellPositions() {
         const ctx = _mkSellCtx({ kp, mint, pos, nowTs });
 
         try {
+          const agentRisk = (() => {
+            try {
+              const agent = getAutoTraderAgent();
+              const cfg = agent?.getConfigFromRuntime ? agent.getConfigFromRuntime() : null;
+              const enabledFlag = !!(cfg && cfg.enabled !== false);
+              const keyPresent = !!String(cfg?.apiKey || cfg?.llmApiKey || cfg?.openaiApiKey || "").trim();
+              if (!(enabledFlag && keyPresent)) return null;
+              const raw = String(cfg?.riskLevel || "safe").trim().toLowerCase();
+              return (raw === "safe" || raw === "medium" || raw === "degen") ? raw : "safe";
+            } catch { return null; }
+          })();
+
           const rug = (() => { try { return _summarizeRugSignal(getRugSignalForMint(mint)) || null; } catch { return null; } })();
           const badge = normBadge(rug?.badge);
           const series = _summarizeLeaderSeries(mint, 6);
           // Do not share object references between `leaderNow` and `leaderSeries`.
           const leaderNow = (series && series.length) ? { ...(series[series.length - 1] || {}) } : null;
           ctx.agentSignals = {
+            agentRisk,
             fullAiControl: _isFullAiControlEnabled(),
             urgent: (() => {
               try {

@@ -21,6 +21,26 @@ export function createUrgentSellPolicy({
 
     const highSev = Number(urgent.sev || 0) >= 0.75;
 
+    const agentRisk = (() => {
+      try {
+        const raw = String(ctx?.agentSignals?.agentRisk || ctx?.agentRisk || "").trim().toLowerCase();
+        return (raw === "safe" || raw === "medium" || raw === "degen") ? raw : "";
+      } catch {
+        return "";
+      }
+    })();
+
+    // DEGEN mode: allow bypassing rug severity urgent exits unless extremely severe.
+    if (agentRisk === "degen" && isRugUrg) {
+      const sev = Number(urgent.sev || 0);
+      const hardRugSev = 3.0;
+      if (Number.isFinite(sev) && sev < hardRugSev) {
+        if (hasPeekClear) clearUrgentSell(ctx.mint);
+        _log(`DEGEN: bypassing urgent rug exit for ${ctx.mint.slice(0, 4)}… (sev=${sev.toFixed(2)} < ${hardRugSev.toFixed(2)})`);
+        return;
+      }
+    }
+
     // During min-hold, drop non-rug / non-high-severity urgent signals.
     // This prevents force-sells from noisy observers/momentum immediately after entry.
     if (ctx.inMinHold && !isRugUrg && !highSev) {
