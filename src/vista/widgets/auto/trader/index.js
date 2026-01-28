@@ -8312,6 +8312,9 @@ async function tick() {
         const warmingHold = !!state.rideWarming;
         const guardMs = Math.max(10_000, Number(state.observerGraceSecs || 0) * 1000);
         let entryChg5m = 0, entryPre = NaN, entryPreMin = NaN, entryScSlope = NaN;
+        let past = null;
+        let tickNow = null;
+        let forecastBaseline = null;
         try {
           const leadersNow = computePumpingLeaders(3) || [];
           const itNow = leadersNow.find(x => x?.mint === mint);
@@ -8321,11 +8324,11 @@ async function tick() {
           const series = getLeaderSeries(mint, 3);
           entryChg5m = Number(series?.[series.length - 1]?.chg5m || kpNow.change5m || 0);
           entryPre = Number(warm?.pre || NaN);
-          const past = (() => { try { return _summarizePastCandlesForMint(mint, 24) || null; } catch { return null; } })();
-          const tickNow = (() => { try { return _summarizePumpTickNowForMint(mint) || null; } catch { return null; } })();
-          const forecastBaseline = (() => {
+          past = (() => { try { return _summarizePastCandlesForMint(mint, 24) || null; } catch { return null; } })();
+          tickNow = (() => { try { return _summarizePumpTickNowForMint(mint) || null; } catch { return null; } })();
+          forecastBaseline = (() => {
             try {
-              return _buildForecastBaselineForMint(mint, { past, tickNow, leaderNow, rugSignal: rug, horizonMins: 30 }) || null;
+              return _buildForecastBaselineForMint(mint, { past, tickNow, leaderNow: entryLeaderNow || null, rugSignal: entryRugSignal || null, horizonMins: 30 }) || null;
             } catch {
               return null;
             }
@@ -8345,13 +8348,13 @@ async function tick() {
           awaitingSizeSync: false,
           allowRebuy: false,
           lastSplitSellAt: undefined,
-            tickNow,
+          tickNow,
           warmingHoldAt: warmingHold ? now() : undefined,
           warmingMinProfitPct: Number.isFinite(Number(state.warmingMinProfitPct)) ? Number(state.warmingMinProfitPct) : 2,
           sellGuardUntil: now() + guardMs,
           entryChg5m,
-            past,
-            forecastBaseline,
+          past,
+          forecastBaseline,
           entryPreMin,
           entryScSlope,
           entryEdgeExclPct: Number.isFinite(entryEdgeExclPct) ? entryEdgeExclPct : undefined,
