@@ -19,8 +19,35 @@
 		<meta name="twitter:image" content="./assets/meta/fdv.lol.meta.png" />
 		<meta name="theme-color" content="#050607" />
 		<title>fdv.lol - Agent Gary</title>
+		<script>
+			document.documentElement.classList.add('js');
+		</script>
 
 		<style>
+			html { scroll-behavior: smooth; }
+			html.js .reveal {
+				opacity: 0;
+				transform: translateY(14px);
+				filter: blur(6px);
+				transition:
+					opacity .70s ease,
+					transform .70s cubic-bezier(.22, 1, .36, 1),
+					filter .70s ease;
+				transition-delay: var(--reveal-delay, 0ms);
+				will-change: opacity, transform, filter;
+			}
+			html.js .reveal.is-visible {
+				opacity: 1;
+				transform: none;
+				filter: none;
+			}
+			html.js .reveal.reveal--fast {
+				transition-duration: .48s;
+			}
+			html.js .reveal.reveal--slow {
+				transition-duration: .90s;
+			}
+
 			:root {
 				--bg: #050607;
 				--panel: #0a0e0c;
@@ -675,6 +702,7 @@
 			}
 
 			@media (prefers-reduced-motion: reduce) {
+				html { scroll-behavior: auto; }
 				* {
 					transition: none !important;
 					scroll-behavior: auto !important;
@@ -694,7 +722,6 @@
 						<a href="https://github.com/builders-toronto/fdv.lol/blob/main/src/vista/widgets/auto/docs/guide.md" target="_blank" rel="noreferrer">Guide</a>
 						<a href="#safety">Safety</a>
 						<a href="#faq">FAQ</a>
-                        <a href="https://github.com/builders-toronto/fdv.lol">Source</a>
 					</nav>
 				</div>
 			</div>
@@ -705,7 +732,6 @@
 				<div class="wrap">
 					<div class="hero-grid">
 						<div>
-							<!-- <div class="kicker">Open-source • client-side Solana tooling • optional AI guardrails</div> -->
 							<h1>Understand the Auto Trader first. Then decide how automated you want to be.</h1>
 							<p class="sub">
 								fdv.lol’s Auto Trader is an engine: it watches Pumping Radar leaders, runs a chain of safety gates,
@@ -734,7 +760,6 @@
 
 						<aside class="card card-pad video" aria-label="Demo" id="demo">
 							<div class="video-header">
-								<!-- <div class="video-title">Quick look</div> -->
 								<a class="btn small ghost" href="https://www.youtube.com/watch?v=LUboJNCMow8" target="_blank" rel="noreferrer">Open on YouTube</a>
 							</div>
 							<div class="video-frame">
@@ -1076,6 +1101,66 @@
 				if (form) {
 					form.addEventListener('submit', syncEmail);
 				}
+			})();
+		</script>
+		<script>
+			(function () {
+				if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+				var els = [];
+				function pushAll(sel) {
+					var list = document.querySelectorAll(sel);
+					for (var i = 0; i < list.length; i++) els.push(list[i]);
+				}
+
+				pushAll('header.hero');
+				pushAll('section');
+				pushAll('footer');
+				pushAll('.card');
+				pushAll('.li');
+				pushAll('details');
+				pushAll('.pill');
+				pushAll('.notice');
+
+				// Unique elements only
+				var uniq = [];
+				for (var e = 0; e < els.length; e++) {
+					if (els[e] && uniq.indexOf(els[e]) === -1) uniq.push(els[e]);
+				}
+
+				for (var j = 0; j < uniq.length; j++) {
+					uniq[j].classList.add('reveal');
+					if (uniq[j].tagName === 'HEADER') uniq[j].classList.add('reveal--slow');
+				}
+
+				// Stagger list items
+				var lists = document.querySelectorAll('ul.list');
+				for (var li = 0; li < lists.length; li++) {
+					var items = lists[li].children;
+					for (var k = 0; k < items.length; k++) {
+						if (items[k] && items[k].classList && items[k].classList.contains('li')) {
+							items[k].style.setProperty('--reveal-delay', String(Math.min(k * 70, 350)) + 'ms');
+							items[k].classList.add('reveal--fast');
+						}
+					}
+				}
+
+				if (!('IntersectionObserver' in window)) {
+					for (var t = 0; t < uniq.length; t++) uniq[t].classList.add('is-visible');
+					return;
+				}
+
+				var io = new IntersectionObserver(function (entries) {
+					for (var i = 0; i < entries.length; i++) {
+						var entry = entries[i];
+						if (entry.isIntersecting) {
+							entry.target.classList.add('is-visible');
+							io.unobserve(entry.target);
+						}
+					}
+				}, { threshold: 0.12, rootMargin: '0px 0px -10% 0px' });
+
+				for (var u = 0; u < uniq.length; u++) io.observe(uniq[u]);
 			})();
 		</script>
 	</body>
