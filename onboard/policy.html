@@ -1,0 +1,285 @@
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="robots" content="index,follow" />
+		<meta name="theme-color" content="#050607" />
+		<title>fdv.lol - Policy</title>
+		<meta name="description" content="Privacy policy, terms, and disclosures for fdv.lol funnel pages." />
+
+		<link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
+		<link rel="alternate icon" href="./assets/favicon.svg" />
+		<meta property="og:title" content="fdv.lol - Policy" />
+		<meta property="og:description" content="Privacy policy, terms, and disclosures for fdv.lol funnel pages." />
+		<meta property="og:type" content="website" />
+		<meta property="og:image" content="https://fdv.lol/funnel/assets/og.svg" />
+		<meta property="og:image:alt" content="fdv.lol Agent Gary" />
+
+		<style>
+			:root {
+				--bg: #050607;
+				--panel: #0a0e0c;
+				--border: rgba(128, 255, 205, .22);
+				--text: rgba(240, 255, 249, .95);
+				--muted: rgba(200, 255, 233, .78);
+				--muted2: rgba(160, 255, 215, .70);
+				--brand: #00ffb2;
+				--brand2: #7dffcf;
+				--radius: 16px;
+				--shadow: 0 18px 55px rgba(0,0,0,.55);
+				--mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+			}
+
+			* { box-sizing: border-box; }
+			html, body { height: 100%; }
+			html { background: var(--bg); }
+			body {
+				margin: 0;
+				position: relative;
+				font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, Helvetica, sans-serif;
+				color: var(--text);
+				background:
+					radial-gradient(900px 650px at 18% -10%, rgba(0,255,178,.16), rgba(5,6,7,0) 60%),
+					radial-gradient(1100px 700px at 85% 0%, rgba(125,255,207,.10), rgba(5,6,7,0) 55%),
+					var(--bg);
+			}
+
+			body::before {
+				content: "";
+				position: fixed;
+				inset: 0;
+				pointer-events: none;
+				z-index: 0;
+				background-image:
+					linear-gradient(rgba(0,255,178,.045) 1px, transparent 1px),
+					linear-gradient(90deg, rgba(0,255,178,.035) 1px, transparent 1px),
+					linear-gradient(0deg, rgba(255,255,255,.030), rgba(0,0,0,0));
+				background-size: 160px 160px, 160px 160px, 100% 8px;
+				opacity: .22;
+			}
+
+			main, .topbar, footer { position: relative; z-index: 1; }
+			::selection { background: rgba(0,255,178,.22); }
+			a { color: inherit; }
+			.wrap { max-width: 920px; margin: 0 auto; padding: 0 20px; }
+
+			.topbar {
+				position: sticky;
+				top: 0;
+				z-index: 20;
+				background: rgba(5,6,7,.82);
+				border-bottom: 1px solid rgba(128,255,205,.18);
+			}
+			.topbar-inner {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				padding: 14px 0;
+				gap: 12px;
+			}
+			.nav {
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				flex-wrap: wrap;
+			}
+			.nav a {
+				font-size: 13px;
+				color: rgba(240,255,249,.78);
+				padding: 8px 10px;
+				border-radius: 10px;
+				border: 1px solid transparent;
+				text-decoration: none;
+			}
+			.nav a:hover { border-color: rgba(128,255,205,.22); background: rgba(10,14,12,.75); }
+
+			.btn {
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				gap: 10px;
+				padding: 10px 12px;
+				border-radius: 10px;
+				border: 1px solid rgba(128,255,205,.26);
+				text-decoration: none;
+				white-space: nowrap;
+			}
+			.btn.primary {
+				background: linear-gradient(180deg, rgba(0,255,178,1), rgba(0,255,178,.82));
+				color: #03100b;
+				border-color: rgba(0,255,178,.85);
+			}
+
+			.hero { padding: 34px 0 10px; }
+			h1 {
+				margin: 0;
+				font-size: 34px;
+				line-height: 1.1;
+				font-family: var(--mono);
+				font-weight: 900;
+				background: linear-gradient(90deg, rgba(240,255,249,1), rgba(125,255,207,.92), rgba(0,255,178,.86));
+				-webkit-background-clip: text;
+				background-clip: text;
+				color: transparent;
+			}
+			.sub {
+				margin-top: 10px;
+				font-size: 14.5px;
+				line-height: 1.65;
+				color: var(--muted);
+				max-width: 85ch;
+			}
+			section { padding: 14px 0; }
+			.card {
+				background: linear-gradient(180deg, rgba(10,14,12,.92), rgba(10,14,12,.76));
+				border: 1px solid rgba(128,255,205,.20);
+				border-radius: var(--radius);
+				box-shadow: var(--shadow);
+			}
+			.card-pad { padding: 18px; }
+			.h {
+				margin: 0 0 10px 0;
+				font-size: 16px;
+				font-weight: 900;
+				font-family: var(--mono);
+			}
+			.p {
+				margin: 0;
+				color: var(--muted);
+				line-height: 1.65;
+				font-size: 13.75px;
+			}
+			.p + .p { margin-top: 10px; }
+			.hr { height: 1px; background: rgba(128,255,205,.12); margin: 14px 0; }
+			.list { margin: 0; padding-left: 18px; color: var(--muted); line-height: 1.65; }
+			.list li { margin: 6px 0; }
+			.notice {
+				border: 1px dashed rgba(128,255,205,.26);
+				background: rgba(10,14,12,.65);
+				border-radius: 14px;
+				padding: 12px;
+				color: rgba(233,237,255,.9);
+				font-size: 13.25px;
+				line-height: 1.55;
+			}
+			.notice b { color: rgba(0,255,178,.95); }
+			footer {
+				padding: 24px 0 34px;
+				color: rgba(160,255,215,.62);
+				font-size: 12.5px;
+				line-height: 1.6;
+				border-top: 1px solid rgba(128,255,205,.12);
+				background: rgba(5,6,7,.22);
+			}
+			.footer-links {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 10px;
+				margin-top: 10px;
+			}
+			.footer-links a {
+				padding: 6px 10px;
+				border-radius: 10px;
+				border: 1px solid rgba(128,255,205,.18);
+				background: rgba(5,6,7,.35);
+				color: rgba(200,255,233,.78);
+				text-decoration: none;
+			}
+			.footer-links a:hover { border-color: rgba(0,255,178,.45); }
+
+			@media (max-width: 720px) {
+				.topbar-inner { flex-direction: column; align-items: flex-start; }
+				h1 { font-size: 30px; }
+			}
+		</style>
+	</head>
+	<body>
+		<div class="topbar">
+			<div class="wrap">
+				<div class="topbar-inner">
+					<nav class="nav" aria-label="Primary">
+						<a href="./index.html">Back</a>
+						<a href="#privacy">Privacy</a>
+						<a href="#terms">Terms</a>
+						<a href="#disclosures">Disclosures</a>
+					</nav>
+					<a class="btn primary" href="./index.html#get-access">Get coaching</a>
+				</div>
+			</div>
+		</div>
+
+		<main>
+			<header class="hero">
+				<div class="wrap">
+					<h1>Policy</h1>
+					<p class="sub">
+						This page summarizes privacy, basic terms, and risk disclosures for the fdv.lol funnel pages.
+						It's written to be readable, not exhaustive. Effective date: <b>2026-01-28</b>.
+					</p>
+				</div>
+			</header>
+
+			<section id="privacy">
+				<div class="wrap">
+					<div class="card card-pad">
+						<h2 class="h">Privacy policy</h2>
+						<p class="p"><b>What we collect:</b> If you request 1:1 coaching, we collect your email address. We do not require your name.</p>
+						<p class="p"><b>Why we collect it:</b> To coordinate the 1:1 coaching request and (optionally) follow up with important updates about safety, docs, or breaking changes.</p>
+						<p class="p"><b>How it's processed:</b> The funnel form submits via a third-party form/mail service (lfbuilders API). Your email and the form metadata are transmitted to that provider to deliver the message.</p>
+						<p class="p"><b>Embedded/third-party content:</b> If you watch embedded media (e.g., YouTube) those providers may collect usage data or set cookies according to their own policies.</p>
+						<div class="hr"></div>
+						<h3 class="h">Data retention & deletion</h3>
+						<p class="p">We aim to retain collected emails only as long as needed for operations (handling coaching requests and relevant updates). If you want your email removed, request deletion via the project repo:</p>
+						<ul class="list">
+							<li><a href="https://github.com/builders-toronto/fdv.lol/issues" target="_blank" rel="noreferrer">github.com/builders-toronto/fdv.lol/issues</a></li>
+						</ul>
+						<div class="hr"></div>
+						<h3 class="h">Security</h3>
+						<p class="p">No system is perfectly secure. Please avoid sending sensitive personal information through the funnel form.</p>
+					</div>
+				</div>
+			</section>
+
+			<section id="terms">
+				<div class="wrap">
+					<div class="card card-pad">
+						<h2 class="h">Terms (plain language)</h2>
+						<p class="p"><b>Open-source software:</b> fdv.lol and related tooling are provided on an “as-is” basis. Review the repository and run at your own risk.</p>
+						<p class="p"><b>No custody:</b> This funnel and documentation do not create a managed account relationship. You control your own keys and execution.</p>
+						<p class="p"><b>Acceptable use:</b> Do not use the software or content for unlawful activity, harassment, or abuse of third-party services.</p>
+						<p class="p"><b>Changes:</b> We may update these terms as the project evolves. Material changes will be reflected on this page.</p>
+					</div>
+				</div>
+			</section>
+
+			<section id="disclosures">
+				<div class="wrap">
+					<div class="card card-pad">
+						<h2 class="h">Disclosures</h2>
+						<div class="notice">
+							<b>Not financial advice:</b> fdv.lol is a research/education tool. Nothing on this site is investment advice.
+							<br />
+							<b>Trading risk:</b> Trading is risky and you can lose money. Start small, use a burner wallet, and verify everything.
+							<br />
+							<b>No guarantees:</b> There are no promises of profit, performance, or uptime.
+						</div>
+					</div>
+				</div>
+			</section>
+		</main>
+
+		<footer>
+			<div class="wrap">
+				<div class="footer-links">
+					<a href="./index.html">1:1</a>
+					<a href="https://fdv.lol" target="_blank" rel="noreferrer">fdv.lol</a>
+					<a href="https://github.com/builders-toronto/fdv.lol" target="_blank" rel="noreferrer">GitHub</a>
+					<a href="https://t.me/fdvlolgroup" target="_blank" rel="noreferrer">Telegram</a>
+				</div>
+				<div style="margin-top:10px; opacity:.9;">© fdv.lol • Policy</div>
+			</div>
+		</footer>
+	</body>
+</html>

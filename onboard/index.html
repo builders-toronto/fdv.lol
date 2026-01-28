@@ -1,0 +1,1082 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="description" content="Learn-first onboarding for fdv.lol Auto Trader + Agent Gary. Understand the safety gates, the two-wallet pattern, and get optional 1:1 setup coaching before you launch." />
+		<meta name="robots" content="index,follow" />
+		<link rel="icon" href="./assets/icons/icon.png" type="image/png" />
+		<link rel="alternate icon" href="./assets/icons/fdv.lol.ico" />
+
+		<meta property="og:title" content="fdv.lol - Agent Gary" />
+		<meta property="og:description" content="Learn-first onboarding for Auto Trader + Agent Gary: safety gates, two-wallet setup, approval-based decisions, and optional 1:1 setup coaching." />
+		<meta property="og:type" content="website" />
+		<meta property="og:image" content="./assets/meta/fdv.lol.meta.png" />
+		<meta property="og:image:alt" content="fdv.lol Agent Gary" />
+		<meta name="twitter:card" content="summary_large_image" />
+		<meta name="twitter:title" content="fdv.lol - Agent Gary" />
+		<meta name="twitter:description" content="Learn-first onboarding for Auto Trader + Agent Gary: safety gates, two-wallet setup, approval-based decisions, and optional 1:1 setup coaching." />
+		<meta name="twitter:image" content="./assets/meta/fdv.lol.meta.png" />
+		<meta name="theme-color" content="#050607" />
+		<title>fdv.lol - Agent Gary</title>
+
+		<style>
+			:root {
+				--bg: #050607;
+				--panel: #0a0e0c;
+				--panel2: #0a1410;
+				--border: rgba(128, 255, 205, .22);
+				--dash: rgba(128, 255, 205, .35);
+				--text: rgba(244, 255, 250, .96);
+				--muted: rgba(214, 255, 238, .86);
+				--muted2: rgba(186, 255, 226, .78);
+				--muted3: rgba(170, 255, 218, .64);
+				--brand: #00ffb2;
+				--brand2: #7dffcf;
+				--good: #2ee59d;
+				--warn: #ffd36a;
+				--radius: 16px;
+				--shadow: 0 18px 55px rgba(0,0,0,.55);
+				--sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+				--mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+				--page-pad: clamp(12px, 4vw, 22px);
+				--section-pad: clamp(28px, 6vw, 54px);
+				--card-pad: clamp(16px, 3.2vw, 20px);
+			}
+
+			* { box-sizing: border-box; }
+			html, body { height: 100%; }
+			html { background: var(--bg); }
+			body {
+				margin: 0;
+				position: relative;
+				font-family: var(--sans);
+				font-size: 16px;
+				line-height: 1.65;
+				color: var(--text);
+				text-rendering: optimizeLegibility;
+				-webkit-font-smoothing: antialiased;
+				-moz-osx-font-smoothing: grayscale;
+				background:
+					radial-gradient(900px 650px at 18% -10%, rgba(0,255,178,.16), rgba(5,6,7,0) 60%),
+					radial-gradient(1100px 700px at 85% 0%, rgba(125,255,207,.10), rgba(5,6,7,0) 55%),
+					var(--bg);
+			}
+
+			/* Subtle overlay pattern (fixed) to avoid visible tiling seams while scrolling */
+			body::before {
+				content: "";
+				position: fixed;
+				inset: 0;
+				pointer-events: none;
+				z-index: 0;
+				background-image:
+					linear-gradient(rgba(0,255,178,.040) 1px, transparent 1px),
+					linear-gradient(90deg, rgba(0,255,178,.032) 1px, transparent 1px),
+					linear-gradient(0deg, rgba(255,255,255,.030), rgba(0,0,0,0));
+				background-size: 160px 160px, 160px 160px, 100% 8px;
+				opacity: .20;
+			}
+
+			/* Ensure content is above the overlay */
+			.topbar, main, footer { position: relative; z-index: 1; }
+
+			::selection { background: rgba(0,255,178,.22); }
+
+			a { color: inherit; text-decoration: none; }
+			a:focus-visible { outline: none; box-shadow: 0 0 0 4px rgba(0,255,178,.14); border-radius: 10px; }
+			.wrap { max-width: 1120px; margin: 0 auto; padding: 0 var(--page-pad); }
+			.topbar {
+				position: sticky;
+				top: 0;
+				z-index: 20;
+				background: rgba(5,6,7,.82);
+				border-bottom: 1px solid rgba(128,255,205,.18);
+			}
+			.topbar-inner {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				padding: 14px 0;
+				gap: 12px;
+			}
+
+            @media(max-width: 480px) {
+                .topbar-inner {
+                    flex-direction: column;
+                    align-items: flex-start;
+                }
+            }
+			.logo {
+				display: flex;
+				align-items: baseline;
+				gap: 10px;
+				font-weight: 850;
+				letter-spacing: .12em;
+				color: var(--brand2);
+				text-transform: uppercase;
+				font-size: 13px;
+				font-family: var(--mono);
+			}
+			.logo span {
+				letter-spacing: normal;
+				text-transform: none;
+				font-weight: 800;
+				font-family: var(--mono);
+				color: rgba(240,255,249,.92);
+			}
+			.nav {
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				flex-wrap: wrap;
+				justify-content: flex-end;
+			}
+			.nav a {
+				font-size: 11px;
+				color: rgba(244,255,250,.82);
+				    padding: 6px 2px;
+				border-radius: 10px;
+				border: 1px solid transparent;
+				font-family: var(--mono);
+			}
+			.nav a:hover { border-color: rgba(128,255,205,.22); background: rgba(10,14,12,.75); }
+
+			.btn {
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				gap: 10px;
+				padding: 12px 14px;
+				border-radius: 10px;
+				border: 1px dashed rgba(128,255,205,.32);
+				background: rgba(5,6,7,.35);
+				transition: transform .12s ease, background .12s ease, border-color .12s ease, box-shadow .12s ease;
+				white-space: nowrap;
+				font-family: var(--mono);
+			}
+			.btn:hover { transform: translateY(-1px); border-color: rgba(0,255,178,.55); box-shadow: 0 10px 30px rgba(0,255,178,.08); }
+			.btn.primary {
+				background: linear-gradient(180deg, rgba(0,255,178,1), rgba(0,255,178,.82));
+				color: #03100b;
+				border-color: rgba(0,255,178,.85);
+			}
+			.btn.primary:hover { background: rgba(0,255,178,1); }
+			.btn.ghost { background: rgba(10,14,12,.75); color: var(--text); }
+			.btn.small { padding: 9px 10px; font-weight: 750; font-size: 13px; }
+
+			.hero { padding: clamp(18px, 4vw, 34px) 0 clamp(10px, 2.5vw, 18px); }
+			.hero-grid {
+				display: flex;
+				gap: clamp(18px, 5vw, 60px);
+				align-items: flex-start;
+				flex-wrap: nowrap;
+			}
+			.hero-grid > div {
+				flex: 1 1 0;
+				min-width: 0;
+			}
+			.hero-grid > aside {
+				/* flex: 1.25 1 0; */
+				min-width: 0;
+			}
+			.kicker {
+				display: inline-flex;
+				align-items: center;
+				gap: 10px;
+				padding: 13px 25px;
+				border-radius: 999px;
+				background: rgba(10,14,12,.78);
+				border: 1px solid rgba(128,255,205,.22);
+				color: var(--muted);
+				font-size: 16px;
+				margin-bottom: 14px;
+				font-family: var(--mono);
+			}
+			.dot {
+				width: 8px;
+				height: 8px;
+				border-radius: 999px;
+				background: rgba(0,255,178,.95);
+				box-shadow: 0 0 0 6px rgba(0,255,178,.10);
+			}
+			h1 {
+				margin: 0;
+				font-size: clamp(30px, 3.5vw, 44px);
+				line-height: 1.06;
+				letter-spacing: -0.02em;
+				font-family: var(--mono);
+				font-weight: 900;
+				text-transform: none;
+				background: linear-gradient(90deg, rgba(240,255,249,1), rgba(125,255,207,.92), rgba(0,255,178,.86));
+				-webkit-background-clip: text;
+				background-clip: text;
+				color: transparent;
+			}
+			.sub {
+				margin-top: 14px;
+				font-size: 16px;
+				line-height: 1.7;
+				color: var(--muted);
+				max-width: 56ch;
+			}
+			.cta-row {
+				display: flex;
+				gap: 10px;
+				flex-wrap: wrap;
+				margin-top: 18px;
+				align-items: center;
+			}
+			.fine {
+				margin-top: 12px;
+				font-size: 12.5px;
+				color: var(--muted3);
+				line-height: 1.45;
+			}
+
+			.card {
+				/* background:
+					linear-gradient(180deg, rgba(0,255,178,.05), rgba(0,0,0,0)),
+					rgba(5,6,7,.55); */
+				/* border: 1px solid rgba(0,255,178,.22);
+				border-radius: var(--radius); */
+				/* box-shadow: var(--shadow); */
+			}
+			.card-pad { padding: var(--card-pad); }
+
+			.card-spec {
+				border: none;
+				background: transparent;
+				border-radius: 14px;
+				padding: clamp(18px, 4vw, 34px);
+				color: var(--muted2);
+				font-size: 13.25px;
+				line-height: 1.55;
+
+			}
+
+			.card-spec .cta-row {
+				display: flex;
+				gap: 10px;
+				flex-wrap: wrap;
+				margin-top: 18px;
+				align-items: center;
+				flex-direction: row;
+				justify-content: flex-end;
+			}
+
+			.card-spec .btn {
+				margin: 10px;
+			}
+
+			/* Terminal window chrome */
+			.termwin {
+				position: relative;
+				overflow: hidden;
+			}
+			.termwin::before {
+				content: "";
+				position: absolute;
+				left: 0;
+				right: 0;
+				top: 0;
+				height: 34px;
+				background: rgba(5,6,7,.75);
+				border-bottom: 1px solid rgba(128,255,205,.18);
+			}
+			.termwin::after {
+				content: "";
+				position: absolute;
+				left: 12px;
+				top: 11px;
+				width: 48px;
+				height: 12px;
+				background:
+					radial-gradient(circle at 6px 6px, rgba(255,95,86,.95) 0 4px, transparent 5px),
+					radial-gradient(circle at 24px 6px, rgba(255,189,46,.92) 0 4px, transparent 5px),
+					radial-gradient(circle at 42px 6px, rgba(39,201,63,.82) 0 4px, transparent 5px);
+			}
+			.termwin.card-pad {
+				padding: 52px 18px 18px;
+			}
+
+			.video {
+				background: transparent;
+				border: none;
+				overflow: hidden;
+			}
+			.video-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+    flex-direction: column;
+			}
+			.video-title {
+                width: 100%;
+				font-weight: 850;
+				font-size: 14px;
+				letter-spacing: .02em;
+				font-family: var(--mono);
+			}
+			.video-frame {
+				border-radius: 14px;
+				border: 1px solid rgba(128,255,205,.20);
+				overflow: hidden;
+				background: rgba(5,6,7,.65);
+				aspect-ratio: 16 / 9;
+			}
+			.video-frame iframe {
+				width: 100%;
+				height: 100%;
+				display: block;
+				border: 0;
+			}
+			video {
+				width: 100%;
+				height: 100%;
+				display: block;
+				object-fit: cover;
+				background: #000;
+			}
+
+			.grid3 {
+				display: grid;
+				grid-template-columns: repeat(3, 1fr);
+				gap: 30px;
+				margin-top: 18px;
+			}
+			.pill {
+				display: inline-flex;
+				align-items: center;
+                justify-content: center;
+				gap: 8px;
+				padding: 8px 10px;
+				border-radius: 999px;
+				background: rgba(10,14,12,.75);
+				border: 1px solid rgba(128,255,205,.22);
+				color: rgba(240,255,249,.85);
+				font-size: 13px;
+				font-weight: 700;
+				font-family: var(--mono);
+			}
+			.pill b { color: var(--brand); font-weight: 900; }
+
+			section { padding: var(--section-pad) 0; }
+			.section-title {
+				margin: 0 0 10px 0;
+				font-size: 18px;
+				font-weight: 850;
+				font-family: var(--mono);
+			}
+			.section-title::before {
+				content: "$ ";
+				color: rgba(0,255,178,.95);
+			}
+			.section-sub {
+				margin: 0 0 16px 0;
+				color: var(--muted);
+				line-height: 1.7;
+			}
+			.list {
+				display: grid;
+				gap: 10px;
+				margin: 0;
+				padding: 0;
+				list-style: none;
+			}
+			.li {
+				display: flex;
+				gap: 10px;
+				align-items: flex-start;
+				padding: 12px;
+				/* border-radius: 14px; */
+				border-bottom: 1px solid rgba(128,255,205,.16);
+				background: rgba(5,6,7,.26);
+			}
+			.badge {
+				width: 26px;
+				height: 26px;
+				border-radius: 10px;
+				display: grid;
+				place-items: center;
+				font-weight: 950;
+				font-size: 13px;
+				background: rgba(0,255,178,.12);
+				border: 1px solid rgba(0,255,178,.32);
+				color: rgba(0,255,178,1);
+				flex: 0 0 auto;
+			}
+			.li h3 {
+				margin: 0;
+				font-size: 14px;
+				font-weight: 850;
+			}
+			.li p {
+				margin: 4px 0 0 0;
+				font-size: 13.5px;
+				line-height: 1.55;
+				color: rgba(214,255,238,.82);
+			}
+
+			.two {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 14px;
+			}
+			.two > * {
+				flex: 1 1 420px;
+				min-width: 0;
+			}
+
+			@media (max-width: 800px) {
+				.matrix-fdv-qa {
+					flex: none;
+				}
+			}
+
+			.form {
+				display: grid;
+				gap: 25px;
+			}
+			.form .field {
+				display: grid;
+				gap: 6px;
+			}
+			.form label {
+				font-family: var(--mono);
+				font-size: 12px;
+				color: var(--muted3);
+			}
+			.row {
+				display: grid;
+				grid-template-columns: minmax(0, 1fr) auto;
+				gap: 10px;
+				align-items: end;
+			}
+			.row.two {
+				grid-template-columns: 1fr 1fr;
+			}
+			input[type="email"] {
+				width: 100%;
+				padding: 12px 14px;
+				border-radius: 10px;
+				border: 1px solid rgba(128,255,205,.24);
+				background: rgba(5,6,7,.55);
+				color: var(--text);
+				outline: none;
+				font-weight: 650;
+				font-family: var(--mono);
+			}
+			input[type="text"] {
+				width: 100%;
+				padding: 12px 14px;
+				border-radius: 10px;
+				border: 1px solid rgba(128,255,205,.24);
+				background: rgba(5,6,7,.55);
+				color: var(--text);
+				outline: none;
+				font-weight: 650;
+				font-family: var(--mono);
+			}
+			input[type="text"]::placeholder { color: rgba(160,255,215,.55); }
+			input[type="text"]:focus { border-color: rgba(0,255,178,.55); box-shadow: 0 0 0 4px rgba(0,255,178,.12); }
+			input[type="email"]::placeholder { color: rgba(160,255,215,.55); }
+			input[type="email"]:focus { border-color: rgba(0,255,178,.55); box-shadow: 0 0 0 4px rgba(0,255,178,.12); }
+			.help {
+				font-size: 12.5px;
+				color: var(--muted3);
+				line-height: 1.45;
+			}
+			.sr-only {
+				position: absolute;
+				width: 1px;
+				height: 1px;
+				padding: 0;
+				margin: -1px;
+				overflow: hidden;
+				clip: rect(0, 0, 0, 0);
+				white-space: nowrap;
+				border: 0;
+			}
+			.notice {
+				border: 1px dashed rgba(128,255,205,.26);
+				background: rgba(10,14,12,.65);
+				border-radius: 14px;
+				padding: 12px;
+				color: rgba(233,237,255,.9);
+				font-size: 13px;
+				line-height: 1.55;
+			}
+			.notice b { color: rgba(0,255,178,.95); }
+
+			.notice div {
+				    padding: 9px;
+			}
+
+			.terminal {
+				margin-top: 14px;
+				border-radius: 14px;
+				border: 1px solid rgba(0,255,178,.22);
+				background:
+					linear-gradient(180deg, rgba(0,255,178,.06), rgba(0,0,0,0)),
+					rgba(5,6,7,.55);
+			}
+			.terminal-centered {
+				width: 100%;
+				max-width: 760px;
+				margin-left: auto;
+				margin-right: auto;
+			}
+			.terminal .hdr {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 10px;
+				margin-bottom: 10px;
+				font-family: var(--mono);
+				color: rgba(214,255,238,.86);
+				font-weight: 850;
+				font-size: 13px;
+			}
+			.dots {
+				display: inline-flex;
+				gap: 6px;
+				align-items: center;
+			}
+			.dots i {
+				display: inline-block;
+				width: 8px;
+				height: 8px;
+				border-radius: 999px;
+				background: rgba(160,255,215,.28);
+				border: 1px solid rgba(128,255,205,.22);
+			}
+			.terminal pre {
+				margin: 0;
+				white-space: pre-wrap;
+				word-break: break-word;
+				font-family: var(--mono);
+				font-size: 12.5px;
+				line-height: 1.55;
+				color: rgba(240,255,249,.90);
+			}
+			.terminal .prompt { color: rgba(0,255,178,.95); }
+
+			details {
+				border: 1px solid rgba(128,255,205,.18);
+				background: rgba(5,6,7,.35);
+				border-radius: 14px;
+				padding: 12px;
+				transition: border-color .12s ease, box-shadow .12s ease, background .12s ease;
+			}
+			details.termwin {
+				padding: 48px 12px 12px;
+				border-color: rgba(0,255,178,.22);
+				background:
+					linear-gradient(180deg, rgba(0,255,178,.05), rgba(0,0,0,0)),
+					rgba(5,6,7,.45);
+			}
+			details:hover {
+				border-color: rgba(0,255,178,.28);
+			}
+			details[open] {
+				border-color: rgba(0,255,178,.35);
+				box-shadow: 0 12px 40px rgba(0,255,178,.06);
+				background:
+					linear-gradient(180deg, rgba(0,255,178,.05), rgba(0,0,0,0)),
+					rgba(5,6,7,.42);
+			}
+			summary {
+				cursor: pointer;
+				font-weight: 900;
+				font-family: var(--mono);
+				color: rgba(240,255,249,.92);
+				list-style: none;
+				outline: none;
+				line-height: 1.35;
+			}
+			summary::-webkit-details-marker { display: none; }
+			summary::after {
+				content: "+";
+				float: right;
+				color: rgba(0,255,178,.85);
+				font-family: var(--mono);
+				font-weight: 900;
+			}
+			details[open] summary::after { content: "–"; }
+			summary:focus-visible {
+				box-shadow: 0 0 0 4px rgba(0,255,178,.12);
+				border-radius: 10px;
+			}
+			details p {
+				margin: 10px 0 0 0;
+				color: rgba(200,255,233,.76);
+				line-height: 1.6;
+				font-size: 13.5px;
+			}
+
+			footer {
+				padding: 28px 0 36px;
+				color: var(--muted3);
+				font-size: 12.5px;
+				line-height: 1.6;
+				border-top: 1px solid rgba(128,255,205,.12);
+				background: rgba(5,6,7,.22);
+			}
+			.footer-links {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 10px;
+				margin-top: 10px;
+			}
+			.footer-links a {
+				padding: 6px 10px;
+				border-radius: 10px;
+				border: 1px solid rgba(128,255,205,.18);
+				background: rgba(5,6,7,.35);
+				color: rgba(200,255,233,.78);
+			}
+			.footer-links a:hover { border-color: rgba(0,255,178,.45); }
+
+			@media (max-width: 980px) {
+				.hero-grid { flex-direction: column; }
+				h1 { font-size: clamp(30px, 5vw, 38px); }
+			}
+			@media (max-width: 720px) {
+				.grid3 { grid-template-columns: 1fr; }
+				.row { grid-template-columns: 1fr; }
+				.row.two { grid-template-columns: 1fr; }
+				.cta-row .btn { width: 100%; }
+				.nav { width: 100%; justify-content: flex-start; }
+			}
+			@media (max-width: 520px) {
+				.wrap { padding: 0 var(--page-pad); }
+				.hero { padding: 16px 0 10px; }
+				section { padding: clamp(24px, 7vw, 30px) 0; }
+				.card-pad { padding: var(--card-pad); }
+				.termwin.card-pad { padding: 48px 16px 16px; }
+
+				/* Full-bleed demo card without killing all page padding */
+				.hero-grid { gap: 16px; }
+				.hero-grid > aside {
+					margin-left: -12px;
+					margin-right: -12px;
+					border-radius: 0;
+					border-left: 0;
+					border-right: 0;
+				}
+				.hero-grid > aside.card-pad { padding-left: 12px; padding-right: 12px; }
+				.hero-grid > aside .video-frame { border-radius: 0; border-left: 0; border-right: 0; }
+				.video-header .btn { width: auto; }
+				h1 { font-size: 32px; }
+			}
+
+			@media (prefers-reduced-motion: reduce) {
+				* {
+					transition: none !important;
+					scroll-behavior: auto !important;
+				}
+			}
+		</style>
+	</head>
+
+	<body>
+		<div class="topbar">
+			<div class="wrap">
+				<div class="topbar-inner">
+					<nav class="nav" aria-label="Primary">
+                        <a href="https://fdv.lol">fdv.lol</a>
+						<a href="#how">How it works</a>
+						<a href="#tools">Tools</a>
+						<a href="https://github.com/builders-toronto/fdv.lol/blob/main/src/vista/widgets/auto/docs/guide.md" target="_blank" rel="noreferrer">Guide</a>
+						<a href="#safety">Safety</a>
+						<a href="#faq">FAQ</a>
+                        <a href="https://github.com/builders-toronto/fdv.lol">Source</a>
+					</nav>
+				</div>
+			</div>
+		</div>
+
+		<main id="top">
+			<header class="hero">
+				<div class="wrap">
+					<div class="hero-grid">
+						<div>
+							<!-- <div class="kicker">Open-source • client-side Solana tooling • optional AI guardrails</div> -->
+							<h1>Understand the Auto Trader first. Then decide how automated you want to be.</h1>
+							<p class="sub">
+								fdv.lol’s Auto Trader is an engine: it watches Pumping Radar leaders, runs a chain of safety gates,
+								quotes routes, executes, and manages exits.
+								Agent Gary adds an <strong>agentic, approval-based</strong> decision layer for entries -the system does the measuring,
+								but it won’t buy unless Gary explicitly approves.
+							</p>
+
+							<div class="cta-row">
+								<a class="btn primary" href="#get-access">Get 1:1 coaching</a>
+								<a class="btn ghost" href="#how">How Auto Trader works</a>
+								<a class="btn ghost" href="#tools">Explore tools</a>
+							</div>
+
+							<div class="fine">
+								No guarantees. This is experimental software.
+								Trading is risky and you can lose money. Start small, use a burner wallet, and verify links.
+							</div>
+
+							<div class="grid3" aria-label="Highlights">
+								<div class="pill"><b>Client-side</b></div>
+								<div class="pill"><b>Open-source</b></div>
+								<div class="pill"><b>Guardrails</b></div>
+							</div>
+						</div>
+
+						<aside class="card card-pad video" aria-label="Demo" id="demo">
+							<div class="video-header">
+								<!-- <div class="video-title">Quick look</div> -->
+								<a class="btn small ghost" href="https://www.youtube.com/watch?v=LUboJNCMow8" target="_blank" rel="noreferrer">Open on YouTube</a>
+							</div>
+							<div class="video-frame">
+								<iframe
+									width="560"
+									height="315"
+									src="https://www.youtube.com/embed/LUboJNCMow8?si=pdt-flJI-abeUH8m"
+									title="YouTube video player"
+									frameborder="0"
+									allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+									referrerpolicy="strict-origin-when-cross-origin"
+									allowfullscreen
+									loading="lazy"
+								></iframe>
+							</div>
+							<p class="help" style="margin:12px 0 0 0;">
+								If the embed doesn't load, use "Open on YouTube" above.
+							</p>
+						</aside>
+					</div>
+				</div>
+			</header>
+
+			<section id="how">
+				<div class="wrap">
+					<h2 class="section-title">How it works</h2>
+					<p class="section-sub">
+						Auto Trader is designed to avoid preventable failure modes first (bad routes, low liquidity, insufficient data),
+						and optimize second.
+						When <b>Agent Gary</b> is enabled, buys become approval-based -still inside the same hard safety gates.
+					</p>
+					<div class="two">
+						<div class="card card-pad">
+							<ul class="list">
+								<li class="li">
+									<div class="badge">1</div>
+									<div>
+										<h3>RPC + preflight</h3>
+										<p>Use a CORS-capable Solana RPC endpoint. The bot starts with a preflight check; if RPC is unhealthy, it stops.</p>
+									</div>
+								</li>
+								<li class="li">
+									<div class="badge">2</div>
+									<div>
+										<h3>Two-wallet pattern</h3>
+										<p>Trade from a dedicated Auto Wallet (burner). Set a Recipient (your main wallet) for Return/unwind.</p>
+									</div>
+								</li>
+								<li class="li">
+									<div class="badge">3</div>
+									<div>
+										<h3>Choose your decision layer</h3>
+										<p>Manual mode is rule-driven. Agent Gary mode is approval-based for entries (requires your provider key).</p>
+									</div>
+								</li>
+								<li class="li">
+									<div class="badge">4</div>
+									<div>
+										<h3>Run it as a loop (not a one-off)</h3>
+										<p>The engine ticks repeatedly: evaluate candidates, manage positions, and apply exits. Agent Gary can veto entries and reduce churn.</p>
+									</div>
+								</li>
+							</ul>
+						</div>
+
+						<div class="card card-pad">
+							<h3 class="section-title" style="margin-bottom:8px;">Agentic advantage (practical)</h3>
+							<div class="notice">
+								<div><b>Approval required:</b> entries only happen when Gary returns an explicit “buy” decision.</div>
+								<div><b>Veto + reasons:</b> skips come with a rationale so you can tune constraints without guessing.</div>
+								<div><b>Bounded tuning:</b> Gary may suggest small, stable adjustments to allowed knobs; values are validated and clamped.</div>
+								<div><b>Learning loop:</b> outcomes can be fed back so later decisions are grounded in your session history.</div>
+							</div>
+
+							<div style="height:12px;"></div>
+
+							<h3 class="section-title" style="margin-bottom:8px;">Trust anchors</h3>
+							<ul class="list">
+								<li class="li">
+									<div class="badge">✓</div>
+									<div>
+										<h3>Open-source, verifiable links</h3>
+										<p>Start from the official repo and domain. Be suspicious of DMs and lookalike domains.</p>
+									</div>
+								</li>
+								<li class="li">
+									<div class="badge">✓</div>
+									<div>
+										<h3>We don’t hold your funds</h3>
+										<p>It runs client-side. You control keys and execution; the agent does not receive private keys.</p>
+									</div>
+								</li>
+							</ul>
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<section id="tools">
+				<div class="wrap">
+					<h2 class="section-title">Tools inside fdv.lol</h2>
+					<p class="section-sub">
+						Auto Trader is one workflow. fdv.lol also includes additional modules for monitoring, execution, and repeatable operations.
+						Use what you need, keep constraints explicit, and keep balances small while you evaluate.
+					</p>
+
+					<div class="two">
+						<div class="card card-pad">
+							<h3 class="section-title" style="margin-bottom:8px;">Auto Trader + Agent Gary</h3>
+							<p class="section-sub" style="margin-bottom:0;">
+								The automation loop: evaluate candidates, run safety gates, execute routes, and manage exits.
+								Enable Agent Gary when you want approval-based entries and bounded tuning suggestions.
+							</p>
+						</div>
+
+						<div class="card card-pad">
+							<h3 class="section-title" style="margin-bottom:8px;">Other workflows</h3>
+							<ul class="list">
+								<li class="li">
+									<div class="badge">•</div>
+									<div>
+										<h3>Sentry</h3>
+										<p>Monitoring-first workflows that help you watch conditions and reduce surprises.</p>
+									</div>
+								</li>
+								<li class="li">
+									<div class="badge">•</div>
+									<div>
+										<h3>Hold / Follow</h3>
+										<p>Repeatable position-management styles you can run with explicit constraints.</p>
+									</div>
+								</li>
+								<li class="li">
+									<div class="badge">•</div>
+									<div>
+										<h3>Volume</h3>
+										<p>Operational tooling for controlled repetition -only use with strict limits and conservative budgets.</p>
+									</div>
+								</li>
+							</ul>
+							<div class="cta-row" style="margin-top:14px;">
+								<a class="btn ghost" href="https://github.com/builders-toronto/fdv.lol" target="_blank" rel="noreferrer">Verify in source</a>
+								<a class="btn primary" href="https://fdv.lol" target="_blank" rel="noreferrer">Open the app</a>
+							</div>
+							<p class="help" style="margin:12px 0 0 0;">
+								Recommendation: start by reading the guide, then do a short sanity run before expecting any performance.
+							</p>
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<section id="safety">
+				<div class="wrap">
+					<h2 class="section-title">Safety checklist (read this first)</h2>
+					<p class="section-sub">
+						This is intentionally conservative. A “clean” first session is one where you avoid avoidable mechanics.
+					</p>
+
+					<div class="card card-pad">
+						<ul class="list">
+							<li class="li">
+								<div class="badge">!</div>
+								<div>
+									<h3>Use the two-wallet pattern</h3>
+									<p>Auto Wallet = dedicated trading wallet. Recipient = your main wallet for Return/unwind.</p>
+								</div>
+							</li>
+							<li class="li">
+								<div class="badge">!</div>
+								<div>
+									<h3>Keep fee runway</h3>
+									<p>Fund enough SOL for buys <em>and</em> fees/rent. Many failures look like “bugs” but are fee starvation.</p>
+								</div>
+							</li>
+							<li class="li">
+								<div class="badge">!</div>
+								<div>
+									<h3>Verify the domain + links</h3>
+									<p>Only trust <strong>fdv.lol</strong> and the official repo. Be cautious with DMs and lookalike domains.</p>
+								</div>
+							</li>
+							<li class="li">
+								<div class="badge">!</div>
+								<div>
+									<h3>Expect skips (that's the system working)</h3>
+									<p>Common skip reasons are protective: no route/quote, insufficient samples, edge gates, or simulation enforcement.</p>
+								</div>
+							</li>
+							<li class="li">
+								<div class="badge">!</div>
+								<div>
+									<h3>Verify your mode</h3>
+									<p>If Agent Gary is enabled but a key is missing, buys are blocked by design. Confirm “ACTIVE” before judging behavior.</p>
+								</div>
+							</li>
+						</ul>
+
+						<div style="height:12px;"></div>
+
+						<div class="notice">
+							<b>Disclosure:</b> fdv.lol is a research/education tool and is not financial advice. Trading is risky; you can lose money.
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<section id="get-access">
+				<div class="wrap">
+					<h2 class="section-title">Get 1:1 coaching</h2>
+					<p class="section-sub">
+						Get hands-on help to set up your bots safely: RPC, wallets, safety posture, and how to confirm your mode.
+					</p>
+
+					<div class="two">
+						<div class="card card-pad">
+								<h3 class="section-title" style="margin-bottom:8px;">What we'll cover</h3>
+								<p class="section-sub" style="margin-bottom:12px;">
+										A short, practical 1:1 that matches how the system actually behaves.
+										We'll set RPC, create/fund the Auto Wallet with fee runway, set a Recipient, and identify the key log lines
+										that confirm a healthy session. If you enable Agent Gary, entries become approval-based: the bot measures and gates,
+										and only enters on explicit approval.
+								</p>
+								<div class="cta-row" style="margin-top:0;">
+										<a class="btn small ghost" href="https://github.com/builders-toronto/fdv.lol/blob/main/src/vista/widgets/auto/docs/guide.md" target="_blank" rel="noreferrer">Read the full Auto Trader guide</a>
+								</div>
+								<div style="height:25px;"></div>
+							<form
+								class="form"
+								id="leadForm"
+								action="https://api.lfbuilders.ca/fdv/mail/inquiry"
+								method="post"
+							>
+								<input type="hidden" name="access_key" value="48ba9e0e-72b5-44c5-ab56-76b088276938" />
+								<input type="hidden" name="SERVICE" value="FDV.LOL - Agent Gary coaching (1:1)" />
+									<input type="hidden" id="redirect" name="redirect" value="https://fdv.lol" />
+									<input type="hidden" id="email_lc" name="email" value="" />
+
+									<div class="row">
+										<div class="field">
+											<label class="sr-only" for="email">Email</label>
+											<input id="email" name="EMAIL" type="email" placeholder="you@domain.com" autocomplete="email" inputmode="email" required />
+										</div>
+										<button class="btn primary" type="submit">Request coaching</button>
+									</div>
+
+								<div class="help">
+										By submitting, you agree to be contacted about 1:1 coaching and occasional safety/product updates.
+											<a href="./policy.html">Policy</a>.
+								</div>
+							</form>
+						</div>
+
+						<div class="card card-pad card-spec">
+							<h3 class="section-title" style="margin-bottom:8px;">Prefer to self-serve?</h3>
+							<p class="section-sub" style="margin-bottom:14px;">
+									Start from sources, then launch when you're ready. You can always request coaching later.
+							</p>
+							<div class="cta-row" style="margin-top:0;">
+									<a class="btn ghost" href="https://github.com/builders-toronto/fdv.lol" target="_blank" rel="noreferrer">See the Github repo</a>
+									<a class="btn primary" href="https://fdv.lol" target="_blank" rel="noreferrer" style="font-size: 22px;">Launch fdv.lol</a>
+									<a class="btn ghost" href="https://t.me/fdvlolgroup" target="_blank" rel="noreferrer">Telegram support</a>
+							</div>
+							<p class="help" style="margin:12px 0 0 0;">
+									Tip: verify links from the repo and use a burner Auto Wallet with a Recipient set.
+							</p>
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<section id="faq">
+				<div class="wrap">
+					<h2 class="section-title">FAQ</h2>
+					<p class="section-sub">Short answers to the questions people ask before running automation.</p>
+
+					<div class="two" style="gap:24px;">
+						<details>
+							<summary>Do you hold funds or run accounts for users?</summary>
+							<p>No. It’s client-side tooling -you control keys and execution. Use explicit limits and small balances while testing.</p>
+						</details>
+						<details>
+							<summary>What is Agent Gary, exactly?</summary>
+							<p>An optional decision agent for Auto Trader. With Gary enabled, entries are approval-based: the bot won't buy unless Gary approves.</p>
+						</details>
+						<details>
+							<summary>Does Agent Gary get my private keys?</summary>
+							<p>No. He receives a compact, precomputed signals payload and returns a JSON decision. Keys stay with you; signing happens locally.</p>
+						</details>
+						<details>
+							<summary>Why didn't it buy anything?</summary>
+							<p>Often it's a gate, not a bug: no route/quote, insufficient leader series, edge/simulation enforcement, or Gary mode enabled without a key (buys blocked by design).</p>
+						</details>
+					</div>
+				</div>
+			</section>
+
+			<footer>
+				<div class="wrap">
+
+					<div class="footer-links">
+						<a href="https://fdv.lol" target="_blank" rel="noreferrer">fdv.lol</a>
+						<a href="https://github.com/builders-toronto/fdv.lol" target="_blank" rel="noreferrer">GitHub</a>
+						<a href="https://x.com/fdvlol" target="_blank" rel="noreferrer">X</a>
+						<a href="https://t.me/fdvlolgroup" target="_blank" rel="noreferrer">Telegram</a>
+							<a href="./policy.html">Policy</a>
+					</div>
+					<div style="margin-top:10px; opacity:.9;">© fdv.lol • Agent Gary</div>
+                    					<div>
+						<strong>Disclosure:</strong> fdv.lol is a research/education tool and is not financial advice.
+						Trading is risky and you can lose money. Use a burner wallet, keep balances small, and verify everything.
+					</div>
+				</div>
+			</footer>
+		</main>
+
+		<script>
+			(function () {
+				var redirectInput = document.getElementById('redirect');
+				var emailInput = document.getElementById('email');
+				var emailLcInput = document.getElementById('email_lc');
+				var form = document.getElementById('leadForm');
+				if (!redirectInput) return;
+
+				try {
+					var url = new URL(window.location.href);
+					var basePath = url.pathname.replace(/index\.html?$/, '');
+					if (!basePath.endsWith('/')) basePath = basePath + '/';
+					redirectInput.value = url.origin + basePath + 'thanks.html';
+				} catch (_) {}
+
+				function syncEmail() {
+					if (emailLcInput && emailInput) emailLcInput.value = emailInput.value || '';
+				}
+				if (emailInput) {
+					emailInput.addEventListener('input', syncEmail);
+					emailInput.addEventListener('blur', syncEmail);
+				}
+				if (form) {
+					form.addEventListener('submit', syncEmail);
+				}
+			})();
+		</script>
+	</body>
+</html>

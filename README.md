@@ -133,8 +133,6 @@ Implementation: `src/vista/widgets/favboard/index.js`
 - Responsive layout (table on desktop, cards on mobile)
 - Quick links to token pages and live stats
 
-![v0.0.5.3.png](v0.0.5.3.png)
-
 ---
 
 ## Use Cases (Playbooks)
