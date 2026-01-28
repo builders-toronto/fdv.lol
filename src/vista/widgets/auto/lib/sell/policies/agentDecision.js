@@ -32,6 +32,39 @@ export function createAgentDecisionPolicy({
 
       const fullAiControl = !!(ctx?.agentSignals && ctx.agentSignals.fullAiControl === true);
 
+      const _getHardUrgentSignal = () => {
+        try {
+          const u = ctx?.agentSignals?.urgent;
+          if (!u || typeof u !== "object") return null;
+          const reason = String(u.reason || "");
+          const sev = Number(u.sev || 0);
+          const hard = (/rug/i.test(reason) || (Number.isFinite(sev) && sev >= 0.75));
+          return hard ? { reason, sev } : null;
+        } catch {
+          return null;
+        }
+      };
+
+      // Safety override: hard urgent signals must force an exit even under full AI control.
+      const hardUrg = _getHardUrgentSignal();
+      if (hardUrg) {
+        try {
+          ctx.isFastExit = true;
+          if (/rug/i.test(hardUrg.reason)) {
+            ctx.forceRug = true;
+            ctx.rugSev = Number.isFinite(hardUrg.sev) ? hardUrg.sev : Number(ctx?.rugSev || 1);
+          }
+          ctx.decision = {
+            action: "sell_all",
+            reason: `URGENT:${String(hardUrg.reason || "unknown")}`,
+            hardStop: true,
+          };
+        } catch {}
+
+        try { _log(`urgent override active; skipping agent decision`); } catch {}
+        return;
+      }
+
       const _isSystemHardExit = (decision) => {
         try {
           if (!decision || decision.action === "none") return false;
@@ -122,6 +155,8 @@ export function createAgentDecisionPolicy({
       if (!res?.ok || !res?.decision) return;
       const d = res.decision;
 
+      const action = String(d.action || "").trim().toLowerCase();
+
       if (!fullAiControl) {
         try {
           const allowDuringMinHold = !!(
@@ -141,7 +176,6 @@ export function createAgentDecisionPolicy({
 
       if (!fullAiControl) {
         try {
-          const action = String(d.action || "").toLowerCase();
           const wantsSell = (action === "sell_all" || action === "sell_partial");
           if (wantsSell) {
             const pnl = Number.isFinite(ctx?.pnlNetPct) ? Number(ctx?.pnlNetPct) : Number(ctx?.pnlPct);
@@ -172,7 +206,6 @@ export function createAgentDecisionPolicy({
 
       if (!fullAiControl) {
         try {
-          const action = String(d.action || "").toLowerCase();
           const pnlNet = Number(ctx?.pnlNetPct ?? ctx?.pnlPct ?? NaN);
           if (action === "sell_partial" && !(Number.isFinite(pnlNet) && pnlNet > 0)) {
             ctx.decision = { action: "none", reason: `agent-partial-ignored pnl=${Number.isFinite(pnlNet) ? pnlNet.toFixed(2) : "?"}%` };
@@ -213,24 +246,57 @@ export function createAgentDecisionPolicy({
         _log(`sell decision mint=${mint} action=${String(d.action||"")} conf=${Number(d.confidence||0).toFixed(2)} reason=${String(d.reason||"")}${ftxt}`);
       } catch {}
 
-      if (d.action === "hold") {
+      const _isSellAllAction = (a) => {
+        const s = String(a || "").trim().toLowerCase();
+        return (
+          s === "sell_all" ||
+          s === "sellall" ||
+          s === "sell_full" ||
+          s === "sellfull" ||
+          s === "sell_100" ||
+          s === "sell100" ||
+          s === "sell" ||
+          s === "exit" ||
+          s === "close"
+        );
+      };
+
+      const _isHoldAction = (a) => {
+        const s = String(a || "").trim().toLowerCase();
+        return (s === "hold" || s === "none" || s === "skip");
+      };
+
+      const _isSellPartialAction = (a) => {
+        const s = String(a || "").trim().toLowerCase();
+        return (
+          s === "sell_partial" ||
+          s === "sellpartial" ||
+          s === "partial" ||
+          s === "trim" ||
+          s === "reduce"
+        );
+      };
+
+      if (_isHoldAction(action)) {
         // Agent HOLD veto: in volatile regimes, allow Gary to suppress some system exits
         // (e.g., SL / Trail / FAST_ fades) within bounded risk.
-        if (!fullAiControl) {
-          try {
-            const decision = ctx?.decision;
-            const hardExit = !!(
-              ctx?.forceRug ||
-              ctx?.forcePumpDrop ||
-              ctx?.forceExpire ||
-              ctx?.isFastExit ||
-              _isSystemHardExit(decision)
-            );
-            if (hardExit) {
-              try { _log(`hold ignored (hard exit active)`); } catch {}
-              return;
-            }
+        try {
+          const decision = ctx?.decision;
+          const hardExit = !!(
+            ctx?.forceRug ||
+            ctx?.forcePumpDrop ||
+            ctx?.forceExpire ||
+            ctx?.isFastExit ||
+            decision?.hardStop ||
+            !!hardUrg ||
+            _isSystemHardExit(decision)
+          );
+          if (hardExit) {
+            try { _log(`hold ignored (hard exit active)`); } catch {}
+            return;
+          }
 
+          if (!fullAiControl) {
             const softExit = _isSystemSoftExit(decision);
             if (softExit) {
               const enabled = (state?.agentHoldVetoEnabled !== false);
@@ -249,15 +315,15 @@ export function createAgentDecisionPolicy({
                 return;
               }
             }
-          } catch {}
-        }
+          }
+        } catch {}
 
         ctx.decision = { action: "none", reason: `agent-hold ${String(d.reason || "")}`.trim() };
         try { _log(`sell mapped -> none (hold)`); } catch {}
         return;
       }
 
-      if (d.action === "sell_all") {
+      if (_isSellAllAction(action)) {
         ctx.decision = {
           action: "sell_all",
           reason: `agent-sell ${String(d.reason || "")}`.trim(),
@@ -267,8 +333,8 @@ export function createAgentDecisionPolicy({
         return;
       }
 
-      if (d.action === "sell_partial") {
-        const pct = Math.max(1, Math.min(100, Number(d?.sell?.pct ?? 50)));
+      if (_isSellPartialAction(action)) {
+        const pct = Math.max(1, Math.min(100, Number(d?.sell?.pct ?? d?.pct ?? 50)));
         ctx.decision = {
           action: "sell_partial",
           pct,
