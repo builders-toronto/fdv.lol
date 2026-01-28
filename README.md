@@ -304,3 +304,8 @@ allow Agent Gary to return validated forecast on buy/sell decisions;
 pass forecastBaseline derived from past OHLCV features + tick/leader/rug context;
 log forecast fields for buy approvals and sell decisions;
 
+feat(onboard): add 1:1 coaching funnel + scroll-reveal animations
+
+Switch onboarding CTAs/copy from “checklist” to “Get 1:1 coaching” and update form metadata/policy language accordingly
+Add smooth scrolling + IntersectionObserver-based scroll reveal (with stagger) and reduced-motion fallback
+Include /onboard/ + policy.html in sitemap and sitemap generator so they persist across rebuilds

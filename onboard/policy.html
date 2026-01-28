@@ -8,6 +8,9 @@
 		<meta name="theme-color" content="#050607" />
 		<title>fdv.lol - Policy</title>
 		<meta name="description" content="Privacy policy, terms, and disclosures for fdv.lol funnel pages." />
+		<script>
+			document.documentElement.classList.add('js');
+		</script>
 
 		<link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
 		<link rel="alternate icon" href="./assets/favicon.svg" />
@@ -18,6 +21,25 @@
 		<meta property="og:image:alt" content="fdv.lol Agent Gary" />
 
 		<style>
+			html { scroll-behavior: smooth; }
+
+			/* Scroll reveal (JS adds .reveal + .is-visible). No-JS users see normal content. */
+			html.js .reveal {
+				opacity: 0;
+				transform: translateY(12px);
+				filter: blur(6px);
+				transition:
+					opacity .62s ease,
+					transform .62s cubic-bezier(.22, 1, .36, 1),
+					filter .62s ease;
+				transition-delay: var(--reveal-delay, 0ms);
+				will-change: opacity, transform, filter;
+			}
+			html.js .reveal.is-visible {
+				opacity: 1;
+				transform: none;
+				filter: none;
+			}
 			:root {
 				--bg: #050607;
 				--panel: #0a0e0c;
@@ -193,6 +215,10 @@
 				.topbar-inner { flex-direction: column; align-items: flex-start; }
 				h1 { font-size: 30px; }
 			}
+			@media (prefers-reduced-motion: reduce) {
+				html { scroll-behavior: auto; }
+				* { transition: none !important; scroll-behavior: auto !important; }
+			}
 		</style>
 	</head>
 	<body>
@@ -281,5 +307,58 @@
 				<div style="margin-top:10px; opacity:.9;">© fdv.lol • Policy</div>
 			</div>
 		</footer>
+
+		<script>
+			(function () {
+				if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+				var els = [];
+				function pushAll(sel) {
+					var list = document.querySelectorAll(sel);
+					for (var i = 0; i < list.length; i++) els.push(list[i]);
+				}
+
+				pushAll('.topbar');
+				pushAll('header.hero');
+				pushAll('section');
+				pushAll('.card');
+				pushAll('footer');
+
+				var uniq = [];
+				for (var e = 0; e < els.length; e++) {
+					if (els[e] && uniq.indexOf(els[e]) === -1) uniq.push(els[e]);
+				}
+
+				for (var j = 0; j < uniq.length; j++) {
+					uniq[j].classList.add('reveal');
+					if (uniq[j].classList && uniq[j].classList.contains('topbar')) {
+						uniq[j].style.setProperty('--reveal-delay', '0ms');
+					}
+				}
+
+				// Stagger the sections a touch
+				var sections = document.querySelectorAll('section');
+				for (var s = 0; s < sections.length; s++) {
+					sections[s].style.setProperty('--reveal-delay', String(Math.min(s * 90, 240)) + 'ms');
+				}
+
+				if (!('IntersectionObserver' in window)) {
+					for (var t = 0; t < uniq.length; t++) uniq[t].classList.add('is-visible');
+					return;
+				}
+
+				var io = new IntersectionObserver(function (entries) {
+					for (var i2 = 0; i2 < entries.length; i2++) {
+						var entry = entries[i2];
+						if (entry.isIntersecting) {
+							entry.target.classList.add('is-visible');
+							io.unobserve(entry.target);
+						}
+					}
+				}, { threshold: 0.12, rootMargin: '0px 0px -10% 0px' });
+
+				for (var u = 0; u < uniq.length; u++) io.observe(uniq[u]);
+			})();
+		</script>
 	</body>
 </html>
