@@ -1,5 +1,5 @@
 import { createAgentJsonRunner } from "./driver.js";
-import { GARY_SENTRY_SYSTEM_PROMPT } from "./personas/agent.gary.sentry.js";
+import { GARY_SENTRY_SYSTEM_PROMPT } from "./personas/strategies/agent.gary.sentry.js";
 
 const _safeNum = (v, fallback = 0) => {
 	const n = Number(v);

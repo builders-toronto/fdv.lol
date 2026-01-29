@@ -55,5 +55,19 @@ export function createQuoteAndEdgePolicy({
 
     ctx.pxNowNet  = sz > 0 ? (ctx.curSolNet / sz) : 0;
     ctx.pnlNetPct = (ctx.pxNowNet > 0 && ctx.pxCost > 0) ? ((ctx.pxNowNet - ctx.pxCost) / ctx.pxCost) * 100 : 0;
+
+    // Maintain high-water marks from live valuation ticks.
+    // - `hwmSol` is used as a peak value hint (prefer net for conservatism).
+    // - `hwmPx` is used by several drawdown/trailing checks.
+    try {
+      if (Number.isFinite(ctx.pxNow) && ctx.pxNow > 0) {
+        const prevHwmPx = Number(ctx.pos.hwmPx || 0);
+        ctx.pos.hwmPx = Math.max(prevHwmPx || ctx.pxNow, ctx.pxNow);
+      }
+      const v = (Number.isFinite(ctx.curSolNet) && ctx.curSolNet > 0)
+        ? ctx.curSolNet
+        : ((Number.isFinite(ctx.curSol) && ctx.curSol > 0) ? ctx.curSol : 0);
+      if (v > 0) ctx.pos.hwmSol = Math.max(Number(ctx.pos.hwmSol || 0), v);
+    } catch {}
   };
 }

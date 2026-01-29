@@ -57,7 +57,7 @@ import {
   DYN_HS,
 } from "../lib/constants.js";
 import { createDex } from "../lib/dex.js";
-import { getAutoHelpModalHtml, wireAutoHelpModal } from "../docs/helpModal.js";
+import { getAutoHelpModalHtml, wireAutoHelpModal } from "../help/modal.js";
 
 import { createPreflightSellPolicy } from "../lib/sell/policies/preflight.js";
 import { createLeaderModePolicy } from "../lib/sell/policies/leaderMode.js";
@@ -1215,6 +1215,7 @@ const fastExitPolicy = createFastExitPolicy({
 const profitLockPolicy = createProfitLockPolicy({
   log,
   save,
+  getState: () => state,
 });
 
 const fallbackSellPolicy = createFallbackSellPolicy({
@@ -1703,6 +1704,8 @@ let state = {
   warmingExtendOnRise: true,
   warmingExtendStepMs: 4000,  
   warmingNoHardStopSecs: 35,
+
+  profitLockEnabled: false,
  
   reboundGateEnabled: true,         
   reboundLookbackSecs: 35,       
@@ -2519,7 +2522,7 @@ function clearPendingCredit(owner, mint) {
   try { _getPendingStore().delete(_pcKey(String(owner||""), String(mint||""))); } catch {}
 }
 
-function enqueuePendingCredit({ owner, mint, addCostSol = 0, decimalsHint, basePos, sig = "" } = {}) {
+function enqueuePendingCredit({ owner, mint, addCostSol = 0, decimalsHint, basePos, sig = "", minSizeUi = 0 } = {}) {
   try {
     if (!owner || !mint) return false;
     const key = _pcKey(owner, mint);
@@ -2527,6 +2530,7 @@ function enqueuePendingCredit({ owner, mint, addCostSol = 0, decimalsHint, baseP
       owner: String(owner),
       mint: String(mint),
       addCostSol: Number(addCostSol || 0),
+      minSizeUi: Math.max(0, Number(minSizeUi || 0)),
       decimalsHint: Number.isFinite(decimalsHint) ? decimalsHint : undefined,
       basePos: basePos && typeof basePos === "object" ? { ...basePos } : null,
       sig: String(sig || ""),
@@ -2557,11 +2561,8 @@ async function reconcileBuyFromTx(sig, owner, mint) {
     const uiPost = Number(p1.uiTokenAmount?.uiAmount || 0);
     const uiPre  = Number(p0?.uiTokenAmount?.uiAmount || 0);
     const delta  = uiPost - uiPre;
-    if (Number.isFinite(delta) && delta > 0) {
-      return { mint: String(mint), sizeUi: delta, decimals: Number.isFinite(dec) ? dec : undefined };
-    }
     if (uiPost > 0) {
-      return { mint: String(mint), sizeUi: uiPost, decimals: Number.isFinite(dec) ? dec : undefined };
+      return { mint: String(mint), sizeUi: uiPost, deltaUi: Number.isFinite(delta) ? delta : undefined, decimals: Number.isFinite(dec) ? dec : undefined };
     }
   } catch {}
   return null;
@@ -2589,7 +2590,10 @@ async function processPendingCredits() {
           }
         }
 
-        if (size > 0) {
+        const minWant = Math.max(0, Number(rec.minSizeUi || 0));
+        const okSize = (minWant > 0) ? (size > minWant + 1e-12) : (size > 0);
+
+        if (okSize) {
           const prev = state.positions[mint] || (rec.basePos || { costSol: 0, hwmSol: 0, acquiredAt: now() });
           const pos = {
             ...prev,
@@ -2631,7 +2635,9 @@ async function reconcileFromOwnerScan(ownerPubkeyStr) {
         const b = await getAtaBalanceUi(rec.owner, rec.mint, rec.decimalsHint, "confirmed");
         const size = Number(b.sizeUi || 0);
         const dec  = Number.isFinite(b.decimals) ? b.decimals : (rec.decimalsHint ?? 6);
-        if (size > 0) {
+        const minWant = Math.max(0, Number(rec.minSizeUi || 0));
+        const okSize = (minWant > 0) ? (size > minWant + 1e-12) : (size > 0);
+        if (okSize) {
           const prev = state.positions[rec.mint] || (rec.basePos || { costSol: 0, hwmSol: 0, acquiredAt: now() });
           const pos = {
             ...prev,
@@ -2640,6 +2646,11 @@ async function reconcileFromOwnerScan(ownerPubkeyStr) {
             awaitingSizeSync: false,
             lastSeenAt: now(),
           };
+          if (Number(rec.addCostSol || 0) > 0) {
+            pos.costSol = Number(pos.costSol || 0) + Number(rec.addCostSol || 0);
+            pos.hwmSol  = Math.max(Number(pos.hwmSol || 0), Number(rec.addCostSol || 0));
+            pos.lastBuyAt = now();
+          }
           state.positions[rec.mint] = pos;
           updatePosCache(rec.owner, rec.mint, pos.sizeUi, pos.decimals);
           clearPendingCredit(rec.owner, rec.mint);
@@ -2797,7 +2808,7 @@ function releaseBuyLock() {
   try { window._fdvBuyLockUntil = 0; } catch {}
 }
 
-function optimisticSeedBuy(ownerStr, mint, estUi, decimals, buySol, sig = "") {
+function optimisticSeedBuy(ownerStr, mint, estUi, decimals, buySol, sig = "", prevSizeUi = 0) {
   try {
     if (!ownerStr || !mint || !Number.isFinite(estUi) || estUi <= 0) return;
     const nowTs = now();
@@ -2822,6 +2833,8 @@ function optimisticSeedBuy(ownerStr, mint, estUi, decimals, buySol, sig = "") {
       mint,
       // Cost already applied optimistically; pending credit should only reconcile size.
       addCostSol: 0,
+      // If the mint already had a balance (dust or prior hold), wait for an actual increase.
+      minSizeUi: Math.max(0, Number(prevSizeUi || 0)) + 1e-9,
       decimalsHint: pos.decimals,
       basePos: pos,
       sig: sig || ""
@@ -2830,7 +2843,7 @@ function optimisticSeedBuy(ownerStr, mint, estUi, decimals, buySol, sig = "") {
   } catch {}
 }
 
-function ensurePendingBuyTracking(ownerStr, mint, basePos, buyCostSol, sig = "") {
+function ensurePendingBuyTracking(ownerStr, mint, basePos, buyCostSol, sig = "", prevSizeUi = 0) {
   try {
     if (!ownerStr || !mint) return false;
     const nowTs = now();
@@ -2853,6 +2866,8 @@ function ensurePendingBuyTracking(ownerStr, mint, basePos, buyCostSol, sig = "")
         owner: ownerStr,
         mint,
         addCostSol: Number(buyCostSol || 0),
+        // If the mint already had a balance (dust or prior hold), wait for an actual increase.
+        minSizeUi: Math.max(0, Number(prevSizeUi || 0)) + 1e-9,
         decimalsHint: pos.decimals,
         basePos: pos,
         sig: String(sig || ""),
@@ -3096,6 +3111,17 @@ async function waitForTokenDebit(ownerPubkeyStr, mintStr, prevSizeUi, { timeoutM
 
 async function waitForTokenCredit(ownerPubkeyStr, mintStr, { timeoutMs = 8000, pollMs = 300 } = {}) {
 	return await _getDex().waitForTokenCredit(ownerPubkeyStr, mintStr, { timeoutMs, pollMs });
+}
+
+async function waitForTokenCreditIncrease(ownerPubkeyStr, mintStr, prevSizeUi, { timeoutMs = 8000, pollMs = 300 } = {}) {
+  try {
+    const d = _getDex();
+    if (typeof d.waitForTokenCreditIncrease === "function") {
+      return await d.waitForTokenCreditIncrease(ownerPubkeyStr, mintStr, prevSizeUi, { timeoutMs, pollMs });
+    }
+  } catch {}
+  const got = await waitForTokenCredit(ownerPubkeyStr, mintStr, { timeoutMs, pollMs });
+  return { increased: Number(got?.sizeUi || 0) > Math.max(1e-9, Number(prevSizeUi || 0) + 1e-9), sizeUi: Number(got?.sizeUi || 0), decimals: got?.decimals };
 }
 
 // async function getFeeAta(mintStr) {
@@ -5991,10 +6017,6 @@ function shouldSell(pos, curSol, nowTs) {
     return { action: "none", reason: "sell-cooldown" };
   }
 
-  if (state.minHoldSecs > 0 && pos.acquiredAt && (nowTs - pos.acquiredAt) < state.minHoldSecs * 1000) {
-    return { action: "none", reason: "min-hold" };
-  }
-
   const pxNow = curSol / sz;
   const pxCost = cost / sz;
   pos.hwmPx = Math.max(Number(pos.hwmPx || 0) || pxNow, pxNow);
@@ -6007,6 +6029,19 @@ function shouldSell(pos, curSol, nowTs) {
   const partialPct = Math.min(100, Math.max(0, Number(state.partialTpPct || 0)));
 
   if (sl > 0 && pnlPct <= -sl) return { action: "sell_all", reason: `SL ${pnlPct.toFixed(2)}%` };
+
+  // Min-hold is a soft gate: allow SL and an early profit-lock exit.
+  // This prevents "we were up but never sold" when a short pump happens inside min-hold.
+  if (state.minHoldSecs > 0 && pos.acquiredAt && (nowTs - pos.acquiredAt) < state.minHoldSecs * 1000) {
+    const lockPct = Math.max(0, Number(pos.warmingMinProfitPct ?? state.warmingMinProfitPct ?? 0));
+    if (lockPct > 0 && Number.isFinite(pnlPct) && pnlPct >= lockPct) {
+      if (partialPct > 0 && partialPct < 100) {
+        return { action: "sell_partial", pct: partialPct, reason: `MIN_HOLD_PROFIT_LOCK ${pnlPct.toFixed(2)}% (${partialPct}%)` };
+      }
+      return { action: "sell_all", reason: `MIN_HOLD_PROFIT_LOCK ${pnlPct.toFixed(2)}%` };
+    }
+    return { action: "none", reason: "min-hold" };
+  }
 
   if (tp > 0 && pnlPct >= tp) {
     if (partialPct > 0 && partialPct < 100) {
@@ -8054,6 +8089,12 @@ async function tick() {
       const ownerStr = kp.publicKey.toBase58();
       const basePos  = prevPos || { costSol: 0, hwmSol: 0, acquiredAt: now() };
 
+      let prevOnChainSizeUi = 0;
+      try {
+        const b0 = await getAtaBalanceUi(ownerStr, mint, Number.isFinite(basePos.decimals) ? basePos.decimals : undefined, "confirmed");
+        prevOnChainSizeUi = Math.max(0, Number(b0?.sizeUi || 0));
+      } catch {}
+
         let dynSlip = Math.max(150, Number(state.slippageBps || 150));
         let liqUsdHint = NaN;
         let solUsdHint = NaN;
@@ -8235,8 +8276,8 @@ async function tick() {
                     slippageBps: state.slippageBps,
                     buyPct: state.buyPct,
                     minProfitToTrailPct: state.minProfitToTrailPct,
-                    minHoldSecs: state.minHoldSecs,
-                    maxHoldSecs: state.maxHoldSecs,
+                    // minHoldSecs: state.minHoldSecs,
+                    // maxHoldSecs: state.maxHoldSecs,
                     takeProfitPct: state.takeProfitPct,
                     stopLossPct: state.stopLossPct,
                     trailPct: state.trailPct,
@@ -8320,13 +8361,13 @@ async function tick() {
         try {
           const seed = getBuySeed(ownerStr, mint);
           if (seed && Number(seed.sizeUi || 0) > 0) {
-            optimisticSeedBuy(ownerStr, mint, Number(seed.sizeUi), Number(seed.decimals), buyCostSol, res.sig || "");
+            optimisticSeedBuy(ownerStr, mint, Number(seed.sizeUi), Number(seed.decimals), buyCostSol, res.sig || "", prevOnChainSizeUi);
             clearBuySeed(ownerStr, mint);
             log(`Buy unconfirmed for ${mint.slice(0,4)}… seeded pending credit watch.`);
             } else {
 
             if (res.sig) {
-              ensurePendingBuyTracking(ownerStr, mint, basePos, buyCostSol, res.sig);
+              ensurePendingBuyTracking(ownerStr, mint, basePos, buyCostSol, res.sig, prevOnChainSizeUi);
               log(`Buy not confirmed for ${mint.slice(0,4)}… tracking pending credit reconciliation.`);
             } else {
               log(`Buy not confirmed for ${mint.slice(0,4)}… skipping accounting.`);
@@ -8340,12 +8381,12 @@ async function tick() {
       try {
         const seed = getBuySeed(ownerStr, mint);
         if (seed && Number(seed.sizeUi || 0) > 0) {
-          optimisticSeedBuy(ownerStr, mint, Number(seed.sizeUi), Number(seed.decimals), buyCostSol, res.sig || "");
+          optimisticSeedBuy(ownerStr, mint, Number(seed.sizeUi), Number(seed.decimals), buyCostSol, res.sig || "", prevOnChainSizeUi);
           clearBuySeed(ownerStr, mint);
         } else {
           // Ensure the position exists immediately so we don't re-buy while awaiting on-chain credit.
           // Cost is applied via pending-credit reconciliation (or later confirmed-credit path) to avoid double counting.
-          if (res.sig) ensurePendingBuyTracking(ownerStr, mint, basePos, buyCostSol, res.sig);
+          if (res.sig) ensurePendingBuyTracking(ownerStr, mint, basePos, buyCostSol, res.sig, prevOnChainSizeUi);
         }
       } catch {}
 
@@ -8355,17 +8396,24 @@ async function tick() {
       remaining = remainingLamports / 1e9;
 
       // let credited = false;
-      let got = { sizeUi: 0, decimals: Number.isFinite(basePos.decimals) ? basePos.decimals : 6 };
+      let got = { sizeUi: 0, decimals: Number.isFinite(basePos.decimals) ? basePos.decimals : 6, increased: false };
       try {
-        got = await waitForTokenCredit(kp.publicKey.toBase58(), mint, { timeoutMs: 8000, pollMs: 300 });
+        got = await waitForTokenCreditIncrease(kp.publicKey.toBase58(), mint, prevOnChainSizeUi, { timeoutMs: 8000, pollMs: 300 });
       } catch (e) { log(`Token credit wait failed: ${e.message || e}`); }
+
+      if (prevOnChainSizeUi > 0 && Number(got.sizeUi || 0) > 0 && Number(got.sizeUi || 0) <= prevOnChainSizeUi + 1e-9) {
+        got.sizeUi = 0;
+      }
 
       if (!Number(got.sizeUi || 0) && res.sig) {
         try {
           const metaHit = await reconcileBuyFromTx(res.sig, kp.publicKey.toBase58(), mint);
           if (metaHit && metaHit.mint === mint && Number(metaHit.sizeUi || 0) > 0) {
-            got = { sizeUi: Number(metaHit.sizeUi), decimals: Number.isFinite(metaHit.decimals) ? metaHit.decimals : got.decimals };
-            log(`Buy registered via tx meta for ${mint.slice(0,4)}… (${got.sizeUi.toFixed(6)})`);
+            const metaSz = Number(metaHit.sizeUi || 0);
+            if (!(prevOnChainSizeUi > 0 && metaSz <= prevOnChainSizeUi + 1e-9)) {
+              got = { sizeUi: metaSz, decimals: Number.isFinite(metaHit.decimals) ? metaHit.decimals : got.decimals, increased: true };
+              log(`Buy registered via tx meta for ${mint.slice(0,4)}… (${got.sizeUi.toFixed(6)})`);
+            }
           }
         } catch {}
       }
@@ -8511,6 +8559,7 @@ async function tick() {
           owner: kp.publicKey.toBase58(),
           mint,
           addCostSol: buyCostSol,
+          minSizeUi: Math.max(0, Number(prevOnChainSizeUi || 0)) + 1e-9,
           decimalsHint: basePos.decimals,
           basePos: pos,
           sig: res.sig
