@@ -7,7 +7,7 @@
 		<meta name="robots" content="index,follow" />
 		<meta name="theme-color" content="#050607" />
 		<title>fdv.lol - Policy</title>
-		<meta name="description" content="Privacy policy, terms, and disclosures for fdv.lol funnel pages." />
+		<meta name="description" content="Privacy policy, terms, security practices, and crypto risk disclosures for fdv.lol (site-wide) and the funnel pages." />
 		<script>
 			document.documentElement.classList.add('js');
 		</script>
@@ -15,7 +15,7 @@
 		<link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
 		<link rel="alternate icon" href="./assets/favicon.svg" />
 		<meta property="og:title" content="fdv.lol - Policy" />
-		<meta property="og:description" content="Privacy policy, terms, and disclosures for fdv.lol funnel pages." />
+		<meta property="og:description" content="Privacy policy, terms, security practices, and crypto risk disclosures for fdv.lol (site-wide) and the funnel pages." />
 		<meta property="og:type" content="website" />
 		<meta property="og:image" content="https://fdv.lol/funnel/assets/og.svg" />
 		<meta property="og:image:alt" content="fdv.lol Agent Gary" />
@@ -27,9 +27,12 @@
 				<div class="topbar-inner">
 					<nav class="nav" aria-label="Primary">
 						<a href="./index.html">Back</a>
+						<a href="#scope">Scope</a>
 						<a href="#privacy">Privacy</a>
+						<a href="#security">Security</a>
 						<a href="#terms">Terms</a>
-						<a href="#disclosures">Disclosures</a>
+						<a href="#crypto">Crypto</a>
+						<a href="#contact">Contact</a>
 					</nav>
 				</div>
 			</div>
@@ -40,29 +43,114 @@
 				<div class="wrap">
 					<h1>Policy</h1>
 					<p class="sub">
-						This page summarizes privacy, basic terms, and risk disclosures for the fdv.lol funnel pages.
-						It's written to be readable, not exhaustive. Effective date: <b>2026-01-28</b>.
+						This policy covers fdv.lol <b>site-wide</b> (the web app, funnel pages, and related services).
+						It's written to be readable, but it is intentionally explicit.
+						Effective date: <b>2026-01-29</b>. Last updated: <b>2026-01-29</b>.
 					</p>
 				</div>
 			</header>
 
+			<section id="scope">
+				<div class="wrap">
+					<div class="card card-pad">
+						<h2 class="h">Scope & definitions</h2>
+						<p class="p"><b>What this applies to:</b> This policy applies to fdv.lol and related subdomains/services we operate, including:</p>
+						<ul class="list">
+							<li>fdv.lol (the web app and token/profile pages)</li>
+							<li>These funnel pages (onboard + 1:1 coaching request)</li>
+							<li>Cloudflare Workers we operate (e.g., metrics, ledger/leaderboard, RPC proxy)</li>
+							<li>Project tooling that may be run locally (CLI/scripts in the repo)</li>
+						</ul>
+						<p class="p"><b>What we are not:</b> We are not an exchange, broker, investment adviser, or custodian. We do not provide KYC/AML services. You remain responsible for your own compliance and decisions.</p>
+						<p class="p"><b>Age:</b> fdv.lol is intended for adults. Do not use it if you are under 18.</p>
+						<p class="p"><b>Important:</b> Blockchains are public ledgers. When you use crypto, you may publish data permanently (wallet addresses, transactions, token mints). We do not control the blockchain.</p>
+					</div>
+				</div>
+			</section>
+
 			<section id="privacy">
 				<div class="wrap">
 					<div class="card card-pad">
-						<h2 class="h">Privacy policy</h2>
-						<p class="p"><b>What we collect:</b> If you request 1:1 coaching, we collect your email address. We do not require your name.</p>
-						<p class="p"><b>Why we collect it:</b> To coordinate the 1:1 coaching request and (optionally) follow up with important updates about safety, docs, or breaking changes.</p>
-						<p class="p"><b>How it's processed:</b> The funnel form submits via a third-party form/mail service (lfbuilders API). Your email and the form metadata are transmitted to that provider to deliver the message.</p>
-						<p class="p"><b>Embedded/third-party content:</b> If you watch embedded media (e.g., YouTube) those providers may collect usage data or set cookies according to their own policies.</p>
+						<h2 class="h">Privacy policy (data practices)</h2>
+						<p class="p"><b>Summary:</b> fdv.lol is primarily a client-side web app. Most market/on-chain reads happen in your browser against third-party endpoints (RPC, aggregators, market data). We try to minimize what we store server-side, but some features require telemetry and abuse prevention.</p>
+
+						<div class="hr"></div>
+						<h3 class="h">1) Information you provide</h3>
+						<p class="p"><b>1:1 coaching request:</b> If you request coaching via the funnel, we collect your email address and the message you submit. We do not require your legal name.</p>
+						<p class="p"><b>Wallet addresses you enter:</b> Some features accept Solana addresses/mints (public keys). If you type or paste these into the app, you are providing them to your own browser session; they may also be sent to third-party APIs you query (see “Third parties”).</p>
+
+						<div class="hr"></div>
+						<h3 class="h">2) Automatic information (site + service logs)</h3>
+						<p class="p"><b>CDN/edge logs:</b> Like most websites, requests may generate basic logs at the hosting/CDN layer (e.g., IP address, user agent, request path, referrer, timestamp). These are used for operational security, debugging, and abuse prevention.</p>
+						<p class="p"><b>Cloudflare Worker logs:</b> Our Worker endpoints may record minimal diagnostic logs (for example, error traces). We avoid logging secrets by design.</p>
+
+						<div class="hr"></div>
+						<h3 class="h">3) Feature-specific telemetry (explicit)</h3>
+						<p class="p"><b>Shill links / referral analytics (opt-in by URL parameter):</b> Some token/profile pages support “ref”/slug-based analytics. When enabled, events sent to our metrics service can include:</p>
+						<ul class="list">
+							<li>Token mint, slug, event name/value, timestamp</li>
+							<li>Page path + URL (href), referrer, user agent</li>
+							<li><b>Hashed identifiers:</b> a SHA-256 hash of IP address and user agent (stored as hashes, not raw values)</li>
+							<li>A per-client nonce to help deduplicate/spam-control events</li>
+						</ul>
+						<p class="p"><b>Favorites:</b> “Favorite” counters use hashed IP-based controls to reduce spam and enforce caps.</p>
+						<p class="p"><b>Leaderboard / ledger (opt-in):</b> If you opt in to publishing bot/session metrics, you may submit:</p>
+						<ul class="list">
+							<li>Your public wallet address (pubkey)</li>
+							<li>A signed message proving control of that pubkey (signature + timestamp + nonce)</li>
+							<li>Telemetry payloads you choose to send (e.g., session PnL fields, last tx signature, balances), which are sanitized server-side</li>
+							<li>IP address may be used for rate limiting/abuse prevention</li>
+						</ul>
+						<p class="p"><b>Important:</b> This leaderboard telemetry is optional. If you don’t want to share it, do not enable/report it.</p>
+
+						<div class="hr"></div>
+						<h3 class="h">4) Local storage (your device)</h3>
+						<p class="p"><b>localStorage/sessionStorage:</b> fdv.lol uses browser storage for caching, preferences, and some workflow state. Examples include saved favorites, UI settings, shill link metadata, and RPC configuration.</p>
+						<p class="p"><b>High-risk local data:</b> Some Auto Trader workflows allow you to import an “Auto Wallet” secret for local signing. If you do this, that secret may be stored in your browser’s localStorage (on your device). We do not receive your private key unless you deliberately send it somewhere else, but localStorage can be exfiltrated by malware, browser extensions, or someone with device access.</p>
+						<p class="p"><b>Recommendation:</b> Use a burner wallet, keep balances small, and treat any browser-stored key material as hot-wallet risk. Consider using a dedicated browser profile and a clean machine.</p>
+
+						<div class="hr"></div>
+						<h3 class="h">5) Third parties we rely on</h3>
+						<p class="p">Depending on what you click/use, fdv.lol may interact with third-party services. These services have their own privacy policies and may collect IP, device info, cookies, and usage data.</p>
+						<ul class="list">
+							<li><b>Solana RPC providers:</b> Your RPC endpoint receives your JSON-RPC requests (which can include wallet addresses, signatures, and program calls).</li>
+							<li><b>RPC proxy (optional):</b> We operate an RPC proxy endpoint primarily to support CORS and abuse controls; it forwards JSON-RPC to an upstream provider.</li>
+							<li><b>Jupiter:</b> For quotes/routing and swap-related flows (API + site links).</li>
+							<li><b>Market data:</b> Services like DEXScreener (and similar) for token/market metadata.</li>
+							<li><b>Embeds:</b> YouTube (on the funnel), DEXTools if embedded/linked.</li>
+							<li><b>Comments/discussion:</b> Giscus (GitHub Discussions) if enabled on a page.</li>
+							<li><b>Anti-bot:</b> Cloudflare Turnstile for some gated endpoints.</li>
+							<li><b>Social automation (backend ops):</b> Optional Workers that post updates to X (Twitter) and/or Telegram channels.</li>
+						</ul>
+
 						<div class="hr"></div>
 						<h3 class="h">Data retention & deletion</h3>
-						<p class="p">We aim to retain collected emails only as long as needed for operations (handling coaching requests and relevant updates). If you want your email removed, request deletion via the project repo:</p>
+						<p class="p"><b>Email (coaching requests):</b> We retain emails only as long as needed to handle the request and related operational follow-ups. If you want your email removed, request deletion via the project repo:</p>
 						<ul class="list">
 							<li><a href="https://github.com/builders-toronto/fdv.lol/issues" target="_blank" rel="noreferrer">github.com/builders-toronto/fdv.lol/issues</a></li>
 						</ul>
+						<p class="p"><b>Telemetry (metrics/leaderboard):</b> Retention depends on the feature. For example, leaderboard report records are stored with short TTLs (days) and shill analytics are stored for operational needs and abuse prevention. We do not sell user data.</p>
 						<div class="hr"></div>
 						<h3 class="h">Security</h3>
-						<p class="p">No system is perfectly secure. Please avoid sending sensitive personal information through the funnel form.</p>
+						<p class="p">No system is perfectly secure. Do not send sensitive personal information through the funnel form. Do not paste seed phrases/private keys into any form or DMs.</p>
+					</div>
+				</div>
+			</section>
+
+			<section id="security">
+				<div class="wrap">
+					<div class="card card-pad">
+						<h2 class="h">Security & safety practices</h2>
+						<p class="p"><b>We design for “no custody”:</b> fdv.lol does not run a managed account. You sign transactions locally (in your wallet or via locally stored key material) and broadcast via RPC.</p>
+						<p class="p"><b>Key handling:</b> The safest pattern is to avoid storing private keys in the browser at all. If you do use an Auto Wallet secret in-browser, treat it like a hot wallet.</p>
+						<ul class="list">
+							<li>Use a burner Auto Wallet with small balances.</li>
+							<li>Keep your main wallet separate (recipient / cold storage).</li>
+							<li>Prefer reputable RPC providers and understand they can observe your traffic.</li>
+							<li>Beware browser extensions, malware, clipboard hijackers, and fake domains.</li>
+							<li>Verify addresses, mints, and links every time (especially on memecoins).</li>
+						</ul>
+						<p class="p"><b>Abuse prevention:</b> Some endpoints include rate limiting, nonce replay protection, and anti-bot challenges. This may involve processing IP addresses (or hashes) and request metadata to keep services usable.</p>
 					</div>
 				</div>
 			</section>
@@ -70,26 +158,59 @@
 			<section id="terms">
 				<div class="wrap">
 					<div class="card card-pad">
-						<h2 class="h">Terms (plain language)</h2>
-						<p class="p"><b>Open-source software:</b> fdv.lol and related tooling are provided on an “as-is” basis. Review the repository and run at your own risk.</p>
-						<p class="p"><b>No custody:</b> This funnel and documentation do not create a managed account relationship. You control your own keys and execution.</p>
-						<p class="p"><b>Acceptable use:</b> Do not use the software or content for unlawful activity, harassment, or abuse of third-party services.</p>
+						<h2 class="h">Terms of use (plain language)</h2>
+						<p class="p"><b>Open-source, “as-is”:</b> fdv.lol and related tooling are provided on an “as-is” and “as-available” basis, without warranties of any kind. You are responsible for reviewing the code and understanding what you run.</p>
+						<p class="p"><b>No custody / no fiduciary relationship:</b> Using fdv.lol does not create a managed account relationship. We do not take custody of your assets, and we do not act as your agent, broker, or adviser.</p>
+						<p class="p"><b>Third-party dependency:</b> The app depends on third-party networks and APIs (Solana RPC, aggregators, market data). Outages, rate limits, incorrect data, MEV conditions, or upstream changes may break features or cause losses.</p>
+						<p class="p"><b>Fees:</b> Some workflows may include platform fees (expressed in basis points) as part of on-chain routes. Fees, if any, are visible in the UI and on-chain transaction details. You control whether you execute the transaction.</p>
+						<p class="p"><b>Acceptable use:</b> You agree not to use fdv.lol for unlawful activity, harassment, abuse of third-party services, or market manipulation (including wash trading, spoofing, or coordinated pump-and-dump activity).</p>
+						<p class="p"><b>Sanctions / restricted use:</b> Do not use fdv.lol in any way that violates applicable sanctions, export controls, or local laws. If using crypto tooling is restricted where you live, you must not use this site.</p>
 						<p class="p"><b>Changes:</b> We may update these terms as the project evolves. Material changes will be reflected on this page.</p>
 					</div>
 				</div>
 			</section>
 
-			<section id="disclosures">
+			<section id="crypto">
 				<div class="wrap">
 					<div class="card card-pad">
-						<h2 class="h">Disclosures</h2>
+						<h2 class="h">Crypto risk disclosures (read carefully)</h2>
 						<div class="notice">
-							<b>Not financial advice:</b> fdv.lol is a research/education tool. Nothing on this site is investment advice.
+							<b>Not financial advice:</b> fdv.lol is a research/education and automation tooling project. Nothing here is investment advice.
 							<br />
-							<b>Trading risk:</b> Trading is risky and you can lose money. Start small, use a burner wallet, and verify everything.
+							<b>You can lose everything:</b> Crypto assets can go to zero. Memecoins are especially risky.
 							<br />
-							<b>No guarantees:</b> There are no promises of profit, performance, or uptime.
+							<b>Automation amplifies mistakes:</b> Bugs, misconfiguration, or a bad assumption can cause rapid losses.
 						</div>
+						<div class="hr"></div>
+						<h3 class="h">Key risks (non-exhaustive)</h3>
+						<ul class="list">
+							<li><b>Smart contract risk:</b> tokens and programs may be malicious, upgradeable, or exploitable (honeypots, taxes, transfer hooks, frozen accounts).</li>
+							<li><b>Liquidity + slippage risk:</b> low liquidity can cause extreme price impact; quotes can be stale; pools can be drained.</li>
+							<li><b>MEV / sandwiching / priority fees:</b> transactions can be observed and exploited; priority fee dynamics can change execution results.</li>
+							<li><b>Oracle/market data risk:</b> third-party APIs can be wrong, delayed, rate-limited, or manipulated.</li>
+							<li><b>Network/RPC risk:</b> RPC providers can censor, rate-limit, or degrade; outages can prevent exits; proxies can fail.</li>
+							<li><b>Operational risk:</b> wrong mint, wrong recipient, wrong decimals, wrong token program assumptions, or wrong wallet can cause irreversible loss.</li>
+							<li><b>Phishing/social engineering:</b> lookalike domains, fake support, and malicious “updates” are common. Verify the domain and repo every time.</li>
+							<li><b>Regulatory/tax risk:</b> crypto rules vary by jurisdiction and can change. You are responsible for compliance and tax reporting.</li>
+						</ul>
+						<div class="hr"></div>
+						<h3 class="h">Client-side automation specifics</h3>
+						<p class="p"><b>Signing & broadcasting:</b> If you enable automated execution, your device signs transactions and broadcasts them to an RPC endpoint. Anyone who gains access to your signing keys can drain funds.</p>
+						<p class="p"><b>Two-wallet pattern:</b> We recommend using a dedicated Auto Wallet (burner) and a separate main wallet for receiving/unwinding. This is not a guarantee of safety.</p>
+						<p class="p"><b>Verification gates:</b> Safety gates can reduce preventable failures, but no filter can guarantee a token is safe or that a trade will succeed.</p>
+					</div>
+				</div>
+			</section>
+
+			<section id="contact">
+				<div class="wrap">
+					<div class="card card-pad">
+						<h2 class="h">Contact & requests</h2>
+						<p class="p"><b>Questions, security reports, or deletion requests:</b> The primary support channel is the repository issue tracker.</p>
+						<ul class="list">
+							<li><a href="https://github.com/builders-toronto/fdv.lol/issues" target="_blank" rel="noreferrer">github.com/builders-toronto/fdv.lol/issues</a></li>
+						</ul>
+						<p class="p"><b>Community:</b> For updates and discussion, see Telegram: <a href="https://t.me/fdvlolgroup" target="_blank" rel="noreferrer">t.me/fdvlolgroup</a>.</p>
 					</div>
 				</div>
 			</section>

@@ -2830,6 +2830,41 @@ function optimisticSeedBuy(ownerStr, mint, estUi, decimals, buySol, sig = "") {
   } catch {}
 }
 
+function ensurePendingBuyTracking(ownerStr, mint, basePos, buyCostSol, sig = "") {
+  try {
+    if (!ownerStr || !mint) return false;
+    const nowTs = now();
+    const prev = state.positions?.[mint] || (basePos && typeof basePos === "object" ? { ...basePos } : { costSol: 0, hwmSol: 0, acquiredAt: nowTs });
+    const pos = {
+      ...prev,
+      costSol: Number(basePos?.costSol || prev.costSol || 0),
+      hwmSol: Number(basePos?.hwmSol || prev.hwmSol || 0),
+      lastBuyAt: nowTs,
+      lastSeenAt: nowTs,
+      awaitingSizeSync: true,
+      allowRebuy: false,
+      lastSplitSellAt: undefined,
+    };
+    state.positions[mint] = pos;
+    save();
+
+    if (sig && !hasPendingCredit(ownerStr, mint)) {
+      enqueuePendingCredit({
+        owner: ownerStr,
+        mint,
+        addCostSol: Number(buyCostSol || 0),
+        decimalsHint: pos.decimals,
+        basePos: pos,
+        sig: String(sig || ""),
+      });
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 
 function minSellNotionalSol() {
   return Math.max(
@@ -6147,8 +6182,16 @@ function shouldApplyWarmingHold(mint, pos, nowTs) {
   } catch { return false; }
 }
 
-function applyWarmingPolicy({ mint, pos, nowTs, pnlNetPct, pnlPct, curSol, decision, forceRug, forcePumpDrop, forceObserverDrop, forceEarlyFade }) {
-  const result = { decision, forceObserverDrop, forcePumpDrop, warmingActive: false, warmingHoldActive: false, warmingMaxLossTriggered: false };
+function applyWarmingPolicy({ mint, pos, nowTs, pnlNetPct, pnlPct, curSol, decision, forceRug, forcePumpDrop, forceObserverDrop, forceEarlyFade, fullAiControl = false }) {
+  const result = {
+    decision,
+    forceObserverDrop,
+    forcePumpDrop,
+    warmingActive: false,
+    warmingHoldActive: false,
+    warmingMaxLossTriggered: false,
+    warmReq: null,
+  };
   try {
     const warmingActive = !!(state.rideWarming && pos.warmingHold === true);
     result.warmingActive = warmingActive;
@@ -6188,59 +6231,72 @@ function applyWarmingPolicy({ mint, pos, nowTs, pnlNetPct, pnlPct, curSol, decis
     }
 
     const warmReq = computeWarmingRequirement(pos, nowTs);
+    result.warmReq = warmReq;
     const ext = isWarmingHoldActive(mint, pos, warmReq, nowTs);
     result.warmingHoldActive = !!ext.active;
 
-    if (Number.isFinite(pnl) && pnl >= warmReq.req) {
-      pos.warmingHold = false;
-      pos.warmingClearedAt = now();
-      delete pos.warmingExtendUntil;
-      save();
-      const msg = `WARMING_TARGET ${pnl.toFixed(2)}% ≥ ${warmReq.req.toFixed(2)}%`;
-      result.decision = { action: "sell_all", reason: msg };
-      log(`Warming target met for ${mint.slice(0,4)}… selling now (${msg}).`);
-      return result;
-    }
-
-    if (warmReq.shouldAutoRelease && !result.warmingHoldActive && pos.warmingHold === true) {
-      pos.warmingHold = false;
-      pos.warmingClearedAt = now();
-      delete pos.warmingExtendUntil;
-      save();
-      log(`Warming auto-release: ${mint.slice(0,4)}… (elapsed ${warmReq.elapsedTotalSec}s)`);
-      return result; 
-    }
-
-    if (!result.warmingMaxLossTriggered &&
-        result.warmingHoldActive &&
-        pnl < warmReq.req &&
-        !forceRug &&
-        !forceEarlyFade) {
-      if (result.forceObserverDrop || result.forcePumpDrop) {
-        log(`Warming hold: suppressing volatility sell for ${mint.slice(0,4)}… (PnL ${pnl.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
-      }
-      result.forceObserverDrop = false;
-      result.forcePumpDrop = false;
-
-      const rsn = String(result.decision?.reason || "");
-      const isHardOrFast = /rug|warming\s*max\s*loss|warming_target|FAST_/i.test(rsn);
-      if (result.decision && result.decision.action !== "none" && !isHardOrFast) {
-        log(`Warming hold: skipping sell (${result.decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnl.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
-        result.decision = { action: "none", reason: "warming-hold-until-profit" };
+    // In Full AI control, warming targets should inform the agent rather than forcing a sell.
+    if (!fullAiControl) {
+      if (Number.isFinite(pnl) && pnl >= warmReq.req) {
+        pos.warmingHold = false;
+        pos.warmingClearedAt = now();
+        delete pos.warmingExtendUntil;
+        save();
+        const msg = `WARMING_TARGET ${pnl.toFixed(2)}% ≥ ${warmReq.req.toFixed(2)}%`;
+        result.decision = { action: "sell_all", reason: msg };
+        log(`Warming target met for ${mint.slice(0,4)}… selling now (${msg}).`);
+        return result;
       }
     }
 
-    if (warmReq.shouldAutoRelease && !result.warmingHoldActive && pos.warmingHold === true) {
-      pos.warmingHold = false;
-      pos.warmingClearedAt = now();
-      delete pos.warmingExtendUntil;
-      // start a grace window so TP/SL/trailing can take over before timers
-      const graceMs = Math.max(10_000, Number(state.warmingPostReleaseGraceSecs || 60) * 1000);
-      pos.postWarmGraceUntil = now() + graceMs;
-      result.postReleaseGraceUntil = pos.postWarmGraceUntil;
-      try { const sel = pickTpSlForMint(mint); pos.tpPct=sel.tp; pos.slPct=sel.sl; pos.trailPct=sel.trailPct; pos.minProfitToTrailPct=sel.arm; save(); } catch {}
-      log(`Warming auto-release: ${mint.slice(0,4)}… (+${Math.floor(graceMs/1000)}s TP/SL grace)`);
-      return result;
+    // Full AI control: bypass warming auto-release. The agent should decide whether to keep holding or exit.
+    if (!fullAiControl) {
+      if (warmReq.shouldAutoRelease && !result.warmingHoldActive && pos.warmingHold === true) {
+        pos.warmingHold = false;
+        pos.warmingClearedAt = now();
+        delete pos.warmingExtendUntil;
+        save();
+        log(`Warming auto-release: ${mint.slice(0,4)}… (elapsed ${warmReq.elapsedTotalSec}s)`);
+        return result;
+      }
+    }
+
+    // In Full AI control, do not suppress sell decisions here. Let the agent see warmReq and decide.
+    if (!fullAiControl) {
+      if (!result.warmingMaxLossTriggered &&
+          result.warmingHoldActive &&
+          pnl < warmReq.req &&
+          !forceRug &&
+          !forceEarlyFade) {
+        if (result.forceObserverDrop || result.forcePumpDrop) {
+          log(`Warming hold: suppressing volatility sell for ${mint.slice(0,4)}… (PnL ${pnl.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
+        }
+        result.forceObserverDrop = false;
+        result.forcePumpDrop = false;
+
+        const rsn = String(result.decision?.reason || "");
+        const isHardOrFast = /rug|warming\s*max\s*loss|warming_target|FAST_/i.test(rsn);
+        if (result.decision && result.decision.action !== "none" && !isHardOrFast) {
+          log(`Warming hold: skipping sell (${result.decision.reason||"—"}) for ${mint.slice(0,4)}… (PnL ${pnl.toFixed(2)}% < ${warmReq.req.toFixed(2)}%).`);
+          result.decision = { action: "none", reason: "warming-hold-until-profit" };
+        }
+      }
+    }
+
+    // Full AI control: bypass the post-release grace flow too.
+    if (!fullAiControl) {
+      if (warmReq.shouldAutoRelease && !result.warmingHoldActive && pos.warmingHold === true) {
+        pos.warmingHold = false;
+        pos.warmingClearedAt = now();
+        delete pos.warmingExtendUntil;
+        // start a grace window so TP/SL/trailing can take over before timers
+        const graceMs = Math.max(10_000, Number(state.warmingPostReleaseGraceSecs || 60) * 1000);
+        pos.postWarmGraceUntil = now() + graceMs;
+        result.postReleaseGraceUntil = pos.postWarmGraceUntil;
+        try { const sel = pickTpSlForMint(mint); pos.tpPct=sel.tp; pos.slPct=sel.sl; pos.trailPct=sel.trailPct; pos.minProfitToTrailPct=sel.arm; save(); } catch {}
+        log(`Warming auto-release: ${mint.slice(0,4)}… (+${Math.floor(graceMs/1000)}s TP/SL grace)`);
+        return result;
+      }
     }
   } catch {}
   return result;
@@ -6439,8 +6495,9 @@ async function runSellPipelineForPosition(ctx) {
     ? [
         { name: "preflight", fn: (c) => preflightSellPolicy(c) },
         { name: "quoteAndEdge", fn: (c) => quoteAndEdgePolicy(c) },
-        { name: "agentDecision", fn: (c) => agentDecisionPolicy(c) },
+        // Run warming first so Agent Gary sees decay-delay/targets, but don't auto-release under Full AI.
         { name: "warmingHook", fn: (c) => warmingPolicyHook(c) },
+        { name: "agentDecision", fn: (c) => agentDecisionPolicy(c) },
         ...(() => {
           const skip = _getAutoBotOverride("skipExecute");
           if (skip) return [];
@@ -7320,6 +7377,10 @@ async function tick() {
 
   const withinBatch = state.allowMultiBuy && now() <= _buyBatchUntil;
   if (state.lastTradeTs && (now() - state.lastTradeTs)/1000 < state.minSecsBetween && !withinBatch && !ignoreCooldownForLeaderBuy) return;
+
+  // Hard safety: if a buy/sell/leader-switch is already in flight, do not start another buy pass.
+  // (The buy lock can expire while an async buy is still running.)
+  if (_buyInFlight || _inFlight || _switchingLeader) return;
 
 
   const fullAiControl = _isFullAiControlEnabled();
@@ -8265,15 +8326,8 @@ async function tick() {
             } else {
 
             if (res.sig) {
-              enqueuePendingCredit({
-                owner: ownerStr,
-                mint,
-                addCostSol: buyCostSol,
-                decimalsHint: basePos.decimals,
-                basePos: { ...basePos, awaitingSizeSync: true },
-                sig: res.sig
-              });
-              log(`Buy not confirmed for ${mint.slice(0,4)}… enqueued tx-meta reconciliation.`);
+              ensurePendingBuyTracking(ownerStr, mint, basePos, buyCostSol, res.sig);
+              log(`Buy not confirmed for ${mint.slice(0,4)}… tracking pending credit reconciliation.`);
             } else {
               log(`Buy not confirmed for ${mint.slice(0,4)}… skipping accounting.`);
             }
@@ -8288,6 +8342,10 @@ async function tick() {
         if (seed && Number(seed.sizeUi || 0) > 0) {
           optimisticSeedBuy(ownerStr, mint, Number(seed.sizeUi), Number(seed.decimals), buyCostSol, res.sig || "");
           clearBuySeed(ownerStr, mint);
+        } else {
+          // Ensure the position exists immediately so we don't re-buy while awaiting on-chain credit.
+          // Cost is applied via pending-credit reconciliation (or later confirmed-credit path) to avoid double counting.
+          if (res.sig) ensurePendingBuyTracking(ownerStr, mint, basePos, buyCostSol, res.sig);
         }
       } catch {}
 
@@ -9460,10 +9518,10 @@ export function initTraderWidget(container = document.body) {
         <label>Light top-up min chg5m (%)
           <input data-auto-light-minchg type="number" step="0.1" min="0" max="50" placeholder="0.8"/>
         </label>
-        <label>Light top-up min lope (/m)
+        <label>Light top-up min GS
           <input data-auto-light-minchgslope type="number" step="0.5" min="0" max="50" placeholder="6"/>
         </label>
-        <label>Light top-up min slope (/m)
+        <label>Light top-up min CS
           <input data-auto-light-minscslope type="number" step="0.5" min="0" max="50" placeholder="3"/>
         </label>
 
@@ -9503,7 +9561,7 @@ export function initTraderWidget(container = document.body) {
             <option value="enforce">Enforce</option>
           </select>
         </label>
-        <label>Max entry cost (%) (med/safe)
+        <label>Max entry cost (%)
           <input data-auto-max-entry-cost type="number" step="0.1" min="0" max="10" placeholder="1.5"/>
         </label>
         <label>Sim horizon (s)
@@ -9512,13 +9570,13 @@ export function initTraderWidget(container = document.body) {
         <label>Sim min win P (0-1)
           <input data-auto-entry-sim-minprob type="number" step="0.01" min="0" max="1" placeholder="0.55"/>
         </label>
-        <label>Sim min terminal P (0-1)
+        <label>Sim min terminal P
           <input data-auto-entry-sim-minterm type="number" step="0.01" min="0" max="1" placeholder="0.60"/>
         </label>
         <label>Sigma floor (%)
           <input data-auto-entry-sim-sigmafloor type="number" step="0.05" min="0" max="10" placeholder="0.75"/>
         </label>
-        <label>Sigma μ level weight (0-1)
+        <label>Sigma μ level weight
           <input data-auto-entry-sim-mulevelw type="number" step="0.05" min="0" max="1" placeholder="0.35"/>
         </label>
       </div>
@@ -9561,8 +9619,6 @@ export function initTraderWidget(container = document.body) {
             <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
             <option value="grok-3-mini">grok-3-mini</option>
             <option value="deepseek-chat">deepseek-chat</option>
-            <option value="gpt-7-nano" disabled>gpt-67-nano(coming soon)</option>
-            <option value="grok-elon" disabled>grok-9(coming soon)</option>
           </select>
         </label>
       </div>

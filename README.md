@@ -299,15 +299,9 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-feat(agent): add probabilistic forecast support and baseline signals;
-allow Agent Gary to return validated forecast on buy/sell decisions;
-pass forecastBaseline derived from past OHLCV features + tick/leader/rug context;
-log forecast fields for buy approvals and sell decisions;
+feat: policy revamp, onboarding polish, Full AI sell freedom; fix async buy lock lag;
 
-feat: add Coaching header CTA + externalize onboard/policy CSS
-
-- Add "Coaching" button in main header (between Library and Search) linking to /onboard/
-- Move onboarding page inline styles into onboard/assets/styles/onboard.css
-- Move policy page inline styles into onboard/assets/styles/policy.css
-- Wire pages to load new stylesheets via <link rel="stylesheet" ...>
-- Simplify policy topbar by removing the extra primary "Get coaching" CTA
+Advanced policy + legal declarations across fdv.lol;
+Onboarding styling + shimmer/animations (initial pass);
+Fix lag bug where buy lock could expire during async buy flow;
+Full AI mode no longer hard-blocked by min-hold/sell-guard; Agent Gary still receives timing signals;

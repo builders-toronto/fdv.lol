@@ -1,47 +1,6 @@
 import { PRIVACY, TOS, AGREEMENT } from "../../config/env.js";
 
 (function () {
-  const CSS = `
-  .legalBtn { cursor:pointer; }
-  /* ——— Modal shell ——— */
-  .legal-modal__wrap{position:fixed;inset:0;display:grid;place-items:center;pointer-events:none;z-index:1001}
-  .legal-modal{z-index:1002;width:min(960px,92vw);max-height:min(86vh,760px);background:var(--card,#0b1b22);border-radius:16px;box-shadow:0 10px 40px rgba(0,0,0,.45),inset 0 0 0 1px rgba(122,222,255,.08);transform:translateY(10px) scale(.98);opacity:0;transition:transform .18s ease,opacity .18s ease;display:flex;flex-direction:column;pointer-events:none;overflow:hidden}
-  .legal-modal.is-open{transform:translateY(0) scale(1);opacity:1;pointer-events:auto}
-  .legal-modal__backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);opacity:0;transition:opacity .18s ease;pointer-events:none;z-index:1000}
-  .legal-modal.is-open + .legal-modal__backdrop{opacity:1;pointer-events:auto}
-
-  .legal-modal__header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid rgba(122,222,255,.10);background:linear-gradient(to bottom, rgba(255,255,255,.02), rgba(255,255,255,0))}
-  .legal-modal__title{font-weight:600;font-size:16px}
-  .legal-modal__close{appearance:none;border:0;background:transparent;color:var(--muted,#a9e7f2);padding:6px 10px;border-radius:10px;cursor:pointer}
-  .legal-modal__close:hover{background:rgba(255,255,255,.06)}
-  .legal-modal__tabs{display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid rgba(122,222,255,.08);overflow:auto}
-  .legal-tab{appearance:none;border:0;background:transparent;color:#cfe8f1;padding:10px 12px;border-radius:12px;cursor:pointer;white-space:nowrap}
-  .legal-modal__body{overflow:auto;padding:18px 20px}
-  .legal-panel{display:none;animation:fadeIn .15s ease}
-  .legal-panel[aria-hidden="false"]{display:block}
-  .legal-panel h2{margin:0 0 10px;font-size:18px}
-  .legal-panel h3{margin:16px 0 8px;font-size:15px}
-  .legal-panel p,.legal-panel li{color:#cfe8f1;line-height:1.55}
-  .legal-panel ul{padding-left:18px}
-  @keyframes fadeIn{from{opacity:.6;transform:translateY(2px)}to{opacity:1;transform:none}}
-
-  /* Trigger button in footer */
-  .legal-trigger{margin-left:12px; margin-bottom: 20px;}
-  .legal-trigger .btn{opacity:.9}
-  @media (max-width: 520px){
-    .legal-modal__tabs{gap:4px}
-    .legal-tab{padding:8px 10px}
-    .legal-panel h2{font-size:16px}
-  }
-  `;
-
-  if (!document.getElementById('legal-modal-style')) {
-    const style = document.createElement('style');
-    style.id = 'legal-modal-style';
-    style.textContent = CSS;
-    document.head.appendChild(style);
-  }
-
   if (document.querySelector('.legal-modal__wrap')) return;
 
   const wrap = document.createElement('div');

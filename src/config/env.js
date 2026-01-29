@@ -100,9 +100,9 @@ export const EXPLORER   = (addr)=>`https://explorer.solana.com/address/${addr}`;
 
 export const FALLBACK_LOGO = (sym)=>"data:image/svg+xml;utf8,"+encodeURIComponent(
   `<svg xmlns='http://www.w3.org/2000/svg' width='50' height='50'>
-     <rect width='100%' height='100%' fill='#0b111d'/>
+     <rect width='100%' height='100%' fill='#000'/>
      <text x='50%' y='54%' dominant-baseline='middle' text-anchor='middle'
-           fill='#7bd7ff' font-family='Arial' font-size='12'>${(sym||'?').slice(0,5)}</text>
+           fill='#0aac4d' font-family='Arial' font-size='12'>${(sym||'?').slice(0,5)}</text>
    </svg>`
 );
 
@@ -136,42 +136,57 @@ export const MEME_KEYWORDS = [
 ];
 
 export const PRIVACY = `
-  <h2>Privacy Policy</h2>
-  <p>We do not run servers that store your browsing data. The app fetches public on-chain/market data directly in your browser. Basic, anonymized telemetry may be measured via static hosting (e.g., GitHub Pages/CDN logs). Do not share secrets.</p>
+  <h2>Privacy</h2>
+  <p><b>Summary:</b> fdv.lol is primarily client-side. Most reads happen from your browser to third-party endpoints (Solana RPC, aggregators, market data). We minimize server-side storage, but some optional features require telemetry and abuse prevention.</p>
 
-  <h3>Data Sources</h3>
+  <h3>What we process</h3>
   <ul>
-    <li>Public market APIs (e.g., price/liquidity/volume)</li>
-    <li>Static site hosting logs (aggregate)</li>
-    <li><em>Development-only (opt-in):</em> Microsoft Clarity (heatmaps/session replays) and an in-page click heatmap, used strictly to debug UX during development. These are disabled by default and never run in production unless explicitly enabled.</li>
+    <li><b>Standard web logs:</b> IP address, user agent, path, referrer, timestamps (hosting/CDN/edge).</li>
+    <li><b>Local device storage:</b> localStorage/sessionStorage for preferences, caching, and workflow state.</li>
+    <li><b>Optional shill analytics:</b> event metadata (mint/slug/event) + URL/referrer/user agent; hashed IP/user-agent may be stored for abuse controls.</li>
+    <li><b>Optional leaderboard/ledger:</b> your public wallet address + signed proof-of-control + the telemetry payload you choose to report (sanitized server-side).</li>
   </ul>
 
-  <h3>Cookies/Storage</h3>
-  <p>We may use localStorage/sessionStorage for caching UI preferences and response data to improve speed.</p>
+  <h3>High-risk note (private keys)</h3>
+  <p>Some Auto workflows can import an Auto Wallet secret for local signing. If you use this, the secret may be stored in your browser storage on your device. Treat this as hot-wallet risk. Use a burner wallet and keep balances small.</p>
 
-  <h3>Development-only telemetry</h3>
-  <p>Clarity and the in-page heatmap are used only during development to improve UX.</p>
+  <h3>Third parties</h3>
+  <p>Depending on features used, you may interact with Solana RPC providers, Jupiter, market data providers (e.g., DEXScreener), Cloudflare Turnstile, and embedded content (e.g., YouTube/Giscus). These services may collect data under their own policies.</p>
+
+  <p>Full policy: <a href="https://fdv.lol/onboard/policy.html" target="_blank" rel="noreferrer">fdv.lol/onboard/policy.html</a></p>
 `;
 
 
 export const TOS = `
-  <h2>Terms of Service</h2>
-  <p>FDV.lol is an informational tool. It is <strong>not financial advice</strong>. Use at your own risk.</p>
-  <h3>Use</h3>
+  <h2>Terms</h2>
+  <p><b>Not financial advice:</b> fdv.lol is a research/education and tooling project. You are responsible for your own decisions and trades.</p>
+
+  <h3>No custody / no managed account</h3>
+  <p>You control your keys and execution. We do not custody funds, and we are not an exchange, broker, or investment adviser.</p>
+
+  <h3>Acceptable use</h3>
   <ul>
-    <li>No scraping/abuse of rate-limited services.</li>
-    <li>No attempts to compromise the app or users.</li>
-    <li>Respect third-party API terms.</li>
+    <li>No unlawful activity, harassment, or attempts to compromise users/services.</li>
+    <li>No abuse of third-party APIs (rate limits apply).</li>
+    <li>No market manipulation (e.g., wash trading/spoofing/pump-and-dump).</li>
+    <li>No sanctions/export-control violations; do not use where prohibited.</li>
   </ul>
-  <h3>Warranty</h3>
-  <p>Provided “as is” without warranty. We do not guarantee accuracy or uptime.</p>
+
+  <h3>Warranty / liability</h3>
+  <p>Provided “as is” and “as available” without warranty. Crypto is risky and automation amplifies mistakes; we do not guarantee accuracy, uptime, or outcomes.</p>
+
+  <p>Full policy: <a href="https://fdv.lol/onboard/policy.html" target="_blank" rel="noreferrer">fdv.lol/onboard/policy.html</a></p>
 `;
 
 export const AGREEMENT = `
   <h2>Service Agreement</h2>
-  <p>By using FDV.lol you agree that the service may change or discontinue at any time without notice.</p>
+  <p>fdv.lol may change, break, or discontinue at any time. Features may be experimental and may rely on third-party infrastructure that can fail.</p>
+
   <h3>Availability</h3>
-  <p>Service is best-effort. Maintenance, API rate limits, or upstream outages may impact functionality.</p>
+  <p>Best-effort only. Maintenance, upstream outages, network congestion, MEV conditions, and rate limits may impact functionality and execution.</p>
+
   <h3>Limitations</h3>
-  <p>We are not responsible for trading outcomes, lost funds, or third-party actions.</p>
+  <p>You accept the risks of using crypto software and automation. We are not responsible for trading outcomes, lost funds, or third-party actions/services.</p>
+
+  <p>Full policy: <a href="https://fdv.lol/onboard/policy.html" target="_blank" rel="noreferrer">fdv.lol/onboard/policy.html</a></p>
 `;

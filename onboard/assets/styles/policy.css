@@ -131,12 +131,12 @@ h1 {
     max-width: 85ch;
 }
 section { padding: 14px 0; }
-.card {
+/* .card {
     background: linear-gradient(180deg, rgba(10,14,12,.92), rgba(10,14,12,.76));
     border: 1px solid rgba(128,255,205,.20);
     border-radius: var(--radius);
     box-shadow: var(--shadow);
-}
+} */
 .card-pad { padding: 18px; }
 .h {
     margin: 0 0 10px 0;
