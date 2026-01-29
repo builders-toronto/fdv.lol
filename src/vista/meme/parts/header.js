@@ -74,6 +74,7 @@ export function ensureCoachingHeaderLink() {
   a.setAttribute('role', 'button');
   a.setAttribute('aria-label', 'Open 1:1 coaching');
   a.setAttribute('title', '1:1 coaching');
+  a.style.color = '#fff';
   a.style.marginLeft = '8px';
   a.style.marginBottom = '15px';
   a.style.textDecoration = 'none';
