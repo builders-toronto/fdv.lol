@@ -304,3 +304,10 @@ allow Agent Gary to return validated forecast on buy/sell decisions;
 pass forecastBaseline derived from past OHLCV features + tick/leader/rug context;
 log forecast fields for buy approvals and sell decisions;
 
+feat: add Coaching header CTA + externalize onboard/policy CSS
+
+- Add "Coaching" button in main header (between Library and Search) linking to /onboard/
+- Move onboarding page inline styles into onboard/assets/styles/onboard.css
+- Move policy page inline styles into onboard/assets/styles/policy.css
+- Wire pages to load new stylesheets via <link rel="stylesheet" ...>
+- Simplify policy topbar by removing the extra primary "Get coaching" CTA
