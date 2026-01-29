@@ -15,6 +15,8 @@ export function createPreflightSellPolicy({
     const { mint, pos, nowTs } = ctx;
     const state = _getState();
 
+    const fullAiControl = !!(ctx?.agentSignals && ctx.agentSignals.fullAiControl === true);
+
     ctx.ageMs = nowTs - Number(pos.lastBuyAt || pos.acquiredAt || 0);
     ctx.minHoldMs = Math.max(0, Number(state.minHoldSecs || 0)) * 1000;
     ctx.inMinHold = ctx.minHoldMs > 0 && ctx.ageMs < ctx.minHoldMs;
@@ -45,7 +47,7 @@ export function createPreflightSellPolicy({
 
     ctx.inSellGuard = Number(pos.sellGuardUntil || 0) > nowTs;
 
-    if (!ctx.forceExpire && !urgentHard && (ctx.inMinHold || ctx.inSellGuard)) {
+    if (!fullAiControl && !ctx.forceExpire && !urgentHard && (ctx.inMinHold || ctx.inSellGuard)) {
       const reasons = [
         ctx.inMinHold ? `min-hold ${Math.max(0, Math.ceil((ctx.minHoldMs - ctx.ageMs) / 1000))}s left` : null,
         ctx.inSellGuard ? `sell-guard ${(Math.max(0, Math.ceil((Number(pos.sellGuardUntil || 0) - nowTs) / 1000)))}s left` : null,
