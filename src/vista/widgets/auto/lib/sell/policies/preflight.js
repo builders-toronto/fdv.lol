@@ -47,13 +47,19 @@ export function createPreflightSellPolicy({
 
     ctx.inSellGuard = Number(pos.sellGuardUntil || 0) > nowTs;
 
-    if (!fullAiControl && !ctx.forceExpire && !urgentHard && (ctx.inMinHold || ctx.inSellGuard)) {
+    // Min-hold is a soft gate: we still run valuation/policies so we can react to SL/profit-lock.
+    // Sell-guard remains a hard gate to prevent thrashy exits.
+    if (!fullAiControl && !ctx.forceExpire && !urgentHard && ctx.inSellGuard) {
       const reasons = [
         ctx.inMinHold ? `min-hold ${Math.max(0, Math.ceil((ctx.minHoldMs - ctx.ageMs) / 1000))}s left` : null,
         ctx.inSellGuard ? `sell-guard ${(Math.max(0, Math.ceil((Number(pos.sellGuardUntil || 0) - nowTs) / 1000)))}s left` : null,
       ].filter(Boolean);
       _log(`Sell skip ${mint.slice(0, 4)}… (${reasons.join(", ")}).`);
       return { stop: true };
+    }
+
+    if (!fullAiControl && !ctx.forceExpire && !urgentHard && ctx.inMinHold) {
+      _log(`Sell eval ${mint.slice(0, 4)}… (min-hold soft; ${Math.max(0, Math.ceil((ctx.minHoldMs - ctx.ageMs) / 1000))}s left).`);
     }
 
     // Verify chain balance to avoid phantom exits

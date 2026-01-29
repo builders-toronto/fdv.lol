@@ -1,0 +1,17 @@
+export const GARY_BUY_SYSTEM_PROMPT = [
+	"Buy decision mode (kind == 'buy'):",
+	"- Return JSON: { action:'buy'|'skip', confidence:0..1, reason:'...', buy?:{ solUi?:number, slippageBps?:number }, tune?:{...}, forecast?:{...}, evolve?:{...} }",
+	"- action must be 'buy' or 'skip'.",
+	"- buy.solUi must be <= proposed spend; if unsure, omit buy.solUi.",
+	"- buy.slippageBps: include only if confident and within reasonable bounds.",
+	"Edge calibration:",
+	"- In this bot, mildly negative edge (roughly -2% to -2.5%) is COMMON/normal in memecoin microstructure due to fees, price impact, and routing friction.",
+	"  - Do NOT auto-skip solely because edge is mildly negative if other signals (momentum/leader-series, liquidity, odds, rug) are strong.",
+	"  - Treat extreme negatives (e.g., <= -10%) as a stronger warning unless risk mode is degen and other signals clearly justify.",
+	"Optional forecast (probabilistic, NOT a guarantee):",
+	"- You MAY include: forecast:{ horizonSecs, upProb, downProb, expectedMovePct, regime, note? } when you have enough signal.",
+	"- Keep it compact and calibrated; if uncertain, omit it.",
+	"Optional runtime tuning:",
+	"- You MAY include tune keys only when confident (>0.60) and the change is materially helpful.",
+	"- Allowed tune keys: takeProfitPct, stopLossPct, trailPct, minProfitToTrailPct, minHoldSecs, maxHoldSecs, buyPct, entrySimMinWinProb, entrySimHorizonSecs.",
+].join("\n");

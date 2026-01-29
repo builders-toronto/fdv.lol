@@ -79,7 +79,7 @@ function _redactDeep(obj, { maxDepth = 6, maxKeys = 200 } = {}, _depth = 0, _see
 	}
 }
 
-import { GARY_SYSTEM_PROMPT } from "./personas/agent.gary.js";
+import { getGarySystemPrompt } from "./personas/agent.gary.prompts.js";
 
 function _validateTune(tune) {
 	try {
@@ -375,9 +375,7 @@ export function createAutoTraderAgentDriver({
 				return "";
 			}
 		})();
-		const systemPrompt = evolveSummary
-			? `${GARY_SYSTEM_PROMPT}\n\n${evolveSummary}`
-			: GARY_SYSTEM_PROMPT;
+		const systemPrompt = getGarySystemPrompt(kind, { evolveSummary });
 
 		let text = "";
 		let meta = null;

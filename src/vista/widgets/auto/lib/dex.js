@@ -755,6 +755,45 @@ export function createDex(deps = {}) {
 		return { sizeUi: 0, decimals };
 	}
 
+	async function waitForTokenCreditIncreaseInternal(ownerPubkeyStr, mintStr, prevSizeUi = 0, { timeoutMs = 8000, pollMs = 300, epsilonUi = 1e-9 } = {}) {
+		const start = now();
+		let effPollMs = Math.max(150, Number(pollMs || 300) | 0);
+		let consecutiveUnknown = 0;
+		let decimals = 6;
+		try { decimals = await getMintDecimals(mintStr); } catch {}
+
+		const prev = Math.max(0, Number(prevSizeUi || 0));
+		const eps = Math.max(1e-12, Number(epsilonUi || 1e-9));
+		let lastCur = prev;
+
+		while (now() - start < timeoutMs) {
+			try {
+				const b = await getAtaBalanceUiInternal(ownerPubkeyStr, mintStr, decimals);
+				const cur = Math.max(0, Number(b?.sizeUi || 0));
+				lastCur = cur;
+				const dec = Number.isFinite(b?.decimals) ? b.decimals : decimals;
+				if (b?.sampleOk) {
+					consecutiveUnknown = 0;
+					effPollMs = Math.max(150, Number(pollMs || 300) | 0);
+					if (prev <= eps) {
+						if (cur > eps) return { increased: true, sizeUi: cur, decimals: dec };
+					} else {
+						if (cur > prev + eps) return { increased: true, sizeUi: cur, decimals: dec };
+					}
+				} else {
+					consecutiveUnknown++;
+					effPollMs = Math.min(5000, Math.floor(effPollMs * 1.6) + 25);
+				}
+			} catch {
+				consecutiveUnknown++;
+				effPollMs = Math.min(5000, Math.floor(effPollMs * 1.6) + 25);
+			}
+			const extra = Math.min(1500, consecutiveUnknown * 40);
+			await _sleep(Math.max(effPollMs, _rpcLeft()) + extra);
+		}
+		return { increased: false, sizeUi: lastCur > prev ? lastCur : 0, decimals };
+	}
+
 	function withTimeout(promise, ms, { label = "op" } = {}) {
 		const timeoutMs = Math.max(1, Number(ms || 0));
 		let t = null;
@@ -2653,6 +2692,7 @@ export function createDex(deps = {}) {
 		ataExists: ataExistsInternal,
 		getAtaBalanceUi: getAtaBalanceUiInternal,
 		waitForTokenCredit: waitForTokenCreditInternal,
+		waitForTokenCreditIncrease: waitForTokenCreditIncreaseInternal,
 		waitForTokenDebit: waitForTokenDebitInternal,
 
 		getJupBase,
