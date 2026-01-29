@@ -272,6 +272,53 @@ export function createAgentDecisionPolicy({
         return (s === "hold" || s === "none" || s === "skip");
       };
 
+    const _extractPnlNetPctSafe = () => {
+      try {
+        const pnlNet = Number(ctx?.pnlNetPct);
+        if (Number.isFinite(pnlNet)) return pnlNet;
+        const pnl = Number(ctx?.pnlPct);
+        return Number.isFinite(pnl) ? pnl : NaN;
+      } catch {
+        return NaN;
+      }
+    };
+
+    const _isStagnantMarket = () => {
+      try {
+        const past = ctx?.agentSignals?.past;
+        const regime = String(past?.regime || past?.label || "").toLowerCase();
+        if (/(chop|flat|range|sideways|stagn|stale)/i.test(regime)) return true;
+        // Leader-series flattening heuristic: last few slope-like deltas near zero.
+        const series = ctx?.agentSignals?.leaderSeries;
+        if (Array.isArray(series) && series.length >= 4) {
+          const last = series.slice(-4);
+          const scoreVals = last
+            .map((x) => Number(x?.score01 ?? x?.score ?? x?.pumpScore ?? NaN))
+            .filter((n) => Number.isFinite(n));
+          if (scoreVals.length >= 3) {
+            const deltas = [];
+            for (let i = 1; i < scoreVals.length; i++) deltas.push(scoreVals[i] - scoreVals[i - 1]);
+            const maxAbs = Math.max(...deltas.map((d) => Math.abs(d)));
+            if (Number.isFinite(maxAbs) && maxAbs <= 0.01) return true;
+          }
+        }
+      } catch {}
+      return false;
+    };
+
+    const _profitThresholdPct = () => {
+      try {
+        const cfg = ctx?.agentSignals?.cfg;
+        const tp = Number(cfg?.takeProfitPct);
+        const trailArm = Number(cfg?.minProfitToTrailPct);
+        const t0 = Number.isFinite(tp) ? tp : 0;
+        const t1 = Number.isFinite(trailArm) ? trailArm : 0;
+        return Math.max(0, t0, t1);
+      } catch {
+        return 0;
+      }
+    };
+
       const _isSellPartialAction = (a) => {
         const s = String(a || "").trim().toLowerCase();
         return (
@@ -284,6 +331,27 @@ export function createAgentDecisionPolicy({
       };
 
       if (_isHoldAction(action)) {
+    // Profit policy (Full AI control only): if we're up, do not allow the agent to HOLD and miss the exit.
+    try {
+      if (fullAiControl) {
+        const pnl = _extractPnlNetPctSafe();
+        if (Number.isFinite(pnl) && pnl > 0) {
+          const thr = _profitThresholdPct();
+          const stagnant = _isStagnantMarket();
+          if ((thr > 0 && pnl >= thr) || stagnant) {
+            ctx.decision = { action: "sell_all", reason: `agent-profit-exit pnl=${pnl.toFixed(2)}%${thr > 0 ? ` thr=${thr.toFixed(2)}%` : ""}${stagnant ? " stagnant" : ""}` };
+            try { _log(`hold overridden -> sell_all (profit policy)`); } catch {}
+            return;
+          }
+
+          // Otherwise harvest some profit rather than holding indefinitely.
+          ctx.decision = { action: "sell_partial", pct: 50, reason: `agent-profit-harvest pnl=${pnl.toFixed(2)}%` };
+          try { _log(`hold overridden -> sell_partial (profit harvest)`); } catch {}
+          return;
+        }
+      }
+    } catch {}
+
         // Agent HOLD veto: in volatile regimes, allow Gary to suppress some system exits
         // (e.g., SL / Trail / FAST_ fades) within bounded risk.
         try {
