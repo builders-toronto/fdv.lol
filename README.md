@@ -301,7 +301,4 @@ fdv.lol is open-source and community-driven. You can help by:
 
 feat: policy revamp, onboarding polish, Full AI sell freedom; fix async buy lock lag;
 
-Advanced policy + legal declarations across fdv.lol;
-Onboarding styling + shimmer/animations (initial pass);
-Fix lag bug where buy lock could expire during async buy flow;
-Full AI mode no longer hard-blocked by min-hold/sell-guard; Agent Gary still receives timing signals;
+git commit -m "feat(agent): add long_hold + tighten dynamic fees" -m "- Add Agent Gary long_hold action (30s timed hold + recheck) while bot continues monitoring PnL/targets" -m "- Extend Agent Gary prompts + driver validation for long_hold/holdSeconds" -m "- Harden dynamic platform fee restraints (more conservative defaults + cap fee to a fraction of profit)" -m "- Update auto-trader docs for long_hold behavior"

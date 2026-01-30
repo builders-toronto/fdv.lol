@@ -140,7 +140,7 @@ Sell evaluation is implemented as a policy pipeline (a set of small decision mod
 - `quoteAndEdgePolicy`: re-quotes token→SOL and detects quote shock / edge collapse; can flag urgent sells when the route/edge deteriorates quickly.
 - `profitLockPolicy`: persists stateful “profit lock” signals to reduce churn and keep exits consistent across ticks.
 - `forceFlagDecisionPolicy`: consolidates force flags (rug, pump drop, observer drop, expiry, momentum) into a consistent, explainable decision surface.
-- `agentDecisionPolicy` (Agent Gary sell layer): optional agent call that can map system decisions to hold/sell_all/sell_partial while respecting min-hold and profit-floor constraints.
+- `agentDecisionPolicy` (Agent Gary sell layer): optional agent call that can map system decisions to hold/sell_all/sell_partial, and can schedule a timed `long_hold` (wait then re-check) while respecting min-hold and profit-floor constraints.
 - `reboundGatePolicy`: defers sells when rebound conditions are met, with strict caps.
 - `executeSellDecisionPolicy`: executes the chosen sell with locking, slippage escalation, split-sell fallbacks, dust promotion, debit checks, and optional stealth rotation.
 

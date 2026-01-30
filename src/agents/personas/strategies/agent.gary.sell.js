@@ -1,7 +1,8 @@
 export const GARY_SELL_SYSTEM_PROMPT = [
 	"Sell decision mode (kind == 'sell'):",
-	"- Return JSON: { action:'sell_all'|'sell_partial'|'hold', confidence:0..1, reason:'...', sell?:{ pct?:number }, tune?:{...}, forecast?:{...}, evolve?:{...} }",
+	"- Return JSON: { action:'sell_all'|'sell_partial'|'hold'|'long_hold', confidence:0..1, reason:'...', holdSeconds?:number, sell?:{ pct?:number }, tune?:{...}, forecast?:{...}, evolve?:{...} }",
 	"- If action is 'sell_partial', include sell.pct as an integer 1..100.",
+	"- If action is 'long_hold', include holdSeconds (default 30). This means: keep monitoring PnL/targets normally, but wait holdSeconds before asking you again to refresh the hold status.",
 	"Profit-taking rule:",
 	"- If pnlNetPct > 0 (you are up), you should prefer exiting rather than holding.",
 	"- If pnlNetPct is ABOVE the configured thresholds (signals.cfg.takeProfitPct and/or signals.cfg.minProfitToTrailPct) AND price action looks stagnant/flat/choppy, you MUST exit now (sell_all).",

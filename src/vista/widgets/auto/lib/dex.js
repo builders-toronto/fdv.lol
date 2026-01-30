@@ -447,7 +447,8 @@ export function createDex(deps = {}) {
 			const tr = _getDynFeeTracker(st);
 
 			const cfg = (st && typeof st.dynamicFeeConfig === "object") ? st.dynamicFeeConfig : {};
-			const minFrac = _clamp01("minFrac" in cfg ? cfg.minFrac : 0.25);
+			// Keep dynamic fees conservative by default; platform fees should not eat most of user profit.
+			const minFrac = _clamp01("minFrac" in cfg ? cfg.minFrac : 0.05);
 			const totalTargetSol = Math.max(0.25, Number("totalProfitTargetSol" in cfg ? cfg.totalProfitTargetSol : 5));
 			const rateTargetSolPerDay = Math.max(0.05, Number("profitRateTargetSolPerDay" in cfg ? cfg.profitRateTargetSolPerDay : 1));
 			const ageTargetDays = Math.max(1, Number("ageTargetDays" in cfg ? cfg.ageTargetDays : 14));
@@ -467,17 +468,31 @@ export function createDex(deps = {}) {
 			const outLamports = Number(estOutLamports || 0);
 			const proceedsSol = Number.isFinite(outLamports) ? (outLamports / 1e9) : NaN;
 			const costSol = Number(costSoldSol || 0);
+			let capBpsProfit = null;
 			if (Number.isFinite(proceedsSol) && Number.isFinite(costSol) && costSol > 0) {
 				const pnlSol = proceedsSol - costSol;
 				const pnlPct = (pnlSol / Math.max(1e-9, costSol)) * 100;
 				const sTrade = _clamp01((pnlPct - 2) / 18);
 				frac *= (0.60 + 0.40 * sTrade);
+
+				// Hard caps: require a minimum profit, and cap fee to a fraction of estimated profit.
+				const minProfitSol = Math.max(0, Number("minProfitSol" in cfg ? cfg.minProfitSol : 0.005));
+				const maxProfitShare = _clamp01("maxProfitShare" in cfg ? cfg.maxProfitShare : 0.20);
+				if (!(Number.isFinite(pnlSol) && pnlSol > minProfitSol)) return 0;
+
+				capBpsProfit = Math.floor(((pnlSol * maxProfitShare) / Math.max(1e-9, proceedsSol)) * 10_000);
+				if (!(capBpsProfit > 0)) return 0;
 			}
 
 			frac = Math.max(0, Math.min(1, frac));
 			if (frac <= 0) return 0;
 
-			const eff = Math.floor(base * frac);
+			let eff = Math.floor(base * frac);
+			if (capBpsProfit !== null) eff = Math.min(eff, capBpsProfit);
+
+			const cfgMaxBps = Math.floor(Number("maxBps" in cfg ? cfg.maxBps : NaN));
+			if (Number.isFinite(cfgMaxBps) && cfgMaxBps >= 0) eff = Math.min(eff, cfgMaxBps);
+
 			return Math.max(0, Math.min(10_000, eff));
 		} catch {
 			return Math.max(0, Math.floor(Number(baseFeeBps || 0)));
@@ -1832,7 +1847,12 @@ export function createDex(deps = {}) {
 					const outRawNoFee = Number(quote?.outAmount || 0);
 					const ts = now();
 					const pos = state?.positions?.[inputMint];
-					const costSoldSol = Number(pos?.costSol || 0);
+					const decIn = Number.isFinite(inDecimals) ? inDecimals : (_decHint ?? 6);
+					const posSizeUi = Math.max(0, Number(pos?.sizeUi || 0));
+					const posCostSol = Math.max(0, Number(pos?.costSol || 0));
+					const soldUi = amountRaw / Math.pow(10, decIn);
+					const frac = (posSizeUi > 0 && soldUi > 0) ? Math.min(1, Math.max(0, soldUi / Math.max(1e-9, posSizeUi))) : 1;
+					const costSoldSol = posCostSol > 0 ? (posCostSol * frac) : 0;
 					appliedFeeBps = _computeDynamicPlatformFeeBps({
 						state,
 						baseFeeBps,

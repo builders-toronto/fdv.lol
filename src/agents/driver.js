@@ -183,10 +183,15 @@ function _validateBuyDecision(obj) {
 function _validateSellDecision(obj) {
 	if (!obj || typeof obj !== "object") return null;
 	const action = String(obj.action || "").toLowerCase();
-	if (action !== "sell_all" && action !== "sell_partial" && action !== "hold") return null;
+	if (action !== "sell_all" && action !== "sell_partial" && action !== "hold" && action !== "long_hold") return null;
 	const confidence = _clampNum(obj.confidence, 0, 1);
 	const reason = String(obj.reason || "").slice(0, 220);
 	const out = { kind: "sell", action, confidence, reason };
+	if (action === "long_hold") {
+		const raw = Number(obj.holdSeconds);
+		const hs = Number.isFinite(raw) ? _clampNum(raw, 5, 120) : 30;
+		out.holdSeconds = Math.floor(hs);
+	}
 	if (action === "sell_partial") {
 		const pct = _clampNum(obj?.sell?.pct, 1, 100);
 		out.sell = { pct: Math.floor(pct) };
