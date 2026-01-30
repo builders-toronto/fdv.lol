@@ -12,7 +12,7 @@
   --brand2: #7dffcf;
 
   /* Backwards-compat variable names used throughout the app */
-  --neon: var(--brand);
+  --neon: #00ff74;
   --neon2: var(--brand2);
 
   --text: rgba(244, 255, 250, .96);
@@ -103,6 +103,19 @@ html,body{
 }
 
 #app {
+  height: 100dvh;
+  overflow: auto;
+}
+
+/* When home feed is collapsed, shrink the main container height */
+body[data-route="home"][data-home-collapsed="1"] #app{
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+/* When reopened, ensure we restore the full-height scroller */
+body[data-route="home"][data-home-collapsed="0"] #app{
   height: 100dvh;
   overflow: auto;
 }
@@ -842,6 +855,99 @@ input[type="checkbox"]:disabled{
   box-shadow: 0 10px 35px rgba(0,0,0,.35), inset 0 0 0 1px rgba(26,255,213,.05);
 }
 
+/* Home page: top-right collapse/expand ("exit") control */
+body[data-route="home"] .grid{
+  padding-top: 46px;
+}
+
+.home-exit{
+  position:absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 6;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 14px;
+
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+
+  border: 1px solid rgba(122,222,255,.22);
+  background:
+    radial-gradient(14px 14px at 50% 40%, rgba(26,255,213,.14), transparent 70%),
+    rgba(123,241,255,.06);
+  box-shadow:
+    0 12px 26px rgba(0,0,0,.35),
+    inset 0 0 0 1px rgba(26,255,213,.06);
+
+  transition:
+    transform .14s ease,
+    filter .14s ease,
+    border-color .14s ease,
+    background .14s ease,
+    box-shadow .14s ease;
+}
+
+/* Hidden by default; only enabled on route home via JS */
+.home-exit[hidden]{ display:none; }
+
+.home-exit:hover{
+  filter: brightness(1.08);
+  border-color: rgba(26,255,213,.45);
+}
+.home-exit:active{ transform: translateY(1px) scale(.98); }
+
+.home-exit:focus-visible{
+  outline: none;
+  box-shadow:
+    var(--ring-strong),
+    0 14px 36px rgba(0,0,0,.42),
+    inset 0 0 0 1px rgba(26,255,213,.08);
+}
+
+.home-exit svg{ display:block; }
+
+.home-exit svg{
+  transition: transform .22s ease, filter .22s ease;
+  filter: drop-shadow(0 0 10px rgba(26,255,213,.0));
+}
+
+.home-exit[data-state="collapsed"] svg{
+  transform: rotate(45deg);
+  filter: drop-shadow(0 0 12px rgba(26,255,213,.35));
+}
+
+.home-exit[data-state="collapsed"]{
+  color: var(--neon2);
+  background:
+    radial-gradient(16px 16px at 50% 40%, rgba(26,255,213,.18), transparent 70%),
+    rgba(123,241,255,.04);
+}
+
+@keyframes homeExitClick {
+  0% { transform: translateZ(0) scale(1); box-shadow: 0 0 0 0 rgba(26,255,213,.0), 0 12px 26px rgba(0,0,0,.35), inset 0 0 0 1px rgba(26,255,213,.06); }
+  35%{ transform: translateZ(0) scale(1.06) rotate(-4deg); box-shadow: 0 0 0 6px rgba(26,255,213,.10), 0 14px 36px rgba(0,0,0,.45), inset 0 0 0 1px rgba(26,255,213,.12); }
+  100%{ transform: translateZ(0) scale(1) rotate(0deg); box-shadow: 0 0 0 0 rgba(26,255,213,.0), 0 12px 26px rgba(0,0,0,.35), inset 0 0 0 1px rgba(26,255,213,.06); }
+}
+.home-exit.is-clicked{ animation: homeExitClick .38s ease-out both; }
+
+.home-collapsed-notice{
+  margin-top: 12px;
+  padding: 12px 12px;
+  border-radius: 14px;
+  border: 1px dashed rgba(122,222,255,.18);
+  background: rgba(0,0,0,.18);
+  color: var(--muted2);
+  font-size: .85rem;
+}
+.home-collapsed-notice[hidden]{ display:none; }
+
 @media screen and (max-width: 720px){
   .grid{
     padding: 0 20px 16px 20px;
@@ -859,6 +965,42 @@ input[type="checkbox"]:disabled{
   display:grid; gap:16px;
   margin-top: 23px;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
+/* Home feed collapse animation */
+#cards{
+  transform-origin: top right;
+}
+
+@keyframes fdvCardsClose {
+  0%   { opacity: 1; transform: translateY(0) scale(1); filter: blur(0px); clip-path: inset(0 0 0 0 round 18px); }
+  55%  { opacity: .55; transform: translateY(-10px) scale(.985); filter: blur(4px); }
+  100% { opacity: 0; transform: translateY(-18px) scale(.97); filter: blur(10px); clip-path: inset(0 0 100% 0 round 18px); }
+}
+
+@keyframes fdvCardsOpen {
+  0%   { opacity: 0; transform: translateY(-14px) scale(.98); filter: blur(10px); clip-path: inset(0 0 100% 0 round 18px); }
+  55%  { opacity: .65; transform: translateY(-4px) scale(.992); filter: blur(4px); }
+  100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0px); clip-path: inset(0 0 0 0 round 18px); }
+}
+
+#cards.fdv-closing{ animation: fdvCardsClose .44s cubic-bezier(.2,.9,.1,1) both; }
+#cards.fdv-opening{ animation: fdvCardsOpen .52s cubic-bezier(.2,.9,.1,1) both; }
+
+body[data-home-collapsed="1"] #cards{
+  opacity: 0;
+  transform: translateY(-18px) scale(.97);
+  filter: blur(10px);
+  pointer-events: none;
+  margin-top: 0;
+  max-height: 0;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce){
+  #cards.fdv-closing, #cards.fdv-opening{ animation: none; }
+  body[data-home-collapsed="1"] #cards{ transform: none; filter: none; }
+  .home-exit.is-clicked{ animation: none; }
 }
 
 .cards .card { will-change: transform, opacity; }

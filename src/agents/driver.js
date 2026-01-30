@@ -245,6 +245,157 @@ function _validateConfigScanDecision(obj) {
 	}
 }
 
+function _coerceWrongKindDecision(kind, parsed) {
+	try {
+		const k = String(kind || "").trim().toLowerCase();
+		const obj = (parsed && typeof parsed === "object") ? parsed : null;
+		if (!obj) return parsed;
+		const action = String(obj.action || "").trim().toLowerCase();
+		if (!action) return parsed;
+		// Safety: if the model returns a sell-ish action while we asked for a buy,
+		// treat it as a skip rather than hard-failing JSON validation.
+		if (k === "buy" && (action === "sell" || action === "sell_all" || action === "sell_partial" || action === "hold" || action === "long_hold")) {
+			return {
+				kind: "buy",
+				action: "skip",
+				confidence: 0,
+				reason: "model_returned_sell_action_for_buy_kind",
+			};
+		}
+		// Safety: if the model returns a buy-ish action while we asked for a sell,
+		// treat it as hold.
+		if (k === "sell" && (action === "buy" || action === "skip")) {
+			return {
+				kind: "sell",
+				action: "hold",
+				confidence: 0,
+				reason: "model_returned_buy_action_for_sell_kind",
+			};
+		}
+		return parsed;
+	} catch {
+		return parsed;
+	}
+}
+
+function _compactUserMsgForGary(userMsg) {
+	try {
+		if (!userMsg || typeof userMsg !== "object") return userMsg;
+		const kind = String(userMsg.kind || "").trim().toLowerCase();
+		const src = String(userMsg.source || "").slice(0, 80);
+		const out = { source: src || "fdv_auto_trader", kind };
+
+		// Keep minimal state (large state tends to drown small local models).
+		try {
+			const st = userMsg.state;
+			if (st && typeof st === "object") {
+				const keep = {};
+				for (const k of [
+					"riskLevel",
+					"buyPct",
+					"minBuySol",
+					"maxBuySol",
+					"slippageBps",
+					"minSecsBetween",
+					"coolDownSecsAfterBuy",
+					"minHoldSecs",
+					"maxHoldSecs",
+					"minNetEdgePct",
+					"edgeSafetyBufferPct",
+					"takeProfitPct",
+					"stopLossPct",
+					"trailPct",
+					"minProfitToTrailPct",
+					"maxEntryCostPct",
+					"entrySimMode",
+					"entrySimHorizonSecs",
+					"entrySimMinWinProb",
+					"entrySimMinTerminalProb",
+				]) {
+					if (k in st) keep[k] = st[k];
+				}
+				if (Object.keys(keep).length) out.state = keep;
+			}
+		} catch {}
+
+		// Compact payload/signals aggressively.
+		const p = (userMsg.payload && typeof userMsg.payload === "object") ? userMsg.payload : {};
+		const payload = {};
+		if (typeof p.mint === "string") payload.mint = p.mint;
+		if (p.proposed && typeof p.proposed === "object") payload.proposed = p.proposed;
+		if (p.pos && typeof p.pos === "object") payload.pos = p.pos;
+		if (p.ctx && typeof p.ctx === "object") payload.ctx = p.ctx;
+		if (p.allowedKeys && Array.isArray(p.allowedKeys)) payload.allowedKeys = p.allowedKeys.slice(0, 60);
+		if (p.note) payload.note = String(p.note || "").slice(0, 260);
+		if (Object.keys(payload).length) out.payload = payload;
+
+		const s = (p.signals && typeof p.signals === "object") ? p.signals : {};
+		const signals = {};
+		if (s.agentRisk) signals.agentRisk = String(s.agentRisk || "").slice(0, 16);
+		if (typeof s.fullAiControl === "boolean") signals.fullAiControl = s.fullAiControl;
+
+		// Gates: keep only the numeric facts and ok flags.
+		try {
+			const g = (s.gates && typeof s.gates === "object") ? s.gates : {};
+			const gates = {};
+			if (g.finalGateReady != null) gates.finalGateReady = !!g.finalGateReady;
+			if (g.cooldown && typeof g.cooldown === "object") gates.cooldown = { ok: !!g.cooldown.ok, recentAgeMs: g.cooldown.recentAgeMs ?? null, minRebuyMs: g.cooldown.minRebuyMs ?? null };
+			if (g.buyWarmup && typeof g.buyWarmup === "object") gates.buyWarmup = { ready: !!g.buyWarmup.ready, ageMs: g.buyWarmup.ageMs ?? null, minMs: g.buyWarmup.minMs ?? null, seen: g.buyWarmup.seen ?? null, minSeen: g.buyWarmup.minSeen ?? null, seriesN: g.buyWarmup.seriesN ?? null, minSeries: g.buyWarmup.minSeries ?? null };
+			if (g.manualEdge && typeof g.manualEdge === "object") gates.manualEdge = { ok: !!g.manualEdge.ok, edgeExclPct: g.manualEdge.edgeExclPct ?? null, minNetEdgePct: g.manualEdge.minNetEdgePct ?? null };
+			if (g.entryCost && typeof g.entryCost === "object") gates.entryCost = { on: !!g.entryCost.on, ok: ("ok" in g.entryCost) ? !!g.entryCost.ok : undefined, risk: g.entryCost.risk ?? null, edgeCostPct: g.entryCost.edgeCostPct ?? null, maxEntryCostPct: g.entryCost.maxEntryCostPct ?? null };
+			if (g.sim && typeof g.sim === "object") gates.sim = { ready: !!g.sim.ready, mode: g.sim.mode ?? null, horizonSecs: g.sim.horizonSecs ?? null, pHit: g.sim.pHit ?? null, pTerminal: g.sim.pTerminal ?? null, minWinProb: g.sim.minWinProb ?? null, minTerminalProb: g.sim.minTerminalProb ?? null };
+			if (Object.keys(gates).length) signals.gates = gates;
+		} catch {}
+
+		// Targets and outcomes: keep tiny summaries only.
+		try {
+			const t = (s.targets && typeof s.targets === "object") ? s.targets : {};
+			const targets = {};
+			for (const k of ["sessionPnlSol", "minNetEdgePct", "edgeExclPct", "edgeSafetyBufferPct", "baseGoalPct", "requiredGrossTpPct", "takeProfitPct"]) {
+				if (k in t) targets[k] = t[k];
+			}
+			if (Object.keys(targets).length) signals.targets = targets;
+		} catch {}
+		try {
+			const o = (s.outcomes && typeof s.outcomes === "object") ? s.outcomes : {};
+			const recent = Array.isArray(o.recent) ? o.recent.slice(Math.max(0, o.recent.length - 3)) : [];
+			if (recent.length) {
+				signals.outcomes = {
+					sessionPnlSol: o.sessionPnlSol ?? null,
+					recent: recent.map((r) => ({
+						ts: r?.ts ?? null,
+						mint: r?.mint ? String(r.mint).slice(0, 12) : undefined,
+						kind: r?.kind ? String(r.kind).slice(0, 24) : undefined,
+						pnlSol: r?.pnlSol ?? null,
+						decisionAction: r?.decisionAction ? String(r.decisionAction).slice(0, 20) : undefined,
+					})),
+				};
+			}
+		} catch {}
+
+		if (Object.keys(signals).length) {
+			if (!out.payload) out.payload = {};
+			out.payload.signals = signals;
+		}
+
+		// For config_scan, keep extra minimal: only market/allowedKeys/note.
+		if (kind === "config_scan") {
+			try {
+				const pp = out.payload && typeof out.payload === "object" ? out.payload : {};
+				const keep = {};
+				if (pp.market && typeof pp.market === "object") keep.market = pp.market;
+				if (pp.allowedKeys && Array.isArray(pp.allowedKeys)) keep.allowedKeys = pp.allowedKeys;
+				if (pp.note) keep.note = pp.note;
+				out.payload = keep;
+			} catch {}
+		}
+
+		return out;
+	} catch {
+		return userMsg;
+	}
+}
+
 function _readLs(key, fallback = "") {
 	try {
 		if (typeof localStorage === "undefined") return fallback;
@@ -342,8 +493,12 @@ export function createAutoTraderAgentDriver({
 
 	async function _run(kind, payload, opts = null) {
 		if (!_enabled()) return { ok: false, disabled: true, err: "disabled" };
+
 		const client = _getClient();
 		if (!client) return { ok: false, disabled: true, err: "disabled" };
+		const cfgN = (() => {
+			try { return normalizeLlmConfig(_getConfig() || {}); } catch { return null; }
+		})();
 		const body = _redactDeep(payload);
 		const options = (opts && typeof opts === "object") ? opts : {};
 
@@ -381,13 +536,23 @@ export function createAutoTraderAgentDriver({
 
 		const state = options.omitState
 			? {}
-			: _redactDeep(("stateOverride" in options) ? options.stateOverride : _getState());
-		const userMsg = {
+			: _redactDeep(("stateOverride" in options) ? options.stateOverride : _getState(),
+				(String(cfgN?.provider || "").toLowerCase() === "gary")
+					? { maxDepth: 4, maxKeys: 90 }
+					: undefined
+			);
+		let userMsg = {
 			source: "fdv_auto_trader",
 			kind,
 			state,
 			payload: body,
 		};
+		// Gary local models are small; keep prompts compact and avoid noisy context.
+		try {
+			if (String(cfgN?.provider || "").toLowerCase() === "gary") {
+				userMsg = _compactUserMsgForGary(userMsg);
+			}
+		} catch {}
 
 		const evolveSummary = (() => {
 			try {
@@ -399,12 +564,21 @@ export function createAutoTraderAgentDriver({
 			}
 		})();
 		const systemPrompt = getGarySystemPrompt(kind, { evolveSummary });
+		const systemPromptFinal = (() => {
+			try {
+				if (String(cfgN?.provider || "").toLowerCase() !== "gary") return systemPrompt;
+				// Keep system prompts short for tiny local models; the kind is also present in USER payload.
+				return String(systemPrompt || "").slice(0, 3500);
+			} catch {
+				return systemPrompt;
+			}
+		})();
 
 		let text = "";
 		let meta = null;
 		try {
 			const req = {
-				system: systemPrompt,
+				system: systemPromptFinal,
 				user: JSON.stringify(userMsg),
 				temperature: Number.isFinite(Number(options.temperature)) ? Number(options.temperature) : 0.15,
 				maxTokens: Math.max(
@@ -425,6 +599,18 @@ export function createAutoTraderAgentDriver({
 			const res = { ok: false, err: String(e?.message || e || "") };
 			try {
 				if (TRAINING_CAPTURE?.enabled) {
+					let uploadToGary = null;
+					try {
+						const cfgN = normalizeLlmConfig(_getConfig() || {});
+						if (String(cfgN.provider || "").toLowerCase() === "gary" && String(cfgN.apiKey || "").trim()) {
+							uploadToGary = {
+								provider: "gary",
+								baseUrl: String(cfgN.baseUrl || "").trim(),
+								apiKey: String(cfgN.apiKey || "").trim(),
+								hmacSecret: String(cfgN.hmacSecret || "").trim(),
+							};
+						}
+					} catch {}
 					appendTrainingCapture({
 						mode: "inference",
 						source: "fdv_auto_trader",
@@ -432,10 +618,10 @@ export function createAutoTraderAgentDriver({
 						ok: false,
 						err: String(res.err || ""),
 						userMsg,
-						system: String(systemPrompt || "").slice(0, 8000),
+						system: String(systemPromptFinal || "").slice(0, 8000),
 						text: "",
 						meta: _redactDeep(meta),
-					}, { storageKey: TRAINING_CAPTURE.storageKey, maxEntries: TRAINING_CAPTURE.maxEntries }).catch(() => {});
+					}, { storageKey: TRAINING_CAPTURE.storageKey, maxEntries: TRAINING_CAPTURE.maxEntries, uploadToGary }).catch(() => {});
 				}
 			} catch {}
 			cache.set(key, { at: now(), res });
@@ -458,7 +644,8 @@ export function createAutoTraderAgentDriver({
 			}
 		} catch {}
 
-		const parsed = _safeJsonParse(text);
+		let parsed = _safeJsonParse(text);
+		parsed = _coerceWrongKindDecision(kind, parsed);
 		const validated = (kind === "buy")
 			? _validateBuyDecision(parsed)
 			: (kind === "sell")
@@ -473,6 +660,18 @@ export function createAutoTraderAgentDriver({
 		try {
 			const shouldCapture = !!TRAINING_CAPTURE?.enabled && (res.ok || !!TRAINING_CAPTURE?.includeBad);
 			if (shouldCapture) {
+				let uploadToGary = null;
+				try {
+					const cfgN = normalizeLlmConfig(_getConfig() || {});
+					if (String(cfgN.provider || "").toLowerCase() === "gary" && String(cfgN.apiKey || "").trim()) {
+						uploadToGary = {
+							provider: "gary",
+							baseUrl: String(cfgN.baseUrl || "").trim(),
+							apiKey: String(cfgN.apiKey || "").trim(),
+							hmacSecret: String(cfgN.hmacSecret || "").trim(),
+						};
+					}
+				} catch {}
 				appendTrainingCapture({
 					mode: "inference",
 					source: "fdv_auto_trader",
@@ -480,12 +679,12 @@ export function createAutoTraderAgentDriver({
 					ok: !!res.ok,
 					err: res.ok ? "" : String(res.err || ""),
 					userMsg,
-					system: String(systemPrompt || "").slice(0, 8000),
+					system: String(systemPromptFinal || "").slice(0, 8000),
 					text: String(text || "").slice(0, 20000),
 					parsed: _redactDeep(parsed),
 					decision: _redactDeep(validated),
 					meta: _redactDeep(meta),
-				}, { storageKey: TRAINING_CAPTURE.storageKey, maxEntries: TRAINING_CAPTURE.maxEntries }).catch(() => {});
+				}, { storageKey: TRAINING_CAPTURE.storageKey, maxEntries: TRAINING_CAPTURE.maxEntries, uploadToGary }).catch(() => {});
 			}
 		} catch {}
 		try {
@@ -515,6 +714,7 @@ export function createAutoTraderAgentDriver({
 					try {
 						const s = String(modelName || "").trim().toLowerCase();
 						if (!s) return "openai";
+						if (s === "gary-predictions-v1" || s.startsWith("gary-")) return "gary";
 						if (s.startsWith("gemini-")) return "gemini";
 						if (s === "deepseek-chat" || s === "deepseek-reasoner" || s.startsWith("deepseek-")) return "deepseek";
 						if (s.startsWith("grok-")) return "grok";
@@ -534,7 +734,7 @@ export function createAutoTraderAgentDriver({
 						: _readLs("fdv_llm_model", _readLs("fdv_openai_model", "gpt-4o-mini"))
 				).trim() || "gpt-4o-mini";
 
-				const provider = (llmProvider === "gemini" || llmProvider === "grok" || llmProvider === "deepseek" || llmProvider === "openai")
+				const provider = (llmProvider === "gemini" || llmProvider === "grok" || llmProvider === "deepseek" || llmProvider === "openai" || llmProvider === "gary")
 					? llmProvider
 					: _inferProviderForModel(llmModel);
 
@@ -554,9 +754,15 @@ export function createAutoTraderAgentDriver({
 					? String(o.deepseekApiKey || o.deepseekKey || o.apiKey || o.llmApiKey)
 					: _readLs("fdv_deepseek_key", "");
 
+				const garyKey = (o && (o.garyApiKey || o.garyKey || (provider === "gary" ? (o.apiKey || o.llmApiKey) : "")))
+					? String(o.garyApiKey || o.garyKey || o.apiKey || o.llmApiKey)
+					: _readLs("fdv_gary_key", "");
+
 				const llmApiKey = String(
 					(o && (o.llmApiKey || o.apiKey))
 						? (o.llmApiKey || o.apiKey)
+						: (provider === "gary")
+							? garyKey
 						: (provider === "gemini")
 							? geminiKey
 							: (provider === "grok")
@@ -579,10 +785,16 @@ export function createAutoTraderAgentDriver({
 					? (o.deepseekBaseUrl || o.llmBaseUrl || o.baseUrl)
 					: _readLs("fdv_deepseek_base_url", "https://api.deepseek.com")
 				).trim() || "https://api.deepseek.com";
+				const garyBaseUrl = String((o && (o.garyBaseUrl || o.llmBaseUrl || o.baseUrl))
+					? (o.garyBaseUrl || o.llmBaseUrl || o.baseUrl)
+					: _readLs("fdv_gary_base_url", "http://127.0.0.1:8088")
+				).trim() || "http://127.0.0.1:8088";
 
 				const llmBaseUrl = String(
 					(o && (o.llmBaseUrl || o.baseUrl))
 						? (o.llmBaseUrl || o.baseUrl)
+						: (provider === "gary")
+							? garyBaseUrl
 						: (provider === "gemini")
 							? geminiBaseUrl
 							: (provider === "grok")
@@ -600,7 +812,12 @@ export function createAutoTraderAgentDriver({
 					llmApiKey,
 					llmModel,
 					llmBaseUrl,
-					llmTimeoutMs: _safeNum((o && o.llmTimeoutMs) ? o.llmTimeoutMs : _readLs("fdv_llm_timeout_ms", _readLs("fdv_openai_timeout_ms", "12000")), 12000),
+					llmTimeoutMs: (() => {
+						const fallback = (provider === "gary")
+							? _readLs("fdv_gary_timeout_ms", "45000")
+							: _readLs("fdv_openai_timeout_ms", "12000");
+						return _safeNum((o && o.llmTimeoutMs) ? o.llmTimeoutMs : _readLs("fdv_llm_timeout_ms", fallback), (provider === "gary") ? 45000 : 12000);
+					})(),
 
 					// Back-compat: older fields expected by legacy paths/logging.
 					openaiApiKey: provider === "openai" ? openaiKey : "",
@@ -637,18 +854,24 @@ export function createAutoTraderAgentDriver({
 		},
 
 		async scanConfig({ market, allowedKeys, keyHints, note, stateSummary } = {}) {
+			const cfgN = (() => {
+				try { return normalizeLlmConfig(_getConfig() || {}); } catch { return null; }
+			})();
 			const payload = {
 				cacheKey: "startup",
 				market: market && typeof market === "object" ? market : {},
-				allowedKeys: Array.isArray(allowedKeys) ? allowedKeys.slice(0, 80).map(String) : [],
-				// Keep request cheap: omit keyHints by default unless explicitly provided.
-				keyHints: (keyHints && typeof keyHints === "object" && Object.keys(keyHints).length) ? keyHints : undefined,
+				allowedKeys: Array.isArray(allowedKeys) ? allowedKeys.slice(0, 60).map(String) : [],
+				// Key hints are huge; tiny local models do better without them.
+				keyHints: (String(cfgN?.provider || "").toLowerCase() === "gary")
+					? undefined
+					: ((keyHints && typeof keyHints === "object" && Object.keys(keyHints).length) ? keyHints : undefined),
 				note: String(note || "").slice(0, 500),
 			};
 			const first = await _run("config_scan", payload, {
 				cacheKey: "startup",
+				omitState: true,
 				temperature: 0.1,
-				maxTokens: 650,
+				maxTokens: 260,
 				stateOverride: stateSummary && typeof stateSummary === "object" ? stateSummary : {},
 			});
 
@@ -662,8 +885,9 @@ export function createAutoTraderAgentDriver({
 				};
 				return await _run("config_scan", payload2, {
 					cacheKey: "startup_retry",
+					omitState: true,
 					temperature: 0.05,
-					maxTokens: 950,
+					maxTokens: 320,
 					stateOverride: stateSummary && typeof stateSummary === "object" ? stateSummary : {},
 				});
 			}
