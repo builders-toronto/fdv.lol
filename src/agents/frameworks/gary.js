@@ -108,6 +108,11 @@ export function createGaryPredictionsChatClient({
 		let userMsg = null;
 		try { userMsg = JSON.parse(String(user || "{}")); } catch { userMsg = null; }
 		const kind = String(userMsg?.kind || "").trim().toLowerCase();
+		const t = Math.max(0.0, Math.min(2, _safeNum(temperature, 0.2)));
+		const greedy = t <= 0.15;
+		// Give the model enough room to close braces, but rely on server stop-on-JSON.
+		const maxNew = Math.max(96, Math.min(700, Math.floor(_safeNum(maxTokens, 220) + 120)));
+
 		const payload = {
 			kind: kind || "buy",
 			system: String(system || ""),
@@ -115,9 +120,9 @@ export function createGaryPredictionsChatClient({
 			// fallbacks if userMsg wasn't parseable
 			state: (userMsg && typeof userMsg === "object") ? (userMsg.state || {}) : {},
 			payload: (userMsg && typeof userMsg === "object") ? (userMsg.payload || {}) : {},
-			maxNewTokens: Math.max(64, Math.min(650, Math.floor(_safeNum(maxTokens, 220)))),
-			temperature: Math.max(0.01, Math.min(2, _safeNum(temperature, 0.2))),
-			greedy: _safeNum(temperature, 0.2) <= 0.05,
+			maxNewTokens: maxNew,
+			temperature: Math.max(0.0, t),
+			greedy,
 			strict: true,
 		};
 

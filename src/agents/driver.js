@@ -323,8 +323,112 @@ function _compactUserMsgForGary(userMsg) {
 		const payload = {};
 		if (typeof p.mint === "string") payload.mint = p.mint;
 		if (p.proposed && typeof p.proposed === "object") payload.proposed = p.proposed;
-		if (p.pos && typeof p.pos === "object") payload.pos = p.pos;
-		if (p.ctx && typeof p.ctx === "object") payload.ctx = p.ctx;
+		// pos/ctx are extremely large; keep only decision-critical fields.
+		if (p.pos && typeof p.pos === "object") {
+			const pos = p.pos;
+			const keepPos = {};
+			for (const k of [
+				"sizeUi",
+				"decimals",
+				"costSol",
+				"hwmSol",
+				"acquiredAt",
+				"lastBuyAt",
+				"lastSellAt",
+				"allowRebuy",
+				"awaitingSizeSync",
+				"warmingHold",
+				"sellGuardUntil",
+				"warmingMinProfitPct",
+				"tpPct",
+				"slPct",
+				"trailPct",
+				"minProfitToTrailPct",
+				"entryEdgeExclPct",
+				"entryEdgeCostPct",
+				"entryTpBumpPct",
+				"entryPreMin",
+			]) {
+				if (k in pos) keepPos[k] = pos[k];
+			}
+			// Minimal tick snapshot.
+			try {
+				const t = pos.tickNow;
+				if (t && typeof t === "object") {
+					keepPos.tickNow = {
+						ts: t.ts ?? null,
+						priceUsd: t.priceUsd ?? null,
+						liqUsd: t.liqUsd ?? null,
+						change5m: t.change5m ?? null,
+						change1h: t.change1h ?? null,
+						v1hUsd: t.v1hUsd ?? null,
+					};
+				}
+			} catch {}
+			if (Object.keys(keepPos).length) payload.pos = keepPos;
+		}
+		if (p.ctx && typeof p.ctx === "object") {
+			const c = p.ctx;
+			const keepCtx = {};
+			for (const k of [
+				"agentRisk",
+				"nowTs",
+				"curSol",
+				"curSolNet",
+				"pnlPct",
+				"pnlNetPct",
+				"minNotionalSol",
+				"inMinHold",
+				"inSellGuard",
+				"hasPending",
+				"isFastExit",
+				"rugSev",
+				"forceRug",
+				"forcePumpDrop",
+				"forceObserverDrop",
+				"forceMomentum",
+				"forceExpire",
+			]) {
+				if (k in c) keepCtx[k] = c[k];
+			}
+			try {
+				const fg = c.finalGate;
+				if (fg && typeof fg === "object") keepCtx.finalGate = { intensity: fg.intensity ?? null, tier: fg.tier ?? null, chgSlope: fg.chgSlope ?? null, scSlope: fg.scSlope ?? null };
+			} catch {}
+			try {
+				const cfg = c.cfg;
+				if (cfg && typeof cfg === "object") keepCtx.cfg = {
+					minHoldSecs: cfg.minHoldSecs ?? null,
+					maxHoldSecs: cfg.maxHoldSecs ?? null,
+					takeProfitPct: cfg.takeProfitPct ?? null,
+					stopLossPct: cfg.stopLossPct ?? null,
+					trailPct: cfg.trailPct ?? null,
+					minProfitToTrailPct: cfg.minProfitToTrailPct ?? null,
+					minNetEdgePct: cfg.minNetEdgePct ?? null,
+					edgeSafetyBufferPct: cfg.edgeSafetyBufferPct ?? null,
+				};
+			} catch {}
+			try {
+				const an = c.agentSignals;
+				if (an && typeof an === "object") {
+					const outc = (an.outcomes && typeof an.outcomes === "object") ? an.outcomes : null;
+					const recent = outc && Array.isArray(outc.recent) ? outc.recent.slice(Math.max(0, outc.recent.length - 2)) : [];
+					keepCtx.agentSignals = {
+						agentRisk: an.agentRisk ? String(an.agentRisk).slice(0, 16) : undefined,
+						fullAiControl: (typeof an.fullAiControl === "boolean") ? an.fullAiControl : undefined,
+						outcomes: recent.length ? {
+							sessionPnlSol: outc ? (outc.sessionPnlSol ?? null) : null,
+							recent: recent.map((r) => ({
+								pnlSol: r?.pnlSol ?? null,
+								kind: r?.kind ? String(r.kind).slice(0, 24) : undefined,
+								decisionAction: r?.decisionAction ? String(r.decisionAction).slice(0, 20) : undefined,
+							})),
+						} : undefined,
+					};
+				}
+			} catch {}
+			if (Object.keys(keepCtx).length) payload.ctx = keepCtx;
+		}
 		if (p.allowedKeys && Array.isArray(p.allowedKeys)) payload.allowedKeys = p.allowedKeys.slice(0, 60);
 		if (p.note) payload.note = String(p.note || "").slice(0, 260);
 		if (Object.keys(payload).length) out.payload = payload;
@@ -590,7 +694,21 @@ export function createAutoTraderAgentDriver({
 			};
 			if (client && typeof client.chatJsonWithMeta === "function") {
 				meta = await client.chatJsonWithMeta(req);
-				text = String(meta?.text || "");
+				// For Gary, prefer the server-extracted parsed JSON when available.
+				try {
+					if (String(cfgN?.provider || "").toLowerCase() === "gary") {
+						const p = meta && Object.prototype.hasOwnProperty.call(meta, "parsed") ? meta.parsed : null;
+						if (p && (typeof p === "object" || Array.isArray(p))) {
+							text = JSON.stringify(p);
+						} else {
+							text = String(meta?.text || "");
+						}
+					} else {
+						text = String(meta?.text || "");
+					}
+				} catch {
+					text = String(meta?.text || "");
+				}
 			} else {
 				text = await client.chatJson(req);
 			}
