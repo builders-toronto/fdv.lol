@@ -137,11 +137,9 @@ a:focus-visible { outline: none; box-shadow: 0 0 0 4px rgba(0,255,178,.14); bord
     font-size: 11px;
     color: rgba(244,255,250,.82);
         padding: 6px 2px;
-    border-radius: 10px;
-    border: 1px solid transparent;
     font-family: var(--mono);
 }
-.nav a:hover { border-color: rgba(128,255,205,.22); background: rgba(10,14,12,.75); }
+.nav a:hover { background: rgba(10,14,12,.75); }
 
 .btn {
     display: inline-flex;

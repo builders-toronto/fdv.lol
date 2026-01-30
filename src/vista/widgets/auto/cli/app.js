@@ -1339,6 +1339,7 @@ async function configureAgentGaryFullAiWizard(existing = {}) {
   console.log("You will pick: model, risk, and API key.\n");
 
   const supportedModels = [
+    "gary-predictions-v1",
     "gpt-4o-mini",
     "gpt-4.1-mini",
     "gpt-4o",
@@ -1360,6 +1361,7 @@ async function configureAgentGaryFullAiWizard(existing = {}) {
 
   const inferProvider = (m) => {
     const mm = String(m || "").trim().toLowerCase();
+    if (mm === "gary-predictions-v1" || mm.startsWith("gary-")) return "gary";
     if (mm.startsWith("gemini-")) return "gemini";
     if (mm.startsWith("grok-")) return "grok";
     if (mm.startsWith("deepseek-")) return "deepseek";

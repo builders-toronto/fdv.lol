@@ -137,8 +137,24 @@
     </div>
   </header>
     <main id="app" class="container grid">
-        <div id="cards" class="cards"></div>
-      </main>
+      <button
+        id="homeExit"
+        class="home-exit"
+        type="button"
+        aria-label="Collapse feed"
+        aria-controls="cards"
+        aria-expanded="true"
+        hidden
+      >
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+          <path d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 1 0-1.4 1.4L10.6 12l-4.9 4.9a1 1 0 1 0 1.4 1.4L12 13.4l4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4Z" fill="currentColor"/>
+        </svg>
+      </button>
+      <div id="homeCollapsedNotice" class="home-collapsed-notice" hidden>
+        Feed hidden. Click the button to reopen.
+      </div>
+      <div id="cards" class="cards"></div>
+    </main>
     <footer>
       <p><a href="https://github.com/builders-toronto/fdv.lol/wiki/Post-Your-Token-to-the-Static-List">Add Coin</a></p><p class="important"><a href="https://github.com/builders-toronto/fdv.lol" target="_blank" rel="noopener">Source</a></p><p><span class="joinCta">Join us</span> on <a href="https://t.me/fdvlol" target="_blank" rel="noopener">Telegram</a></p>
     </footer>

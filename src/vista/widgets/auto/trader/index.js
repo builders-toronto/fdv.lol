@@ -1754,6 +1754,10 @@ let state = {
   logNetBalance: true,          
   solSessionStartLamports: 0,
 
+  // Estimated SOL locked in rent-exempt token accounts (ATA/wSOL).
+  // This is an approximation used for UI equity reporting.
+  lockedRentLamportsEst: 0,
+
   // Entry simulation / profit-goal settings 
   entrySimMode: "enforce",
   entrySimHorizonSecs: 120,
@@ -2534,20 +2538,45 @@ function _pcKey(owner, mint) { return `${owner}:${mint}`; }
 // Tracks pending token credits after a buy when the on-chain ATA balance hasn't reflected yet.
 // Provides lightweight reconciliation via ATA balance checks and optional tx meta parsing.
 function _getPendingStore() {
-  if (!window._fdvPendingCredits) window._fdvPendingCredits = new Map(); // key=owner:mint -> rec
+  if (!window._fdvPendingCredits) window._fdvPendingCredits = new Map(); // key=owner:mint -> rec[]
   return window._fdvPendingCredits;
 }
 
 function pendingCreditsSize() {
-  try { return _getPendingStore().size | 0; } catch { return 0; }
+  try {
+    let n = 0;
+    for (const v of _getPendingStore().values()) {
+      if (Array.isArray(v)) n += v.length;
+      else if (v) n += 1;
+    }
+    return n | 0;
+  } catch { return 0; }
 }
 
 function hasPendingCredit(owner, mint) {
-  try { return _getPendingStore().has(_pcKey(String(owner||""), String(mint||""))); } catch { return false; }
+  try {
+    const v = _getPendingStore().get(_pcKey(String(owner||""), String(mint||"")));
+    if (!v) return false;
+    if (Array.isArray(v)) return v.length > 0;
+    return true;
+  } catch { return false; }
 }
 
-function clearPendingCredit(owner, mint) {
-  try { _getPendingStore().delete(_pcKey(String(owner||""), String(mint||""))); } catch {}
+function clearPendingCredit(owner, mint, sig = "") {
+  try {
+    const key = _pcKey(String(owner||""), String(mint||""));
+    if (!sig) {
+      _getPendingStore().delete(key);
+      return;
+    }
+    const store = _getPendingStore();
+    const v = store.get(key);
+    if (!v) return;
+    const list = Array.isArray(v) ? v.slice() : [v];
+    const next = list.filter(r => String(r?.sig || "") !== String(sig || ""));
+    if (next.length) store.set(key, next);
+    else store.delete(key);
+  } catch {}
 }
 
 function enqueuePendingCredit({ owner, mint, addCostSol = 0, decimalsHint, basePos, sig = "", minSizeUi = 0 } = {}) {
@@ -2565,7 +2594,17 @@ function enqueuePendingCredit({ owner, mint, addCostSol = 0, decimalsHint, baseP
       enqueuedAt: now(),
       attempts: 0,
     };
-    _getPendingStore().set(key, rec);
+    const store = _getPendingStore();
+    const prev = store.get(key);
+    const list = Array.isArray(prev) ? prev.slice() : (prev ? [prev] : []);
+
+    // Dedupe by signature when present (prevents double-add cost for a single tx).
+    if (rec.sig && list.some(r => String(r?.sig || "") === rec.sig)) {
+      return true;
+    }
+
+    list.push(rec);
+    store.set(key, list);
     try { startPendingCreditWatchdog(); } catch {}
     return true;
   } catch { return false; }
@@ -2601,52 +2640,62 @@ async function processPendingCredits() {
     const store = _getPendingStore();
     if (store.size === 0) return 0;
     let reconciled = 0;
-    for (const [key, rec] of Array.from(store.entries())) {
-      try {
-        const owner = rec.owner, mint = rec.mint;
-        const hintDec = Number.isFinite(rec.decimalsHint) ? rec.decimalsHint : undefined;
-        let b = await getAtaBalanceUi(owner, mint, hintDec, "confirmed").catch(()=>({ sizeUi:0, decimals: hintDec }));
-        let size = Number(b.sizeUi || 0);
-        let dec  = Number.isFinite(b.decimals) ? b.decimals : (hintDec ?? 6);
+    for (const [key, v] of Array.from(store.entries())) {
+      const list = Array.isArray(v) ? v.slice() : (v ? [v] : []);
+      if (!list.length) { store.delete(key); continue; }
 
-        if (size <= 0 && rec.sig) {
-          const metaHit = await reconcileBuyFromTx(rec.sig, owner, mint).catch(()=>null);
-          if (metaHit && metaHit.mint === mint && Number(metaHit.sizeUi||0) > 0) {
-            size = Number(metaHit.sizeUi || 0);
-            if (Number.isFinite(metaHit.decimals)) dec = metaHit.decimals;
-            log(`Pending-credit via tx meta for ${mint.slice(0,4)}… size≈${size.toFixed(6)}`);
+      const keep = [];
+      for (const rec of list) {
+        try {
+          const owner = rec.owner, mint = rec.mint;
+          const hintDec = Number.isFinite(rec.decimalsHint) ? rec.decimalsHint : undefined;
+          let b = await getAtaBalanceUi(owner, mint, hintDec, "confirmed").catch(()=>({ sizeUi:0, decimals: hintDec }));
+          let size = Number(b.sizeUi || 0);
+          let dec  = Number.isFinite(b.decimals) ? b.decimals : (hintDec ?? 6);
+
+          if (size <= 0 && rec.sig) {
+            const metaHit = await reconcileBuyFromTx(rec.sig, owner, mint).catch(()=>null);
+            if (metaHit && metaHit.mint === mint && Number(metaHit.sizeUi||0) > 0) {
+              size = Number(metaHit.sizeUi || 0);
+              if (Number.isFinite(metaHit.decimals)) dec = metaHit.decimals;
+              log(`Pending-credit via tx meta for ${mint.slice(0,4)}… size≈${size.toFixed(6)}`);
+            }
           }
-        }
 
-        const minWant = Math.max(0, Number(rec.minSizeUi || 0));
-        const okSize = (minWant > 0) ? (size > minWant + 1e-12) : (size > 0);
+          const minWant = Math.max(0, Number(rec.minSizeUi || 0));
+          const okSize = (minWant > 0) ? (size > minWant + 1e-12) : (size > 0);
 
-        if (okSize) {
-          const prev = state.positions[mint] || (rec.basePos || { costSol: 0, hwmSol: 0, acquiredAt: now() });
-          const pos = {
-            ...prev,
-            sizeUi: size,
-            decimals: Number.isFinite(dec) ? dec : (prev.decimals ?? 6),
-            awaitingSizeSync: false,
-            lastSeenAt: now(),
-          };
-          if (Number(rec.addCostSol || 0) > 0) {
-            pos.costSol = Number(pos.costSol || 0) + Number(rec.addCostSol || 0);
-            pos.hwmSol  = Math.max(Number(pos.hwmSol || 0), Number(rec.addCostSol || 0));
-            pos.lastBuyAt = now();
+          if (okSize) {
+            const prev = state.positions[mint] || (rec.basePos || { costSol: 0, hwmSol: 0, acquiredAt: now() });
+            const pos = {
+              ...prev,
+              sizeUi: size,
+              decimals: Number.isFinite(dec) ? dec : (prev.decimals ?? 6),
+              awaitingSizeSync: false,
+              lastSeenAt: now(),
+            };
+            if (Number(rec.addCostSol || 0) > 0) {
+              pos.costSol = Number(pos.costSol || 0) + Number(rec.addCostSol || 0);
+              pos.hwmSol  = Math.max(Number(pos.hwmSol || 0), Number(rec.addCostSol || 0));
+              pos.lastBuyAt = now();
+            }
+            state.positions[mint] = pos;
+            updatePosCache(owner, mint, pos.sizeUi, pos.decimals);
+            save();
+            reconciled++;
+            log(`Reconciled pending credit for ${mint.slice(0,4)}… -> ${pos.sizeUi.toFixed(6)} (dec=${pos.decimals}).`);
+          } else {
+            // Keep retrying for a grace window, then leave for sweep logic to prune
+            rec.attempts = (rec.attempts|0) + 1;
+            keep.push(rec);
           }
-          state.positions[mint] = pos;
-          updatePosCache(owner, mint, pos.sizeUi, pos.decimals);
-          clearPendingCredit(owner, mint);
-          save();
-          reconciled++;
-          log(`Reconciled pending credit for ${mint.slice(0,4)}… -> ${pos.sizeUi.toFixed(6)} (dec=${pos.decimals}).`);
-        } else {
-          // Keep retrying for a grace window, then leave for sweep logic to prune
-          rec.attempts = (rec.attempts|0) + 1;
-          store.set(key, rec);
+        } catch {
+          keep.push(rec);
         }
-      } catch {}
+      }
+
+      if (keep.length) store.set(key, keep);
+      else store.delete(key);
     }
     return reconciled;
   } catch { return 0; }
@@ -2657,36 +2706,48 @@ async function reconcileFromOwnerScan(ownerPubkeyStr) {
     const store = _getPendingStore();
     if (store.size === 0) return 0;
     let hits = 0;
-    for (const [key, rec] of Array.from(store.entries())) {
-      if (rec.owner !== ownerPubkeyStr) continue;
-      try {
-        const b = await getAtaBalanceUi(rec.owner, rec.mint, rec.decimalsHint, "confirmed");
-        const size = Number(b.sizeUi || 0);
-        const dec  = Number.isFinite(b.decimals) ? b.decimals : (rec.decimalsHint ?? 6);
-        const minWant = Math.max(0, Number(rec.minSizeUi || 0));
-        const okSize = (minWant > 0) ? (size > minWant + 1e-12) : (size > 0);
-        if (okSize) {
-          const prev = state.positions[rec.mint] || (rec.basePos || { costSol: 0, hwmSol: 0, acquiredAt: now() });
-          const pos = {
-            ...prev,
-            sizeUi: size,
-            decimals: dec,
-            awaitingSizeSync: false,
-            lastSeenAt: now(),
-          };
-          if (Number(rec.addCostSol || 0) > 0) {
-            pos.costSol = Number(pos.costSol || 0) + Number(rec.addCostSol || 0);
-            pos.hwmSol  = Math.max(Number(pos.hwmSol || 0), Number(rec.addCostSol || 0));
-            pos.lastBuyAt = now();
+    for (const [key, v] of Array.from(store.entries())) {
+      const list = Array.isArray(v) ? v.slice() : (v ? [v] : []);
+      if (!list.length) { store.delete(key); continue; }
+
+      const keep = [];
+      for (const rec of list) {
+        if (rec.owner !== ownerPubkeyStr) { keep.push(rec); continue; }
+        try {
+          const b = await getAtaBalanceUi(rec.owner, rec.mint, rec.decimalsHint, "confirmed");
+          const size = Number(b.sizeUi || 0);
+          const dec  = Number.isFinite(b.decimals) ? b.decimals : (rec.decimalsHint ?? 6);
+          const minWant = Math.max(0, Number(rec.minSizeUi || 0));
+          const okSize = (minWant > 0) ? (size > minWant + 1e-12) : (size > 0);
+          if (okSize) {
+            const prev = state.positions[rec.mint] || (rec.basePos || { costSol: 0, hwmSol: 0, acquiredAt: now() });
+            const pos = {
+              ...prev,
+              sizeUi: size,
+              decimals: dec,
+              awaitingSizeSync: false,
+              lastSeenAt: now(),
+            };
+            if (Number(rec.addCostSol || 0) > 0) {
+              pos.costSol = Number(pos.costSol || 0) + Number(rec.addCostSol || 0);
+              pos.hwmSol  = Math.max(Number(pos.hwmSol || 0), Number(rec.addCostSol || 0));
+              pos.lastBuyAt = now();
+            }
+            state.positions[rec.mint] = pos;
+            updatePosCache(rec.owner, rec.mint, pos.sizeUi, pos.decimals);
+            save();
+            hits++;
+            log(`Owner-scan reconciled ${rec.mint.slice(0,4)}… -> ${size.toFixed(6)}.`);
+          } else {
+            keep.push(rec);
           }
-          state.positions[rec.mint] = pos;
-          updatePosCache(rec.owner, rec.mint, pos.sizeUi, pos.decimals);
-          clearPendingCredit(rec.owner, rec.mint);
-          save();
-          hits++;
-          log(`Owner-scan reconciled ${rec.mint.slice(0,4)}… -> ${size.toFixed(6)}.`);
+        } catch {
+          keep.push(rec);
         }
-      } catch {}
+      }
+
+      if (keep.length) store.set(key, keep);
+      else store.delete(key);
     }
     return hits;
   } catch { return 0; }
@@ -2889,7 +2950,7 @@ function ensurePendingBuyTracking(ownerStr, mint, basePos, buyCostSol, sig = "",
     state.positions[mint] = pos;
     save();
 
-    if (sig && !hasPendingCredit(ownerStr, mint)) {
+    if (sig) {
       enqueuePendingCredit({
         owner: ownerStr,
         mint,
@@ -7459,12 +7520,11 @@ async function tick() {
         const t = now();
         const until = Number(window._fdvBuyLockUntil || 0);
         const remMs = Math.max(0, until - t);
-        log(`Buy lock held (AI bypass); continuing buy evaluation (rem ${(remMs / 1000).toFixed(2)}s).`);
+        log(`Buy lock held; skipping buys this tick (AI) (rem ${(remMs / 1000).toFixed(2)}s).`);
       } catch {
-        log("Buy lock held (AI bypass); continuing buy evaluation.");
+        log("Buy lock held; skipping buys this tick (AI).");
       }
-      // Safety: if something is already in-flight, do not overlap buys.
-      if (_buyInFlight || _inFlight || _switchingLeader) return;
+      return;
     }
   } else {
     if (!tryAcquireBuyLock(BUY_LOCK_MS)) {
@@ -8409,6 +8469,16 @@ async function tick() {
         }
         continue;
       }
+
+      // Track estimated SOL locked as rent when a buy opens new accounts.
+      // (This is best-effort UI accounting; actual returnable rent depends on closing accounts.)
+      try {
+        const rr = Number(reqRent || 0);
+        if (Number.isFinite(rr) && rr > 0) {
+          state.lockedRentLamportsEst = Math.max(0, Number(state.lockedRentLamportsEst || 0)) + rr;
+          save();
+        }
+      } catch {}
       try {
         const seed = getBuySeed(ownerStr, mint);
         if (seed && Number(seed.sizeUi || 0) > 0) {
@@ -8530,7 +8600,7 @@ async function tick() {
         state.positions[mint] = pos;
         updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
         save();
-        try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
+        try { clearPendingCredit(kp.publicKey.toBase58(), mint, res.sig || ""); } catch {}
         log(`Bought ~${buySol.toFixed(4)} SOL -> ${mint.slice(0,4)}…`);
         clearObserverConsider(mint);
         try { await focusMintAndRecord(mint, { refresh: true, ttlMs: 88 }); } catch {}
@@ -9216,13 +9286,16 @@ function _ensureStatsHeader() {
 
     // Build the header contents once (do NOT overwrite on each update).
     try {
-      if (!hdr.dataset.fdvBuilt) {
-        hdr.dataset.fdvBuilt = "1";
+      // Versioned build so new stats can be added without requiring a hard refresh.
+      if (hdr.dataset.fdvBuilt !== "3") {
+        hdr.dataset.fdvBuilt = "3";
         hdr.innerHTML = `
           <div><strong>Money made</strong>: <span data-auto-stat-pnl-sol>—</span> <span data-auto-stat-pnl-usd></span></div>
           <div><strong>Status</strong>: <span data-auto-stat-status>—</span></div>
-          <div><strong>SOL</strong>: <span data-auto-stat-solbal>—</span></div>
+          <div><strong>SOL (avail)</strong>: <span data-auto-stat-solbal>—</span></div>
+          <div><strong>Equity (est)</strong>: <span data-auto-stat-equity title="SOL + open positions + locked rent">—</span></div>
           <div><strong>Open</strong>: <span data-auto-stat-open>—</span></div>
+          <div><strong>Pending</strong>: <span data-auto-stat-pending title="pending buy-credit reconciliation">—</span></div>
           <div><strong>Time left</strong>: <span data-auto-stat-left>—</span></div>
           <div><strong>Last trade</strong>: <span data-auto-stat-lasttrade>—</span></div>
         `;
@@ -9236,6 +9309,8 @@ function _ensureStatsHeader() {
         const riskEl = root.querySelector("[data-auto-agent-risk]");
         const keyLabelEl = root.querySelector("[data-auto-llm-key-label]");
         const keyEl = root.querySelector("[data-auto-openai-key]");
+        const garyUrlWrapEl = root.querySelector("[data-auto-gary-url-wrap]");
+        const garyUrlEl = root.querySelector("[data-auto-gary-url]");
         const modelEl = root.querySelector("[data-auto-openai-model]");
         const stateEl = root.querySelector("[data-auto-agent-state]");
 
@@ -9287,6 +9362,7 @@ function _ensureStatsHeader() {
           try {
             const s = String(modelName || "").trim().toLowerCase();
             if (!s) return "openai";
+            if (s === "gary-predictions-v1" || s.startsWith("gary-")) return "gary";
             if (s.startsWith("gemini-")) return "gemini";
             if (s === "deepseek-chat" || s === "deepseek-reasoner" || s.startsWith("deepseek-")) return "deepseek";
             if (s.startsWith("grok-")) return "grok";
@@ -9298,6 +9374,7 @@ function _ensureStatsHeader() {
 
         const _lsKeyForProvider = (provider) => {
           const p = String(provider || "").trim().toLowerCase();
+          if (p === "gary") return "fdv_gary_key";
           if (p === "gemini") return "fdv_gemini_key";
           if (p === "grok") return "fdv_grok_key";
           if (p === "deepseek") return "fdv_deepseek_key";
@@ -9307,11 +9384,16 @@ function _ensureStatsHeader() {
         const _applyKeyUiForProvider = (provider) => {
           try {
             const p = String(provider || "openai").trim().toLowerCase();
+            const isGary = p === "gary";
             const isGemini = p === "gemini";
             const isGrok = p === "grok";
             const isDeepSeek = p === "deepseek";
-            if (keyLabelEl) keyLabelEl.textContent = isGemini ? "Gemini key" : (isGrok ? "xAI key" : (isDeepSeek ? "DeepSeek key" : "OpenAI key"));
-            if (keyEl) keyEl.placeholder = isGemini ? "AIza…" : (isGrok ? "xai-…" : "sk-…");
+            if (keyLabelEl) keyLabelEl.textContent = isGary ? "Gary API key" : (isGemini ? "Gemini key" : (isGrok ? "xAI key" : (isDeepSeek ? "DeepSeek key" : "OpenAI key")));
+            if (keyEl) keyEl.placeholder = isGary ? "123456" : (isGemini ? "AIza…" : (isGrok ? "xai-…" : "sk-…"));
+
+            try {
+              if (garyUrlWrapEl) garyUrlWrapEl.classList.toggle("fdv-hidden", !isGary);
+            } catch {}
           } catch {}
         };
 
@@ -9339,7 +9421,7 @@ function _ensureStatsHeader() {
                 stateEl.textContent = "(active)";
                 stateEl.style.color = "#7ee787";
               } else if (enabledFlag && !keyPresent) {
-                const who = (String(provider) === "gemini") ? "Gemini" : ((String(provider) === "grok") ? "xAI" : ((String(provider) === "deepseek") ? "DeepSeek" : "OpenAI"));
+                const who = (String(provider) === "gary") ? "Gary" : ((String(provider) === "gemini") ? "Gemini" : ((String(provider) === "grok") ? "xAI" : ((String(provider) === "deepseek") ? "DeepSeek" : "OpenAI")));
                 stateEl.textContent = `(missing ${who} key)`;
                 stateEl.style.color = "#ffb86c";
               } else {
@@ -9379,6 +9461,11 @@ function _ensureStatsHeader() {
           const lsKey = _lsKeyForProvider(provider);
           const k = typeof localStorage !== "undefined" ? String(localStorage.getItem(lsKey) || "") : "";
           if (keyEl) keyEl.value = k;
+        } catch {}
+
+        try {
+          const u = typeof localStorage !== "undefined" ? String(localStorage.getItem("fdv_gary_base_url") || "") : "";
+          if (garyUrlEl) garyUrlEl.value = u || "";
         } catch {}
 
         try { updateAgentUi(); } catch {}
@@ -9431,6 +9518,7 @@ function _ensureStatsHeader() {
               const provider = _inferProviderForModel(modelEl && modelEl.value);
               const lsKey = _lsKeyForProvider(provider);
               localStorage.setItem(lsKey, String(keyEl.value || "").trim());
+			  try { localStorage.setItem("fdv_llm_provider", String(provider || "")); } catch {}
               try { updateAgentUi(); } catch {}
               try {
                 const enabledFlag = _readAgentEnabled();
@@ -9442,6 +9530,19 @@ function _ensureStatsHeader() {
           keyEl.addEventListener("change", saveKey);
           keyEl.addEventListener("blur", saveKey);
         }
+
+        if (garyUrlEl) {
+          const saveUrl = () => {
+            try {
+              if (typeof localStorage === "undefined") return;
+              const v = String(garyUrlEl.value || "").trim() || "http://127.0.0.1:8088";
+              localStorage.setItem("fdv_gary_base_url", v);
+              try { log(`Gary URL set to ${v}`, "help"); } catch {}
+            } catch {}
+          };
+          garyUrlEl.addEventListener("change", saveUrl);
+          garyUrlEl.addEventListener("blur", saveUrl);
+        }
         if (modelEl) {
           modelEl.addEventListener("change", () => {
             try {
@@ -9450,6 +9551,12 @@ function _ensureStatsHeader() {
               localStorage.setItem("fdv_llm_model", mv);
               // Back-compat: older code reads fdv_openai_model.
               localStorage.setItem("fdv_openai_model", mv);
+
+        // Keep provider in sync as a hint for other runtimes.
+        try {
+        const provider = _inferProviderForModel(mv);
+        localStorage.setItem("fdv_llm_provider", String(provider || ""));
+        } catch {}
 
               // Switch the key box to the correct provider's key.
               const provider = _inferProviderForModel(mv);
@@ -9460,7 +9567,7 @@ function _ensureStatsHeader() {
 
               try { updateAgentUi(); } catch {}
               try {
-                const who = (String(provider) === "gemini") ? "Gemini" : ((String(provider) === "grok") ? "xAI" : ((String(provider) === "deepseek") ? "DeepSeek" : "OpenAI"));
+                const who = (String(provider) === "gary") ? "Gary" : ((String(provider) === "gemini") ? "Gemini" : ((String(provider) === "grok") ? "xAI" : ((String(provider) === "deepseek") ? "DeepSeek" : "OpenAI")));
                 log(`Agent model set to ${String(mv).trim()} (${who}).`, "help");
               } catch {}
             } catch {}
@@ -9488,7 +9595,34 @@ function updateStatsHeader() {
       const pnlUsd = px > 0 ? pnlSol * px : null;
 
       const solBal = Number(window._fdvLastSolBal || 0);
-      const open = Object.entries(state.positions || {}).filter(([m, p]) => m !== SOL_MINT && Number(p?.sizeUi || 0) > 0).length;
+      const posEntries = Object.entries(state.positions || {}).filter(([m, p]) => m !== SOL_MINT && Number(p?.sizeUi || 0) > 0);
+      const open = posEntries.length;
+
+      // Equity estimate = available SOL + estimated liquidation value of open positions + estimated locked rent.
+      let openValSol = 0;
+      try {
+        const solUsd = px > 0 ? px : Number((_solPxCache && _solPxCache.usd) || 0);
+        for (const [m, p] of posEntries) {
+          const lastQ = Number(p?.lastQuotedSol || 0);
+          if (Number.isFinite(lastQ) && lastQ > 0) { openValSol += lastQ; continue; }
+
+          const sizeUi = Number(p?.sizeUi || 0);
+          const lastPxSol = Number(p?.lastQuotedPx || 0);
+          if (sizeUi > 0 && Number.isFinite(lastPxSol) && lastPxSol > 0) {
+            openValSol += sizeUi * lastPxSol;
+            continue;
+          }
+
+          // Fallback: infer SOL value from USD price if present.
+          const priceUsd = Number(p?.tickNow?.priceUsd || 0);
+          if (sizeUi > 0 && solUsd > 0 && Number.isFinite(priceUsd) && priceUsd > 0) {
+            openValSol += sizeUi * (priceUsd / solUsd);
+          }
+        }
+      } catch {}
+
+      const lockedRentSol = Math.max(0, Number(state.lockedRentLamportsEst || 0) / 1e9);
+      const equitySol = Math.max(0, solBal + openValSol + lockedRentSol);
 
       const running = !!state.enabled;
       const status = running ? "RUNNING" : "STOPPED";
@@ -9508,7 +9642,9 @@ function updateStatsHeader() {
       const pnlUsdEl = hdr.querySelector("[data-auto-stat-pnl-usd]");
       const statusEl = hdr.querySelector("[data-auto-stat-status]");
       const solEl = hdr.querySelector("[data-auto-stat-solbal]");
+      const eqEl = hdr.querySelector("[data-auto-stat-equity]");
       const openEl = hdr.querySelector("[data-auto-stat-open]");
+      const pendingEl = hdr.querySelector("[data-auto-stat-pending]");
       const leftEl = hdr.querySelector("[data-auto-stat-left]");
       const lastEl = hdr.querySelector("[data-auto-stat-lasttrade]");
 
@@ -9516,7 +9652,19 @@ function updateStatsHeader() {
       if (pnlUsdEl) pnlUsdEl.textContent = pnlUsd !== null ? ` (${fmtUsd(pnlUsd)})` : "";
       if (statusEl) statusEl.textContent = status;
       if (solEl) solEl.textContent = solBal ? solBal.toFixed(6) : "—";
+      if (eqEl) {
+        eqEl.textContent = equitySol > 0 ? equitySol.toFixed(6) : "—";
+        try {
+          eqEl.title = `SOL ${solBal.toFixed(6)} + open ${openValSol.toFixed(6)} + rent ${lockedRentSol.toFixed(6)}`;
+        } catch {}
+      }
       if (openEl) openEl.textContent = String(open);
+      if (pendingEl) {
+        let n = 0;
+        try { n = pendingCreditsSize(); } catch { n = 0; }
+        const busy = !!(_inFlight || _buyInFlight || _sellEvalRunning || _switchingLeader);
+        pendingEl.textContent = `${n}${busy ? " (busy)" : ""}`;
+      }
       if (leftEl) leftEl.textContent = left;
       if (lastEl) lastEl.textContent = lastTradeStr;
     } catch {}
@@ -9696,9 +9844,14 @@ export function initTraderWidget(container = document.body) {
           <span data-auto-llm-key-label>OpenAI key</span>
           <input type="password" data-auto-openai-key placeholder="sk-…" autocomplete="off" spellcheck="false" />
         </label>
+        <label class="fdv-agent-item fdv-agent-url fdv-hidden" data-auto-gary-url-wrap>
+          URL
+          <input type="text" data-auto-gary-url placeholder="https://fdv.lol/bot?" autocomplete="off" spellcheck="false" />
+        </label>
         <label class="fdv-agent-item fdv-agent-model">
           Model
           <select data-auto-openai-model>
+            <option value="gary-predictions-v1">gary-predictions-v1</option>
             <option value="gpt-4o-mini">gpt-4o-mini</option>
             <option value="gpt-4.1-mini">gpt-4.1-mini</option>
             <option value="gpt-4o">gpt-4o</option>
@@ -10729,6 +10882,7 @@ export function initTraderWidget(container = document.body) {
     state.moneyMadeSol = 0;
     state.solSessionStartLamports = 0;
     state.pnlBaselineSol = 0; // reset session baseline
+    state.lockedRentLamportsEst = 0;
     fetchSolBalance(state.autoWalletPub).then(b => { depBalEl.value = `${b.toFixed(4)} SOL`; }).catch(()=>{});
     save();
     try { updateStatsHeader(); } catch {}

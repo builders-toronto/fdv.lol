@@ -2,16 +2,19 @@ import { createOpenAIChatClient } from "./open.js";
 import { createGeminiChatClient } from "./gemini.js";
 import { createGrokChatClient } from "./grok.js";
 import { createDeepSeekChatClient } from "./deepseek.js";
+import { createGaryPredictionsChatClient } from "./gary.js";
 
 function _inferProvider({ provider, baseUrl, model } = {}) {
 	try {
 		const p = String(provider || "").trim().toLowerCase();
 		if (p) return p;
 		const mn = String(model || "").trim().toLowerCase();
+		if (mn === "gary-predictions-v1" || mn.startsWith("gary-")) return "gary";
 		if (mn === "deepseek-chat" || mn === "deepseek-reasoner" || mn.startsWith("deepseek-")) return "deepseek";
 		if (mn.startsWith("grok-")) return "grok";
 		const u = String(baseUrl || "").trim().toLowerCase();
 		if (!u) return "openai";
+		if (u.includes("127.0.0.1") && u.includes(":8088")) return "gary";
 		if (u.includes("generativelanguage.googleapis.com")) return "gemini";
 		if (u.includes("api.x.ai")) return "grok";
 		if (u.includes("api.deepseek.com")) return "deepseek";
@@ -37,6 +40,8 @@ export function normalizeLlmConfig(cfg = {}) {
 				? "https://api.x.ai/v1"
 				: (provider === "deepseek")
 					? "https://api.deepseek.com"
+					: (provider === "gary")
+						? "http://127.0.0.1:8088"
 				: "https://api.openai.com/v1";
 		const defaultModel = (provider === "gemini")
 			? "gemini-2.5-flash-lite"
@@ -44,6 +49,8 @@ export function normalizeLlmConfig(cfg = {}) {
 				? "grok-3-mini"
 				: (provider === "deepseek")
 					? "deepseek-chat"
+					: (provider === "gary")
+						? "gary-predictions-v1"
 				: "gpt-4o-mini";
 		return {
 			provider,
@@ -56,6 +63,7 @@ export function normalizeLlmConfig(cfg = {}) {
 				? Math.max(2000, Math.floor(Number(c.llmTimeoutMs)))
 				: Math.max(2000, Math.floor(Number(c.timeoutMs || 12_000))),
 			maxTokens: Number.isFinite(Number(c.maxTokens)) ? Math.floor(Number(c.maxTokens)) : 350,
+			hmacSecret: String(c.hmacSecret || c.llmHmacSecret || c.garyHmacSecret || "").trim(),
 		};
 	} catch {
 		return {
@@ -66,12 +74,16 @@ export function normalizeLlmConfig(cfg = {}) {
 			model: "gpt-4o-mini",
 			timeoutMs: 12_000,
 			maxTokens: 350,
+			hmacSecret: "",
 		};
 	}
 }
 
-export function createChatClient({ provider, apiKey, baseUrl, model, timeoutMs, fetchFn } = {}) {
+export function createChatClient({ provider, apiKey, baseUrl, model, timeoutMs, fetchFn, hmacSecret } = {}) {
 	const p = _inferProvider({ provider, baseUrl, model });
+	if (p === "gary" || p === "gary_predictions" || p === "gary-predictions" || p === "gary-predictions-v1") {
+		return createGaryPredictionsChatClient({ apiKey, baseUrl, model, timeoutMs, fetchFn, hmacSecret });
+	}
 	if (p === "openai" || p === "openai_compat" || p === "compatible") {
 		return createOpenAIChatClient({ apiKey, baseUrl, model, timeoutMs, fetchFn });
 	}
@@ -98,5 +110,6 @@ export function createChatClientFromConfig(cfg = {}, { fetchFn } = {}) {
 		model: c.model,
 		timeoutMs: c.timeoutMs,
 		fetchFn,
+		hmacSecret: c.hmacSecret,
 	});
 }
