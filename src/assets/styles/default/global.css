@@ -75,6 +75,9 @@
   --fdv-danger-700: color-mix(in srgb, var(--avoid) 80%, #000);
   --fdv-focus: rgba(0,255,178,0.22);
   --fdv-shadow: 0 18px 55px rgba(0,0,0,0.55);
+
+  /* Single source of truth for monospace (body, .fdv-log, .fdv-mono, etc.) */
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
 html, body, input, select, textarea { color-scheme: dark; }
@@ -92,10 +95,10 @@ input, select, textarea, button{
 
 html{ background: var(--bg); }
 
-html,body{
-  margin:0;
-  color:var(--text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+html, body {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
   background:
     radial-gradient(900px 650px at 18% -10%, rgba(0,255,178,.14), rgba(5,6,7,0) 60%),
     radial-gradient(1100px 700px at 85% 0%, rgba(125,255,207,.10), rgba(5,6,7,0) 55%),
@@ -394,7 +397,7 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
 .header{
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  z-index:5;
+  z-index: 1000;
 }
 
 .superFeat {
@@ -428,10 +431,12 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
   flex:0 0 auto;
 }
 .innerControls .btn{
-  flex:1 1 auto; min-width:0;
+  flex: 1 1 auto;
+  min-width: 0;
   padding: 12px 14px;
   font-size: clamp(.9rem, .85rem + .3vw, 1rem);
   min-height: 40px;
+  background: black;
 }
 
 .hdr-tools {
@@ -1027,8 +1032,8 @@ input[type="checkbox"]:disabled{
 }
 .metrics{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:10px 0 6px}
 .kv{background: rgba(123,241,255,.06); border:1px solid rgba(122,222,255,.16); border-radius:12px; padding:8px}
-.kv .k{color:var(--muted); font-size:.78rem}
-.kv .v{font-weight:600; letter-spacing:.2px; margin-top:1px}
+.kv .k{ font-size:.78rem; color:var(--fdv-muted) }
+.kv .v{ font-size:.9rem; font-weight:600; letter-spacing:.2px; margin-top:1px }
 .kv .spark{
   width: 100%;
   height: 28px;
@@ -1085,10 +1090,6 @@ input[type="checkbox"]:disabled{
 }
 .holdCoin:hover{ box-shadow: var(--shadow-1) }
 .holdCoin:active{ transform: translateY(0) scale(.99) }
-
-.innerControls .btn {
-  background: black;
-}
 
 .rec{margin-left:auto; font-weight:700; font-size:.9rem; padding:6px 10px; border-radius:10px; border:1px solid; }
 .rec.GOOD  { color: var(--good);   border-color: rgba(26,255,122,.45); background: rgba(26,255,122,.08)}
@@ -1171,7 +1172,7 @@ input[type="checkbox"]:disabled{
 .fdv-chart-tooltip__mint{
   margin-left: auto;
   color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   max-width: 52ch;
   overflow: hidden;
@@ -1266,7 +1267,7 @@ input[type="checkbox"]:disabled{
   background: rgba(9, 12, 18, 0.55);
 }
 .fdv-chart-tooltip__hint code{
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   color: rgba(123,215,255,.9);
 }
@@ -1607,22 +1608,24 @@ hr.sep{border:0; border-top:1px dashed var(--dash); margin:10px 0}
 .search-results .name{ color: var(--muted); }
 .search-results .mint{
   margin-top: 2px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: .8rem;
   color: color-mix(in srgb, var(--muted) 80%, transparent);
 }
 .search-results .badge{
-  border:1px solid rgba(26,255,213,.35);
+  border: 1px solid #333;
   color: var(--neon);
-  padding: 2px 8px;
+  padding: 2px 6px;
   border-radius: 999px;
-  font-size: .72rem;
+  font-size: 12px;
   background: rgba(26,255,213,.08);
+  opacity: .8;
 }
 .search-results .empty{
-  padding: 12px 14px;
+  padding: 10px 12px;
   color: var(--muted);
   font-style: italic;
+  opacity: .6;
 }
 
 @media (max-width: 640px){
@@ -1633,10 +1636,6 @@ hr.sep{border:0; border-top:1px dashed var(--dash); margin:10px 0}
   .search-results{ border-radius: 12px; }
 }
 
-.search-results .badge { font-size: 12px; padding: 2px 6px; border: 1px solid #333; border-radius: 999px; opacity: .8; }
-.search-results .empty { padding: 10px 12px; opacity: .6; font-style: italic; }
-
-.header{ z-index: 1000; }
 
 
 .searchbar{flex:1; min-width:240px; display:flex; align-items:center; gap:8px}
@@ -1913,7 +1912,7 @@ hr.sep{border:0; border-top:1px dashed var(--dash); margin:10px 0}
     flex-direction: row;
     align-items: center;
 }
-.fdv-title{ margin:0; font-size:1.1rem; }
+.fdv-title{ margin:0; font-weight:600; font-size:clamp(16px, 1.6vw, 20px); line-height:1.2; letter-spacing:.2px; }
 .fdv-chips{ display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }
 .fdv-chip{ font-size:.78rem; padding:4px 8px; border-radius:999px;
   background:#0e131c; border:1px solid var(--fdv-border); color:var(--fdv-muted) }
@@ -1998,8 +1997,6 @@ hr.sep{border:0; border-top:1px dashed var(--dash); margin:10px 0}
 .fdv-token-external{ margin-left:auto; font-size:.85rem; color:var(--brand2); text-decoration:none }
 .fdv-token-price{ display:flex; gap:8px; align-items:center; font-size:1rem; font-weight:700 }
 .fdv-token-grid{ display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:10px }
-.kv .k{ font-size:.78rem; color:var(--fdv-muted) }
-.kv .v{ font-size:.9rem }
 
 .fdv-field{ display:block }
 .fdv-label{ display:block; font-size:.9rem; color:var(--fdv-muted); margin:0 0 6px }
@@ -2081,7 +2078,7 @@ hr.sep{border:0; border-top:1px dashed var(--dash); margin:10px 0}
 
 .fdv-hold-rug-value{
   font-size: 12px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family: var(--font-mono);
   color: var(--fdv-muted);
 }
 
@@ -2115,7 +2112,7 @@ hr.sep{border:0; border-top:1px dashed var(--dash); margin:10px 0}
 .fdv-note{ border:1px dashed color-mix(in srgb, var(--fdv-border) 80%, #000); border-radius:12px; padding:10px 12px; background:var(--fdv-bg) }
 .fdv-note-title{ font-size:.85rem; color:var(--fdv-muted); margin-bottom:6px }
 .fdv-note-body{ font-size:.86rem; color: color-mix(in srgb, var(--fdv-fg) 86%, var(--fdv-muted)) }
-.fdv-mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace }
+.fdv-mono{ font-family: var(--font-mono); }
 .fdv-tiny{ font-size:.78rem; color:var(--fdv-muted); margin-top:4px }
 
 .fdv-wallet{ display:flex; flex-direction:column; gap:8px }
@@ -2127,14 +2124,8 @@ hr.sep{border:0; border-top:1px dashed var(--dash); margin:10px 0}
 }
 
 .fdv-status{ min-height:180px; background:var(--fdv-bg); border: 1px solid var(--fdv-border); border-radius: 12px; padding: 10px; overflow: hidden; }
-.fdv-log{ white-space:pre-wrap; font-size:.9rem; height:160px; overflow:auto }
-.fdv-log .ok{ color:var(--fdv-ok) }
-.fdv-log .info{ color:var(--fdv-info) }
-.fdv-log .help{ color:var(--fdv-help) }
-.fdv-log .err{ color:var(--fdv-err) }
-.fdv-log .warn{ color:var(--fdv-warn) }
 
-/* Log container - consolidated styles */
+/* .fdv-log — single source of truth */
 .fdv-log {
   position: relative;
   background: var(--fdv-bg);
@@ -2144,40 +2135,24 @@ hr.sep{border:0; border-top:1px dashed var(--dash); margin:10px 0}
   height: clamp(140px, 32vh, 260px);
   overflow: auto;
   resize: none;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family: var(--font-mono);
   font-size: .84rem;
   line-height: 1.35;
   color: var(--fdv-muted);
   white-space: pre-wrap;
   word-break: break-word;
-  /* Performance optimizations */
   contain: content;
   content-visibility: auto;
   will-change: scroll-position;
-  /* Firefox scrollbar */
   scrollbar-width: thin;
   scrollbar-color: #2a3a50 transparent;
 }
+.fdv-log::-webkit-scrollbar{ width: 10px; height: 10px; }
+.fdv-log::-webkit-scrollbar-track{ background: transparent; }
+.fdv-log::-webkit-scrollbar-thumb{ background: #263244; border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+.fdv-log::-webkit-scrollbar-corner{ background: transparent; }
+.fdv-log::-webkit-resizer{ background: transparent; }
 
-/* WebKit scrollbar styles */
-.fdv-log::-webkit-scrollbar{
-  width: 10px;
-  height: 10px;
-}
-.fdv-log::-webkit-scrollbar-track{
-  background: transparent;
-}
-.fdv-log::-webkit-scrollbar-thumb{
-  background: #263244;
-  border-radius: 8px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-.fdv-log::-webkit-scrollbar-corner{
-  background: transparent;
-}
-
-/* Log color classes */
 .fdv-log .ok{ color:var(--fdv-ok) }
 .fdv-log .info{ color:var(--fdv-info) }
 .fdv-log .help{ color:var(--fdv-help) }
@@ -2199,62 +2174,6 @@ hr.sep{border:0; border-top:1px dashed var(--dash); margin:10px 0}
 
 @media (prefers-reduced-motion: reduce) {
   .fdv-log .log-row { transition: none; transform: none; }
-}
-
-.fdv-log{
-  scrollbar-width: thin; /* Firefox */
-  scrollbar-color: rgba(128,255,205,.35) var(--fdv-bg);
-}
-
-.fdv-log::-webkit-scrollbar{
-  width: 10px; height: 10px;
-}
-.fdv-log::-webkit-scrollbar-track{
-  background: var(--fdv-bg);
-  border: 1px solid var(--fdv-border);
-  border-radius: 10px;
-}
-.fdv-log::-webkit-scrollbar-thumb{
-  background: linear-gradient(180deg, rgba(125,255,207,.22), rgba(0,255,178,.22));
-  border: 1px solid rgba(128,255,205,.35);
-  border-radius: 10px;
-}
-.fdv-log::-webkit-scrollbar-thumb:hover{
-  background: linear-gradient(180deg, rgba(125,255,207,.35), rgba(0,255,178,.35));
-  border-color: rgba(128,255,205,.45);
-}
-.fdv-log::-webkit-scrollbar-corner{
-  background: transparent;
-}
-
-.fdv-log::-webkit-resizer{
-  background: transparent;
-}
-
-.fdv-log {
-  background: var(--fdv-bg);
-  border: 1px solid var(--fdv-border);
-  border-radius: 10px;
-  padding: 0 10px 10px 10px;
-  height: clamp(140px, 32vh, 260px);
-  overflow: auto;
-  resize: auto;
-  font-size: .84rem;
-  color: var(--fdv-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  line-height: 1.35;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-/* Nicer scrollbars (WebKit) */
-.fdv-log::-webkit-scrollbar{ width:10px; height:10px; }
-.fdv-log::-webkit-scrollbar-thumb{ background: #263244; border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
-.fdv-log::-webkit-scrollbar-track{ background: transparent; }
-/* Firefox scrollbar */
-.fdv-log{ scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
-
-.fdv-log {
-  position: relative;
 }
 
 .fdv-log::before {
@@ -2341,14 +2260,13 @@ hr.sep{border:0; border-top:1px dashed var(--dash); margin:10px 0}
   font-weight: 600;
 }
 
-/* Price formatting: integer + fractional parts, fits in tight boxes */
+/* Price formatting: integer + fractional parts, fits in tight boxes — single source of truth */
 .price {
   display: inline-flex;
   align-items: baseline;
   gap: 0.1em;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  font-variant-numeric: tabular-nums;
 }
 .price .int { font-weight: 700; }
 .price .dot { opacity: .9; }
@@ -2698,13 +2616,6 @@ hr.sep{border:0; border-top:1px dashed var(--dash); margin:10px 0}
 }
 
 .fdv-flamebar-fill::after{ content:none; }
-
-.fdv-title{
-  margin:0; font-weight:600;
-  font-size: clamp(16px, 1.6vw, 20px);
-  line-height: 1.2;
-  letter-spacing: 0.2px;
-}
 
 /* Grid */
 .fdv-grid{
