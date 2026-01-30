@@ -889,7 +889,9 @@ async function _jupSwapSellToSol({ conn, signerKp, mintStr, amountRawStr, slippa
   const amount = String(amountRawStr || "").trim();
   if (!inputMint || !amount || amount === "0") return { ok: false, code: "NO_AMOUNT", msg: "missing amount" };
 
-  const base = String(process?.env?.FDV_JUP_BASE_URL || "https://lite-api.jup.ag").trim() || "https://lite-api.jup.ag";
+  const base = String(process?.env?.FDV_JUP_BASE_URL || "https://api.jup.ag").trim() || "https://api.jup.ag";
+  const apiKey = String(process?.env?.FDV_JUP_API_KEY || process?.env?.JUP_API_KEY || "").trim();
+  if (!apiKey) throw new Error("Missing Jupiter API key. Set FDV_JUP_API_KEY (get one at https://portal.jup.ag/)");
   const q = new URL(`${base.replace(/\/+$/, "")}/swap/v1/quote`);
   q.searchParams.set("inputMint", inputMint);
   q.searchParams.set("outputMint", outputMint);
@@ -897,16 +899,16 @@ async function _jupSwapSellToSol({ conn, signerKp, mintStr, amountRawStr, slippa
   q.searchParams.set("slippageBps", String(Math.max(1, slippageBps | 0)));
   q.searchParams.set("restrictIntermediateTokens", "true");
 
-  const quote = await _fetchJsonWith429(q.toString(), { method: "GET" });
+  const quote = await _fetchJsonWith429(q.toString(), { method: "GET", headers: { "x-api-key": apiKey } });
   if (!quote) return { ok: false, code: "NO_QUOTE", msg: "empty quote" };
 
   const swap = await _fetchJsonWith429(`${base.replace(/\/+$/, "")}/swap/v1/swap`, {
     method: "POST",
+    headers: { "x-api-key": apiKey },
     body: {
       quoteResponse: quote,
       userPublicKey: signerKp.publicKey.toBase58(),
       dynamicComputeUnitLimit: true,
-      dynamicSlippage: { maxBps: Math.max(1, slippageBps | 0) },
     },
   });
 

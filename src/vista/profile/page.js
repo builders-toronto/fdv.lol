@@ -18,8 +18,11 @@ try {
   widgets.register('swap', {
     importer: () => import('../widgets/auto/swap/index.js'),
     init: ({ mod }) => {
-      if (typeof mod.initSwap === 'function') mod.initSwap();
-      if (typeof mod.bindSwapButtons === 'function') mod.bindSwapButtons(document);
+      if (typeof mod.initSwapSystem === 'function') mod.initSwapSystem();
+      else {
+        if (typeof mod.initSwap === 'function') mod.initSwap();
+        if (typeof mod.bindSwapButtons === 'function') mod.bindSwapButtons(document);
+      }
     },
     eager: true,
     once: true,
@@ -103,7 +106,15 @@ export async function renderProfileView(input, { onBack } = {}) {
     }
     if (raw?.error) return errorNotice(elApp, raw.error);
   } catch {
-    window.location.href = "https://jup.ag/tokens/" + encodeURIComponent(mint);
+    try {
+      await widgets.mount('swap');
+      const mod = await import('../widgets/auto/swap/index.js');
+      if (typeof mod.initSwapSystem === 'function') mod.initSwapSystem();
+      if (typeof mod.openSwapModal === 'function') {
+        await mod.openSwapModal({ outputMint: mint, noFetch: true });
+      }
+    } catch {}
+    errorNotice(elApp, "Token data unavailable. You can still swap by mint.");
     return;
   }
 

@@ -1,6 +1,7 @@
 import { getJSON } from '../core/tools.js'
+import { JUP_API_BASE, JUP_API_KEY } from '../config/env.js'
 
-const JUP_TRENDING_BASE = 'https://lite-api.jup.ag/tokens/v2/toptrending';
+const JUP_TRENDING_BASE = `${String(JUP_API_BASE || "https://api.jup.ag").replace(/\/+$/, "")}/tokens/v2/toptrending`;
 
 const WIN_TO_FIELD = {
   '5m': 'stats5m',
@@ -190,8 +191,15 @@ function mapTrendingTokenToModel(t, headlineWindow = '5m') {
 }
 
 export async function fetchJupiterTrendingModels({ window = '5m', limit = 50, signal } = {}) {
+  // Avoid hard-failing the main feed if the user hasn't configured a key.
+  // Auto bot widgets enforce the key separately.
+  if (!String(JUP_API_KEY || "").trim()) return [];
   const url = `${JUP_TRENDING_BASE}/${encodeURIComponent(window)}?limit=${encodeURIComponent(limit)}`;
-  const data = await getJSON(url, { signal, timeout: 15_000 });
+  const data = await getJSON(url, {
+    signal,
+    timeout: 15_000,
+    headers: { accept: 'application/json', 'x-api-key': String(JUP_API_KEY || "").trim() },
+  });
   const arr = Array.isArray(data) ? data : [];
   return arr
     .map(t => mapTrendingTokenToModel(t, window))

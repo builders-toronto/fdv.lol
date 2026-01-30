@@ -298,7 +298,3 @@ fdv.lol is open-source and community-driven. You can help by:
 ---
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
-
-feat: policy revamp, onboarding polish, Full AI sell freedom; fix async buy lock lag;
-
-git commit -m "feat(agent): add long_hold + tighten dynamic fees" -m "- Add Agent Gary long_hold action (30s timed hold + recheck) while bot continues monitoring PnL/targets" -m "- Extend Agent Gary prompts + driver validation for long_hold/holdSeconds" -m "- Harden dynamic platform fee restraints (more conservative defaults + cap fee to a fraction of profit)" -m "- Update auto-trader docs for long_hold behavior"

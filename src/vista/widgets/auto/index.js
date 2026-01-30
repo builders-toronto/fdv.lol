@@ -2,6 +2,7 @@
 import { initFollowWidget } from './follow/index.js';
 import { initSniperWidget } from './sniper/index.js';
 import { initHoldWidget } from './hold/index.js';
+import { initSwapSystem } from './swap/index.js';
 import { maybeShowAutoTraderFirstRunHelp } from './help/index.js';
 import {
   initTraderWidget,
@@ -64,6 +65,7 @@ function ensureAutoDeps() {
 
 export function initAutoWidget(container = document.body) {
   try { ensureAutoDeps(); } catch {}
+  try { initSwapSystem(); } catch {}
 
   const wrap = document.createElement('details');
   wrap.className = 'fdv-auto-wrap';
@@ -125,7 +127,7 @@ export function initAutoWidget(container = document.body) {
 
     <div class="fdv-bot-footer" style="display:flex;justify-content:space-between;margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
       <a href="https://t.me/fdvlolgroup" target="_blank" data-auto-help-tg>t.me/fdvlolgroup</a>
-      <span>Version: 0.0.6.9</span>
+      <span>Version: 0.0.7.0</span>
     </div>
   `;
 

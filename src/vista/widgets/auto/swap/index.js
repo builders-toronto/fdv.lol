@@ -17,6 +17,9 @@ const SOL_MINT = "So11111111111111111111111111111111111111112";
 const DEFAULTS = {
   jupiterBase: "https://lite-api.jup.ag",
 
+  // Optional: forwarded to Jupiter (x-api-key)
+  jupiterApiKey: "",
+
   // Prefer Auto widget configured RPC by default.
   rpcUrl: "",
   rpcHeaders: null,
@@ -101,6 +104,20 @@ function _effectiveRpcHeaders() {
   } catch {}
 
   return normalize(_safeLsGet("fdv_rpc_headers") || "{}");
+}
+
+function _effectiveJupApiKey() {
+  const explicit = String(CFG.jupiterApiKey || "").trim();
+  if (explicit) return explicit;
+  try {
+    const k = String("").trim();
+    if (k) return k;
+  } catch {}
+  try {
+    return String(_safeLsGet("fdv_jup_api_key") || "").trim();
+  } catch {
+    return "";
+  }
 }
 
 function _isVerified() {
@@ -834,7 +851,11 @@ async function _quoteAndSwap() {
     q.searchParams.set("restrictIntermediateTokens", "true");
     if (platformFeeBps > 0) q.searchParams.set("platformFeeBps", String(platformFeeBps));
 
-    const qRes = await fetch(q.toString());
+    const jupKey = _effectiveJupApiKey();
+    const jupHeaders = { accept: "application/json" };
+    if (jupKey) jupHeaders["x-api-key"] = jupKey;
+
+    const qRes = await fetch(q.toString(), { headers: jupHeaders });
     if (!qRes.ok) throw new Error(`Quote failed: ${qRes.status} ${await qRes.text()}`);
     const quote = await qRes.json();
     try { document.dispatchEvent(new CustomEvent("swap:quote", { detail: { quote } })); } catch {}
@@ -855,13 +876,12 @@ async function _quoteAndSwap() {
     _log("Building swap transaction (with fee)…");
     const sRes = await fetch(`${CFG.jupiterBase}/swap/v1/swap`, {
       method: "POST",
-      headers: {"Content-Type":"application/json"},
+      headers: { ...jupHeaders, "Content-Type":"application/json" },
       body: JSON.stringify({
         quoteResponse: quote,
         userPublicKey: _state.pubkey.toBase58(),
         feeAccount: feeAccount || undefined,
         dynamicComputeUnitLimit: true,
-        dynamicSlippage: { maxBps: slippageBps },
       })
     });
     if (!sRes.ok) throw new Error(`Swap build failed: ${sRes.status} ${await sRes.text()}`);
@@ -1558,7 +1578,11 @@ export async function autoSwap({
     q.searchParams.set("restrictIntermediateTokens", "true");
     if (platformFeeBps > 0) q.searchParams.set("platformFeeBps", String(platformFeeBps));
 
-    const qRes = await fetch(q.toString(), { signal: ac.signal });
+    const jupKey = _effectiveJupApiKey();
+    const jupHeaders = { accept: "application/json" };
+    if (jupKey) jupHeaders["x-api-key"] = jupKey;
+
+    const qRes = await fetch(q.toString(), { signal: ac.signal, headers: jupHeaders });
     if (!qRes.ok) throw new Error(`quote ${qRes.status}`);
     const quote = await qRes.json();
 
@@ -1576,13 +1600,12 @@ export async function autoSwap({
     // Build swap
     const sRes = await fetch(`${CFG.jupiterBase}/swap/v1/swap`, {
       method: "POST",
-      headers: {"Content-Type":"application/json"},
+      headers: { ...jupHeaders, "Content-Type":"application/json" },
       body: JSON.stringify({
         quoteResponse: quote,
         userPublicKey: _state.pubkey.toBase58(),
         feeAccount: feeAccount || undefined,
         dynamicComputeUnitLimit: true,
-        dynamicSlippage: { maxBps: slippageBps },
       })
     });
     if (!sRes.ok) throw new Error(`swap ${sRes.status}`);

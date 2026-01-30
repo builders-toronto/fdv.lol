@@ -759,7 +759,7 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
 }
 
 select, input{
-  background:var(--card); border:1px solid rgba(122,222,255,.2);
+  background:#000; border:1px solid rgba(122,222,255,.2);
   font-weight: 600; color:var(--text); padding:8px 10px; border-radius:10px;
   outline:none; transition: .2s border;
 }
@@ -1031,7 +1031,7 @@ input[type="checkbox"]:disabled{
   /* background: conic-gradient(from 180deg at 50% 50%, rgba(26,255,213,.16), rgba(123,241,255,.16), transparent 40% 100%); */
   filter: blur(18px); opacity:.0; transition: .25s opacity;
 }
-.card:hover{ border-color: rgba(26,255,213,.35); box-shadow: 0 10px 30px rgba(26,255,213,.08)}
+.card:hover{ border-color: rgba(26,255,213,.35); box-shadow: 0 30px 60px rgba(26,255,213,.08)}
 .card:hover::before{opacity:.6}
 
 .card a {
@@ -1082,7 +1082,7 @@ input[type="checkbox"]:disabled{
 }
 
 .btn{
-  display:inline-flex; align-items:center; justify-content: center; gap:8px; padding:13px 12px; border-radius:12px; font-weight:600; letter-spacing:.2px;
+  display:inline-flex; align-items:center; justify-content: center; gap:8px;     padding: 5px 8px; border-radius:12px; font-weight:600; letter-spacing:.2px;
   /* background: linear-gradient(90deg, rgb(0 0 0 / 15%), rgb(11 156 173 / 15%)); */
   background: transparent;
   border:1px solid rgba(122,222,255,.28); color:var(--text); text-decoration:none; cursor: pointer;

@@ -1647,6 +1647,8 @@ let state = {
   minBuySol: 0.12,
   maxBuySol: 0.24,       
   rpcUrl: "",    
+  // Jupiter API key (required for api.jup.ag)
+  jupiterApiKey: "",
   oldWallets: [],         
 
   // Per-mint positions:
@@ -1796,6 +1798,8 @@ let lightEnabledEl, lightFracEl, lightArmEl, lightMinChgEl, lightMinChgSlopeEl, 
 
 let _logQueue = [];
 let _logRaf = 0;
+
+let _updateJupKeyLockUi = null;
 
 function _trimLogDom() {
   try {
@@ -2497,7 +2501,31 @@ function normalizeState(raw = {}) {
   if (!out.positions || typeof out.positions !== "object") out.positions = {};
   if (!out.rpcHeaders || typeof out.rpcHeaders !== "object") out.rpcHeaders = {};
 
+
+
+  // Keep API key a string; also allow separate storage key for convenience.
+  try {
+    const fromState = String(out.jupiterApiKey || "").trim();
+    const fromLs = (typeof localStorage !== "undefined") ? String(localStorage.getItem("fdv_jup_api_key") || "").trim() : "";
+    out.jupiterApiKey = (fromState || fromLs || "").trim();
+  } catch {
+    out.jupiterApiKey = String(out.jupiterApiKey || "").trim();
+  }
+
   return out;
+}
+
+function currentJupApiKey() {
+  try {
+    return String(state.jupiterApiKey || localStorage.getItem("fdv_jup_api_key") || "").trim();
+  } catch {
+    return String(state.jupiterApiKey || "").trim();
+  }
+}
+
+function setJupApiKey(key) {
+  state.jupiterApiKey = String(key || "").trim();
+  try { localStorage.setItem("fdv_jup_api_key", state.jupiterApiKey); } catch {}
 }
 
 function _pcKey(owner, mint) { return `${owner}:${mint}`; }
@@ -2938,7 +2966,10 @@ function downloadTextFile(filename, text) {
 }
 
 async function getCfg() {
-  return AUTO_CFG;
+  return {
+    ...AUTO_CFG,
+    jupiterApiKey: currentJupApiKey(),
+  };
 }
 
 export async function getJupBase() {
@@ -3845,7 +3876,7 @@ async function _migrateWalletFunds({ fromSigner, toSigner }) {
   return { ok: true, fromOwner, toOwner };
 }
 
-async function ensureAutoWallet() {
+export async function ensureAutoWallet() {
   if (state.autoWalletPub && state.autoWalletSecret) {
     try { _startLedgerReporting(); } catch {}
     return state.autoWalletPub;
@@ -8861,6 +8892,18 @@ function onToggle(on) {
      try { updateStatsHeader(); } catch {}
      return;
    }
+   if (state.enabled && !currentJupApiKey()) {
+     log("This bot requires a Jup API key (x-api-key). Get one at https://portal.jup.ag/", "warn");
+     state.enabled = false;
+     if (toggleEl) toggleEl.value = "no";
+     startBtn.disabled = false;
+     stopBtn.disabled = true;
+     try { renderStatusLed(); } catch {}
+     try { if (typeof _updateJupKeyLockUi === "function") _updateJupKeyLockUi(); } catch {}
+     save();
+     try { updateStatsHeader(); } catch {}
+     return;
+   }
    if (state.enabled && !timer) {
      startAutoAsync();
    } else if (!state.enabled && timer) {
@@ -9495,6 +9538,7 @@ export function initTraderWidget(container = document.body) {
     <div data-main-tab-panel="auto" class="tab-panel active">
     <div class="fdv-grid">
       <label><a href="https://quicknode.com/signup?via=lf" target="_blank">RPC (CORS)</a> <input data-auto-rpc placeholder="https://your-provider.example/solana?api-key=..."/></label>
+      <label><a href="https://portal.jup.ag/" target="_blank">Jup API key</a> <input data-auto-jupkey placeholder="paste your x-api-key"/></label>
       <label>RPC Headers (JSON) <input data-auto-rpch placeholder='{"Authorization":"Bearer ..."}'/></label>
       <label>Auto Wallet <input data-auto-dep readonly placeholder="Generate to get address"/></label>
       <label>Deposit Balance <input data-auto-bal readonly/></label>
@@ -9520,12 +9564,6 @@ export function initTraderWidget(container = document.body) {
      <label>Leader
         <select data-auto-hold>
           <option value="no">No</option>
-          <option value="yes">Yes</option>
-        </select>
-      </label>
-      <label>Dust
-        <select data-auto-dust>
-          <option value="no" selected>No</option>
           <option value="yes">Yes</option>
         </select>
       </label>
@@ -9739,6 +9777,23 @@ export function initTraderWidget(container = document.body) {
 
   wrap.appendChild(body);
 
+  // Swap modal integration (dynamic import to avoid circular deps).
+  try {
+    const swapBtn = wrap.querySelector('[data-auto-swap]');
+    if (swapBtn && !swapBtn.__fdvBound) {
+      swapBtn.__fdvBound = true;
+      swapBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        const mint = String(wrap.querySelector('[data-auto-swap-mint]')?.value || '').trim();
+        const mod = await import('../swap/index.js');
+        if (typeof mod.initSwapSystem === 'function') mod.initSwapSystem();
+        if (typeof mod.openSwapModal === 'function') {
+          await mod.openSwapModal({ outputMint: mint || undefined });
+        }
+      });
+    }
+  } catch {}
+
   // Strip the old multi-tab wrapper markup if present and keep only the Auto panel content.
   try {
     const autoPanel = body.querySelector('[data-main-tab-panel="auto"]');
@@ -9788,7 +9843,7 @@ export function initTraderWidget(container = document.body) {
   trailEl   = wrap.querySelector("[data-auto-trail]");
   slipEl    = wrap.querySelector("[data-auto-slip]");
   const holdEl  = wrap.querySelector("[data-auto-hold]");
-  const dustEl  = wrap.querySelector("[data-auto-dust]");
+  // const dustEl  = wrap.querySelector("[data-auto-dust]");
   const warmingEl = wrap.querySelector("[data-auto-warming]");
   const stealthEl = wrap.querySelector("[data-auto-stealth]");
   const expandBtn = wrap.querySelector("[data-auto-log-expand]");
@@ -9863,6 +9918,7 @@ export function initTraderWidget(container = document.body) {
 
   const secExportBtn = wrap.querySelector("[data-auto-sec-export]");
   const rpcEl = wrap.querySelector("[data-auto-rpc]");
+  const jupKeyEl = wrap.querySelector("[data-auto-jupkey]");
   const rpchEl = wrap.querySelector("[data-auto-rpch]");
   const copyLogBtn = wrap.querySelector("[data-auto-log-copy]");
   const snapshotBtn = wrap.querySelector("[data-auto-snapshot]");
@@ -9887,8 +9943,99 @@ export function initTraderWidget(container = document.body) {
             // </div>
 
   rpcEl.value   = currentRpcUrl();
+  if (jupKeyEl) jupKeyEl.value = currentJupApiKey();
   try { rpchEl.value = JSON.stringify(currentRpcHeaders() || {}); } catch { rpchEl.value = "{}"; }
   depAddrEl.value = state.autoWalletPub || "";
+
+
+
+  // Centered lock overlay while missing Jup API key
+  let jupLockEl = wrap.querySelector("[data-auto-jup-lock]");
+  if (!jupLockEl) {
+    jupLockEl = document.createElement("div");
+    jupLockEl.setAttribute("data-auto-jup-lock", "true");
+    jupLockEl.style.position = "absolute";
+    jupLockEl.style.inset = "0";
+    jupLockEl.style.display = "none";
+    jupLockEl.style.alignItems = "center";
+    jupLockEl.style.justifyContent = "center";
+    jupLockEl.style.background = "rgba(0,0,0,0.82)";
+    jupLockEl.style.backdropFilter = "blur(2px)";
+    jupLockEl.style.WebkitBackdropFilter = "blur(2px)";
+    jupLockEl.style.zIndex = "100";
+    jupLockEl.innerHTML = `
+      <div style="max-width:520px;padding:18px 16px;border:1px solid var(--fdv-border,#333);border-radius:12px;background:rgba(10,10,10,0.85);text-align:center;">
+        <div style="font-size:16px;font-weight:700;margin-bottom:8px;">This bot requires a Jup API key</div>
+        <div style="font-size:13px;opacity:0.9;line-height:1.4;margin-bottom:12px;">
+          Generate a free key (60 req/min) and paste it below.
+        </div>
+        <div style="display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+          <input data-auto-jup-lock-key placeholder="paste x-api-key" style="width:min(360px,90vw);padding:9px 10px;border-radius:10px;border:1px solid var(--fdv-border,#333);background:rgba(255,255,255,0.06);color:#fff;"/>
+          <button type="button" data-auto-jup-lock-save style="padding:9px 10px;border-radius:10px;border:1px solid #2f81f7;background:rgba(47,129,247,0.10);color:#9ecbff;">Save key</button>
+        </div>
+        <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
+          <a href="https://portal.jup.ag/" target="_blank" rel="noreferrer" style="padding:8px 10px;border-radius:10px;border:1px solid #2f81f7;background:rgba(47,129,247,0.10);color:#9ecbff;text-decoration:none;">Get API key</a>
+          <button type="button" data-auto-jup-lock-refresh style="padding:8px 10px;border-radius:10px;border:1px solid var(--fdv-border,#333);background:rgba(255,255,255,0.06);color:#fff;">I set my key</button>
+        </div>
+      </div>
+    `;
+    try { body.style.position = "relative"; } catch {}
+    body.appendChild(jupLockEl);
+  }
+
+  const __updateJupKeyLockUi = () => {
+    try {
+      const has = !!currentJupApiKey();
+      if (jupLockEl) jupLockEl.style.display = has ? "none" : "flex";
+      try {
+        if (startBtn) startBtn.disabled = !!state.enabled || !has;
+      } catch {}
+    } catch {}
+  };
+  _updateJupKeyLockUi = __updateJupKeyLockUi;
+
+  try {
+    const refreshBtn = jupLockEl.querySelector("[data-auto-jup-lock-refresh]");
+    if (refreshBtn) refreshBtn.addEventListener("click", () => { try { __updateJupKeyLockUi(); } catch {} });
+  } catch {}
+
+  try {
+    const lockKeyEl = jupLockEl.querySelector("[data-auto-jup-lock-key]");
+    const saveBtn = jupLockEl.querySelector("[data-auto-jup-lock-save]");
+    if (lockKeyEl) lockKeyEl.value = "";
+    const apply = () => {
+      try {
+        const v = String(lockKeyEl && lockKeyEl.value || "").trim();
+        if (!v) return;
+        setJupApiKey(v);
+        if (jupKeyEl) jupKeyEl.value = v;
+        save();
+        __updateJupKeyLockUi();
+        try { lockKeyEl.value = ""; } catch {}
+      } catch {}
+    };
+    if (saveBtn) saveBtn.addEventListener("click", apply);
+    if (lockKeyEl) {
+      lockKeyEl.addEventListener("keydown", (e) => {
+        try {
+          if (e.key === "Enter") { e.preventDefault(); apply(); }
+        } catch {}
+      });
+    }
+  } catch {}
+
+  if (jupKeyEl) {
+    const saveKey = () => {
+      try {
+        setJupApiKey(String(jupKeyEl.value || "").trim());
+        save();
+        __updateJupKeyLockUi();
+      } catch {}
+    };
+    jupKeyEl.addEventListener("change", saveKey);
+    jupKeyEl.addEventListener("blur", saveKey);
+  }
+  try { __updateJupKeyLockUi(); } catch {}
 
   // Best-effort: publish any existing auto wallet to the public FDV ledger.
   try {
@@ -10527,11 +10674,11 @@ export function initTraderWidget(container = document.body) {
     save();
     log(`Hold-until-leader: ${state.holdUntilLeaderSwitch ? "ON" : "OFF"}`);
   });
-  dustEl.addEventListener("change", () => {
-    state.dustExitEnabled = (dustEl.value === "yes");
-    save();
-    log(`Dust sells: ${state.dustExitEnabled ? "ON" : "OFF"}`);
-  });
+  // dustEl.addEventListener("change", () => {
+  //   state.dustExitEnabled = (dustEl.value === "yes");
+  //   save();
+  //   log(`Dust sells: ${state.dustExitEnabled ? "ON" : "OFF"}`);
+  // });
   warmingEl.addEventListener("change", () => {
     state.rideWarming = (warmingEl.value === "yes");
     save();
@@ -10807,7 +10954,7 @@ export function initTraderWidget(container = document.body) {
 
   if (toggleEl) toggleEl.value = state.enabled ? "yes" : "no";
   holdEl.value = state.holdUntilLeaderSwitch ? "yes" : "no";
-  dustEl.value = state.dustExitEnabled ? "yes" : "no";
+  // dustEl.value = state.dustExitEnabled ? "yes" : "no";
   warmingEl.value = state.rideWarming ? "yes" : "no";
   startBtn.disabled = !!state.enabled;
   stopBtn.disabled = !state.enabled;

@@ -115,7 +115,7 @@ function _buildHelpInlineCard() {
 	const body = _createEl('div', { style: 'display:block;' });
 	body.innerHTML = `
 		<div style="display:flex; flex-direction:column; gap:12px;">
-			<div style="border:1px solid var(--fdv-border); border-radius:12px; padding:12px; background:color-mix(in srgb, var(--fdv-bg) 70%, transparent);">
+			<div style="border-bottom:1px solid var(--fdv-border);  padding:12px; background:color-mix(in srgb, var(--fdv-bg) 70%, transparent);">
 				<div style="font-weight:700; margin-bottom:6px;">Step 1 - Get a CORS-enabled Solana RPC</div>
 				<div style="color:var(--fdv-muted); font-size:13px; line-height:1.45;">
 					The bot needs a Solana RPC endpoint that allows browser requests (CORS). We recommend QuickNode:
@@ -130,8 +130,20 @@ function _buildHelpInlineCard() {
 				</div>
 			</div>
 
-			<div style="border:1px solid var(--fdv-border); border-radius:12px; padding:12px; background:color-mix(in srgb, var(--fdv-bg) 70%, transparent);">
-				<div style="font-weight:700; margin-bottom:6px;">Step 2 - Generate the Auto Wallet</div>
+			<div style="border-bottom:1px solid var(--fdv-border);  padding:12px; background:color-mix(in srgb, var(--fdv-bg) 70%, transparent);">
+				<div style="font-weight:700; margin-bottom:6px;">Step 2 - Add your Jup API key (x-api-key)</div>
+				<div style="color:var(--fdv-muted); font-size:13px; line-height:1.45;">
+					Swaps and quotes are powered by Jupiter. Get an API key from
+					<a href="https://portal.jup.ag/" target="_blank" rel="noopener">portal.jup.ag</a>
+					and paste it into <b>Jup API key</b> in the Auto panel.
+				</div>
+				<div style="color:var(--fdv-muted); font-size:12px; line-height:1.35; margin-top:6px;">
+					This is sent as the <span class="fdv-mono">x-api-key</span> header. Treat it like a password.
+				</div>
+			</div>
+
+			<div style="border-bottom:1px solid var(--fdv-border);  padding:12px; background:color-mix(in srgb, var(--fdv-bg) 70%, transparent);">
+				<div style="font-weight:700; margin-bottom:6px;">Step 3 - Generate the Auto Wallet</div>
 				<div style="color:var(--fdv-muted); font-size:13px; line-height:1.45;">
 					Click <b>Generate</b> to create a dedicated trading wallet. Then send a small amount of SOL to the displayed address.
 				</div>
@@ -140,17 +152,17 @@ function _buildHelpInlineCard() {
 				</div>
 			</div>
 
-			<div style="border:1px solid var(--fdv-border); border-radius:12px; padding:12px; background:color-mix(in srgb, var(--fdv-bg) 70%, transparent);">
-				<div style="font-weight:700; margin-bottom:6px;">Step 3 - Start safely</div>
+			<div style="border-bottom:1px solid var(--fdv-border);  padding:12px; background:color-mix(in srgb, var(--fdv-bg) 70%, transparent);">
+				<div style="font-weight:700; margin-bottom:6px;">Step 4 - Start safely</div>
 				<div style="color:var(--fdv-muted); font-size:13px; line-height:1.45;">
 					Set conservative values (Buy %, Min/Max Buy, TP/SL), then click <b>Start</b>. You can click <b>Stop</b> anytime.
 					To send funds back to your Recipient, use <b>Return</b>.
 				</div>
 			</div>
 
-			<details style="border:1px solid var(--fdv-border); border-radius:12px; padding:12px; background:color-mix(in srgb, var(--fdv-bg) 70%, transparent);">
+			<details style="border-bottom:1px solid var(--fdv-border);  padding:12px; background:color-mix(in srgb, var(--fdv-bg) 70%, transparent);">
 				<summary style="cursor:pointer; user-select:none; display:flex; align-items:center; gap:8px; font-weight:700;">
-					Step 4 (optional) - Agent Gary (AI mode)
+					Step 5 (optional) - Agent Gary (AI mode)
 					<span style="font-size:12px; font-weight:600; color:var(--fdv-muted);">(recommended once comfortable)</span>
 				</summary>
 				<div style="margin-top:10px; color:var(--fdv-muted); font-size:13px; line-height:1.45;">
@@ -178,8 +190,8 @@ function _buildHelpInlineCard() {
 				</div>
 			</details>
 
-			<div style="border:1px solid var(--fdv-border); border-radius:12px; padding:12px; background:color-mix(in srgb, var(--fdv-bg) 70%, transparent);">
-				<div style="font-weight:700; margin-bottom:6px;">Step 5 (optional) - Import Auto Wallet into Phantom</div>
+			<div style="border-bottom:1px solid var(--fdv-border);  padding:12px; background:color-mix(in srgb, var(--fdv-bg) 70%, transparent);">
+				<div style="font-weight:700; margin-bottom:6px;">Step 6 (optional) - Import Auto Wallet into Phantom</div>
 				<div style="color:var(--fdv-muted); font-size:13px; line-height:1.45;">
 					You can export your Auto Wallet secret/key and import it into Phantom. Keep the Phantom extension open beside the bot while operating.
 					This gives full control over funds and transfers.
