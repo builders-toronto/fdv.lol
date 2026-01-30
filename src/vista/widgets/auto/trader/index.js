@@ -89,6 +89,8 @@ import { createAgentGarySentry } from "../../../../agents/sentry.js";
 
 import { createRoundtripEdgeEstimator } from "../lib/honeypot.js";
 
+import { computeEdgeCaseCostLamports, lamportsToSol } from "../lib/edgeCase.js";
+
 import { createDustCacheStore } from "../lib/stores/dustCacheStore.js";
 import { createPosCacheStore } from "../lib/stores/posCacheStore.js";
 import { createBuySeedStore } from "../lib/stores/buySeedStore.js";
@@ -7921,6 +7923,65 @@ async function tick() {
         }
       } catch {}
 
+      let edgeSizingHint = null;
+      try {
+        const edge = computeEdgeCaseCostLamports({
+          ataRentLamports: reqRent,
+          txFeeEstimateLamports: EDGE_TX_FEE_ESTIMATE_LAMPORTS,
+          txFeeBufferLamports: TX_FEE_BUFFER_LAMPORTS,
+          includeBuffer: true,
+        });
+
+        const edgeSol = lamportsToSol(edge.totalLamports);
+        const buySol0 = buyLamports / 1e9;
+
+        const costCapPct = Math.max(0.1, Number(state.maxEntryCostPct ?? 1.5));
+        const tpTargetPct = Math.max(0, Number(state.takeProfitPct ?? 0));
+        const bufPct = Math.max(0, Number(state.edgeSafetyBufferPct ?? 0));
+        const tpHeadroomPct = tpTargetPct - bufPct;
+
+        const requiredByCostSol = (edgeSol > 0 && costCapPct > 0) ? (edgeSol / (costCapPct / 100)) : 0;
+        const requiredByTpSol = (edgeSol > 0 && tpHeadroomPct > 0.25) ? (edgeSol / (tpHeadroomPct / 100)) : 0;
+        const requiredSol = Math.max(requiredByCostSol, requiredByTpSol);
+
+        try {
+          const wantLamportsForMin = Math.floor(Math.max(0, requiredSol) * 1e9);
+          const maxLamportsForMin = Math.floor(Math.max(0, Number(state.maxBuySol || 0)) * 1e9);
+          const cappedLamportsForMin = Math.min(candidateBudgetLamports, maxLamportsForMin, wantLamportsForMin);
+          edgeSizingHint = {
+            fixedEdgeLamports: Math.max(0, Number(edge.totalLamports || 0)),
+            fixedEdgeSolUi: Number.isFinite(edgeSol) ? edgeSol : null,
+            suggestedMinBuySolUi: Number.isFinite(requiredSol) ? requiredSol : null,
+            suggestedMinBuySolUiCapped: cappedLamportsForMin > 0 ? (cappedLamportsForMin / 1e9) : null,
+            suggestedMinBuyLamportsCapped: cappedLamportsForMin > 0 ? cappedLamportsForMin : null,
+            targets: {
+              tpTargetPct: Number.isFinite(tpTargetPct) ? tpTargetPct : null,
+              edgeSafetyBufferPct: Number.isFinite(bufPct) ? bufPct : null,
+              maxEntryCostPct: Number.isFinite(costCapPct) ? costCapPct : null,
+            },
+          };
+        } catch {}
+
+        if (Number.isFinite(requiredSol) && requiredSol > buySol0 + 1e-6) {
+          const wantLamports = Math.floor(requiredSol * 1e9);
+          const maxLamports = Math.floor(Math.max(0, Number(state.maxBuySol || 0)) * 1e9);
+          const nextLamports = Math.min(candidateBudgetLamports, maxLamports, wantLamports);
+
+          if (nextLamports > buyLamports && nextLamports >= minPerOrderLamports) {
+            const prevSol = buyLamports / 1e9;
+            const nextSol = nextLamports / 1e9;
+            const pctPrev = buySol0 > 0 ? (edgeSol / buySol0) * 100 : 0;
+            const pctNext = nextSol > 0 ? (edgeSol / nextSol) * 100 : 0;
+            buyLamports = nextLamports;
+            log(
+              `Edge-size bump ${mint.slice(0,4)}… ${prevSol.toFixed(6)}→${nextSol.toFixed(6)} SOL ` +
+              `(fixed≈${edgeSol.toFixed(6)} SOL: ${pctPrev.toFixed(2)}%→${pctNext.toFixed(2)}%; ` +
+              `tpTarget=${tpTargetPct.toFixed(2)}% buf=${bufPct.toFixed(2)}% cap=${costCapPct.toFixed(2)}%)`
+            );
+          }
+        }
+      } catch {}
+
       // True-ish net accounting: include one-time ATA rent (wSOL + out ATA if needed)
       // and a conservative buy-side tx fee estimate into cost basis.
       let buySol = buyLamports / 1e9;
@@ -8316,6 +8377,7 @@ async function tick() {
                   agentRisk: _riskLevel,
                   fullAiControl: !!fullAiControl,
                   gates: agentGates,
+                  sizing: edgeSizingHint,
                   targets: {
                     sessionPnlSol: getSessionPnlSol(),
                     minNetEdgePct: Number(state.minNetEdgePct),
@@ -8415,11 +8477,27 @@ async function tick() {
                 const wantLamports = Math.floor(Math.max(0, Number(d.buy.solUi)) * 1e9);
                 const capLamports = Math.floor(Math.max(0, buySol) * 1e9);
                 const nextLamports = Math.min(capLamports, wantLamports);
-                if (nextLamports >= Math.max(minPerOrderLamports, Math.floor(MIN_JUP_SOL_IN * 1e9))) {
+                const suggestedMin = (() => {
+                  try {
+                    const s = edgeSizingHint && typeof edgeSizingHint === "object" ? edgeSizingHint.suggestedMinBuyLamportsCapped : null;
+                    const n = Number(s);
+                    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+                  } catch {
+                    return 0;
+                  }
+                })();
+                const minAllowedLamports = Math.max(minPerOrderLamports, Math.floor(MIN_JUP_SOL_IN * 1e9), suggestedMin);
+                if (nextLamports >= minAllowedLamports) {
                   if (nextLamports !== buyLamports) tuneBits.push(`sol ${(buyLamports/1e9).toFixed(4)}→${(nextLamports/1e9).toFixed(4)}`);
                   buyLamports = nextLamports;
                   buySol = buyLamports / 1e9;
                   buyCostSol = buySol + (Math.max(0, reqRent) + Math.max(0, EDGE_TX_FEE_ESTIMATE_LAMPORTS)) / 1e9;
+                } else {
+                  try {
+                    if (suggestedMin > 0 && nextLamports < suggestedMin) {
+                      tuneBits.push(`sol floor ${(suggestedMin/1e9).toFixed(4)} (ignore ${Number(d.buy.solUi).toFixed(4)})`);
+                    }
+                  } catch {}
                 }
               }
               try {
