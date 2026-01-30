@@ -5,6 +5,7 @@ export function createAgentDecisionPolicy({
   getState,
   getAgent,
 } = {}) {
+  const _longHoldUntilByMint = new Map();
   let _evolveOutcomes;
   const _getEvolveOutcomes = () => {
     try {
@@ -27,6 +28,20 @@ export function createAgentDecisionPolicy({
     try {
       const agent = _getAgent();
       if (!agent || typeof agent.decideSell !== "function") return;
+
+      const mintStr = String(ctx?.mint || "").trim();
+      const nowTs = Number(ctx?.nowTs || 0) || Date.now();
+      // During an active long-hold window, keep running normal PnL/target monitoring,
+      // but skip additional LLM calls until the window expires.
+      try {
+        if (mintStr) {
+          const until = Number(_longHoldUntilByMint.get(mintStr) || 0);
+          if (Number.isFinite(until) && until > 0 && nowTs < until) {
+            ctx.agentLongHoldUntilTs = until;
+            return;
+          }
+        }
+      } catch {}
 
       const state = _getState();
 
@@ -114,7 +129,7 @@ export function createAgentDecisionPolicy({
 
       const payloadCtx = {
         agentRisk: _riskLevel,
-        nowTs: Number(ctx?.nowTs || 0),
+        nowTs,
         ownerStr: String(ctx?.ownerStr || ""),
 
 		// Extra market/safety signals provided by Trader when available
@@ -162,6 +177,24 @@ export function createAgentDecisionPolicy({
       const d = res.decision;
 
       const action = String(d.action || "").trim().toLowerCase();
+
+      // Timed long-hold: let the bot continue monitoring PnL/targets normally,
+      // and re-check with Gary after holdSeconds.
+      if (action === "long_hold") {
+        try {
+          const hsRaw = Number(d.holdSeconds ?? d.holdSecs ?? d?.hold?.seconds ?? d?.hold?.secs);
+          const holdSeconds = Math.max(5, Math.min(120, Number.isFinite(hsRaw) ? Math.floor(hsRaw) : 30));
+          const until = nowTs + holdSeconds * 1000;
+          if (mintStr) _longHoldUntilByMint.set(mintStr, until);
+          ctx.agentLongHoldUntilTs = until;
+          ctx.agentLongHoldSeconds = holdSeconds;
+          try {
+            const mint = String(mintStr || "").slice(0, 8);
+            _log(`long_hold scheduled mint=${mint} secs=${holdSeconds} reason=${String(d.reason || "")}`);
+          } catch {}
+        } catch {}
+        return;
+      }
 
       if (!fullAiControl) {
         try {
