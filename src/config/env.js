@@ -41,6 +41,57 @@ export const toNum = (v, fallback = 0) => {
   return Number.isFinite(num) ? num : fallback;
 };
 
+const toBool = (v, fallback = false) => {
+  try {
+    if (v == null) return fallback;
+    const s = String(v).trim().toLowerCase();
+    if (!s) return fallback;
+    if (s === '1' || s === 'true' || s === 'yes' || s === 'on') return true;
+    if (s === '0' || s === 'false' || s === 'no' || s === 'off') return false;
+    return fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+// Training/capture mode: stores redacted agent I/O for building fine-tune datasets.
+// Enable via URL query (e.g. ?train_capture=1) or env (e.g. VITE_TRAIN_CAPTURE=1).
+const _TRAIN_CAPTURE_ENABLED = getEnv([
+  'VITE_TRAIN_CAPTURE',
+  'TRAIN_CAPTURE',
+  'FDV_TRAIN_CAPTURE',
+  'train_capture',
+], '');
+
+const _TRAIN_CAPTURE_KEY = getEnv([
+  'VITE_TRAIN_CAPTURE_KEY',
+  'TRAIN_CAPTURE_KEY',
+  'FDV_TRAIN_CAPTURE_KEY',
+  'train_capture_key',
+], 'fdv_gary_training_captures_v1');
+
+const _TRAIN_CAPTURE_MAX = getEnv([
+  'VITE_TRAIN_CAPTURE_MAX',
+  'TRAIN_CAPTURE_MAX',
+  'FDV_TRAIN_CAPTURE_MAX',
+  'train_capture_max',
+], 750);
+
+const _TRAIN_CAPTURE_INCLUDE_BAD = getEnv([
+  'VITE_TRAIN_CAPTURE_INCLUDE_BAD',
+  'TRAIN_CAPTURE_INCLUDE_BAD',
+  'FDV_TRAIN_CAPTURE_INCLUDE_BAD',
+  'train_capture_include_bad',
+], '0');
+
+export const TRAINING_CAPTURE = {
+  enabled: toBool(_TRAIN_CAPTURE_ENABLED, false),
+  storageKey: String(_TRAIN_CAPTURE_KEY || 'fdv_gary_training_captures_v1'),
+  // localStorage is small; keep this bounded.
+  maxEntries: Math.max(25, Math.min(5000, Math.floor(toNum(_TRAIN_CAPTURE_MAX, 750)))),
+  includeBad: toBool(_TRAIN_CAPTURE_INCLUDE_BAD, false),
+};
+
 export const CACHE_TTL_MS = 90_000;
 export const CACHE_KEY = 'sol-meme-ultralite-cache-v1';
 export const MAX_CARDS = 21;
@@ -91,6 +142,23 @@ const _FDV_PLATFORM_FEE_BPS_RAW = getEnv(
 );
 
 export const FDV_PLATFORM_FEE_BPS = Math.max(0, Math.min(10_000, Math.floor(toNum(_FDV_PLATFORM_FEE_BPS_RAW, 25))));
+
+
+// Jupiter API
+// lite-api.jup.ag will be deprecated on 31 Jan 2026; api.jup.ag requires an API key.
+export const JUP_API_BASE = String(getEnv([
+  "VITE_JUP_API_BASE",
+  "JUP_API_BASE",
+  "FDV_JUP_API_BASE",
+  "jup_api_base",
+], "https://api.jup.ag")).replace(/\/+$/, "");
+
+export const JUP_API_KEY = String(getEnv([
+  "VITE_JUP_API_KEY",
+  "JUP_API_KEY",
+  "FDV_JUP_API_KEY",
+  "jup_api_key",
+], "")).trim();
 
 
 export const JUP_SWAP   = (mint)=>`https://jup.ag/tokens/${encodeURIComponent(mint)}`;

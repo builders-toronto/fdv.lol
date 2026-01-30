@@ -89,7 +89,8 @@ export const DYN_HS = Object.freeze({
 // Lightweight shared config for Auto's dex/Jupiter logic.
 // Kept here so auto widgets can import it directly without cross-widget imports.
 export const AUTO_CFG = Object.freeze({
-  jupiterBase: "https://lite-api.jup.ag",
+  jupiterBase: "https://api.jup.ag",
+  jupiterApiKey: "",
   tokenDecimals: Object.freeze({}),
 });
 

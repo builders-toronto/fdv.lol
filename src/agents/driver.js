@@ -1,4 +1,6 @@
 import { createChatClientFromConfig, normalizeLlmConfig } from "./frameworks/index.js";
+import { TRAINING_CAPTURE } from "../config/env.js";
+import { appendTrainingCapture, clearTrainingCaptures, downloadTrainingCapturesJsonl, getTrainingCaptures, isTrainingCaptureEnabled } from "./training.js";
 
 function now() {
 	return Date.now();
@@ -294,6 +296,22 @@ export function createAutoTraderAgentDriver({
 	const cache = new Map();
 	const CACHE_TTL_MS = 2500;
 
+	// Debug helpers (browser): export/clear captures.
+	try {
+		const g = (typeof window !== "undefined") ? window : globalThis;
+		if (g && !g.__fdvTraining) {
+			g.__fdvTraining = {
+				enabled: () => isTrainingCaptureEnabled(),
+				get: () => getTrainingCaptures(),
+				clear: () => clearTrainingCaptures(),
+				downloadJsonl: () => downloadTrainingCapturesJsonl({ filenamePrefix: "fdv-gary-captures" }),
+				cfg: () => {
+					try { return TRAINING_CAPTURE || {}; } catch { return {}; }
+				},
+			};
+		}
+	} catch {}
+
 	function _enabled() {
 		try {
 			const cfg = _getConfig() || {};
@@ -405,6 +423,21 @@ export function createAutoTraderAgentDriver({
 		} catch (e) {
 			try { _log(`request failed: ${String(e?.message || e || "")}` , "warn"); } catch {}
 			const res = { ok: false, err: String(e?.message || e || "") };
+			try {
+				if (TRAINING_CAPTURE?.enabled) {
+					appendTrainingCapture({
+						mode: "inference",
+						source: "fdv_auto_trader",
+						kind: String(kind || ""),
+						ok: false,
+						err: String(res.err || ""),
+						userMsg,
+						system: String(systemPrompt || "").slice(0, 8000),
+						text: "",
+						meta: _redactDeep(meta),
+					}, { storageKey: TRAINING_CAPTURE.storageKey, maxEntries: TRAINING_CAPTURE.maxEntries }).catch(() => {});
+				}
+			} catch {}
 			cache.set(key, { at: now(), res });
 			return res;
 		}
@@ -436,6 +469,25 @@ export function createAutoTraderAgentDriver({
 		const res = validated
 			? { ok: true, decision: validated }
 			: { ok: false, err: "invalid_json" };
+
+		try {
+			const shouldCapture = !!TRAINING_CAPTURE?.enabled && (res.ok || !!TRAINING_CAPTURE?.includeBad);
+			if (shouldCapture) {
+				appendTrainingCapture({
+					mode: "inference",
+					source: "fdv_auto_trader",
+					kind: String(kind || ""),
+					ok: !!res.ok,
+					err: res.ok ? "" : String(res.err || ""),
+					userMsg,
+					system: String(systemPrompt || "").slice(0, 8000),
+					text: String(text || "").slice(0, 20000),
+					parsed: _redactDeep(parsed),
+					decision: _redactDeep(validated),
+					meta: _redactDeep(meta),
+				}, { storageKey: TRAINING_CAPTURE.storageKey, maxEntries: TRAINING_CAPTURE.maxEntries }).catch(() => {});
+			}
+		} catch {}
 		try {
 			if (res.ok) {
 				const d = res.decision || {};

@@ -6,7 +6,7 @@ export function createDex(deps = {}) {
 	const {
 		// Constants
 		SOL_MINT,
-		MIN_QUOTE_RAW_AMOUNT,
+		MIN_QUOTE_RAW_AMOUNT, //?
 		MIN_SELL_CHUNK_SOL,
 		MAX_CONSEC_SWAP_400,
 		ROUTER_COOLDOWN_MS,
@@ -880,7 +880,16 @@ export function createDex(deps = {}) {
 
 	async function getJupBase() {
 		const cfg = (typeof getCfg === "function") ? await getCfg() : (typeof getCfg === "object" ? getCfg : {});
-		return String(cfg?.jupiterBase || "https://lite-api.jup.ag").replace(/\/+$/, "");
+		return String(cfg?.jupiterBase || "https://api.jup.ag").replace(/\/+$/, "");
+	}
+
+	async function getJupApiKey() {
+		try {
+			const cfg = (typeof getCfg === "function") ? await getCfg() : (typeof getCfg === "object" ? getCfg : {});
+			return String(cfg?.jupiterApiKey || cfg?.jupApiKey || "").trim();
+		} catch {
+			return "";
+		}
 	}
 
 	async function getMintDecimals(mintStr) {
@@ -908,9 +917,22 @@ export function createDex(deps = {}) {
 
 	async function jupFetch(path, opts) {
 		const base = await getJupBase();
+		const apiKey = await getJupApiKey();
 		const url = `${base}${path}`;
 		const isGet = !opts || String(opts.method || "GET").toUpperCase() === "GET";
 		const isQuote = isGet && /\/quote(\?|$)/.test(path);
+
+		// Jupiter now requires an API key on api.jup.ag. Return a synthetic response so callers
+		// can handle it like a normal HTTP failure without throwing.
+		try {
+			const isApi = /(^|\/\/)api\.jup\.ag\b/i.test(String(base || ""));
+			if (isApi && !apiKey) {
+				return new Response(
+					JSON.stringify({ error: "API_KEY_REQUIRED", msg: "This bot requires a Jup API key (x-api-key)." }),
+					{ status: 401, headers: { "content-type": "application/json" } },
+				);
+			}
+		} catch {}
 
 		const nowTs = Date.now();
 		let minGapMs = isQuote ? 1200 : 200;
@@ -969,12 +991,34 @@ export function createDex(deps = {}) {
 							try { controller.abort(); } catch {}
 						}, timeoutMs);
 					}
+					let optHeaders = {};
+					try {
+						if (typeof Headers !== "undefined" && opts?.headers instanceof Headers) {
+							optHeaders = Object.fromEntries(opts.headers.entries());
+						} else {
+							optHeaders = opts?.headers ? { ...(opts.headers) } : {};
+						}
+					} catch {
+						optHeaders = {};
+					}
+					const headers = { accept: "application/json", ...optHeaders };
+					if (apiKey) headers["x-api-key"] = apiKey;
 					const res = await fetch(url, {
-						headers: { accept: "application/json", ...(opts?.headers || {}) },
+						...(opts || {}),
+						headers,
 						signal: controller?.signal,
-						...opts,
 					});
 					lastRes = res;
+					if (res && res.status === 401) {
+						try {
+							_throttledLog?.(
+								`jup:401:${method}:${path}`,
+								`JUP 401 Unauthorized (${method} ${path}) apiKeyPresent=${!!apiKey} headerSent=${!!headers["x-api-key"]}`,
+								15_000,
+								"warn",
+							);
+						} catch {}
+					}
 					if (res.ok && isQuote) {
 						try {
 							const json = await res.clone().json();
@@ -1390,7 +1434,7 @@ export function createDex(deps = {}) {
 				dynamicComputeUnitLimit: true,
 				useSharedAccounts: !!sharedAllowed,
 				asLegacyTransaction: !!asLegacy,
-				...(feeAccount && appliedFeeBps > 0 ? { feeAccount, platformFeeBps: appliedFeeBps } : {}),
+				...(feeAccount && appliedFeeBps > 0 ? { feeAccount } : {}),
 			};
 
 			try {
