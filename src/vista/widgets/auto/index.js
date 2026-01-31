@@ -127,7 +127,7 @@ export function initAutoWidget(container = document.body) {
 
     <div class="fdv-bot-footer" style="display:flex;justify-content:space-between;margin-top:12px; font-size:12px; text-align:right; opacity:0.6;">
       <a href="https://t.me/fdvlolgroup" target="_blank" data-auto-help-tg>t.me/fdvlolgroup</a>
-      <span>Version: 0.0.7.2</span>
+      <span>Version: 0.0.7.3</span>
     </div>
   `;
 

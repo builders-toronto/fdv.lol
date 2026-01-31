@@ -6,7 +6,7 @@ import { FDV_PLATFORM_FEE_BPS, FDV_LEDGER_URL } from "../../../../config/env.js"
 import { registerFdvWallet, reportFdvStats } from "../lib/telemetry/ledger.js";
 
 import { computePumpingLeaders, getRugSignalForMint, getPumpHistoryForMint, focusMint } from "../../../meme/metrics/kpi/pumping.js";
-import { getLatestSnapshot } from "../../../meme/metrics/ingest.js";
+import { getLatestSnapshot, getKpiMintBundle } from "../../../meme/metrics/ingest.js";
 import { buildKpiScoreContext, scoreKpiItem, selectTradeCandidatesFromKpis } from "../lib/kpi/kpiSelection.js";
 import { getMint as kpiGetMint, getLiqUsd as kpiGetLiqUsd, getVol24 as kpiGetVol24 } from "../lib/kpi/kpiExtract.js";
 
@@ -105,10 +105,83 @@ function now() {
     const fn = o && typeof o === "object" ? o.now : null;
     if (typeof fn === "function") return fn();
   } catch {}
-  try {
-    if (performance && performance.now) return performance.now();
-  } catch {}
   return Date.now();
+}
+
+const _mintOnchainHoneypotCache = new Map();
+
+function _readU32LE(u8, offset) {
+  try {
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    return dv.getUint32(offset, true);
+  } catch {
+    return 0;
+  }
+}
+
+async function _assessMintOnchainSellRisk(mintStr, { cacheMs = 10 * 60 * 1000 } = {}) {
+  const mint = String(mintStr || "").trim();
+  if (!mint) return { ok: false, why: "missing_mint" };
+
+  const t = now();
+  const cached = _mintOnchainHoneypotCache.get(mint);
+  if (cached && (t - Number(cached.at || 0)) < cacheMs) return cached.res;
+
+  try {
+    const { PublicKey } = await loadWeb3();
+    const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = await loadSplToken();
+    const conn = await getConn();
+
+    const mintPk = new PublicKey(mint);
+    const ai = await conn.getAccountInfo(mintPk, "processed").catch(e => { _markRpcStress(e, 1500); return null; });
+    if (!ai || !ai.data) {
+      const res = { ok: false, why: "mint_account_missing" };
+      _mintOnchainHoneypotCache.set(mint, { at: t, res });
+      return res;
+    }
+
+    const ownerStr = (() => { try { return ai.owner?.toBase58?.() || String(ai.owner || ""); } catch { return ""; } })();
+    const tokenPid = TOKEN_PROGRAM_ID ? TOKEN_PROGRAM_ID.toBase58() : "";
+    const token2022Pid = TOKEN_2022_PROGRAM_ID ? TOKEN_2022_PROGRAM_ID.toBase58() : "";
+    const program = ownerStr === token2022Pid ? "token-2022" : (ownerStr === tokenPid ? "token" : (ownerStr ? "unknown" : "unknown"));
+
+    const u8 = (ai.data instanceof Uint8Array) ? ai.data : new Uint8Array(ai.data);
+    // Base mint layout is 82 bytes for both Token and Token-2022 (extensions come after).
+    if (u8.length < 82) {
+      const res = { ok: false, why: "mint_data_too_small", program, owner: ownerStr, dataLen: u8.length };
+      _mintOnchainHoneypotCache.set(mint, { at: t, res });
+      return res;
+    }
+
+    const mintAuthOpt = _readU32LE(u8, 0);
+    const freezeAuthOpt = _readU32LE(u8, 46);
+    const mintAuthority = (mintAuthOpt !== 0)
+      ? new PublicKey(u8.slice(4, 36)).toBase58()
+      : null;
+    const freezeAuthority = (freezeAuthOpt !== 0)
+      ? new PublicKey(u8.slice(50, 82)).toBase58()
+      : null;
+
+    const res = {
+      ok: true,
+      program,
+      owner: ownerStr,
+      mintAuthority,
+      freezeAuthority,
+      flags: {
+        token2022: program === "token-2022",
+        hasMintAuthority: !!mintAuthority,
+        hasFreezeAuthority: !!freezeAuthority,
+      },
+    };
+
+    _mintOnchainHoneypotCache.set(mint, { at: t, res });
+    return res;
+  } catch (e) {
+    const res = { ok: false, why: "mint_check_failed", err: String(e?.message || e) };
+    _mintOnchainHoneypotCache.set(mint, { at: t, res });
+    return res;
+  }
 }
 
 let log = (msg, type) => {
@@ -216,6 +289,18 @@ try {
       const res = await getGarySentry().assessMint({ mint: m, stage, signals });
       if (res?.ok && res.decision) _applySentryAction(m, res.decision, { stage });
       return res;
+    };
+  }
+
+  if (g && !g.__fdvDebug_mintRpcFlags) {
+    // Debug helper: inspect what the RPC-based mint check sees (token vs token-2022, authorities)
+    // Usage: await window.__fdvDebug_mintRpcFlags('<mint>', { cacheMs: 0 })
+    g.__fdvDebug_mintRpcFlags = async (mint, opts = {}) => {
+      const m = String(mint || "").trim();
+      if (!m) throw new Error("mint required");
+      const cacheMs = Number(opts?.cacheMs ?? 0) || 0;
+      const res = await _assessMintOnchainSellRisk(m, { cacheMs });
+      return { mint: m, ...res };
     };
   }
 } catch {}
@@ -1957,6 +2042,21 @@ function traceOnce(key, msg, everyMs = 8000, type = "info") {
   }
 }
 
+function _kpiLabelMintOnce(mint, label, { ttlMs = 30 * 60 * 1000, cls = "warn" } = {}, everyMs = 12_000) {
+  try {
+    const m = String(mint || "").trim();
+    if (!m) return false;
+    const key = `kpiLabel:${m}:${String(label?.text || label || "").slice(0, 48)}`;
+    if (!traceOnce(key, `[KPI] label ${m.slice(0,4)}… -> ${String(label?.text || label || "").slice(0, 64)}`, everyMs, "info")) return false;
+    const fn = (typeof window !== "undefined") ? window.fdvKpiLabelMint : null;
+    if (typeof fn !== "function") return false;
+    fn(m, label, { ttlMs, cls });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 let _starting = false;
 
 let _agentConfigScanDone = false;
@@ -2510,6 +2610,46 @@ function normalizeState(raw = {}) {
   if (!out.positions || typeof out.positions !== "object") out.positions = {};
   if (!out.rpcHeaders || typeof out.rpcHeaders !== "object") out.rpcHeaders = {};
 
+  // Timebase migration:
+  // Older builds used `performance.now()` for timestamps and persisted them.
+  // After reload, those values are not comparable to epoch time, producing
+  // negative/huge ages that can incorrectly keep `awaitingSizeSync` positions
+  // around and block buys.
+  try {
+    const epochNow = Date.now();
+    const isPerfLikeTs = (x) => Number.isFinite(x) && x > 0 && x < 100_000_000_000; // < ~1973-03-03
+
+    const endAt = Number(out.endAt || 0);
+    if (isPerfLikeTs(endAt)) out.endAt = 0;
+
+    const lastTradeTs = Number(out.lastTradeTs || 0);
+    if (isPerfLikeTs(lastTradeTs)) out.lastTradeTs = 0;
+
+    for (const [mint, posRaw] of Object.entries(out.positions || {})) {
+      if (!mint || !posRaw || typeof posRaw !== "object") continue;
+      const pos = { ...posRaw };
+
+      const tsKeys = [
+        "acquiredAt",
+        "lastBuyAt",
+        "lastSellAt",
+        "lastSeenAt",
+        "hwmAt",
+        "fastPeakAt",
+        "fastBacksideAt",
+        "pendingExpiredAt",
+        "lightTopUpArmedAt",
+        "lastSplitSellAt",
+      ];
+      for (const k of tsKeys) {
+        const v = Number(pos[k] || 0);
+        if (isPerfLikeTs(v)) pos[k] = epochNow;
+      }
+
+      out.positions[mint] = pos;
+    }
+  } catch {}
+
 
 
   // Keep API key a string; also allow separate storage key for convenience.
@@ -2539,6 +2679,14 @@ function setJupApiKey(key) {
 
 function _pcKey(owner, mint) { return `${owner}:${mint}`; }
 
+function _pendingMaxAgeMs() {
+  try {
+    const v = Number(state.pendingMaxAgeMs);
+    if (Number.isFinite(v)) return Math.max(20_000, Math.min(30 * 60_000, v));
+  } catch {}
+  return 180_000; // 3 minutes
+}
+
 // Pending-credit queue (buy reconciliation)
 // Tracks pending token credits after a buy when the on-chain ATA balance hasn't reflected yet.
 // Provides lightweight reconciliation via ATA balance checks and optional tx meta parsing.
@@ -2560,9 +2708,22 @@ function pendingCreditsSize() {
 
 function hasPendingCredit(owner, mint) {
   try {
-    const v = _getPendingStore().get(_pcKey(String(owner||""), String(mint||"")));
+    const key = _pcKey(String(owner||""), String(mint||""));
+    const store = _getPendingStore();
+    const v = store.get(key);
     if (!v) return false;
-    if (Array.isArray(v)) return v.length > 0;
+    const list = Array.isArray(v) ? v.slice() : [v];
+    const t = now();
+    const maxAgeMs = _pendingMaxAgeMs();
+    const keep = list.filter(r => {
+      const at = Number(r?.enqueuedAt || 0);
+      return at > 0 && (t - at) <= maxAgeMs;
+    });
+    if (!keep.length) {
+      store.delete(key);
+      return false;
+    }
+    if (keep.length !== list.length) store.set(key, keep);
     return true;
   } catch { return false; }
 }
@@ -2644,6 +2805,7 @@ async function processPendingCredits() {
   try {
     const store = _getPendingStore();
     if (store.size === 0) return 0;
+    const maxAgeMs = _pendingMaxAgeMs();
     let reconciled = 0;
     for (const [key, v] of Array.from(store.entries())) {
       const list = Array.isArray(v) ? v.slice() : (v ? [v] : []);
@@ -2653,6 +2815,21 @@ async function processPendingCredits() {
       for (const rec of list) {
         try {
           const owner = rec.owner, mint = rec.mint;
+          const ageMs = now() - Number(rec.enqueuedAt || 0);
+          if (!Number.isFinite(ageMs) || ageMs > maxAgeMs) {
+            try {
+              const pos = state.positions?.[mint];
+              if (pos && pos.awaitingSizeSync && Number(pos.sizeUi || 0) <= 0) {
+                pos.awaitingSizeSync = false;
+                pos.allowRebuy = true;
+                pos.pendingExpiredAt = now();
+                state.positions[mint] = pos;
+                save();
+              }
+            } catch {}
+            log(`Pending-credit expired for ${String(mint||"").slice(0,4)}…; clearing.`);
+            continue;
+          }
           const hintDec = Number.isFinite(rec.decimalsHint) ? rec.decimalsHint : undefined;
           let b = await getAtaBalanceUi(owner, mint, hintDec, "confirmed").catch(()=>({ sizeUi:0, decimals: hintDec }));
           let size = Number(b.sizeUi || 0);
@@ -4325,6 +4502,7 @@ function countConsecUp(series = [], key) {
 }
 
 function setMintBlacklist(mint, ms = MINT_RUG_BLACKLIST_MS) {
+  try { _loadMintBlacklistOnce(); } catch {}
   if (!mint) return;
   if (!window._fdvMintBlacklist) window._fdvMintBlacklist = new Map();
 
@@ -4343,13 +4521,18 @@ function setMintBlacklist(mint, ms = MINT_RUG_BLACKLIST_MS) {
   const capMs = Number.isFinite(ms) ? Math.max(60_000, ms | 0) : Infinity;
   const dur = Math.min(stageMs, capMs);
 
-  // If already blacklisted and we're within the window without a bump, quietly extend once
+  // If already blacklist
   if (prev && !canBump) {
+
     const newUntil = Math.max(Number(prev.until || 0), nowTs + dur);
-    // Only mutate if the extension actually increases remaining time by a meaningful margin
+
+
     const meaningfullyExtended = (newUntil - Number(prev.until || 0)) > 15_000;
+
     window._fdvMintBlacklist.set(mint, { ...prev, until: newUntil, lastAt: nowTs });
+
     if (!meaningfullyExtended) return; // suppress duplicate logs
+
   } else {
     const until = Math.max(Number(prev?.until || 0), nowTs + dur);
     window._fdvMintBlacklist.set(mint, { until, count: nextCount, lastAt: nowTs });
@@ -4360,9 +4543,97 @@ function setMintBlacklist(mint, ms = MINT_RUG_BLACKLIST_MS) {
     const mins = Math.round((Number(rec.until) - nowTs) / 60000);
     log(`Blacklist set (stage ${nextCount}/3, ${mins}m) for ${mint.slice(0,4)}… until ${new Date(rec.until).toLocaleTimeString()}`);
   } catch {}
+
+  try { _persistMintBlacklist(); } catch {}
 }
 
+const MINT_BLACKLIST_LS_KEY = "fdv_mint_blacklist_v1";
+let _mintBlacklistLoaded = false;
+
+function _loadMintBlacklistOnce() {
+  if (_mintBlacklistLoaded) return;
+  _mintBlacklistLoaded = true;
+  if (typeof window === "undefined" || typeof localStorage === "undefined") return;
+
+  try {
+    const raw = localStorage.getItem(MINT_BLACKLIST_LS_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== "object") return;
+
+    if (!window._fdvMintBlacklist) window._fdvMintBlacklist = new Map();
+    const nowTs = now();
+    for (const [mint, rec] of Object.entries(data)) {
+      const m = String(mint || "").trim();
+      if (!m) continue;
+      const until = typeof rec === "number" ? rec : Number(rec?.until || 0);
+      if (!Number.isFinite(until) || until <= nowTs) continue;
+      const count = typeof rec === "object" && rec ? Number(rec.count || 1) : 1;
+      const lastAt = typeof rec === "object" && rec ? Number(rec.lastAt || 0) : 0;
+      const kind = typeof rec === "object" && rec ? String(rec.kind || "") : "";
+      const reason = typeof rec === "object" && rec ? String(rec.reason || "") : "";
+      const prev = window._fdvMintBlacklist.get(m);
+      const prevUntil = typeof prev === "number" ? prev : Number(prev?.until || 0);
+      if (!prev || until > prevUntil) {
+        window._fdvMintBlacklist.set(m, { until, count: Number.isFinite(count) ? count : 1, lastAt: Number.isFinite(lastAt) ? lastAt : 0, kind, reason });
+      }
+    }
+  } catch {}
+}
+
+function _persistMintBlacklist() {
+  if (typeof window === "undefined" || typeof localStorage === "undefined") return;
+  if (!window._fdvMintBlacklist) return;
+
+  try {
+    const nowTs = now();
+    const entries = [];
+    for (const [mint, rec] of window._fdvMintBlacklist.entries()) {
+      const until = typeof rec === "number" ? rec : Number(rec?.until || 0);
+      if (!Number.isFinite(until) || until <= nowTs) continue;
+      entries.push([
+        String(mint || "").trim(),
+        {
+          until,
+          count: typeof rec === "object" && rec ? Number(rec.count || 1) : 1,
+          lastAt: typeof rec === "object" && rec ? Number(rec.lastAt || 0) : 0,
+          kind: typeof rec === "object" && rec ? String(rec.kind || "") : "",
+          reason: typeof rec === "object" && rec ? String(rec.reason || "") : "",
+        },
+      ]);
+    }
+
+    // Keep the newest/longest-lived entries; cap to avoid unbounded localStorage growth.
+    entries.sort((a, b) => Number(b?.[1]?.until || 0) - Number(a?.[1]?.until || 0));
+    const capped = entries.slice(0, 800);
+    const obj = Object.fromEntries(capped);
+    localStorage.setItem(MINT_BLACKLIST_LS_KEY, JSON.stringify(obj));
+  } catch {}
+}
+
+// function setMintTrashBlacklist(mint, ms = 30 * 24 * 60 * 60 * 1000, reason = "trash") {
+//   try { _loadMintBlacklistOnce(); } catch {}
+//   const m = String(mint || "").trim();
+//   if (!m) return;
+//   if (!window._fdvMintBlacklist) window._fdvMintBlacklist = new Map();
+
+//   const nowTs = now();
+//   const dur = Math.max(60_000, Number(ms || 0) | 0);
+//   const until = nowTs + dur;
+//   const prev = window._fdvMintBlacklist.get(m);
+//   const prevUntil = typeof prev === "number" ? prev : Number(prev?.until || 0);
+//   if (Number.isFinite(prevUntil) && prevUntil > until) return;
+
+//   window._fdvMintBlacklist.set(m, { until, count: 99, lastAt: nowTs, kind: "trash", reason: String(reason || "trash").slice(0, 80) });
+//   try { _persistMintBlacklist(); } catch {}
+//   try {
+//     const days = Math.max(1, Math.round(dur / (24 * 60 * 60 * 1000)));
+//     log(`Trash blacklist set (${days}d) for ${m.slice(0,4)}… (${String(reason || "trash").slice(0, 60)})`, "warn");
+//   } catch {}
+// }
+
 function isMintBlacklisted(mint) {
+  try { _loadMintBlacklistOnce(); } catch {}
   if (!mint || !window._fdvMintBlacklist) return false;
   const rec = window._fdvMintBlacklist.get(mint);
   if (!rec) return false;
@@ -4419,6 +4690,13 @@ function _getSeriesStore() {
    return window._fdvLeaderSeries;
 }
 
+
+
+
+
+
+
+
 // function slope3(series, key) {  // Legacy
 //   if (!Array.isArray(series) || series.length < 3) return 0;
 //   const a = Number(series[0]?.[key] ?? 0);
@@ -4426,6 +4704,12 @@ function _getSeriesStore() {
 //   const c = Number(series[2]?.[key] ?? b);
 //   return (c - a) / 2;
 // }
+
+
+
+
+
+
 
 function slopeAccel3pm(series, key) {
   if (!Array.isArray(series) || series.length < 3) return 0;
@@ -7672,7 +7956,38 @@ async function tick() {
 
 
 
-    if (!buyCandidates.length) { log("All picks already held or pending. Skipping buys."); return; }
+    if (!buyCandidates.length) {
+      try {
+        const ownerStr = kp.publicKey?.toBase58?.() || "";
+        const reasons = { quarantined: 0, locked: 0, pending: 0, held: 0, other: 0 };
+        for (const m of (picks || [])) {
+          try {
+            if (_isMintQuarantined(m, { allowHeld: true })) { reasons.quarantined++; continue; }
+            const pos = state.positions?.[m];
+            const allowRebuy = !!pos?.allowRebuy;
+            const eligibleSize = allowRebuy || Number(pos?.sizeUi || 0) <= 0;
+            if (!eligibleSize) { reasons.held++; continue; }
+            if (pos?.awaitingSizeSync) { reasons.pending++; continue; }
+            if (isMintLocked(m)) { reasons.locked++; continue; }
+            reasons.other++;
+          } catch {
+            reasons.other++;
+          }
+        }
+        const pcs = (() => { try { return pendingCreditsSize(); } catch { return 0; } })();
+        log(
+          `No buy candidates (picks=${(picks || []).length}) ` +
+          `q=${reasons.quarantined} locked=${reasons.locked} pending=${reasons.pending} held=${reasons.held} other=${reasons.other}` +
+          (pcs ? ` (pendingCredits=${pcs})` : "")
+        );
+        if (ownerStr && reasons.pending > 0 && pcs === 0) {
+          log("Pending gate hit but pending-credit queue empty; likely stale awaitingSizeSync flags.", "warn");
+        }
+      } catch {
+        log("No buy candidates after filtering; skipping buys.");
+      }
+      return;
+    }
 
     if (plannedTotal < minThreshold) {
       // state.carrySol += desired;
@@ -7871,24 +8186,134 @@ async function tick() {
           const okSlopes = (scSlopeMin >= needSc) && (chgSlopeMin >= needChg);
           const c5DomThr = Math.max(0.6, Number(state.lateEntryDomShare || 0.65));
 
-          if (c5Share >= c5DomThr && barelyPasses && !(scSlopeMin > -1 || okTicks)) {
-            log(`Exhaust spike filter: skip ${mint.slice(0,4)}… (c5 ${Math.round(c5Share*100)}% of score, pre ${warm.pre.toFixed(3)} ~ min ${warm.preMin.toFixed(3)}, scSlope=${scSlopeMin.toFixed(2)}/m ≤ 0)`);
-            continue;
+          const exhaustTriggered = (c5Share >= c5DomThr && barelyPasses && !(scSlopeMin > -1 || okTicks));
+          try {
+            agentGates.sustain = {
+              ...(agentGates.sustain && typeof agentGates.sustain === "object" ? agentGates.sustain : {}),
+              c5Share,
+              c5DomThr,
+              barelyPasses,
+              okTicks,
+              okSlopes,
+              scSlopeMin,
+              chgSlopeMin,
+              exhaustOk: !exhaustTriggered,
+            };
+          } catch {}
+          if (exhaustTriggered) {
+            const msg = `Exhaust spike filter: skip ${mint.slice(0,4)}… (c5 ${Math.round(c5Share*100)}% of score, pre ${warm.pre.toFixed(3)} ~ min ${warm.preMin.toFixed(3)}, scSlope=${scSlopeMin.toFixed(2)}/m ≤ 0)`;
+            if (fullAiControl) {
+              log(msg.replace(/^Exhaust spike filter: skip /, "Exhaust spike warn "), "warn");
+            } else {
+              log(msg);
+              continue;
+            }
           }
+
           const needBoth = (!risingNow && !trendUp);
-          if (needBoth && !(okTicks && okSlopes)) {
-            log(`Sustain gate (strict): skip ${mint.slice(0,4)}… (ticks=${okTicks} slopes=${okSlopes})`);
-            continue;
+          let sustainPass = true;
+          let sustainMode = "pass";
+          if (needBoth) {
+            sustainPass = (okTicks && okSlopes);
+            sustainMode = "strict";
+          } else if (!risingNow || !trendUp) {
+            sustainPass = (okTicks || okSlopes);
+            sustainMode = "lenient";
           }
-          if (!needBoth && (!risingNow || !trendUp) && !(okTicks || okSlopes)) {
-            log(`Sustain gate (lenient): skip ${mint.slice(0,4)}… (need ticks OR slopes; rNow=${risingNow} tUp=${trendUp})`);
-            continue;
+          try {
+            agentGates.sustain = {
+              ...(agentGates.sustain && typeof agentGates.sustain === "object" ? agentGates.sustain : {}),
+              sustainOk: !!sustainPass,
+              sustainMode,
+              risingNow,
+              trendUp,
+              needBoth,
+              needTicks,
+              needChg,
+              needSc,
+            };
+          } catch {}
+
+          if (!sustainPass) {
+            const msg = (needBoth)
+              ? `Sustain gate (strict): skip ${mint.slice(0,4)}… (ticks=${okTicks} slopes=${okSlopes})`
+              : `Sustain gate (lenient): skip ${mint.slice(0,4)}… (need ticks OR slopes; rNow=${risingNow} tUp=${trendUp})`;
+            if (fullAiControl) {
+              log(msg.replace(/^Sustain gate \((strict|lenient)\): skip /, "Sustain warn "), "warn");
+            } else {
+              log(msg);
+              continue;
+            }
           }
 
 
           }
         } catch {}
       }
+
+      try {
+        const mode = (() => {
+          const raw = String(state.honeypotOnchainMode || "").trim().toLowerCase();
+          if (raw === "enforce" || raw === "warn" || raw === "off") return raw;
+          if (fullAiControl) return "warn";
+          return "enforce";
+        })();
+
+        if (mode !== "off") {
+          const hp = await _assessMintOnchainSellRisk(mint, { cacheMs: Number(state.honeypotOnchainCacheMs || 0) || (10 * 60 * 1000) });
+
+          const blockToken2022 = (state.honeypotBlockToken2022 !== false);
+          const hardBlockToken2022 = (state.honeypotHardBlockToken2022 !== false);
+          const blockFreezeAuth = (state.honeypotBlockFreezeAuthority !== false);
+
+          const hitToken2022 = !!(hp?.ok && hp?.flags?.token2022);
+          const hitFreeze = !!(hp?.ok && hp?.flags?.hasFreezeAuthority);
+          // In full AI control, do not hard-block Token-2022 at this gate; let the agent see it and decide.
+          const enforceToken2022 = !!(hardBlockToken2022 && blockToken2022 && hitToken2022 && !fullAiControl);
+
+          const reasons = [];
+          if (blockToken2022 && hitToken2022) reasons.push("token-2022");
+          if (blockFreezeAuth && hitFreeze) reasons.push(`freezeAuthority=${String(hp?.freezeAuthority || "?").slice(0, 4)}…`);
+
+          try {
+            agentGates.honeypotOnchain = {
+              on: true,
+              mode,
+              ok: !(reasons.length > 0),
+              program: hp?.program || null,
+              hasFreezeAuthority: !!hitFreeze,
+              hasMintAuthority: !!(hp?.ok && hp?.flags?.hasMintAuthority),
+              reasons,
+              hardBlock: enforceToken2022 ? ["token-2022"] : [],
+            };
+          } catch {}
+
+          if (reasons.length > 0) {
+            const msg = enforceToken2022
+              ? `Skip ${mint.slice(0,4)}… (onchain hard gate: token-2022)`
+              : `Skip ${mint.slice(0,4)}… (onchain risk: ${reasons.join(", ")})`;
+            if (mode === "warn") log(msg.replace(/^Skip /, "Onchain warn "), "warn");
+            else log(msg, "warn");
+
+            if (hitToken2022) {
+              try { _kpiLabelMintOnce(mint, { text: "TOKEN-2022", cls: "warn" }, { ttlMs: 30 * 60 * 1000, cls: "warn" }, 15_000); } catch {}
+              // Token-2022 is currently treated as unsupported by the auto-trader; not necessarily a "honeypot".
+              try { _kpiLabelMintOnce(mint, { text: "AUTO", cls: "warn" }, { ttlMs: 30 * 60 * 1000, cls: "warn" }, 15_000); } catch {}
+            }
+            if (hitFreeze && blockFreezeAuth) {
+              const fa = String(hp?.freezeAuthority || "").trim();
+              const short = fa ? `${fa.slice(0, 4)}…` : "";
+              try { _kpiLabelMintOnce(mint, { text: short ? `FREEZE ${short}` : "FREEZE AUTH", cls: "warn" }, { ttlMs: 30 * 60 * 1000, cls: "warn" }, 15_000); } catch {}
+            }
+
+            if (enforceToken2022) {
+              // try { setMintTrashBlacklist(mint, 30 * 24 * 60 * 60 * 1000, "honeypot:token-2022"); } catch {}
+              try { _kpiLabelMintOnce(mint, { text: "HIGH", cls: "warn" }, { ttlMs: 30 * 60 * 1000, cls: "warn" }, 20_000); } catch {}
+            }
+            if (mode === "enforce" || enforceToken2022) continue;
+          }
+        }
+      } catch {}
 
       const reqRent = await requiredAtaLamportsForSwap(kp.publicKey.toBase58(), SOL_MINT, mint);
       if (reqRent > 0 && solBal < AVOID_NEW_ATA_SOL_FLOOR) {
@@ -8400,6 +8825,14 @@ async function tick() {
                     mint,
                     stage: "buy",
                     signals: {
+                      honeypot: {
+                        onchain: (() => {
+                          try { return agentGates?.honeypotOnchain || null; } catch { return null; }
+                        })(),
+                      },
+                      kpiBundle: (() => {
+                        try { return getKpiMintBundle(mint, { includeSnapshot: true, includeAddons: false }); } catch { return null; }
+                      })(),
                       rugSignal: entryRugSignal,
                       leaderNow: entryLeaderNow,
                       leaderSeries: entryLeaderSeries,
@@ -8436,6 +8869,14 @@ async function tick() {
                   agentRisk: _riskLevel,
                   fullAiControl: !!fullAiControl,
                   gates: agentGates,
+                  honeypot: {
+                    onchain: (() => {
+                      try { return agentGates?.honeypotOnchain || null; } catch { return null; }
+                    })(),
+                  },
+                  kpiBundle: (() => {
+                    try { return getKpiMintBundle(mint, { includeSnapshot: true, includeAddons: true }); } catch { return null; }
+                  })(),
                   sizing: edgeSizingHint,
                   targets: {
                     sessionPnlSol: getSessionPnlSol(),
@@ -8451,7 +8892,7 @@ async function tick() {
                     recent: (() => { try { return agentOutcomes.summarize(8); } catch { return []; } })(),
                     lastForMint: (() => { try { return agentOutcomes.lastForMint(mint); } catch { return null; } })(),
                   },
-                  kpiPick: entryKpiPick,
+                  kpiPick: _summarizeKpiPickRow(entryKpiPick),
                   finalGate: entryFinalGate,
                   tickNow: entryTickNow,
                   tickSeries: entryTickSeries,
@@ -8694,12 +9135,29 @@ async function tick() {
           entryScSlope = Number(slope3pm(series || [], "pumpScore") || NaN);
         } catch {}
 
+        const _prev = (() => {
+          try {
+            const p = state.positions?.[mint];
+            return (p && typeof p === "object") ? p : (basePos && typeof basePos === "object" ? basePos : {});
+          } catch {
+            return (basePos && typeof basePos === "object" ? basePos : {});
+          }
+        })();
+
+        // Cost basis safety: buyCostSol may already have been applied by an optimistic seed
+        // or pending-credit reconciliation while we were waiting for credit.
+        const _baseCost = Number(basePos?.costSol || 0);
+        const _prevCost = Number(_prev?.costSol || 0);
+        const _shouldAddCost = !(_prevCost >= (_baseCost + buyCostSol - 1e-9));
+        const _nextCostSol = _shouldAddCost ? (_baseCost + buyCostSol) : _prevCost;
+        const _nextHwmSol = Math.max(Number(_prev?.hwmSol || 0), Number(basePos?.hwmSol || 0), buyCostSol);
+
         const pos = {
-          ...basePos,
+          ..._prev,
           sizeUi: got.sizeUi,
           decimals: got.decimals,
-          costSol: Number(basePos.costSol || 0) + buyCostSol,
-          hwmSol: Math.max(Number(basePos.hwmSol || 0), buyCostSol),
+          costSol: _nextCostSol,
+          hwmSol: _nextHwmSol,
           lastBuyAt: now(),
           lastSeenAt: now(),
           awaitingSizeSync: false,

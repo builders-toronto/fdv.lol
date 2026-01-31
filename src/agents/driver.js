@@ -285,39 +285,6 @@ function _compactUserMsgForGary(userMsg) {
 		const src = String(userMsg.source || "").slice(0, 80);
 		const out = { source: src || "fdv_auto_trader", kind };
 
-		// Keep minimal state (large state tends to drown small local models).
-		try {
-			const st = userMsg.state;
-			if (st && typeof st === "object") {
-				const keep = {};
-				for (const k of [
-					"riskLevel",
-					"buyPct",
-					"minBuySol",
-					"maxBuySol",
-					"slippageBps",
-					"minSecsBetween",
-					"coolDownSecsAfterBuy",
-					"minHoldSecs",
-					"maxHoldSecs",
-					"minNetEdgePct",
-					"edgeSafetyBufferPct",
-					"takeProfitPct",
-					"stopLossPct",
-					"trailPct",
-					"minProfitToTrailPct",
-					"maxEntryCostPct",
-					"entrySimMode",
-					"entrySimHorizonSecs",
-					"entrySimMinWinProb",
-					"entrySimMinTerminalProb",
-				]) {
-					if (k in st) keep[k] = st[k];
-				}
-				if (Object.keys(keep).length) out.state = keep;
-			}
-		} catch {}
-
 		// Compact payload/signals aggressively.
 		const p = (userMsg.payload && typeof userMsg.payload === "object") ? userMsg.payload : {};
 		const payload = {};
@@ -448,6 +415,31 @@ function _compactUserMsgForGary(userMsg) {
 			if (g.manualEdge && typeof g.manualEdge === "object") gates.manualEdge = { ok: !!g.manualEdge.ok, edgeExclPct: g.manualEdge.edgeExclPct ?? null, minNetEdgePct: g.manualEdge.minNetEdgePct ?? null };
 			if (g.entryCost && typeof g.entryCost === "object") gates.entryCost = { on: !!g.entryCost.on, ok: ("ok" in g.entryCost) ? !!g.entryCost.ok : undefined, risk: g.entryCost.risk ?? null, edgeCostPct: g.entryCost.edgeCostPct ?? null, maxEntryCostPct: g.entryCost.maxEntryCostPct ?? null };
 			if (g.sim && typeof g.sim === "object") gates.sim = { ready: !!g.sim.ready, mode: g.sim.mode ?? null, horizonSecs: g.sim.horizonSecs ?? null, pHit: g.sim.pHit ?? null, pTerminal: g.sim.pTerminal ?? null, minWinProb: g.sim.minWinProb ?? null, minTerminalProb: g.sim.minTerminalProb ?? null };
+			if (g.honeypotOnchain && typeof g.honeypotOnchain === "object") {
+				// Avoid biasing the model by calling this a "honeypot" gate. Treat as neutral on-chain labels.
+				const hp = g.honeypotOnchain;
+				const labels = [];
+				try {
+					const rs = Array.isArray(hp.reasons) ? hp.reasons : [];
+					for (const r of rs) {
+						const s = String(r || "").trim();
+						if (!s) continue;
+						if (s === "token-2022") labels.push("token-2022");
+						else if (/^freezeAuthority=/i.test(s)) labels.push("freeze-authority");
+						else if (/^mintAuthority=/i.test(s)) labels.push("mint-authority");
+						else labels.push(s.slice(0, 40));
+					}
+				} catch {}
+				gates.onchainLabels = {
+					mode: hp.mode ?? null,
+					ok: ("ok" in hp) ? !!hp.ok : undefined,
+					program: hp.program ?? null,
+					hasFreezeAuthority: ("hasFreezeAuthority" in hp) ? !!hp.hasFreezeAuthority : undefined,
+					hasMintAuthority: ("hasMintAuthority" in hp) ? !!hp.hasMintAuthority : undefined,
+					labels: labels.length ? labels.slice(0, 4) : undefined,
+					nudge: labels.length ? "soft_sell_risk" : undefined,
+				};
+			}
 			if (Object.keys(gates).length) signals.gates = gates;
 		} catch {}
 
@@ -462,17 +454,23 @@ function _compactUserMsgForGary(userMsg) {
 		} catch {}
 		try {
 			const o = (s.outcomes && typeof s.outcomes === "object") ? s.outcomes : {};
-			const recent = Array.isArray(o.recent) ? o.recent.slice(Math.max(0, o.recent.length - 3)) : [];
-			if (recent.length) {
+			const recent = Array.isArray(o.recent) ? o.recent.slice(Math.max(0, o.recent.length - 6)) : [];
+			const last = recent.reduce((best, r) => {
+				const ts = _safeNum(r?.ts, 0);
+				if (!best) return r;
+				return ts > _safeNum(best?.ts, 0) ? r : best;
+			}, null);
+			if (last && ("pnlSol" in last || "ts" in last || "kind" in last)) {
+				const pnl = (typeof last?.pnlSol === "number") ? last.pnlSol : null;
 				signals.outcomes = {
 					sessionPnlSol: o.sessionPnlSol ?? null,
-					recent: recent.map((r) => ({
-						ts: r?.ts ?? null,
-						mint: r?.mint ? String(r.mint).slice(0, 12) : undefined,
-						kind: r?.kind ? String(r.kind).slice(0, 24) : undefined,
-						pnlSol: r?.pnlSol ?? null,
-						decisionAction: r?.decisionAction ? String(r.decisionAction).slice(0, 20) : undefined,
-					})),
+					lastTrade: {
+						ts: last?.ts ?? null,
+						kind: last?.kind ? String(last.kind).slice(0, 24) : undefined,
+						decisionAction: last?.decisionAction ? String(last.decisionAction).slice(0, 20) : undefined,
+						pnlSol: pnl,
+						upDown: (typeof pnl === "number") ? (pnl > 0 ? "up" : pnl < 0 ? "down" : "flat") : undefined,
+					},
 				};
 			}
 		} catch {}
@@ -494,6 +492,281 @@ function _compactUserMsgForGary(userMsg) {
 			} catch {}
 		}
 
+		return out;
+	} catch {
+		return userMsg;
+	}
+}
+
+function _compactUserMsgForLlm(userMsg) {
+	try {
+		if (!userMsg || typeof userMsg !== "object") return userMsg;
+		const kind = String(userMsg.kind || "").trim().toLowerCase();
+		const src = String(userMsg.source || "").slice(0, 80);
+		const out = { source: src || "fdv_auto_trader", kind };
+
+		const p = (userMsg.payload && typeof userMsg.payload === "object") ? userMsg.payload : {};
+		const payload = {};
+		if (typeof p.mint === "string") payload.mint = p.mint;
+		if (p.proposed && typeof p.proposed === "object") payload.proposed = p.proposed;
+
+		// For config_scan, keep extra minimal: only market/allowedKeys/note.
+		if (kind === "config_scan") {
+			try {
+				if (p.market && typeof p.market === "object") payload.market = p.market;
+				if (p.allowedKeys && Array.isArray(p.allowedKeys)) payload.allowedKeys = p.allowedKeys.slice(0, 80);
+				if (p.note) payload.note = String(p.note || "").slice(0, 500);
+				if (Object.keys(payload).length) out.payload = payload;
+				return out;
+			} catch {
+				if (Object.keys(payload).length) out.payload = payload;
+				return out;
+			}
+		}
+
+		// For sell, keep compact position/context (LLM needs exit context).
+		if (kind === "sell") {
+			try {
+				if (p.pos && typeof p.pos === "object") {
+					const pos = p.pos;
+					const keepPos = {};
+					for (const k of [
+						"sizeUi",
+						"decimals",
+						"costSol",
+						"hwmSol",
+						"acquiredAt",
+						"lastBuyAt",
+						"lastSellAt",
+						"allowRebuy",
+						"awaitingSizeSync",
+						"warmingHold",
+						"sellGuardUntil",
+						"warmingMinProfitPct",
+						"tpPct",
+						"slPct",
+						"trailPct",
+						"minProfitToTrailPct",
+						"entryEdgeExclPct",
+						"entryEdgeCostPct",
+						"entryTpBumpPct",
+						"entryPreMin",
+					]) {
+						if (k in pos) keepPos[k] = pos[k];
+					}
+					// Minimal tick snapshot.
+					try {
+						const t = pos.tickNow;
+						if (t && typeof t === "object") {
+							keepPos.tickNow = {
+								ts: t.ts ?? null,
+								priceUsd: t.priceUsd ?? null,
+								liqUsd: t.liqUsd ?? null,
+								change5m: t.change5m ?? null,
+								change1h: t.change1h ?? null,
+								v1hUsd: t.v1hUsd ?? null,
+							};
+						}
+					} catch {}
+					if (Object.keys(keepPos).length) payload.pos = keepPos;
+				}
+			} catch {}
+
+			try {
+				if (p.ctx && typeof p.ctx === "object") {
+					const c = p.ctx;
+					const keepCtx = {};
+					for (const k of [
+						"agentRisk",
+						"nowTs",
+						"curSol",
+						"curSolNet",
+						"pnlPct",
+						"pnlNetPct",
+						"minNotionalSol",
+						"inMinHold",
+						"inSellGuard",
+						"hasPending",
+						"isFastExit",
+						"rugSev",
+						"forceRug",
+						"forcePumpDrop",
+						"forceObserverDrop",
+						"forceMomentum",
+						"forceExpire",
+					]) {
+						if (k in c) keepCtx[k] = c[k];
+					}
+					try {
+						const fg = c.finalGate;
+						if (fg && typeof fg === "object") keepCtx.finalGate = { intensity: fg.intensity ?? null, tier: fg.tier ?? null, chgSlope: fg.chgSlope ?? null, scSlope: fg.scSlope ?? null };
+					} catch {}
+					try {
+						const cfg = c.cfg;
+						if (cfg && typeof cfg === "object") keepCtx.cfg = {
+							minHoldSecs: cfg.minHoldSecs ?? null,
+							maxHoldSecs: cfg.maxHoldSecs ?? null,
+							takeProfitPct: cfg.takeProfitPct ?? null,
+							stopLossPct: cfg.stopLossPct ?? null,
+							trailPct: cfg.trailPct ?? null,
+							minProfitToTrailPct: cfg.minProfitToTrailPct ?? null,
+							minNetEdgePct: cfg.minNetEdgePct ?? null,
+							edgeSafetyBufferPct: cfg.edgeSafetyBufferPct ?? null,
+						};
+					} catch {}
+					try {
+						const an = c.agentSignals;
+						if (an && typeof an === "object") {
+							const outc = (an.outcomes && typeof an.outcomes === "object") ? an.outcomes : null;
+							const recent = outc && Array.isArray(outc.recent) ? outc.recent.slice(Math.max(0, outc.recent.length - 2)) : [];
+							keepCtx.agentSignals = {
+								agentRisk: an.agentRisk ? String(an.agentRisk).slice(0, 16) : undefined,
+								fullAiControl: (typeof an.fullAiControl === "boolean") ? an.fullAiControl : undefined,
+								outcomes: recent.length ? {
+									sessionPnlSol: outc ? (outc.sessionPnlSol ?? null) : null,
+									recent: recent.map((r) => ({
+										pnlSol: r?.pnlSol ?? null,
+										kind: r?.kind ? String(r.kind).slice(0, 24) : undefined,
+										decisionAction: r?.decisionAction ? String(r.decisionAction).slice(0, 20) : undefined,
+									})),
+								} : undefined,
+							};
+						}
+					} catch {}
+					if (Object.keys(keepCtx).length) payload.ctx = keepCtx;
+				}
+			} catch {}
+		}
+
+		// Compact signals: keep decision-critical summaries.
+		const s = (p.signals && typeof p.signals === "object") ? p.signals : {};
+		const signals = {};
+		if (s.agentRisk) signals.agentRisk = String(s.agentRisk || "").slice(0, 16);
+		if (typeof s.fullAiControl === "boolean") signals.fullAiControl = s.fullAiControl;
+
+		try {
+			const g = (s.gates && typeof s.gates === "object") ? s.gates : {};
+			const gates = {};
+			if (g.finalGateReady != null) gates.finalGateReady = !!g.finalGateReady;
+			if (g.cooldown && typeof g.cooldown === "object") gates.cooldown = { ok: !!g.cooldown.ok, recentAgeMs: g.cooldown.recentAgeMs ?? null, minRebuyMs: g.cooldown.minRebuyMs ?? null };
+			if (g.honeypotOnchain && typeof g.honeypotOnchain === "object") {
+				// Avoid biasing the model by calling this a "honeypot" gate. Treat as neutral on-chain labels.
+				const hp = g.honeypotOnchain;
+				const labels = [];
+				try {
+					const rs = Array.isArray(hp.reasons) ? hp.reasons : [];
+					for (const r of rs) {
+						const s = String(r || "").trim();
+						if (!s) continue;
+						if (s === "token-2022") labels.push("token-2022");
+						else if (/^freezeAuthority=/i.test(s)) labels.push("freeze-authority");
+						else if (/^mintAuthority=/i.test(s)) labels.push("mint-authority");
+						else labels.push(s.slice(0, 40));
+					}
+				} catch {}
+				gates.onchainLabels = {
+					mode: hp.mode ?? null,
+					ok: ("ok" in hp) ? !!hp.ok : undefined,
+					program: hp.program ?? null,
+					hasFreezeAuthority: ("hasFreezeAuthority" in hp) ? !!hp.hasFreezeAuthority : undefined,
+					hasMintAuthority: ("hasMintAuthority" in hp) ? !!hp.hasMintAuthority : undefined,
+					labels: labels.length ? labels.slice(0, 4) : undefined,
+					nudge: labels.length ? "soft_sell_risk" : undefined,
+				};
+			}
+			if (g.manualEdge && typeof g.manualEdge === "object") gates.manualEdge = { ok: !!g.manualEdge.ok, edgeExclPct: g.manualEdge.edgeExclPct ?? null, minNetEdgePct: g.manualEdge.minNetEdgePct ?? null };
+			if (g.entryCost && typeof g.entryCost === "object") gates.entryCost = { on: !!g.entryCost.on, enforceForRisk: ("enforceForRisk" in g.entryCost) ? !!g.entryCost.enforceForRisk : undefined, risk: g.entryCost.risk ?? null, edgeCostPct: g.entryCost.edgeCostPct ?? null, maxEntryCostPct: g.entryCost.maxEntryCostPct ?? null };
+			if (g.sim && typeof g.sim === "object") gates.sim = { ready: !!g.sim.ready, mode: g.sim.mode ?? null, horizonSecs: g.sim.horizonSecs ?? null, pHit: g.sim.pHit ?? null, pTerminal: g.sim.pTerminal ?? null, minWinProb: g.sim.minWinProb ?? null, minTerminalProb: g.sim.minTerminalProb ?? null };
+			if (Object.keys(gates).length) signals.gates = gates;
+		} catch {}
+
+		// Targets are mostly redundant with other fields; omit to keep prompts small.
+
+		try {
+			const kb = (s.kpiBundle && typeof s.kpiBundle === "object") ? s.kpiBundle : null;
+			const snap = kb && kb.snapshot && typeof kb.snapshot === "object" ? kb.snapshot : null;
+			const snap2 = (!snap && s.kpi && typeof s.kpi === "object") ? s.kpi : null;
+			const k = snap || snap2;
+			if (k) {
+				signals.kpi = {
+					symbol: k.symbol ?? null,
+					priceUsd: k.priceUsd ?? null,
+					chg24: k.chg24 ?? null,
+					vol24: k.vol24 ?? null,
+					liqUsd: k.liqUsd ?? null,
+					tx24: k.tx24 ?? null,
+					mcap: k.mcap ?? null,
+				};
+			}
+		} catch {}
+
+		// Edge fields are noisy/redundant vs sim + gate warnings; omit for compact prompts.
+
+		try {
+			const sim = (s.entrySim && typeof s.entrySim === "object") ? s.entrySim : null;
+			if (sim) {
+				signals.entrySim = {
+					horizonSecs: sim.horizonSecs ?? null,
+					requiredGrossPct: sim.requiredGrossPct ?? null,
+					pHit: sim.pHit ?? null,
+					pTerminal: sim.pTerminal ?? null,
+					muPct: sim.muPct ?? null,
+					sigmaPct: sim.sigmaPct ?? null,
+				};
+			}
+		} catch {}
+
+		try {
+			const ln = (s.leaderNow && typeof s.leaderNow === "object") ? s.leaderNow : null;
+			if (ln) signals.leaderNow = { pumpScore: ln.pumpScore ?? null, v1h: ln.v1h ?? null, chg5m: ln.chg5m ?? null, chg1h: ln.chg1h ?? null };
+		} catch {}
+
+		try {
+			const tn = (s.tickNow && typeof s.tickNow === "object") ? s.tickNow : null;
+			if (tn) signals.tickNow = { ts: tn.ts ?? null, priceUsd: tn.priceUsd ?? null, liqUsd: tn.liqUsd ?? null, change5m: tn.change5m ?? null, change1h: tn.change1h ?? null, v5mUsd: tn.v5mUsd ?? null, v1hUsd: tn.v1hUsd ?? null };
+		} catch {}
+
+		try {
+			const past = (s.past && typeof s.past === "object") ? s.past : null;
+			if (past) {
+				const last = Array.isArray(past.candles) && past.candles.length ? past.candles[past.candles.length - 1] : (Array.isArray(past.lastCandle) ? past.lastCandle : null);
+				signals.past = {
+					source: past.source ?? null,
+					timeframe: past.timeframe ?? null,
+					stats: past.stats ?? null,
+					quality: past.quality ?? null,
+					lastCandle: last ?? null,
+				};
+			}
+		} catch {}
+
+		// Omit wallet/budget (bot already enforces it) and other noisy/redundant scalars.
+
+		try {
+			const o = (s.outcomes && typeof s.outcomes === "object") ? s.outcomes : {};
+			const recent = Array.isArray(o.recent) ? o.recent.slice(Math.max(0, o.recent.length - 6)) : [];
+			const last = recent.reduce((best, r) => {
+				const ts = _safeNum(r?.ts, 0);
+				if (!best) return r;
+				return ts > _safeNum(best?.ts, 0) ? r : best;
+			}, null);
+			if (last && ("pnlSol" in last || "ts" in last || "kind" in last)) {
+				const pnl = (typeof last?.pnlSol === "number") ? last.pnlSol : null;
+				signals.outcomes = {
+					sessionPnlSol: o.sessionPnlSol ?? null,
+					lastTrade: {
+						ts: last?.ts ?? null,
+						kind: last?.kind ? String(last.kind).slice(0, 24) : undefined,
+						decisionAction: last?.decisionAction ? String(last.decisionAction).slice(0, 20) : undefined,
+						pnlSol: pnl,
+						upDown: (typeof pnl === "number") ? (pnl > 0 ? "up" : pnl < 0 ? "down" : "flat") : undefined,
+					},
+				};
+			}
+		} catch {}
+
+		if (Object.keys(signals).length) payload.signals = signals;
+		if (Object.keys(payload).length) out.payload = payload;
 		return out;
 	} catch {
 		return userMsg;
@@ -551,6 +824,53 @@ export function createAutoTraderAgentDriver({
 	const cache = new Map();
 	const CACHE_TTL_MS = 2500;
 
+	function _shouldLogPrompts(cfgN = null) {
+		try {
+			const cfgRaw = _getConfig() || {};
+			if (cfgRaw && cfgRaw.logPrompts === true) return true;
+		} catch {}
+		try {
+			if (cfgN && cfgN.logPrompts === true) return true;
+		} catch {}
+		try {
+			if (globalThis && globalThis.__fdvLogAgentPrompts === true) return true;
+		} catch {}
+		try {
+			const ls = globalThis && globalThis.localStorage;
+			if (!ls || typeof ls.getItem !== "function") return false;
+			const v = String(ls.getItem("fdv_agent_log_prompts") || "").trim().toLowerCase();
+			return (v === "1" || v === "true" || v === "yes" || v === "on");
+		} catch {
+			return false;
+		}
+	}
+
+	function _ensurePromptLogGlobals() {
+		try {
+			const g = (typeof window !== "undefined") ? window : globalThis;
+			if (!g) return;
+			if (!g.__fdvAgentPromptLog || !Array.isArray(g.__fdvAgentPromptLog)) g.__fdvAgentPromptLog = [];
+			if (!g.__fdvEnableAgentPromptLogs) {
+				g.__fdvEnableAgentPromptLogs = (on = true) => {
+					const enable = !!on;
+					try { g.__fdvLogAgentPrompts = enable; } catch {}
+					try { if (g.localStorage) g.localStorage.setItem("fdv_agent_log_prompts", enable ? "1" : "0"); } catch {}
+					return enable;
+				};
+			}
+		} catch {}
+	}
+
+	function _pushPromptLog(entry) {
+		try {
+			const g = (typeof window !== "undefined") ? window : globalThis;
+			if (!g) return;
+			if (!g.__fdvAgentPromptLog || !Array.isArray(g.__fdvAgentPromptLog)) g.__fdvAgentPromptLog = [];
+			g.__fdvAgentPromptLog.unshift(entry);
+			if (g.__fdvAgentPromptLog.length > 25) g.__fdvAgentPromptLog.length = 25;
+		} catch {}
+	}
+
 	// Debug helpers (browser): export/clear captures.
 	try {
 		const g = (typeof window !== "undefined") ? window : globalThis;
@@ -566,6 +886,7 @@ export function createAutoTraderAgentDriver({
 			};
 		}
 	} catch {}
+	try { _ensurePromptLogGlobals(); } catch {}
 
 	function _enabled() {
 		try {
@@ -603,8 +924,10 @@ export function createAutoTraderAgentDriver({
 		const cfgN = (() => {
 			try { return normalizeLlmConfig(_getConfig() || {}); } catch { return null; }
 		})();
+		try { _ensurePromptLogGlobals(); } catch {}
 		const body = _redactDeep(payload);
 		const options = (opts && typeof opts === "object") ? opts : {};
+		const promptLogOn = _shouldLogPrompts(cfgN);
 
 		const key = (() => {
 			try {
@@ -655,6 +978,21 @@ export function createAutoTraderAgentDriver({
 		try {
 			if (String(cfgN?.provider || "").toLowerCase() === "gary") {
 				userMsg = _compactUserMsgForGary(userMsg);
+			} else {
+				// Default ON: full state + full signals is huge and expensive.
+				const compactOn = (() => {
+					try {
+						if (globalThis && globalThis.__fdvCompactAgentPrompts === true) return true;
+					} catch {}
+					try {
+						return _readBoolLs("fdv_agent_compact_prompts", true);
+					} catch {
+						return true;
+					}
+				})();
+				if (compactOn && (kind === "buy" || kind === "sell" || kind === "config_scan")) {
+					userMsg = _compactUserMsgForLlm(userMsg);
+				}
 			}
 		} catch {}
 
@@ -677,6 +1015,38 @@ export function createAutoTraderAgentDriver({
 				return systemPrompt;
 			}
 		})();
+
+		try {
+			if (promptLogOn) {
+				const model = String(cfgN?.model || "gpt-4o-mini").trim() || "gpt-4o-mini";
+				const mintFull = String(payload?.mint || payload?.targetMint || "");
+				const entry = {
+					at: now(),
+					source: "fdv_auto_trader",
+					agent: "gary",
+					kind: String(kind || ""),
+					mint: mintFull || undefined,
+					model,
+					provider: String(cfgN?.provider || ""),
+					cacheKey: String(key || ""),
+					request: {
+						system: String(systemPromptFinal || "").slice(0, 8000),
+						user: _redactDeep(userMsg, { maxDepth: 6, maxKeys: 220 }),
+					},
+				};
+				_pushPromptLog(entry);
+				try {
+					if (globalThis && globalThis.console && typeof globalThis.console.log === "function") {
+						globalThis.console.log("[AGENT GARY] prompt", entry);
+					}
+				} catch {}
+				try {
+					const sysLen = String(systemPromptFinal || "").length;
+					const userLen = (() => { try { return JSON.stringify(userMsg).length; } catch { return -1; } })();
+					_log(`promptLog ON (systemChars=${sysLen}, userChars=${userLen})`, "info");
+				} catch {}
+			}
+		} catch {}
 
 		let text = "";
 		let meta = null;
@@ -809,9 +1179,23 @@ export function createAutoTraderAgentDriver({
 			if (res.ok) {
 				const d = res.decision || {};
 				_log(`decision ${_fmtShortJson(d, 1200)}`, "info");
+				try {
+					if (promptLogOn) {
+						const entry = { at: now(), agent: "gary", kind: String(kind || ""), response: _redactDeep(d) };
+						_pushPromptLog(entry);
+						try { if (globalThis?.console?.log) globalThis.console.log("[AGENT GARY] response", entry); } catch {}
+					}
+				} catch {}
 			} else {
 				const snippet = String(text || "").slice(0, 600);
 				_log(`bad response err=${String(res.err || "unknown")} raw=${_fmtShortJson(_redactDeep(snippet), 800)}`, "warn");
+				try {
+					if (promptLogOn) {
+						const entry = { at: now(), agent: "gary", kind: String(kind || ""), error: String(res.err || ""), raw: String(snippet || "") };
+						_pushPromptLog(entry);
+						try { if (globalThis?.console?.warn) globalThis.console.warn("[AGENT GARY] response (invalid)", entry); } catch {}
+					}
+				} catch {}
 			}
 		} catch {}
 		cache.set(key, { at: now(), res });
@@ -1034,6 +1418,35 @@ export function createAgentJsonRunner({
 
 	const cache = new Map();
 
+	function _shouldLogPrompts(cfg, { logRequest = false } = {}) {
+		try {
+			if (logRequest) return true;
+			if (cfg && cfg.logPrompts === true) return true;
+		} catch {}
+		try {
+			if (globalThis && globalThis.__fdvLogAgentPrompts === true) return true;
+		} catch {}
+		try {
+			const ls = globalThis && globalThis.localStorage;
+			if (!ls || typeof ls.getItem !== "function") return false;
+			const v = String(ls.getItem("fdv_agent_log_prompts") || "").trim().toLowerCase();
+			return (v === "1" || v === "true" || v === "yes" || v === "on");
+		} catch {
+			return false;
+		}
+	}
+
+	function _dbgStore(entry) {
+		try {
+			if (!globalThis) return;
+			if (!globalThis.__fdvAgentPromptLog || !Array.isArray(globalThis.__fdvAgentPromptLog)) {
+				globalThis.__fdvAgentPromptLog = [];
+			}
+			globalThis.__fdvAgentPromptLog.unshift(entry);
+			if (globalThis.__fdvAgentPromptLog.length > 25) globalThis.__fdvAgentPromptLog.length = 25;
+		} catch {}
+	}
+
 	function _getCfgSafe() {
 		try {
 			return normalizeLlmConfig(_getConfig() || {});
@@ -1095,9 +1508,26 @@ export function createAgentJsonRunner({
 		}
 
 		try {
-			if (logRequest) {
-				const model = String(cfg.model || "");
-				_log(`call model=${model}`, "info");
+			const model = String(cfg.model || "");
+			if (logRequest) _log(`call model=${model}`, "info");
+
+			const logPrompts = _shouldLogPrompts(cfg, { logRequest });
+			if (logPrompts) {
+				const safeCfg = { provider: String(cfg.provider || ""), model: String(cfg.model || "") };
+				const safeReq = _redactDeep({
+					cacheKey: String(cacheKey || ""),
+					temperature: Number.isFinite(Number(temperature)) ? Number(temperature) : 0.1,
+					maxTokens: Math.max(120, Number.isFinite(Number(maxTokens)) ? Number(maxTokens) : Number(cfg.maxTokens || 350)),
+					system: String(system || ""),
+					user: String(user || ""),
+				});
+
+				_dbgStore({ at: now(), prefix: String(prefix || "AGENT"), cfg: safeCfg, req: safeReq });
+				try {
+					if (globalThis && globalThis.console && typeof globalThis.console.log === "function") {
+						globalThis.console.log(`[${String(prefix || "AGENT")}] prompt`, { cfg: safeCfg, req: safeReq });
+					}
+				} catch {}
 			}
 		} catch {}
 
@@ -1137,6 +1567,20 @@ export function createAgentJsonRunner({
 
 		const parsed = _safeJsonParse(text);
 		const res = { ok: true, text, parsed, meta };
+
+		try {
+			const logPrompts = _shouldLogPrompts(cfg, { logRequest });
+			if (logPrompts) {
+				const safeParsed = _redactDeep(parsed);
+				_dbgStore({ at: now(), prefix: String(prefix || "AGENT"), res: safeParsed });
+				try {
+					if (globalThis && globalThis.console && typeof globalThis.console.log === "function") {
+						globalThis.console.log(`[${String(prefix || "AGENT")}] response`, safeParsed);
+					}
+				} catch {}
+			}
+		} catch {}
+
 		if (ck) _cacheSet(ck, res);
 		return res;
 	}
