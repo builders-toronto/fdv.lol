@@ -299,9 +299,10 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-Narratives + market health signals (RPC-only)
+feat: add onchain labels + Honeypot Watch KPI; wire KPIs into Agent Gary; add gary-predictions landing page;
 
-Add narrative bucket mapping for mints
-Track stablecoin supply deltas via RPC (USDC/USDT/etc/etc) with local time series
-Sample stable health during tick()
-Send marketHealth + narrative.bucket in Gary buy signals
+Introduce neutral onchain labels (Token-2022, mint/freeze authority) surfaced in UI and prompts;
+Wire KPI bundle/signals into Agent Gary decision payloads to reduce prompt bloat and improve context;
+Improve onchain “honeypot” detection and reframe output as labels (less anchoring, still risk-aware);
+Start Honeypot Watch KPI for users;
+Add initial landing page/first commit for the gary-predictions model;
