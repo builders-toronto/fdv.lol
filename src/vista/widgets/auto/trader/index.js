@@ -91,6 +91,9 @@ import { createRoundtripEdgeEstimator } from "../lib/honeypot.js";
 
 import { computeEdgeCaseCostLamports, lamportsToSol } from "../lib/edgeCase.js";
 
+import { getNarrativeBucketForMint } from "../lib/narratives/buckets.js";
+import { createStablecoinHealthTracker } from "../lib/market/stablecoinHealth.js";
+
 import { createDustCacheStore } from "../lib/stores/dustCacheStore.js";
 import { createPosCacheStore } from "../lib/stores/posCacheStore.js";
 import { createBuySeedStore } from "../lib/stores/buySeedStore.js";
@@ -3358,6 +3361,56 @@ export async function getConn() {
     log(`RPC connection ready -> ${url} ${redactHeaders(headers)}`, 'info');
   }
   return conn;
+}
+
+let _stableHealth = null;
+function getStableHealthTracker() {
+  try {
+    if (_stableHealth) return _stableHealth;
+    _stableHealth = createStablecoinHealthTracker({
+      getConn,
+      loadWeb3,
+      nowFn: () => Date.now(),
+      storageKey: "fdv_stable_health_v1",
+      minSampleGapMs: 90_000,
+      maxPointsPerMint: 96,
+      commitment: "confirmed",
+    });
+    return _stableHealth;
+  } catch {
+    return null;
+  }
+}
+
+let _lastStableSampleAt = 0;
+async function maybeSampleStableHealth({ force = false } = {}) {
+  try {
+    const t = now();
+    const gap = 90_000;
+    if (!force && (t - _lastStableSampleAt) < gap) return;
+    _lastStableSampleAt = t;
+    const tr = getStableHealthTracker();
+    if (!tr) return;
+    await tr.sample({ force });
+  } catch {}
+}
+
+function getMarketHealthSummary() {
+  try {
+    const tr = getStableHealthTracker();
+    if (!tr) return null;
+    const s = tr.summarize({ windowMs: 6 * 60 * 60_000 });
+    if (!s || s.ok !== true) return null;
+    return {
+      stableWindowMins: Math.round(Number(s.windowMs || 0) / 60000),
+      stableDeltaUi: Number.isFinite(Number(s.deltaUi)) ? Number(s.deltaUi) : null,
+      stableRatePerHourUi: Number.isFinite(Number(s.ratePerHourUi)) ? Number(s.ratePerHourUi) : null,
+      riskScore01: Number.isFinite(Number(s.riskScore01)) ? Number(s.riskScore01) : 0,
+      mintsTracked: Number(s.mintsTracked || 0),
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function _getMultipleAccountsInfoBatched(conn, pubkeys, { commitment = "processed", batchSize = 95, kind = "gmai" } = {}) {
@@ -7114,6 +7167,8 @@ async function tick() {
   // const endIn = state.endAt ? ((state.endAt - now())/1000).toFixed(0) : "0";
   if (!state.enabled) return;
 
+  try { await maybeSampleStableHealth({ force: false }); } catch {}
+
   traceOnce(
     "tick:alive",
     `tick alive (enabled=1, inFlight=${_inFlight ? 1 : 0}, sellEvalRunning=${_sellEvalRunning ? 1 : 0})`,
@@ -8374,6 +8429,10 @@ async function tick() {
                 proposedBuySolUi: buySol,
                 proposedSlippageBps: dynSlip,
                 signals: {
+                  marketHealth: getMarketHealthSummary(),
+                  narrative: {
+                    bucket: getNarrativeBucketForMint(mint),
+                  },
                   agentRisk: _riskLevel,
                   fullAiControl: !!fullAiControl,
                   gates: agentGates,

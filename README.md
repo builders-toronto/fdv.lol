@@ -298,3 +298,10 @@ fdv.lol is open-source and community-driven. You can help by:
 ---
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
+
+Narratives + market health signals (RPC-only)
+
+Add narrative bucket mapping for mints
+Track stablecoin supply deltas via RPC (USDC/USDT/etc/etc) with local time series
+Sample stable health during tick()
+Send marketHealth + narrative.bucket in Gary buy signals
