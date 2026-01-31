@@ -9,6 +9,7 @@ import { ingestSnapshot } from './metrics/ingest.js';
 
 // Addons (KPI)
 import './metrics/kpi/pumping.js';
+// import './metrics/kpi/honey.js';
 import './metrics/kpi/three.js';
 import './metrics/kpi/performers.js';
 import './metrics/kpi/liquid.js';

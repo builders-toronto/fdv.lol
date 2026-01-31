@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="description" content="Request access to gary-predictions-v1: an early-access predictions layer for fdv.lol Auto Trader + Agent Gary." />
+		<meta name="robots" content="index,follow" />
+		<link rel="icon" href="./assets/icons/icon.png" type="image/png" />
+		<link rel="alternate icon" href="./assets/icons/fdv.lol.ico" />
+
+		<meta property="og:title" content="fdv.lol - Gary Predictions" />
+		<meta property="og:description" content="Early access: gary-predictions-v1 - a predictions layer for Agent Gary + Auto Trader." />
+		<meta property="og:type" content="website" />
+		<meta property="og:image" content="./assets/meta/fdv.lol.meta.png" />
+		<meta property="og:image:alt" content="fdv.lol Agent Gary" />
+		<meta name="twitter:card" content="summary_large_image" />
+		<meta name="twitter:title" content="fdv.lol - Gary Predictions" />
+		<meta name="twitter:description" content="Early access: gary-predictions-v1 - a predictions layer for Agent Gary + Auto Trader." />
+		<meta name="twitter:image" content="./assets/meta/fdv.lol.meta.png" />
+		<meta name="theme-color" content="#050607" />
+		<title>fdv.lol - Gary Predictions</title>
+
+		<script>
+			document.documentElement.classList.add('js');
+		</script>
+		<link rel="stylesheet" href="./assets/styles/onboard.css" />
+	</head>
+
+	<body>
+		<div class="topbar">
+			<div class="wrap">
+				<div class="topbar-inner">
+					<nav class="nav" aria-label="Primary">
+						<a href="https://fdv.lol">fdv.lol</a>
+						<a href="#what">Overview</a>
+						<a href="#platforms">Platforms</a>
+						<a href="#capabilities">Capabilities</a>
+						<a href="#model">Model</a>
+						<a href="#whats-new">What's new</a>
+						<a href="#get-access">Get access</a>
+						<a href="https://github.com/builders-toronto/fdv.lol/blob/main/src/vista/widgets/auto/docs/guide.md" target="_blank" rel="noreferrer">Guide</a>
+					</nav>
+				</div>
+			</div>
+		</div>
+
+		<main id="top">
+			<header class="hero">
+				<div class="wrap">
+					<div class="hero-grid">
+						<div>
+							<h1>gary-predictions-v1: the memecoin entry brain.</h1>
+							<p class="sub">
+								A new predictions layer for Auto Trader + Agent Gary.
+								It reads the market in real time, compresses signals into a single opinion, and explains itself.
+								Built to be the sharpest memecoin trading assistant on the market - while staying honest about risk.
+							</p>
+
+							<div class="cta-row">
+								<a class="btn primary" href="#get-access">Request access</a>
+								<a class="btn ghost" href="#capabilities">See capabilities</a>
+								<a class="btn ghost" href="./index.html">Read onboarding</a>
+							</div>
+
+							<div class="fine">
+								Early access. Experimental software. No guarantees.
+								Trading is risky and you can lose money - start small, use a burner wallet, verify links.
+							</div>
+
+							<div class="grid3" aria-label="Highlights">
+								<div class="pill"><b>Real-time</b></div>
+								<div class="pill"><b>Explainable</b></div>
+								<div class="pill"><b>Execution-aware</b></div>
+							</div>
+						</div>
+
+						<aside class="card card-pad termwin terminal" aria-label="Live preview">
+							<div class="hdr">
+								<div class="dots" aria-hidden="true"><i></i><i></i><i></i></div>
+								<div>preview</div>
+							</div>
+							<pre><span class="prompt">$</span> gary-predictions-v1
+
+input (computed from mint + market):
+  mint: &lt;token&gt;
+  leader series: momentum, score slope, liquidity/volume
+  execution snapshot: quote quality + fees + route risk
+  safety scan: anomaly + rug signals
+
+decision: BUY
+confidence: 0.78
+risk: 0.32
+
+why:
+  - strong leader momentum + improving score slope
+  - liquidity clears minimums; route looks clean
+  - anomaly scan green; no obvious rug signals
+
+note: Always verify; nothing is guaranteed.</pre>
+						</aside>
+
+					</div>
+				</div>
+			</header>
+
+			<section id="what">
+				<div class="wrap">
+					<h2 class="section-title">Overview</h2>
+					<p class="section-sub">
+						gary-predictions-v1 is a new decision layer that aims to turn chaos into clarity.
+						Think: fewer random entries, more consistent criteria, and a brutally clear explanation when it says "no."
+					</p>
+
+					<div class="two">
+						<div class="card card-pad">
+							<ul class="list">
+								<li class="li">
+									<div class="badge">✓</div>
+									<div>
+										<h3>One answer you can act on</h3>
+										<p>Converts raw market + chain signals into a bounded decision: buy / wait / skip, plus confidence and risk.</p>
+									</div>
+								</li>
+								<li class="li">
+									<div class="badge">✓</div>
+									<div>
+										<h3>Explainable by design</h3>
+										<p>Every call includes a short "why" so you can tune settings with intent, not superstition.</p>
+									</div>
+								</li>
+								<li class="li">
+									<div class="badge">✓</div>
+									<div>
+										<h3>Hard gates stay hard</h3>
+										<p>Predictions don't override safety. The engine still enforces route quality, liquidity, data readiness, and constraints.</p>
+									</div>
+								</li>
+							</ul>
+						</div>
+
+						<div class="card card-pad">
+							<h3 class="section-title" style="margin-bottom:8px;">Why it's different</h3>
+							<div class="notice">
+								<div><b>It's opinionated:</b> defaults are conservative; it's designed to skip aggressively when signals are weak.</div>
+								<div><b>It's execution-aware:</b> it cares about route friction and failure modes, not just "number go up."</div>
+								<div><b>It's aiming for elite:</b> built to be the best memecoin trading assistant in the game - without claiming magic.</div>
+							</div>
+							<div style="height:12px;"></div>
+							<p class="section-sub" style="margin-bottom:0;">
+								We're building it in public and rolling out access carefully while we validate data quality, stability, and failure modes.
+							</p>
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<section id="platforms">
+				<div class="wrap">
+					<h2 class="section-title">Available where you trade</h2>
+					<p class="section-sub">
+						No weird dashboards. gary-predictions-v1 is meant to live inside your workflow.
+					</p>
+					<div class="two">
+						<div class="card card-pad">
+							<ul class="list">
+								<li class="li">
+									<div class="badge">•</div>
+									<div>
+										<h3>fdv.lol Web</h3>
+										<p>Use it in the Auto Trader interface while the engine watches leaders and enforces gates.</p>
+									</div>
+								</li>
+								<li class="li">
+									<div class="badge">•</div>
+									<div>
+										<h3>Agent Gary mode</h3>
+										<p>Entries become approval-based: the bot won't buy unless Gary explicitly approves.</p>
+									</div>
+								</li>
+								<li class="li">
+									<div class="badge">•</div>
+									<div>
+										<h3>Early-access API (planned)</h3>
+										<p>Programmatic access for power users. Rollout is gated and rate-limited while we harden it.</p>
+									</div>
+								</li>
+							</ul>
+						</div>
+						<div class="card card-pad">
+							<div class="notice">
+								<div><b>Privacy:</b> no private keys are needed for predictions.</div>
+								<div><b>Safety:</b> all signing stays local; the engine owns execution.</div>
+								<div><b>Reality:</b> access is staged while we validate performance.</div>
+							</div>
+							<div style="height:12px;"></div>
+							<p class="section-sub" style="margin-bottom:0;">If you want in, request access below - we're onboarding in small cohorts.</p>
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<section id="capabilities">
+				<div class="wrap">
+					<h2 class="section-title">Capabilities</h2>
+					<p class="section-sub">
+						This isn't a "chat bot." It's a decision engine: real-time signals → bounded outputs → auditable reasons.
+					</p>
+					<div class="two">
+						<div class="card card-pad">
+							<ul class="list">
+								<li class="li">
+									<div class="badge">✓</div>
+									<div>
+										<h3>Realtime market read</h3>
+										<p>Tracks fast-changing leader dynamics and reacts to momentum shifts as they happen.</p>
+									</div>
+								</li>
+								<li class="li">
+									<div class="badge">✓</div>
+									<div>
+										<h3>Execution friction awareness</h3>
+										<p>Considers quote quality, fees, and failure modes so "good signals" don't turn into bad fills.</p>
+									</div>
+								</li>
+								<li class="li">
+									<div class="badge">✓</div>
+									<div>
+										<h3>Risk-forward posture</h3>
+										<p>Designed to skip when rug/anomaly signals are ambiguous - it doesn't need to be right every minute to be useful.</p>
+									</div>
+								</li>
+							</ul>
+						</div>
+						<div class="card card-pad">
+							<h3 class="section-title" style="margin-bottom:8px;">What it returns</h3>
+							<div class="terminal">
+								<div class="card-pad">
+									<div class="hdr">
+										<div class="dots" aria-hidden="true"><i></i><i></i><i></i></div>
+										<div>decision schema</div>
+									</div>
+									<pre><span class="prompt">$</span> predict --signals &lt;snapshot&gt;
+
+{
+  "action": "buy" | "wait" | "skip",
+  "confidence": 0.0..1.0,
+  "riskScore": 0.0..1.0,
+  "sizeHint": "small" | "normal" | "none",
+  "reason": "short explanation"
+}
+
+Outputs are bounded on purpose.</pre>
+								</div>
+							</div>
+							<p class="help" style="margin:12px 0 0 0;">The goal is consistency: clear answers, not vibes.</p>
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<section id="model">
+				<div class="wrap">
+					<h2 class="section-title">Model</h2>
+					<p class="section-sub">
+						<b>gary-predictions-v1</b> is a structured predictions model that consumes compact signals and returns a bounded JSON decision.
+						The goal is generalization: <b>any mint + current data → buy / wait / skip</b> guidance for entries.
+					</p>
+
+					<div class="card card-pad">
+						<ul class="list">
+							<li class="li">
+								<div class="badge">1</div>
+								<div>
+									<h3>Inputs</h3>
+									<p>Market regime, liquidity/volume, momentum, route friction, and anomaly/rug signals (no private keys).</p>
+								</div>
+							</li>
+							<li class="li">
+								<div class="badge">2</div>
+								<div>
+									<h3>Outputs</h3>
+									<p>Decision + confidence + risk + short explanation. Designed to be auditable and actionable.</p>
+								</div>
+							</li>
+							<li class="li">
+								<div class="badge">3</div>
+								<div>
+									<h3>Safety posture</h3>
+									<p>Predictions do not override hard gates. They inform entries; they do not force them.</p>
+								</div>
+							</li>
+						</ul>
+
+						<div style="height:12px;"></div>
+						<div class="notice">
+							<b>Disclosure:</b> This is research/education tooling and is not financial advice.
+							Any performance language is aspirational; nothing is guaranteed.
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<section id="whats-new">
+				<div class="wrap">
+					<h2 class="section-title">What's new</h2>
+					<p class="section-sub">A lightweight changelog while we ship v1.</p>
+					<div class="two" style="gap:24px;">
+						<details>
+							<summary>gary-predictions-v1 early access</summary>
+							<p>Rolling out cohort-by-cohort while we validate stability, quality, and safety gates in real conditions.</p>
+						</details>
+						<details>
+							<summary>Explainable decisions</summary>
+							<p>Every output includes a short rationale so you can see why a mint was approved or rejected.</p>
+						</details>
+						<details>
+							<summary>Execution-aware scoring</summary>
+							<p>We're prioritizing real-world fills: route quality and friction are part of the decision.</p>
+						</details>
+						<details>
+							<summary>Safety-first posture</summary>
+							<p>Hard gates remain enforced; the model informs entries but doesn't force them.</p>
+						</details>
+					</div>
+				</div>
+			</section>
+
+			<section id="get-access">
+				<div class="wrap">
+					<h2 class="section-title">Request early access</h2>
+					<p class="section-sub">
+						Join the early cohort for gary-predictions-v1. We'll email you when access is available and include setup guidance.
+					</p>
+
+					<div class="two">
+						<div class="card card-pad">
+							<h3 class="section-title section-sub" style="margin-bottom:8px;">Sign up</h3>
+							<form
+								class="form"
+								id="leadForm"
+								action="https://api.lfbuilders.ca/fdv/mail/inquiry"
+								method="post"
+							>
+								<input type="hidden" name="access_key" value="48ba9e0e-72b5-44c5-ab56-76b088276938" />
+								<input type="hidden" name="SERVICE" value="FDV.LOL - Gary Predictions (gary-predictions-v1) early access" />
+								<input type="hidden" id="redirect" name="redirect" value="https://fdv.lol" />
+								<input type="hidden" id="email_lc" name="email" value="" />
+
+								<div class="row">
+									<div class="field">
+										<label class="sr-only" for="email">Email</label>
+										<input id="email" name="EMAIL" type="email" placeholder="you@domain.com" autocomplete="email" inputmode="email" required />
+									</div>
+									<button class="btn primary" type="submit">Request access</button>
+								</div>
+
+								<div class="help">
+									By submitting, you agree to be contacted about early access and occasional safety/product updates.
+									<a href="./policy.html">Policy</a>.
+								</div>
+							</form>
+						</div>
+
+						<div class="card card-pad">
+							<h3 class="section-title" style="margin-bottom:8px;">What happens next</h3>
+							<ul class="list">
+								<li class="li">
+									<div class="badge">•</div>
+									<div>
+										<h3>Access email</h3>
+										<p>We'll send instructions when your access is enabled.</p>
+									</div>
+								</li>
+								<li class="li">
+									<div class="badge">•</div>
+									<div>
+										<h3>Safe setup</h3>
+										<p>We'll include the recommended two-wallet pattern and how to verify you're in the correct mode.</p>
+									</div>
+								</li>
+								<li class="li">
+									<div class="badge">•</div>
+									<div>
+										<h3>Start small</h3>
+										<p>Early access is for careful iteration: small balances, strict limits, and clear expectations.</p>
+									</div>
+								</li>
+							</ul>
+						</div>
+					</div>
+
+					<div style="height:14px;"></div>
+					<div class="notice">
+						<b>Reminder:</b> "Best on the market" is the target - not a promise.
+						We're building something exceptional, but you should assume volatility and risk.
+					</div>
+				</div>
+			</section>
+
+			<footer>
+				<div class="wrap">
+					<div class="footer-links">
+						<a href="https://fdv.lol" target="_blank" rel="noreferrer">fdv.lol</a>
+						<a href="https://github.com/builders-toronto/fdv.lol" target="_blank" rel="noreferrer">GitHub</a>
+						<a href="https://x.com/fdvlol" target="_blank" rel="noreferrer">X</a>
+						<a href="https://t.me/fdvlolgroup" target="_blank" rel="noreferrer">Telegram</a>
+						<a href="./policy.html">Policy</a>
+					</div>
+					<div style="margin-top:10px; opacity:.9;">© fdv.lol • Gary Predictions</div>
+					<div>
+						<strong>Disclosure:</strong> fdv.lol is a research/education tool and is not financial advice.
+						Trading is risky and you can lose money. Use a burner wallet, keep balances small, and verify everything.
+					</div>
+				</div>
+			</footer>
+		</main>
+
+		<script>
+			(function () {
+				var redirectInput = document.getElementById('redirect');
+				var emailInput = document.getElementById('email');
+				var emailLcInput = document.getElementById('email_lc');
+				var form = document.getElementById('leadForm');
+				if (!redirectInput) return;
+
+				try {
+					var url = new URL(window.location.href);
+					var basePath = url.pathname.replace(/predictions\.html?$/, '');
+					if (!basePath.endsWith('/')) basePath = basePath + '/';
+					redirectInput.value = url.origin + basePath + 'thanks.html';
+				} catch (_) {}
+
+				function syncEmail() {
+					if (emailLcInput && emailInput) emailLcInput.value = emailInput.value || '';
+				}
+				if (emailInput) {
+					emailInput.addEventListener('input', syncEmail);
+					emailInput.addEventListener('blur', syncEmail);
+				}
+				if (form) {
+					form.addEventListener('submit', syncEmail);
+				}
+			})();
+		</script>
+		<script>
+			(function () {
+				if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+				var els = [];
+				function pushAll(sel) {
+					var list = document.querySelectorAll(sel);
+					for (var i = 0; i < list.length; i++) els.push(list[i]);
+				}
+
+				pushAll('header.hero');
+				pushAll('section');
+				pushAll('footer');
+				pushAll('.card');
+				pushAll('.li');
+				pushAll('details');
+				pushAll('.pill');
+				pushAll('.notice');
+
+				var uniq = [];
+				for (var e = 0; e < els.length; e++) {
+					if (els[e] && uniq.indexOf(els[e]) === -1) uniq.push(els[e]);
+				}
+
+				for (var j = 0; j < uniq.length; j++) {
+					uniq[j].classList.add('reveal');
+					if (uniq[j].tagName === 'HEADER') uniq[j].classList.add('reveal--slow');
+				}
+
+				var lists = document.querySelectorAll('ul.list');
+				for (var li = 0; li < lists.length; li++) {
+					var items = lists[li].children;
+					for (var k = 0; k < items.length; k++) {
+						if (items[k] && items[k].classList && items[k].classList.contains('li')) {
+							items[k].style.setProperty('--reveal-delay', String(Math.min(k * 70, 350)) + 'ms');
+							items[k].classList.add('reveal--fast');
+						}
+					}
+				}
+
+				if (!('IntersectionObserver' in window)) {
+					for (var t = 0; t < uniq.length; t++) uniq[t].classList.add('is-visible');
+					return;
+				}
+
+				var io = new IntersectionObserver(function (entries) {
+					for (var i = 0; i < entries.length; i++) {
+						var entry = entries[i];
+						if (entry.isIntersecting) {
+							entry.target.classList.add('is-visible');
+							io.unobserve(entry.target);
+						}
+					}
+				}, { threshold: 0.12, rootMargin: '0px 0px -10% 0px' });
+
+				for (var u = 0; u < uniq.length; u++) io.observe(uniq[u]);
+			})();
+		</script>
+	</body>
+</html>

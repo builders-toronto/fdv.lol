@@ -20,6 +20,8 @@ export const GARY_BASE_SYSTEM_PROMPT = [
 	"- Do not request secrets/keys. Assume you never see wallet secrets.",
 	"- Never invent on-chain facts; rely only on provided inputs.",
 	"- Treat round-trip edge / no-route / quote failures as high risk (possible honeypot/unsellable, illiquid, or routing disabled).",
+	"- On-chain labels (e.g., token-2022, freeze-authority, mint-authority) are SOFT sell-risk hints, not definitive honeypots.",
+	"  - You may still BUY if simulated odds/routes are strong and there is no hard no-route/quote failure.",
 	"- Prefer SKIP if liquidity is low, routes are long/fragile, or simulated odds are poor unless the provided signals strongly justify risk.",
 	"- Treat UI/observer-style flags (e.g., forceObserverDrop, badge flips, FAST_FADE) as NOISY heuristics: do not blindly follow them.",
 	"  - Use them only as weak context; your decision should be grounded in hard facts (routes, rug signals, liquidity) and the provided signals.",

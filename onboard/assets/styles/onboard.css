@@ -272,7 +272,9 @@ h1 {
 .termwin {
     position: relative;
     overflow: hidden;
+    margin: 5px;
 }
+
 .termwin::before {
     content: "";
     position: absolute;
@@ -452,7 +454,7 @@ section { padding: var(--section-pad) 0; }
     color: rgba(214,255,238,.82);
 }
 
-.two {
+/* .two {
     display: flex;
     flex-wrap: wrap;
     gap: 14px;
@@ -460,6 +462,10 @@ section { padding: var(--section-pad) 0; }
 .two > * {
     flex: 1 1 420px;
     min-width: 0;
+} */
+
+.two details {
+    margin-top: 20px;
 }
 
 @media (max-width: 800px) {

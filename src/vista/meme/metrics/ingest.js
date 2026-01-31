@@ -4,6 +4,127 @@ const ADDONS = new Map();
 let booted = false;
 let latestSnapshot = [];
 
+function normMint(m) {
+  return String(m || '').trim();
+}
+
+function truncStr(v, maxLen = 140) {
+  const s = String(v ?? '').trim();
+  if (!s) return '';
+  return s.length > maxLen ? (s.slice(0, Math.max(0, maxLen - 1)) + '…') : s;
+}
+
+function numOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function findSnapshotItemByMint(mint) {
+  const m = normMint(mint);
+  if (!m) return null;
+  const snap = Array.isArray(latestSnapshot) ? latestSnapshot : [];
+  for (const it of snap) {
+    const im = normMint(it?.mint ?? it?.id ?? '');
+    if (im && im === m) return it;
+  }
+  return null;
+}
+
+function compactSnapshotItemForAgent(it) {
+  if (!it || typeof it !== 'object') return null;
+  // Keep this intentionally tiny: scalars + short strings only.
+  const mint = normMint(it?.mint ?? it?.id ?? '');
+  if (!mint) return null;
+  return {
+    mint,
+    symbol: truncStr(it?.symbol, 24),
+    name: truncStr(it?.name, 48),
+    pairUrl: truncStr(it?.pairUrl, 140),
+    priceUsd: numOrNull(it?.priceUsd),
+    chg5m: numOrNull(it?.chg5m ?? it?.change5m),
+    chg1h: numOrNull(it?.chg1h ?? it?.change1h),
+    chg24: numOrNull(it?.chg24 ?? it?.change24h ?? it?.change?.h24),
+    vol24: numOrNull(it?.vol24 ?? it?.vol24hUsd ?? it?.volume?.h24),
+    liqUsd: numOrNull(it?.liqUsd ?? it?.liquidityUsd),
+    tx24: numOrNull(it?.tx24 ?? it?.txns?.h24),
+    mcap: numOrNull(it?.fdv ?? it?.marketCap),
+    // Some pipelines include these; safe to pass if present.
+    buys24: numOrNull(it?.buys24 ?? it?.txns?.h24?.buys),
+    sells24: numOrNull(it?.sells24 ?? it?.txns?.h24?.sells),
+  };
+}
+
+function compactAddonItemForAgent(row) {
+  if (!row || typeof row !== 'object') return null;
+  const mint = normMint(row?.mint ?? row?.id ?? '');
+  if (!mint) return null;
+  return {
+    mint,
+    metric: numOrNull(row?.metric ?? row?.score ?? row?.smq),
+    score01: numOrNull(row?.score01 ?? row?.alpha01 ?? row?.quality01),
+    badge: truncStr(row?.badge ?? row?.tag ?? '', 32),
+    note: truncStr(row?.note ?? row?.reason ?? row?.msg ?? '', 140),
+  };
+}
+
+export function getKpiCompactRowForMint(mint) {
+  try {
+    const it = findSnapshotItemByMint(mint);
+    return compactSnapshotItemForAgent(it);
+  } catch {
+    return null;
+  }
+}
+
+export function getKpiAddonMintSignals(mint, { freshMs = 30_000, maxAddons = 8 } = {}) {
+  try {
+    const m = normMint(mint);
+    if (!m) return null;
+    const t = now();
+    const out = {};
+    let n = 0;
+    for (const [id, a] of ADDONS) {
+      if (n >= Math.max(0, Number(maxAddons) | 0)) break;
+      const meta = a?._meta || {};
+      const p = meta.lastPayload;
+      const at = Number(meta.lastPayloadAt || 0);
+      if (!p || !(at > 0)) continue;
+      if (Number.isFinite(Number(freshMs)) && freshMs > 0 && (t - at) > freshMs) continue;
+      const items = Array.isArray(p?.items) ? p.items : [];
+      if (!items.length) continue;
+      const row = items.find((r) => normMint(r?.mint ?? r?.id ?? '') === m) || null;
+      if (!row) continue;
+      const compact = compactAddonItemForAgent(row);
+      if (!compact) continue;
+      out[id] = {
+        at,
+        title: truncStr(p?.title || a?.def?.title || a?.def?.label || id, 36),
+        metricLabel: truncStr(p?.metricLabel || a?.def?.metricLabel || '', 20),
+        ...compact,
+      };
+      n++;
+    }
+    return Object.keys(out).length ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+export function getKpiMintBundle(mint, { includeSnapshot = true, includeAddons = true } = {}) {
+  try {
+    const m = normMint(mint);
+    if (!m) return null;
+    return {
+      mint: m,
+      at: Date.now(),
+      snapshot: includeSnapshot ? getKpiCompactRowForMint(m) : null,
+      addons: includeAddons ? getKpiAddonMintSignals(m) : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 const DEFAULT_THROTTLE_MS = 200;
 
 function now() { return performance.now ? performance.now() : Date.now(); }
@@ -91,6 +212,10 @@ function pushAll() {
       const payload = a.computePayload?.(latestSnapshot);
       if (payload && typeof payload === 'object') {
         setAddonData(id, payload);
+        try {
+          a._meta.lastPayload = payload;
+          a._meta.lastPayloadAt = now();
+        } catch {}
         markSent(a);
       }
     } catch {}
