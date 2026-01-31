@@ -2122,6 +2122,18 @@ function _agentConfigScanKeyHints(keys = AGENT_CONFIG_SCAN_KEYS) {
     for (const k of keys) {
       const s = CONFIG_SCHEMA?.[k];
       if (!s) continue;
+      // Guardrail: our observed best average roundtrip edge threshold is negative.
+      // Keep the agent's suggested minNetEdgePct in a tight range so it doesn't
+      // over-restrict entries (e.g. setting it positive will block almost everything).
+      if (k === "minNetEdgePct") {
+        out[k] = {
+          type: "number",
+          def: -2.6,
+          min: -3.4,
+          max: -2.0,
+        };
+        continue;
+      }
       out[k] = {
         type: String(s.type || ""),
         def: s.def,
@@ -2240,6 +2252,33 @@ function _applyAgentConfigPatch(patch = {}, { source = "agent" } = {}) {
       picked[k] = v;
       keys.push(k);
     }
+    if (!keys.length) return { applied: false, keys: [] };
+
+    const _dropKey = (k) => {
+      try {
+        const idx = keys.indexOf(k);
+        if (idx >= 0) keys.splice(idx, 1);
+        delete picked[k];
+      } catch {}
+    };
+
+    if ("minNetEdgePct" in picked) {
+      const raw = Number(picked.minNetEdgePct);
+      if (!Number.isFinite(raw)) {
+        _dropKey("minNetEdgePct");
+      } else {
+        const min = -3.4;
+        const max = -2.0;
+        const clamped = Math.min(max, Math.max(min, raw));
+        if (clamped !== raw) {
+          picked.minNetEdgePct = clamped;
+          log(`[AGENT GARY] config clamp (${source}) minNetEdgePct ${raw.toFixed(2)}%→${clamped.toFixed(2)}% (target ${min.toFixed(2)}..${max.toFixed(2)})`, "warn");
+        } else {
+          picked.minNetEdgePct = raw;
+        }
+      }
+    }
+
     if (!keys.length) return { applied: false, keys: [] };
 
     state = normalizeState({ ...state, ...picked });
