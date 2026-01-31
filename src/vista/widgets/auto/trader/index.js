@@ -8053,8 +8053,6 @@ async function tick() {
       }
 
       try {
-        // Data readiness gate: always require a few observations + leader-series points before buying.
-        // Agent Gary can tune sizing/slippage and veto, but should not bypass missing-data gates.
         if (state.buyAnalysisEnabled !== false) {
           const st = _noteBuyCandidateAndCheckReady(mint);
           try {
@@ -8262,43 +8260,43 @@ async function tick() {
         if (mode !== "off") {
           const hp = await _assessMintOnchainSellRisk(mint, { cacheMs: Number(state.honeypotOnchainCacheMs || 0) || (10 * 60 * 1000) });
 
-          const blockToken2022 = (state.honeypotBlockToken2022 !== false);
-          const hardBlockToken2022 = (state.honeypotHardBlockToken2022 !== false);
+          const warnToken2022 = (state.honeypotBlockToken2022 !== false);
           const blockFreezeAuth = (state.honeypotBlockFreezeAuthority !== false);
 
           const hitToken2022 = !!(hp?.ok && hp?.flags?.token2022);
           const hitFreeze = !!(hp?.ok && hp?.flags?.hasFreezeAuthority);
-          // In full AI control, do not hard-block Token-2022 at this gate; let the agent see it and decide.
-          const enforceToken2022 = !!(hardBlockToken2022 && blockToken2022 && hitToken2022 && !fullAiControl);
 
-          const reasons = [];
-          if (blockToken2022 && hitToken2022) reasons.push("token-2022");
-          if (blockFreezeAuth && hitFreeze) reasons.push(`freezeAuthority=${String(hp?.freezeAuthority || "?").slice(0, 4)}…`);
+          const warnReasons = [];
+          const enforceReasons = [];
+          if (warnToken2022 && hitToken2022) warnReasons.push("token-2022");
+          if (blockFreezeAuth && hitFreeze) enforceReasons.push(`freezeAuthority=${String(hp?.freezeAuthority || "?").slice(0, 4)}…`);
+
+          const reasons = [...warnReasons, ...enforceReasons];
 
           try {
             agentGates.honeypotOnchain = {
               on: true,
               mode,
-              ok: !(reasons.length > 0),
+              ok: !(enforceReasons.length > 0),
               program: hp?.program || null,
               hasFreezeAuthority: !!hitFreeze,
               hasMintAuthority: !!(hp?.ok && hp?.flags?.hasMintAuthority),
               reasons,
-              hardBlock: enforceToken2022 ? ["token-2022"] : [],
+              hardBlock: [],
             };
           } catch {}
 
           if (reasons.length > 0) {
-            const msg = enforceToken2022
-              ? `Skip ${mint.slice(0,4)}… (onchain hard gate: token-2022)`
-              : `Skip ${mint.slice(0,4)}… (onchain risk: ${reasons.join(", ")})`;
-            if (mode === "warn") log(msg.replace(/^Skip /, "Onchain warn "), "warn");
-            else log(msg, "warn");
+            const shouldSkip = (enforceReasons.length > 0 && mode === "enforce");
+            const msg = shouldSkip
+              ? `Skip ${mint.slice(0,4)}… (onchain risk: ${enforceReasons.join(", ")})`
+              : `Onchain warn ${mint.slice(0,4)}… (${reasons.join(", ")})`;
+            log(msg, "warn");
 
             if (hitToken2022) {
               try { _kpiLabelMintOnce(mint, { text: "TOKEN-2022", cls: "warn" }, { ttlMs: 30 * 60 * 1000, cls: "warn" }, 15_000); } catch {}
-              // Token-2022 is currently treated as unsupported by the auto-trader; not necessarily a "honeypot".
               try { _kpiLabelMintOnce(mint, { text: "AUTO", cls: "warn" }, { ttlMs: 30 * 60 * 1000, cls: "warn" }, 15_000); } catch {}
+              try { _kpiLabelMintOnce(mint, { text: "HIGH", cls: "warn" }, { ttlMs: 30 * 60 * 1000, cls: "warn" }, 20_000); } catch {}
             }
             if (hitFreeze && blockFreezeAuth) {
               const fa = String(hp?.freezeAuthority || "").trim();
@@ -8306,11 +8304,7 @@ async function tick() {
               try { _kpiLabelMintOnce(mint, { text: short ? `FREEZE ${short}` : "FREEZE AUTH", cls: "warn" }, { ttlMs: 30 * 60 * 1000, cls: "warn" }, 15_000); } catch {}
             }
 
-            if (enforceToken2022) {
-              // try { setMintTrashBlacklist(mint, 30 * 24 * 60 * 60 * 1000, "honeypot:token-2022"); } catch {}
-              try { _kpiLabelMintOnce(mint, { text: "HIGH", cls: "warn" }, { ttlMs: 30 * 60 * 1000, cls: "warn" }, 20_000); } catch {}
-            }
-            if (mode === "enforce" || enforceToken2022) continue;
+            if (shouldSkip) continue;
           }
         }
       } catch {}

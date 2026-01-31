@@ -22,19 +22,85 @@ function _safeJsonParse(s) {
 	} catch {
 		// Heuristic recovery: strip code fences / surrounding prose and parse the first JSON object/array.
 		try {
+			const _stripTrailingCommas = (t) => {
+				try {
+					return String(t || "").replace(/,\s*([}\]])/g, "$1");
+				} catch {
+					return String(t || "");
+				}
+			};
+			const _balanceClosers = (t) => {
+				try {
+					let inStr = false;
+					let esc = false;
+					let openObj = 0;
+					let openArr = 0;
+					for (let i = 0; i < t.length; i++) {
+						const ch = t[i];
+						if (inStr) {
+							if (esc) { esc = false; continue; }
+							if (ch === "\\") { esc = true; continue; }
+							if (ch === '"') { inStr = false; continue; }
+							continue;
+						}
+						if (ch === '"') { inStr = true; continue; }
+						if (ch === "{") openObj++;
+						else if (ch === "}") openObj = Math.max(0, openObj - 1);
+						else if (ch === "[") openArr++;
+						else if (ch === "]") openArr = Math.max(0, openArr - 1);
+					}
+					let out = t;
+					// Close arrays first, then objects.
+					if (openArr) out += "]".repeat(openArr);
+					if (openObj) out += "}".repeat(openObj);
+					return out;
+				} catch {
+					return String(t || "");
+				}
+			};
+			const _tryRepairParse = (t) => {
+				try {
+					let u = String(t || "");
+					u = _stripTrailingCommas(u);
+					u = _balanceClosers(u);
+					u = _stripTrailingCommas(u);
+					return JSON.parse(u);
+				} catch {
+					return null;
+				}
+			};
+
 			let t = String(s || "");
 			// ```json ... ``` or ``` ... ```
 			t = t.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "");
 			const firstObj = t.indexOf("{");
 			const lastObj = t.lastIndexOf("}");
 			if (firstObj >= 0 && lastObj > firstObj) {
-				return JSON.parse(t.slice(firstObj, lastObj + 1));
+				const slice = t.slice(firstObj, lastObj + 1);
+				try { return JSON.parse(slice); } catch {}
+				const repaired = _tryRepairParse(slice);
+				if (repaired) return repaired;
 			}
 			const firstArr = t.indexOf("[");
 			const lastArr = t.lastIndexOf("]");
 			if (firstArr >= 0 && lastArr > firstArr) {
-				return JSON.parse(t.slice(firstArr, lastArr + 1));
+				const slice = t.slice(firstArr, lastArr + 1);
+				try { return JSON.parse(slice); } catch {}
+				const repaired = _tryRepairParse(slice);
+				if (repaired) return repaired;
 			}
+
+			// Last chance: attempt repair on any leading '{'/'[' content, even if truncated.
+			try {
+				if (firstObj >= 0) {
+					const repaired = _tryRepairParse(t.slice(firstObj));
+					if (repaired) return repaired;
+				}
+				if (firstArr >= 0) {
+					const repaired = _tryRepairParse(t.slice(firstArr));
+					if (repaired) return repaired;
+				}
+			} catch {}
 		} catch {}
 		return null;
 	}
@@ -929,16 +995,22 @@ export function createAutoTraderAgentDriver({
 		const options = (opts && typeof opts === "object") ? opts : {};
 		const promptLogOn = _shouldLogPrompts(cfgN);
 
-		const key = (() => {
+		const { logKey, cacheKey, cacheEnabled } = (() => {
 			try {
-				const mint = String(payload?.mint || payload?.targetMint || "");
-				const ck = String(payload?.cacheKey || options?.cacheKey || "");
-				return `${kind}:${mint || ck || "global"}`;
+				const mint = String(payload?.mint || payload?.targetMint || "").trim();
+				const rawCk = String(payload?.cacheKey || options?.cacheKey || "").trim();
+				// Cache is opt-in via explicit cacheKey. Never cache sell decisions; they must reflect the latest market state.
+				const enabled = !!rawCk && String(kind || "") !== "sell";
+				return {
+					logKey: `${String(kind || "")}:${mint || rawCk || "global"}`,
+					cacheKey: rawCk ? `${String(kind || "")}:${rawCk}` : "",
+					cacheEnabled: enabled,
+				};
 			} catch {
-				return `${kind}:unknown`;
+				return { logKey: `${String(kind || "")}:unknown`, cacheKey: "", cacheEnabled: false };
 			}
 		})();
-		const prev = cache.get(key);
+		const prev = (cacheEnabled && cacheKey) ? cache.get(cacheKey) : null;
 		if (prev && (now() - prev.at) < CACHE_TTL_MS) {
 			try {
 				const cfg = normalizeLlmConfig(_getConfig() || {});
@@ -962,7 +1034,11 @@ export function createAutoTraderAgentDriver({
 		} catch {}
 
 		const state = options.omitState
-			? {}
+			? _redactDeep(("stateOverride" in options) ? options.stateOverride : {},
+				(String(cfgN?.provider || "").toLowerCase() === "gary")
+					? { maxDepth: 4, maxKeys: 90 }
+					: undefined
+			)
 			: _redactDeep(("stateOverride" in options) ? options.stateOverride : _getState(),
 				(String(cfgN?.provider || "").toLowerCase() === "gary")
 					? { maxDepth: 4, maxKeys: 90 }
@@ -1028,7 +1104,7 @@ export function createAutoTraderAgentDriver({
 					mint: mintFull || undefined,
 					model,
 					provider: String(cfgN?.provider || ""),
-					cacheKey: String(key || ""),
+					cacheKey: cacheEnabled ? String(cacheKey || "") : undefined,
 					request: {
 						system: String(systemPromptFinal || "").slice(0, 8000),
 						user: _redactDeep(userMsg, { maxDepth: 6, maxKeys: 220 }),
@@ -1112,7 +1188,7 @@ export function createAutoTraderAgentDriver({
 					}, { storageKey: TRAINING_CAPTURE.storageKey, maxEntries: TRAINING_CAPTURE.maxEntries, uploadToGary }).catch(() => {});
 				}
 			} catch {}
-			cache.set(key, { at: now(), res });
+			if (cacheEnabled && cacheKey) cache.set(cacheKey, { at: now(), res });
 			return res;
 		}
 
@@ -1198,7 +1274,7 @@ export function createAutoTraderAgentDriver({
 				} catch {}
 			}
 		} catch {}
-		cache.set(key, { at: now(), res });
+		if (cacheEnabled && cacheKey) cache.set(cacheKey, { at: now(), res });
 		return res;
 	}
 
@@ -1372,28 +1448,48 @@ export function createAutoTraderAgentDriver({
 			const first = await _run("config_scan", payload, {
 				cacheKey: "startup",
 				omitState: true,
-				temperature: 0.1,
-				maxTokens: 260,
+				temperature: 0.08,
+				maxTokens: 700,
 				stateOverride: stateSummary && typeof stateSummary === "object" ? stateSummary : {},
 			});
 
-			// Retry once if the model produced truncated/invalid JSON.
-			if (first && first.ok === false && String(first.err || "") === "invalid_json") {
+			let res = first;
+
+			// Retry if the model produced truncated/invalid JSON.
+			if (res && res.ok === false && String(res.err || "") === "invalid_json") {
 				const payload2 = {
 					cacheKey: "startup_retry",
 					market: market && typeof market === "object" ? market : {},
 					allowedKeys: Array.isArray(allowedKeys) ? allowedKeys.slice(0, 80).map(String) : [],
-					note: (String(note || "").slice(0, 380) + "\nRetry: return minimal JSON, only keys you would change. No prose.").slice(0, 500),
+					note: (String(note || "").slice(0, 340) + "\nRetry: return ONLY valid JSON. Keep config <= 12 keys, only changed keys. Avoid trailing commas. Omit reason if possible.").slice(0, 500),
 				};
-				return await _run("config_scan", payload2, {
+				res = await _run("config_scan", payload2, {
 					cacheKey: "startup_retry",
 					omitState: true,
-					temperature: 0.05,
-					maxTokens: 320,
+					temperature: 0.03,
+					maxTokens: 900,
 					stateOverride: stateSummary && typeof stateSummary === "object" ? stateSummary : {},
 				});
 			}
-			return first;
+
+			// Last resort: ultra-minimal schema (reduces completion size and truncation risk).
+			if (res && res.ok === false && String(res.err || "") === "invalid_json") {
+				const payload3 = {
+					cacheKey: "startup_retry_min",
+					market: market && typeof market === "object" ? market : {},
+					allowedKeys: Array.isArray(allowedKeys) ? allowedKeys.slice(0, 60).map(String) : [],
+					note: "Return ONLY JSON: {action:'apply'|'skip', confidence:0..1, config?:{...}}. No reason field. config must have <= 10 keys from allowedKeys. No trailing commas.",
+				};
+				res = await _run("config_scan", payload3, {
+					cacheKey: "startup_retry_min",
+					omitState: true,
+					temperature: 0.02,
+					maxTokens: 650,
+					stateOverride: stateSummary && typeof stateSummary === "object" ? stateSummary : {},
+				});
+			}
+
+			return res;
 		},
 	};
 }
