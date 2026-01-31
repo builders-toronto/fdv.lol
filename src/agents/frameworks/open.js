@@ -17,6 +17,57 @@ export function createOpenAIChatClient({
 	const _fetch = typeof fetchFn === "function" ? fetchFn : (typeof fetch !== "undefined" ? fetch : null);
 	if (!_fetch) throw new Error("fetch unavailable");
 
+	// Responses API reasoning chaining (per-client, per-sessionKey).
+	const _responsesChains = new Map();
+	// Cache of which /responses params are supported per model to avoid repeat-400 retries.
+	const _responsesModelCaps = new Map();
+
+	function _capsKey() {
+		try {
+			return _normModel(m);
+		} catch {
+			return "";
+		}
+	}
+	function _getCaps() {
+		try {
+			const k = _capsKey();
+			if (!k) return { responseFormat: "unknown", include: "unknown", jsonSchema: "unknown" };
+			const v = _responsesModelCaps.get(k);
+			if (v && typeof v === "object") {
+				return {
+					responseFormat: v.responseFormat || "unknown",
+					include: v.include || "unknown",
+					jsonSchema: v.jsonSchema || "unknown",
+				};
+			}
+			return { responseFormat: "unknown", include: "unknown", jsonSchema: "unknown" };
+		} catch {
+			return { responseFormat: "unknown", include: "unknown", jsonSchema: "unknown" };
+		}
+	}
+	function _setCaps(patch = {}) {
+		try {
+			const k = _capsKey();
+			if (!k) return;
+			const prev = _getCaps();
+			_responsesModelCaps.set(k, {
+				responseFormat: patch.responseFormat || prev.responseFormat,
+				include: patch.include || prev.include,
+				jsonSchema: patch.jsonSchema || prev.jsonSchema,
+			});
+		} catch {}
+	}
+
+	function _extractResponseId(json) {
+		try {
+			const id = String(json?.id || json?.response?.id || json?.data?.id || "").trim();
+			return id;
+		} catch {
+			return "";
+		}
+	}
+
 	function _normModel(modelName) {
 		try {
 			return String(modelName || "").trim().toLowerCase();
@@ -228,7 +279,7 @@ export function createOpenAIChatClient({
 		}
 	}
 
-	function _buildBody({ system, user, temperature, maxTokens, verbosity, useMaxCompletionTokens, omitTemperature = false, omitResponseFormat = false }) {
+	function _buildBody({ system, user, temperature, maxTokens, verbosity, useMaxCompletionTokens, omitTemperature = false, omitResponseFormat = false, responseSchema = null, omitJsonSchema = false }) {
 		const body = {
 			model: m,
 			messages: [
@@ -240,7 +291,21 @@ export function createOpenAIChatClient({
 			body.verbosity = verbosity.trim();
 		}
 		if (!omitResponseFormat) {
-			body.response_format = { type: "json_object" };
+			const sch = (responseSchema && typeof responseSchema === "object") ? responseSchema : null;
+			const canSchema = !!sch && !omitJsonSchema && sch.schema && typeof sch.schema === "object";
+			if (canSchema) {
+				const name = String(sch.name || "fdv_schema").slice(0, 50) || "fdv_schema";
+				body.response_format = {
+					type: "json_schema",
+					json_schema: {
+						name,
+						strict: ("strict" in sch) ? !!sch.strict : true,
+						schema: sch.schema,
+					},
+				};
+			} else {
+				body.response_format = { type: "json_object" };
+			}
 		}
 		const canUseTemp = !omitTemperature && _supportsTemperature(m);
 		if (canUseTemp) {
@@ -264,21 +329,48 @@ export function createOpenAIChatClient({
 		}
 	}
 
-	function _buildResponsesBody({ system, user, temperature, maxTokens, verbosity, omitTemperature = false, omitResponseFormat = false }) {
+	function _buildResponsesBody({
+		system,
+		user,
+		temperature,
+		maxTokens,
+		verbosity,
+		omitTemperature = false,
+		omitResponseFormat = false,
+		responseSchema = null,
+		omitJsonSchema = false,
+		previousResponseId = "",
+		omitInclude = false,
+		includeEncryptedReasoning = false,
+	}) {
 		const body = {
 			model: m,
-			input: [
-				{ role: "developer", content: String(system || "") },
-				{ role: "user", content: String(user || "") },
-			],
+			instructions: String(system || ""),
+			input: String(user || ""),
 		};
-		// Reasoning models (GPT-5 / o*) generally behave better via Responses API.
+		if (previousResponseId) body.previous_response_id = String(previousResponseId);
 		if (_isGpt5OrO(m)) {
 			body.reasoning = { effort: _mapVerbosityToEffort(verbosity) };
 		}
+		if (!omitInclude && includeEncryptedReasoning) {
+			body.include = ["reasoning.encrypted_content"];
+		}
 		if (!omitResponseFormat) {
-			// Some models/endpoints may not accept this; we retry without it.
-			body.response_format = { type: "json_object" };
+			const sch = (responseSchema && typeof responseSchema === "object") ? responseSchema : null;
+			const canSchema = !!sch && !omitJsonSchema && sch.schema && typeof sch.schema === "object";
+			if (canSchema) {
+				const name = String(sch.name || "fdv_schema").slice(0, 50) || "fdv_schema";
+				body.text = {
+					format: {
+						type: "json_schema",
+						name,
+						strict: ("strict" in sch) ? !!sch.strict : true,
+						schema: sch.schema,
+					},
+				};
+			} else {
+				body.text = { format: { type: "json_object" } };
+			}
 		}
 		if (!omitTemperature) {
 			// Some reasoning models may ignore/reject temperature; we retry without it.
@@ -289,7 +381,17 @@ export function createOpenAIChatClient({
 		return body;
 	}
 
-	async function chatJsonWithMeta({ system, user, temperature = 0.15, maxTokens = 950, verbosity = "low" } = {}) {
+	async function chatJsonWithMeta({
+		system,
+		user,
+		temperature = 0.15,
+		maxTokens = 950,
+		verbosity = "low",
+		reasoningSessionKey = "",
+		reasoningReset = false,
+		reasoningIncludeEncrypted = false,
+		responseSchema = null,
+	} = {}) {
 		const ctl = new AbortController();
 		const to = setTimeout(() => {
 			try { ctl.abort(); } catch {}
@@ -317,19 +419,51 @@ export function createOpenAIChatClient({
 
 			const preferred = _usesMaxCompletionTokens(m);
 			let omitTemperature = !_supportsTemperature(m);
-			let omitResponseFormat = false;
+			const caps = _getCaps();
+			let omitResponseFormat = (mode === "responses") ? (caps.responseFormat === "no") : false;
+			let omitInclude = (mode === "responses") ? (caps.include === "no") : false;
+			let omitJsonSchema = (mode === "responses") ? (caps.jsonSchema === "no") : false;
 			let maxTokensLocal = maxTokens;
+
+			const sessionKey = (() => {
+				try {
+					const k = String(reasoningSessionKey || "").trim();
+					return k;
+				} catch {
+					return "";
+				}
+			})();
+			const shouldChain = mode === "responses" && !!sessionKey;
+			if (shouldChain && reasoningReset) {
+				try { _responsesChains.delete(sessionKey); } catch {}
+			}
+			const prevResponseId = (shouldChain && _responsesChains.has(sessionKey))
+				? String(_responsesChains.get(sessionKey)?.responseId || "").trim()
+				: "";
+			let usedPrevResponseId = prevResponseId;
 
 			const buildBody = () => {
 				if (mode === "responses") {
-					return _buildResponsesBody({ system, user, temperature, maxTokens: maxTokensLocal, verbosity, omitTemperature, omitResponseFormat });
+					return _buildResponsesBody({
+						system,
+						user,
+						temperature,
+						maxTokens: maxTokensLocal,
+						verbosity,
+						omitTemperature,
+						omitResponseFormat,
+						responseSchema,
+						omitJsonSchema,
+						previousResponseId: shouldChain ? usedPrevResponseId : "",
+						omitInclude,
+						includeEncryptedReasoning: !!reasoningIncludeEncrypted,
+					});
 				}
-				return _buildBody({ system, user, temperature, maxTokens: maxTokensLocal, verbosity, useMaxCompletionTokens: preferred, omitTemperature, omitResponseFormat });
+				return _buildBody({ system, user, temperature, maxTokens: maxTokensLocal, verbosity, useMaxCompletionTokens: preferred, omitTemperature, omitResponseFormat, responseSchema, omitJsonSchema });
 			};
 
 			let resp = await _fetch(endpoint, { ...baseReq, body: JSON.stringify(buildBody()) });
 
-			// Responses API fallback: if /responses isn't available in this environment, fall back to chat/completions.
 			if (mode === "responses" && !resp.ok && (resp.status === 404 || resp.status === 405)) {
 				const fallbackEndpoint = `${urlBase.replace(/\/$/, "")}/chat/completions`;
 				mode = "chat";
@@ -347,7 +481,10 @@ export function createOpenAIChatClient({
 				const txt = await resp.text().catch(() => "");
 				const wantsMaxCompletion = /max_completion_tokens/i.test(txt) || /Use\s+'max_completion_tokens'/i.test(txt);
 				const tempUnsupported = /temperature/i.test(txt) && /Only the default \(1\) value is supported/i.test(txt);
-				const responseFormatUnsupported = /response_format/i.test(txt) && /(unknown|unsupported|not allowed|unrecognized)/i.test(txt);
+				const responseFormatUnsupported = /(response_format|text\.format|text_format)/i.test(txt) && /(unknown|unsupported|not allowed|unrecognized|invalid)/i.test(txt);
+				const jsonSchemaUnsupported = responseFormatUnsupported && /(json_schema|json schema)/i.test(txt);
+				const includeUnsupported = /\binclude\b/i.test(txt) && /(unknown|unsupported|not allowed|unrecognized|invalid)/i.test(txt);
+				const prevIdRejected = /previous_response_id/i.test(txt) && /(unknown|invalid|not found|no such|not allowed)/i.test(txt);
 
 				// Retry 1: strip temperature if the model rejects it.
 				if (!omitTemperature && resp.status === 400 && tempUnsupported) {
@@ -357,12 +494,37 @@ export function createOpenAIChatClient({
 						const txtT = await resp.text().catch(() => "");
 						throw new Error(`OpenAI HTTP ${resp.status}: ${txtT.slice(0, 300)}`);
 					}
-				} else if (!omitResponseFormat && resp.status === 400 && responseFormatUnsupported) {
-					omitResponseFormat = true;
+				} else if (resp.status === 400 && responseFormatUnsupported) {
+					// Prefer falling back from json_schema -> json_object before disabling formatting entirely.
+					const wantsSchema = (responseSchema && typeof responseSchema === "object" && responseSchema.schema && typeof responseSchema.schema === "object");
+					if (wantsSchema && !omitJsonSchema) {
+						omitJsonSchema = true;
+						try { if (mode === "responses") _setCaps({ jsonSchema: "no" }); } catch {}
+					} else if (!omitResponseFormat) {
+						omitResponseFormat = true;
+						try { if (mode === "responses") _setCaps({ responseFormat: "no" }); } catch {}
+					}
 					resp = await _fetch(endpoint, { ...baseReq, body: JSON.stringify(buildBody()) });
 					if (!resp.ok) {
 						const txtF = await resp.text().catch(() => "");
 						throw new Error(`OpenAI HTTP ${resp.status}: ${txtF.slice(0, 300)}`);
+					}
+				} else if (!omitInclude && resp.status === 400 && includeUnsupported) {
+					omitInclude = true;
+					try { if (mode === "responses") _setCaps({ include: "no" }); } catch {}
+					resp = await _fetch(endpoint, { ...baseReq, body: JSON.stringify(buildBody()) });
+					if (!resp.ok) {
+						const txtI = await resp.text().catch(() => "");
+						throw new Error(`OpenAI HTTP ${resp.status}: ${txtI.slice(0, 300)}`);
+					}
+				} else if (shouldChain && usedPrevResponseId && resp.status === 400 && prevIdRejected) {
+					// Stale/invalid chain; clear and retry once without previous_response_id.
+					try { _responsesChains.delete(sessionKey); } catch {}
+					usedPrevResponseId = "";
+					resp = await _fetch(endpoint, { ...baseReq, body: JSON.stringify(buildBody()) });
+					if (!resp.ok) {
+						const txtP = await resp.text().catch(() => "");
+						throw new Error(`OpenAI HTTP ${resp.status}: ${txtP.slice(0, 300)}`);
 					}
 				} else {
 					// Chat Completions only: retry once with max_completion_tokens if required.
@@ -395,6 +557,17 @@ export function createOpenAIChatClient({
 			let json = await resp.json();
 			if (json?.error?.message) throw new Error(`OpenAI error: ${String(json.error.message).slice(0, 220)}`);
 			let usage = _extractUsageFromResponse(json);
+			try {
+				if (mode === "responses") {
+					if (!omitResponseFormat) _setCaps({ responseFormat: "yes" });
+					if (!omitJsonSchema && responseSchema && typeof responseSchema === "object" && responseSchema.schema) _setCaps({ jsonSchema: "yes" });
+					if (!omitInclude && !!reasoningIncludeEncrypted) _setCaps({ include: "yes" });
+				}
+			} catch {}
+			const responseId = _extractResponseId(json);
+			if (shouldChain && responseId) {
+				try { _responsesChains.set(sessionKey, { responseId, at: Date.now() }); } catch {}
+			}
 
 			let ext = _extractTextFromResponse(json);
 			let out = String(ext?.text || "");
@@ -434,6 +607,9 @@ export function createOpenAIChatClient({
 					requestId: reqId || "",
 					model: String(json?.model || m || ""),
 					estPromptTokens,
+					mode,
+					responseId: responseId || "",
+					previousResponseId: (shouldChain && prevResponseId) ? prevResponseId : "",
 				};
 			}
 
@@ -463,6 +639,9 @@ export function createOpenAIChatClient({
 									requestId: reqId || "",
 									model: String(jsonL?.model || json?.model || m || ""),
 									estPromptTokens,
+									mode,
+									responseId: responseId || "",
+									previousResponseId: (shouldChain && prevResponseId) ? prevResponseId : "",
 								};
 							}
 						}
@@ -487,12 +666,19 @@ export function createOpenAIChatClient({
 				const ext2 = _extractTextFromResponse(json2);
 				const out2 = String(ext2?.text || "");
 				if (out2 && out2.trim()) {
+					const responseId2 = _extractResponseId(json2);
+					if (shouldChain && responseId2) {
+						try { _responsesChains.set(sessionKey, { responseId: responseId2, at: Date.now() }); } catch {}
+					}
 					return {
 						text: out2,
 						usage: _extractUsageFromResponse(json2) || usage,
 						requestId: reqId || "",
 						model: String(json2?.model || json?.model || m || ""),
 						estPromptTokens,
+						mode,
+						responseId: responseId2 || responseId || "",
+						previousResponseId: (shouldChain && prevResponseId) ? prevResponseId : "",
 					};
 				}
 			}

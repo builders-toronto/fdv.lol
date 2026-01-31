@@ -557,18 +557,12 @@ h1{margin:6px 0 2px 0; font-weight:600; letter-spacing:.5px}
 
 .addon-risk-toggle {
   pointer-events: auto;
-  display: inline-flex;
+  display: none;
   align-items: center;
   gap: 8px;
   user-select: none;
   cursor: pointer;
   padding: 6px 10px;
-  /* border-radius: 999px;
-  border: 1px solid rgba(122,222,255,.12);
-  background: rgba(0,0,0,.35);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  font-size: 12px; */
 }
 
 .addon-risk-toggle input[type="checkbox"] {

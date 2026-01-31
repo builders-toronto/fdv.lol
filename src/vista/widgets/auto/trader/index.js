@@ -3123,6 +3123,16 @@ function optimisticSeedBuy(ownerStr, mint, estUi, decimals, buySol, sig = "", pr
     if (!ownerStr || !mint || !Number.isFinite(estUi) || estUi <= 0) return;
     const nowTs = now();
     const prev = state.positions[mint] || { sizeUi: 0, costSol: 0, hwmSol: 0, acquiredAt: nowTs };
+
+    // Idempotency: avoid double-adding cost/size
+    try {
+      const lastSeedAt = Number(prev?._seededAt || 0);
+      const lastSeedSig = String(prev?._seedSig || "");
+      const sameSig = !!sig && lastSeedSig && String(sig) === lastSeedSig;
+      const recentSeed = lastSeedAt > 0 && (nowTs - lastSeedAt) < 45_000;
+      if ((sameSig || recentSeed) && prev?.awaitingSizeSync === true) return;
+    } catch {}
+
     const pos = {
       ...prev,
       sizeUi: Number(prev.sizeUi || 0) + Number(estUi || 0),   // accumulate
@@ -3134,6 +3144,8 @@ function optimisticSeedBuy(ownerStr, mint, estUi, decimals, buySol, sig = "", pr
       awaitingSizeSync: true,
       allowRebuy: false,
       lastSplitSellAt: undefined,
+      _seededAt: nowTs,
+      _seedSig: sig ? String(sig) : (prev?._seedSig || ""),
     };
     state.positions[mint] = pos;
     updatePosCache(ownerStr, mint, pos.sizeUi, pos.decimals);
@@ -9061,6 +9073,13 @@ async function tick() {
 
       if (!res.ok) {
         try {
+          // If the swap never had enough lamports to even be sent, do NOT create a position
+          // or optimistic/pending accounting. This is not a network issue; it's a local balance issue.
+          if (res && res.insufficient) {
+            log(`Buy failed for ${mint.slice(0,4)}… (INSUFFICIENT_LAMPORTS); skipping accounting.`);
+            continue;
+          }
+
           const seed = getBuySeed(ownerStr, mint);
           if (seed && Number(seed.sizeUi || 0) > 0) {
             optimisticSeedBuy(ownerStr, mint, Number(seed.sizeUi), Number(seed.decimals), buyCostSol, res.sig || "", prevOnChainSizeUi);
@@ -10483,6 +10502,7 @@ export function initTraderWidget(container = document.body) {
             <option value="gpt-4o-mini">gpt-4o-mini</option>
             <option value="gpt-4.1-mini">gpt-4.1-mini</option>
             <option value="gpt-4o">gpt-4o</option>
+            <option value="o4-mini">o4-mini</option>
             <option value="gpt-5-nano">gpt-5-nano</option>
             <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
             <option value="grok-3-mini">grok-3-mini</option>

@@ -299,10 +299,8 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-feat: add onchain labels + Honeypot Watch KPI; wire KPIs into Agent Gary; add gary-predictions landing page;
-
-Introduce neutral onchain labels (Token-2022, mint/freeze authority) surfaced in UI and prompts;
-Wire KPI bundle/signals into Agent Gary decision payloads to reduce prompt bloat and improve context;
-Improve onchain “honeypot” detection and reframe output as labels (less anchoring, still risk-aware);
-Start Honeypot Watch KPI for users;
-Add initial landing page/first commit for the gary-predictions model;
+feat(agents): refactor prompts + support reasoning models;
+;
+Tune prompts and add lightweight benchmarking hooks;
+Refactor prompt construction to smaller, cleaner payloads (dedupe/noise reduction);
+Fix Responses API wiring so reasoning models work end-to-end;
