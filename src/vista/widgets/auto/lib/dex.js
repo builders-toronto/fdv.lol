@@ -2449,7 +2449,7 @@ export function createDex(deps = {}) {
 						);
 					}
 					if (isInsufficient) {
-						const out = { ok: false, insufficient: true, msg, sig: lastSig };
+						const out = { ok: false, insufficient: true, msg, sig: lastSig || "", sent: !!lastSig };
 						try { noteLedgerSwap({ signer: opts?.signer, inputMint: opts?.inputMint, outputMint: opts?.outputMint, amountUi: opts?.amountUi, slippageBps: slip, res: out, stage: "insufficient" }); } catch {}
 						return out;
 					}

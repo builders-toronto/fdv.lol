@@ -284,7 +284,7 @@ function _validateSellDecision(obj) {
 	return out;
 }
 
-function _validateConfigScanDecision(obj) {
+function _validateConfigScanDecision(obj, allowedKeys = null) {
 	try {
 		if (!obj || typeof obj !== "object") return null;
 		const action = String(obj.action || "").toLowerCase();
@@ -292,16 +292,58 @@ function _validateConfigScanDecision(obj) {
 		const confidence = _clampNum(obj.confidence, 0, 1);
 		const reason = String(obj.reason || "").slice(0, 220);
 		const out = { kind: "config_scan", action, confidence, reason };
+		const allow = (() => {
+			try {
+				if (!Array.isArray(allowedKeys) || !allowedKeys.length) return null;
+				return new Set(allowedKeys.map((k) => String(k || "").trim()).filter(Boolean).slice(0, 200));
+			} catch {
+				return null;
+			}
+		})();
+
+		const _shouldAllowKey = (k) => {
+			try {
+				if (!allow) return true;
+				return allow.has(String(k || "").trim());
+			} catch {
+				return false;
+			}
+		};
+
+		const _applyKv = (cfg, keyRaw, v) => {
+			try {
+				const key = String(keyRaw || "").slice(0, 80);
+				if (!key) return;
+				if (!_shouldAllowKey(key)) return;
+				// Structured Outputs schemas may return explicit nulls for "no-op" keys; ignore those.
+				if (v == null) return;
+				const t = typeof v;
+				if (t === "number" || t === "boolean" || t === "string") cfg[key] = v;
+			} catch {}
+		};
+
+		// Preferred compact form (Structured Outputs): patches[]
+		if (Array.isArray(obj.patches)) {
+			const cfg = {};
+			let n = 0;
+			for (const p of obj.patches) {
+				n++;
+				if (n > 24) break;
+				if (!p || typeof p !== "object") continue;
+				_applyKv(cfg, p.key, p.value);
+			}
+			if (Object.keys(cfg).length) out.config = cfg;
+			return out;
+		}
+
+		// Back-compat: config object
 		if (obj.config && typeof obj.config === "object") {
 			const cfg = {};
 			let n = 0;
 			for (const [k, v] of Object.entries(obj.config)) {
 				n++;
 				if (n > 120) break;
-				const key = String(k || "").slice(0, 80);
-				if (!key) continue;
-				const t = typeof v;
-				if (t === "number" || t === "boolean" || t === "string") cfg[key] = v;
+				_applyKv(cfg, k, v);
 			}
 			if (Object.keys(cfg).length) out.config = cfg;
 		}
@@ -344,6 +386,172 @@ function _coerceWrongKindDecision(kind, parsed) {
 	}
 }
 
+function _buildDecisionSchema(kind, allowedConfigKeys = []) {
+	try {
+		const k = String(kind || "").trim().toLowerCase();
+		const tune = {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				takeProfitPct: { type: ["number", "null"] },
+				stopLossPct: { type: ["number", "null"] },
+				trailPct: { type: ["number", "null"] },
+				minProfitToTrailPct: { type: ["number", "null"] },
+				minHoldSecs: { type: ["integer", "null"] },
+				maxHoldSecs: { type: ["integer", "null"] },
+				buyPct: { type: ["number", "null"] },
+				entrySimMinWinProb: { type: ["number", "null"] },
+				entrySimHorizonSecs: { type: ["integer", "null"] },
+			},
+			required: [
+				"takeProfitPct",
+				"stopLossPct",
+				"trailPct",
+				"minProfitToTrailPct",
+				"minHoldSecs",
+				"maxHoldSecs",
+				"buyPct",
+				"entrySimMinWinProb",
+				"entrySimHorizonSecs",
+			],
+		};
+		const forecast = {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				horizonSecs: { type: ["integer", "null"] },
+				upProb: { type: ["number", "null"] },
+				downProb: { type: ["number", "null"] },
+				expectedMovePct: { type: ["number", "null"] },
+				regime: { type: ["string", "null"] },
+				note: { type: ["string", "null"] },
+			},
+			required: ["horizonSecs", "upProb", "downProb", "expectedMovePct", "regime", "note"],
+		};
+		const evolve = {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				outcomeTs: { type: ["integer", "null"] },
+				selfCritique: { type: ["string", "null"] },
+				lesson: { type: ["string", "null"] },
+			},
+			required: ["outcomeTs", "selfCritique", "lesson"],
+		};
+
+		if (k === "buy") {
+			return {
+				name: "fdv_buy_decision_v1",
+				strict: true,
+				schema: {
+					type: "object",
+					additionalProperties: false,
+					properties: {
+						kind: { type: "string", enum: ["buy"] },
+						action: { type: "string", enum: ["buy", "skip"] },
+						confidence: { type: "number" },
+						reason: { type: "string" },
+						buy: {
+							anyOf: [
+								{
+									type: "object",
+									additionalProperties: false,
+									properties: {
+										solUi: { type: ["number", "null"] },
+										slippageBps: { type: ["integer", "null"] },
+									},
+									required: ["solUi", "slippageBps"],
+								},
+								{ type: "null" },
+							],
+						},
+						tune: { anyOf: [tune, { type: "null" }] },
+						forecast: { anyOf: [forecast, { type: "null" }] },
+						evolve: { anyOf: [evolve, { type: "null" }] },
+					},
+					required: ["kind", "action", "confidence", "reason", "buy", "tune", "forecast", "evolve"],
+				},
+			};
+		}
+
+		if (k === "sell") {
+			return {
+				name: "fdv_sell_decision_v1",
+				strict: true,
+				schema: {
+					type: "object",
+					additionalProperties: false,
+					properties: {
+						kind: { type: "string", enum: ["sell"] },
+						action: { type: "string", enum: ["sell_all", "sell_partial", "hold", "long_hold"] },
+						confidence: { type: "number" },
+						reason: { type: "string" },
+						holdSeconds: { type: ["integer", "null"] },
+						sell: {
+							anyOf: [
+								{
+									type: "object",
+									additionalProperties: false,
+									properties: {
+										pct: { type: ["integer", "null"] },
+									},
+									required: ["pct"],
+								},
+								{ type: "null" },
+							],
+						},
+						tune: { anyOf: [tune, { type: "null" }] },
+						forecast: { anyOf: [forecast, { type: "null" }] },
+						evolve: { anyOf: [evolve, { type: "null" }] },
+					},
+					required: ["kind", "action", "confidence", "reason", "holdSeconds", "sell", "tune", "forecast", "evolve"],
+				},
+			};
+		}
+
+		if (k === "config_scan") {
+			const keys = Array.isArray(allowedConfigKeys) ? allowedConfigKeys.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 80) : [];
+			const patchKey = (keys && keys.length)
+				? { type: "string", enum: keys }
+				: { type: "string" };
+			const patchItem = {
+				type: "object",
+				additionalProperties: false,
+				properties: {
+					key: patchKey,
+					value: { type: ["number", "boolean", "string", "null"] },
+				},
+				required: ["key", "value"],
+			};
+			const patches = {
+				type: "array",
+				items: patchItem,
+				maxItems: 12,
+			};
+			return {
+				name: "fdv_config_scan_v1",
+				strict: true,
+				schema: {
+					type: "object",
+					additionalProperties: false,
+					properties: {
+						kind: { type: "string", enum: ["config_scan"] },
+						action: { type: "string", enum: ["apply", "skip"] },
+						confidence: { type: "number" },
+						reason: { type: "string" },
+						patches: { anyOf: [patches, { type: "null" }] },
+					},
+					required: ["kind", "action", "confidence", "reason", "patches"],
+				},
+			};
+		}
+
+		return null;
+	} catch {
+		return null;
+	}
+}
+
 function _compactUserMsgForGary(userMsg) {
 	try {
 		if (!userMsg || typeof userMsg !== "object") return userMsg;
@@ -356,6 +564,9 @@ function _compactUserMsgForGary(userMsg) {
 		const payload = {};
 		if (typeof p.mint === "string") payload.mint = p.mint;
 		if (p.proposed && typeof p.proposed === "object") payload.proposed = p.proposed;
+		try {
+			if (p.evolve && typeof p.evolve === "object") payload.evolve = _compactEvolveAnyForPrompt(p.evolve) || _redactDeep(p.evolve, { maxDepth: 5, maxKeys: 60 });
+		} catch {}
 		// pos/ctx are extremely large; keep only decision-critical fields.
 		if (p.pos && typeof p.pos === "object") {
 			const pos = p.pos;
@@ -447,7 +658,6 @@ function _compactUserMsgForGary(userMsg) {
 					const outc = (an.outcomes && typeof an.outcomes === "object") ? an.outcomes : null;
 					const recent = outc && Array.isArray(outc.recent) ? outc.recent.slice(Math.max(0, outc.recent.length - 2)) : [];
 					keepCtx.agentSignals = {
-						agentRisk: an.agentRisk ? String(an.agentRisk).slice(0, 16) : undefined,
 						fullAiControl: (typeof an.fullAiControl === "boolean") ? an.fullAiControl : undefined,
 						outcomes: recent.length ? {
 							sessionPnlSol: outc ? (outc.sessionPnlSol ?? null) : null,
@@ -462,6 +672,33 @@ function _compactUserMsgForGary(userMsg) {
 			} catch {}
 			if (Object.keys(keepCtx).length) payload.ctx = keepCtx;
 		}
+
+		// Provide a tiny decision-critical summary for sell prompts.
+		try {
+			if (kind === "sell") {
+				const c = payload.ctx && typeof payload.ctx === "object" ? payload.ctx : null;
+				const pos = payload.pos && typeof payload.pos === "object" ? payload.pos : null;
+				const cfg = c && c.cfg && typeof c.cfg === "object" ? c.cfg : null;
+				const t = pos && pos.tickNow && typeof pos.tickNow === "object" ? pos.tickNow : null;
+				const nowTs = c ? _safeNum(c.nowTs, null) : null;
+				const acquiredAt = pos ? _safeNum(pos.acquiredAt, null) : null;
+				payload.summary = {
+					agentRisk: c?.agentRisk ?? null,
+					pnlNetPct: c?.pnlNetPct ?? null,
+					inMinHold: c?.inMinHold ?? null,
+					inSellGuard: c?.inSellGuard ?? null,
+					hasPending: c?.hasPending ?? null,
+					rugSev: c?.rugSev ?? null,
+					heldSecs: (nowTs != null && acquiredAt != null) ? Math.max(0, Math.floor((nowTs - acquiredAt) / 1000)) : null,
+					cfgTpPct: cfg?.takeProfitPct ?? null,
+					cfgSlPct: cfg?.stopLossPct ?? null,
+					posTpPct: pos?.tpPct ?? null,
+					posSlPct: pos?.slPct ?? null,
+					posTrailPct: pos?.trailPct ?? null,
+					px: t ? { priceUsd: t.priceUsd ?? null, liqUsd: t.liqUsd ?? null, change5m: t.change5m ?? null, change1h: t.change1h ?? null } : undefined,
+				};
+			}
+		} catch {}
 		if (p.allowedKeys && Array.isArray(p.allowedKeys)) payload.allowedKeys = p.allowedKeys.slice(0, 60);
 		if (p.note) payload.note = String(p.note || "").slice(0, 260);
 		if (Object.keys(payload).length) out.payload = payload;
@@ -554,6 +791,7 @@ function _compactUserMsgForGary(userMsg) {
 				if (pp.market && typeof pp.market === "object") keep.market = pp.market;
 				if (pp.allowedKeys && Array.isArray(pp.allowedKeys)) keep.allowedKeys = pp.allowedKeys;
 				if (pp.note) keep.note = pp.note;
+				if (pp.evolve && typeof pp.evolve === "object") keep.evolve = _compactEvolveAnyForPrompt(pp.evolve) || _redactDeep(pp.evolve, { maxDepth: 5, maxKeys: 60 });
 				out.payload = keep;
 			} catch {}
 		}
@@ -575,6 +813,9 @@ function _compactUserMsgForLlm(userMsg) {
 		const payload = {};
 		if (typeof p.mint === "string") payload.mint = p.mint;
 		if (p.proposed && typeof p.proposed === "object") payload.proposed = p.proposed;
+		try {
+			if (p.evolve && typeof p.evolve === "object") payload.evolve = _compactEvolveAnyForPrompt(p.evolve) || _redactDeep(p.evolve, { maxDepth: 5, maxKeys: 60 });
+		} catch {}
 
 		// For config_scan, keep extra minimal: only market/allowedKeys/note.
 		if (kind === "config_scan") {
@@ -582,6 +823,7 @@ function _compactUserMsgForLlm(userMsg) {
 				if (p.market && typeof p.market === "object") payload.market = p.market;
 				if (p.allowedKeys && Array.isArray(p.allowedKeys)) payload.allowedKeys = p.allowedKeys.slice(0, 80);
 				if (p.note) payload.note = String(p.note || "").slice(0, 500);
+				if (p.evolve && typeof p.evolve === "object") payload.evolve = _compactEvolveAnyForPrompt(p.evolve) || _redactDeep(p.evolve, { maxDepth: 5, maxKeys: 60 });
 				if (Object.keys(payload).length) out.payload = payload;
 				return out;
 			} catch {
@@ -620,7 +862,6 @@ function _compactUserMsgForLlm(userMsg) {
 					]) {
 						if (k in pos) keepPos[k] = pos[k];
 					}
-					// Minimal tick snapshot.
 					try {
 						const t = pos.tickNow;
 						if (t && typeof t === "object") {
@@ -686,7 +927,6 @@ function _compactUserMsgForLlm(userMsg) {
 							const outc = (an.outcomes && typeof an.outcomes === "object") ? an.outcomes : null;
 							const recent = outc && Array.isArray(outc.recent) ? outc.recent.slice(Math.max(0, outc.recent.length - 2)) : [];
 							keepCtx.agentSignals = {
-								agentRisk: an.agentRisk ? String(an.agentRisk).slice(0, 16) : undefined,
 								fullAiControl: (typeof an.fullAiControl === "boolean") ? an.fullAiControl : undefined,
 								outcomes: recent.length ? {
 									sessionPnlSol: outc ? (outc.sessionPnlSol ?? null) : null,
@@ -701,6 +941,31 @@ function _compactUserMsgForLlm(userMsg) {
 					} catch {}
 					if (Object.keys(keepCtx).length) payload.ctx = keepCtx;
 				}
+			} catch {}
+
+			// Provide a tiny decision-critical summary for sell prompts.
+			try {
+				const c = payload.ctx && typeof payload.ctx === "object" ? payload.ctx : null;
+				const pos = payload.pos && typeof payload.pos === "object" ? payload.pos : null;
+				const cfg = c && c.cfg && typeof c.cfg === "object" ? c.cfg : null;
+				const t = pos && pos.tickNow && typeof pos.tickNow === "object" ? pos.tickNow : null;
+				const nowTs = c ? _safeNum(c.nowTs, null) : null;
+				const acquiredAt = pos ? _safeNum(pos.acquiredAt, null) : null;
+				payload.summary = {
+					agentRisk: c?.agentRisk ?? null,
+					pnlNetPct: c?.pnlNetPct ?? null,
+					inMinHold: c?.inMinHold ?? null,
+					inSellGuard: c?.inSellGuard ?? null,
+					hasPending: c?.hasPending ?? null,
+					rugSev: c?.rugSev ?? null,
+					heldSecs: (nowTs != null && acquiredAt != null) ? Math.max(0, Math.floor((nowTs - acquiredAt) / 1000)) : null,
+					cfgTpPct: cfg?.takeProfitPct ?? null,
+					cfgSlPct: cfg?.stopLossPct ?? null,
+					posTpPct: pos?.tpPct ?? null,
+					posSlPct: pos?.slPct ?? null,
+					posTrailPct: pos?.trailPct ?? null,
+					px: t ? { priceUsd: t.priceUsd ?? null, liqUsd: t.liqUsd ?? null, change5m: t.change5m ?? null, change1h: t.change1h ?? null } : undefined,
+				};
 			} catch {}
 		}
 
@@ -890,6 +1155,298 @@ export function createAutoTraderAgentDriver({
 	const cache = new Map();
 	const CACHE_TTL_MS = 2500;
 
+	let _reasoningSessionKey = "";
+	let _reasoningSessionModel = "";
+
+	// Stable, tiny memory to carry decision context across turns.
+	// This is intentionally small and safe to include in every prompt.
+	const _decisionMemory = {
+		v: 1,
+		startedAt: now(),
+		riskPosture: { agentRisk: "safe", fullAiControl: false, updatedAt: 0 },
+		recentOutcomes: [],
+		recentDecisions: [],
+		recentBuySkips: [],
+	};
+
+	// Default OFF (prompt stability). Enable via:
+	// localStorage.setItem('fdv_agent_decision_memory','1')
+	function _decisionMemoryEnabled() {
+		try {
+			if (globalThis && globalThis.__fdvAgentDecisionMemory === true) return true;
+		} catch {}
+		try {
+			const ls = globalThis && globalThis.localStorage;
+			if (!ls || typeof ls.getItem !== "function") return false;
+			const v = String(ls.getItem("fdv_agent_decision_memory") || "").trim().toLowerCase();
+			return (v === "1" || v === "true" || v === "yes" || v === "on");
+		} catch {
+			return false;
+		}
+	}
+
+	function _evolvePromptEnabled() {
+		try {
+			if (globalThis && globalThis.__fdvAgentEvolvePrompt === false) return false;
+			if (globalThis && globalThis.__fdvAgentEvolvePrompt === true) return true;
+		} catch {}
+		try {
+			const ls = globalThis && globalThis.localStorage;
+			if (!ls || typeof ls.getItem !== "function") return true;
+			const v = String(ls.getItem("fdv_agent_evolve_prompt") || "").trim().toLowerCase();
+			if (!v) return true;
+			if (v === "0" || v === "false" || v === "no" || v === "off") return false;
+			return (v === "1" || v === "true" || v === "yes" || v === "on");
+		} catch {
+			return true;
+		}
+	}
+
+	function _compactEvolveForPrompt(summary) {
+		try {
+			const s = (summary && typeof summary === "object") ? summary : null;
+			if (!s) return null;
+			const p = (s.payload && typeof s.payload === "object") ? s.payload : null;
+
+			const stats0 = (p && p.stats && typeof p.stats === "object") ? p.stats : null;
+			const todo0 = (p && p.todo && typeof p.todo === "object") ? p.todo : null;
+			const rules0 = (p && Array.isArray(p.rules)) ? p.rules : null;
+
+			const out = { v: 1 };
+			if (stats0) {
+				out.stats = {
+					n: (() => { const n = _safeNum(stats0.n, NaN); return Number.isFinite(n) ? Math.max(0, Math.min(999, Math.floor(n))) : null; })(),
+					winRate: (() => { const wr = _safeNum(stats0.winRate, NaN); return Number.isFinite(wr) ? _clampNum(wr, 0, 1) : null; })(),
+					avgPnlSol: (() => { const v = _safeNum(stats0.avgPnlSol, NaN); return Number.isFinite(v) ? v : null; })(),
+					best: (() => { const v = _safeNum(stats0.best, NaN); return Number.isFinite(v) ? v : null; })(),
+					worst: (() => { const v = _safeNum(stats0.worst, NaN); return Number.isFinite(v) ? v : null; })(),
+					pendingCritiques: (() => { const v = _safeNum(stats0.pendingCritiques, NaN); return Number.isFinite(v) ? Math.max(0, Math.min(999, Math.floor(v))) : null; })(),
+				};
+			}
+			if (todo0) {
+				out.todo = {
+					outcomeTs: _safeNum(todo0.outcomeTs, 0) || null,
+					mint8: String(todo0.mint8 || String(todo0.mint || "").slice(0, 8) || "").slice(0, 8) || null,
+					kind: String(todo0.kind || "").slice(0, 24) || null,
+					pnlSol: (() => { const v = _safeNum(todo0.pnlSol, NaN); return Number.isFinite(v) ? v : null; })(),
+					action: String(todo0.decisionAction || todo0.action || "").slice(0, 24) || null,
+				};
+			}
+			if (rules0 && rules0.length) {
+				out.rules = rules0.slice(0, 3).map((r) => ({
+					t: String(r?.text || r?.t || "").slice(0, 140),
+					h: Math.max(0, Math.min(99999, Math.floor(_safeNum(r?.hits ?? r?.h ?? r?.hitCount, 0)))),
+				})).filter((r) => r.t);
+			}
+
+			// Legacy fallback: parse stats/todo/rules out of old multiline EVOLVE text.
+			if (!out.stats && (typeof s.text === "string" || typeof s.prompt === "string")) {
+				const raw = String(s.prompt || s.text || "");
+				const txt = raw.replace(/\r\n/g, "\n");
+				const mStats = txt.match(/winRate=(\d+)%\s+avgPnlSol=([-0-9.]+)/i);
+				const mBest = txt.match(/best=([-0-9.]+)/i);
+				const mWorst = txt.match(/worst=([-0-9.]+)/i);
+				const mPending = txt.match(/pendingCritiques=(\d+)/i);
+				const mN = txt.match(/EVOLVE:\s*last\s+(\d+)\s+outcomes/i);
+				out.stats = {
+					n: mN ? Math.max(0, Math.min(999, parseInt(mN[1], 10))) : null,
+					winRate: mStats ? _clampNum(parseInt(mStats[1], 10) / 100, 0, 1) : null,
+					avgPnlSol: mStats ? _safeNum(mStats[2], null) : null,
+					best: mBest ? _safeNum(mBest[1], null) : null,
+					worst: mWorst ? _safeNum(mWorst[1], null) : null,
+					pendingCritiques: mPending ? Math.max(0, Math.min(999, parseInt(mPending[1], 10))) : null,
+				};
+				const mTodo = txt.match(/EVOLVE TODO:\s*outcomeTs=(\d+)\s+mint=([^\s…]+).*?kind=([^\s]+)\s+pnlSol=([-0-9.]+).*?action=([^\s]+)?/i);
+				if (mTodo) {
+					out.todo = {
+						outcomeTs: _safeNum(mTodo[1], 0) || null,
+						mint8: String(mTodo[2] || "").slice(0, 8) || null,
+						kind: String(mTodo[3] || "").slice(0, 24) || null,
+						pnlSol: _safeNum(mTodo[4], null),
+						action: String(mTodo[5] || "").slice(0, 24) || null,
+					};
+				}
+				try {
+					const rulesSection = txt.split(/EVOLVE RULES[^\n]*:\s*/i)[1] || "";
+					if (rulesSection) {
+						const lines = rulesSection.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("- "));
+						const rules = [];
+						for (const l of lines) {
+							if (rules.length >= 3) break;
+							const hits = (() => { const m = l.match(/\(hits=(\d+)\)/i); return m ? parseInt(m[1], 10) : 0; })();
+							rules.push({ t: l.replace(/^[-\s]+/, "").replace(/\s*\(hits=.*?\)\s*$/i, "").slice(0, 140), h: Math.max(0, Math.min(99999, hits)) });
+						}
+						if (rules.length) out.rules = rules;
+					}
+				} catch {}
+			}
+
+			// Drop null-heavy objects.
+			try {
+				if (out.stats && Object.values(out.stats).every((v) => v == null)) delete out.stats;
+				if (out.todo && Object.values(out.todo).every((v) => v == null)) delete out.todo;
+				if (Array.isArray(out.rules) && !out.rules.length) delete out.rules;
+			} catch {}
+
+			return (out.stats || out.todo || out.rules) ? out : null;
+		} catch {
+			return null;
+		}
+	}
+
+	function _compactEvolveAnyForPrompt(e) {
+		try {
+			const obj = (e && typeof e === "object") ? e : null;
+			if (!obj) return null;
+			// If this is a stored summary shape, use the existing compactor.
+			if (obj.payload && typeof obj.payload === "object") return _compactEvolveForPrompt(obj);
+			// If this already looks like the compact evolve payload shape, normalize it.
+			if (obj.stats || obj.todo || obj.rules || obj.text || obj.prompt) {
+				return _compactEvolveForPrompt({ payload: obj, text: obj.text, prompt: obj.prompt });
+			}
+			return null;
+		} catch {
+			return null;
+		}
+	}
+
+	function _pushRing(arr, item, maxN) {
+		try {
+			if (!Array.isArray(arr)) return;
+			arr.unshift(item);
+			if (arr.length > maxN) arr.length = maxN;
+		} catch {}
+	}
+
+	function _deriveSkipCodeFromPayload(p) {
+		try {
+			const g = p && p.signals && p.signals.gates && typeof p.signals.gates === "object" ? p.signals.gates : null;
+			if (!g) return "unknown";
+			if (g.cooldown && g.cooldown.ok === false) return "cooldown";
+			if (g.buyWarmup && g.buyWarmup.ready === false) return "warmup";
+			if (g.manualEdge && g.manualEdge.ok === false) return "manual_edge";
+			if (g.entryCost && g.entryCost.ok === false) return "entry_cost";
+			if (g.sim && g.sim.ready === false) return "entry_sim";
+			if (g.finalGateReady === false) return "final_gate";
+			if (g.onchainLabels && Array.isArray(g.onchainLabels.labels) && g.onchainLabels.labels.length) return "onchain_label_risk";
+			return "unknown";
+		} catch {
+			return "unknown";
+		}
+	}
+
+	function _updateDecisionMemoryFromPayload(payload) {
+		try {
+			const p = payload && typeof payload === "object" ? payload : null;
+			if (!p) return;
+			if (p.signals && typeof p.signals === "object") {
+				const s = p.signals;
+				if (s.agentRisk) _decisionMemory.riskPosture.agentRisk = String(s.agentRisk || "").slice(0, 16) || _decisionMemory.riskPosture.agentRisk;
+				if (typeof s.fullAiControl === "boolean") _decisionMemory.riskPosture.fullAiControl = s.fullAiControl;
+				_decisionMemory.riskPosture.updatedAt = now();
+
+				if (s.outcomes && typeof s.outcomes === "object" && s.outcomes.lastTrade && typeof s.outcomes.lastTrade === "object") {
+					const lt = s.outcomes.lastTrade;
+					const ts = _safeNum(lt.ts, 0);
+					if (ts > 0) {
+						_pushRing(_decisionMemory.recentOutcomes, {
+							ts,
+							kind: lt.kind ? String(lt.kind).slice(0, 24) : null,
+							decisionAction: lt.decisionAction ? String(lt.decisionAction).slice(0, 20) : null,
+							pnlSol: (typeof lt.pnlSol === "number") ? lt.pnlSol : null,
+							upDown: lt.upDown ? String(lt.upDown).slice(0, 8) : null,
+						}, 3);
+					}
+				}
+			}
+		} catch {}
+	}
+
+	function _updateDecisionMemoryAfterDecision({ kind, payload, decision, ok }) {
+		try {
+			const k = String(kind || "").trim().toLowerCase();
+			const d = (decision && typeof decision === "object") ? decision : null;
+			const p = (payload && typeof payload === "object") ? payload : null;
+			const mint = (() => {
+				try {
+					const m = String(p?.mint || p?.targetMint || p?.proposed?.mint || "").trim();
+					return m ? m.slice(0, 44) : "";
+				} catch { return ""; }
+			})();
+
+		_updateDecisionMemoryFromPayload(p);
+		_pushRing(_decisionMemory.recentDecisions, {
+			at: now(),
+			ok: !!ok,
+			kind: k,
+			mint: mint || null,
+			action: d?.action ? String(d.action).slice(0, 20) : null,
+			confidence: (typeof d?.confidence === "number") ? d.confidence : null,
+			reason: d?.reason ? String(d.reason).slice(0, 160) : null,
+		}, 10);
+
+		if (k === "buy" && d && String(d.action || "").toLowerCase() === "skip") {
+			const code = _deriveSkipCodeFromPayload(p);
+			_pushRing(_decisionMemory.recentBuySkips, { at: now(), mint: mint || null, code }, 12);
+		}
+	} catch {}
+	}
+
+	function _decisionMemorySnapshot() {
+		try {
+			const recent = Array.isArray(_decisionMemory.recentBuySkips) ? _decisionMemory.recentBuySkips.slice(0, 10) : [];
+			const counts = new Map();
+			for (const r of recent) {
+				const c = String(r?.code || "unknown");
+				counts.set(c, (counts.get(c) || 0) + 1);
+			}
+			const skipReasons = Array.from(counts.entries())
+				.sort((a, b) => (b[1] - a[1]))
+				.slice(0, 4)
+				.map(([code, count]) => ({ code, count }));
+
+			return {
+				v: _decisionMemory.v,
+				startedAt: _decisionMemory.startedAt,
+				riskPosture: {
+					agentRisk: String(_decisionMemory.riskPosture.agentRisk || "safe"),
+					fullAiControl: !!_decisionMemory.riskPosture.fullAiControl,
+					updatedAt: _decisionMemory.riskPosture.updatedAt || 0,
+				},
+				outcomes: (Array.isArray(_decisionMemory.recentOutcomes) ? _decisionMemory.recentOutcomes.slice(0, 3) : []),
+				skipBuysLately: {
+					window: recent.length,
+					reasons: skipReasons,
+				},
+				recentDecisions: (Array.isArray(_decisionMemory.recentDecisions) ? _decisionMemory.recentDecisions.slice(0, 6) : []),
+			};
+		} catch {
+			return { v: 1, startedAt: now() };
+		}
+	}
+	function _ensureReasoningSessionKey() {
+		try {
+			if (_reasoningSessionKey) return _reasoningSessionKey;
+			// Short, process-local session id; persisted chaining is not required.
+			const rand = Math.random().toString(36).slice(2);
+			_reasoningSessionKey = `fdv_auto_trader:${now()}:${rand}`;
+			return _reasoningSessionKey;
+		} catch {
+			_reasoningSessionKey = "fdv_auto_trader";
+			return _reasoningSessionKey;
+		}
+	}
+
+	function _isReasoningModel(modelName) {
+		try {
+			const s = String(modelName || "").trim().toLowerCase();
+			// Reasoning-mode models for the OpenAI Responses API.
+			return /(?:^|\/)gpt-5\b/.test(s) || /(?:^|\/)o\d+\b/.test(s);
+		} catch {
+			return false;
+		}
+	}
+
 	function _shouldLogPrompts(cfgN = null) {
 		try {
 			const cfgRaw = _getConfig() || {};
@@ -978,8 +1535,40 @@ export function createAutoTraderAgentDriver({
 	}
 
 	function _getClient() {
-		const cfg = _getConfig() || {};
-		return createChatClientFromConfig(cfg);
+		try {
+			const cfg = _getConfig() || {};
+			const cfgN = normalizeLlmConfig(cfg);
+			const cacheKey = (() => {
+				try {
+					return JSON.stringify({
+						provider: String(cfgN?.provider || ""),
+						baseUrl: String(cfgN?.baseUrl || ""),
+						model: String(cfgN?.model || ""),
+						timeoutMs: Number(cfgN?.timeoutMs || 0),
+						maxTokens: Number(cfgN?.maxTokens || 0),
+						hmacSecret: String(cfgN?.hmacSecret || ""),
+						apiKey: String(cfgN?.apiKey || ""),
+					});
+				} catch {
+					return "";
+				}
+			})();
+			if (!_getClient._cached) {
+				_getClient._cached = { key: "", client: null };
+			}
+			const prev = _getClient._cached;
+			if (prev && prev.client && prev.key && prev.key === cacheKey) return prev.client;
+			const client = createChatClientFromConfig(cfg);
+			_getClient._cached = { key: cacheKey, client };
+			return client;
+		} catch {
+			try {
+				const cfg = _getConfig() || {};
+				return createChatClientFromConfig(cfg);
+			} catch {
+				return null;
+			}
+		}
 	}
 
 	async function _run(kind, payload, opts = null) {
@@ -991,6 +1580,9 @@ export function createAutoTraderAgentDriver({
 			try { return normalizeLlmConfig(_getConfig() || {}); } catch { return null; }
 		})();
 		try { _ensurePromptLogGlobals(); } catch {}
+		try {
+			if (_decisionMemoryEnabled()) _updateDecisionMemoryFromPayload(payload);
+		} catch {}
 		const body = _redactDeep(payload);
 		const options = (opts && typeof opts === "object") ? opts : {};
 		const promptLogOn = _shouldLogPrompts(cfgN);
@@ -1071,21 +1663,29 @@ export function createAutoTraderAgentDriver({
 				}
 			}
 		} catch {}
+		try {
+			if (_decisionMemoryEnabled()) userMsg.decisionMemory = _decisionMemorySnapshot();
+		} catch {}
 
 		const evolveSummary = (() => {
 			try {
+				if (!_evolvePromptEnabled()) return null;
 				const s = _readLsJson("fdv_agent_evolve_summary_v1", null);
-				const txt = String(s?.text || "").trim();
-				return txt ? txt.slice(0, 1400) : "";
+				return _compactEvolveForPrompt(s);
 			} catch {
-				return "";
+				return null;
 			}
 		})();
-		const systemPrompt = getGarySystemPrompt(kind, { evolveSummary });
+		const systemPrompt = getGarySystemPrompt(kind, { evolveSummary: "" });
+		try {
+			if (evolveSummary) {
+				if (!userMsg.payload || typeof userMsg.payload !== "object") userMsg.payload = {};
+				userMsg.payload.evolve = evolveSummary;
+			}
+		} catch {}
 		const systemPromptFinal = (() => {
 			try {
 				if (String(cfgN?.provider || "").toLowerCase() !== "gary") return systemPrompt;
-				// Keep system prompts short for tiny local models; the kind is also present in USER payload.
 				return String(systemPrompt || "").slice(0, 3500);
 			} catch {
 				return systemPrompt;
@@ -1127,6 +1727,15 @@ export function createAutoTraderAgentDriver({
 		let text = "";
 		let meta = null;
 		try {
+			const cfgModel = (() => {
+				try { return String(cfgN?.model || "").trim(); } catch { return ""; }
+			})();
+			const wantsReasoning = _isReasoningModel(cfgModel);
+			const normModel = (() => { try { return String(cfgModel || "").trim().toLowerCase(); } catch { return ""; } })();
+			const reasoningReset = wantsReasoning && _reasoningSessionModel && _reasoningSessionModel !== normModel;
+			if (wantsReasoning) _reasoningSessionModel = normModel;
+			else _reasoningSessionModel = "";
+
 			const req = {
 				system: systemPromptFinal,
 				user: JSON.stringify(userMsg),
@@ -1138,6 +1747,18 @@ export function createAutoTraderAgentDriver({
 						: Number((_getConfig() || {}).maxTokens || 350)
 				),
 			};
+			try {
+				const allowed = (kind === "config_scan" && Array.isArray(payload?.allowedKeys))
+					? payload.allowedKeys
+					: [];
+				req.responseSchema = _buildDecisionSchema(kind, allowed);
+			} catch {}
+			if (wantsReasoning) {
+				req.reasoningSessionKey = _ensureReasoningSessionKey();
+				req.reasoningReset = !!reasoningReset;
+				// Default ON: request encrypted reasoning content when supported.
+				req.reasoningIncludeEncrypted = true;
+			}
 			if (client && typeof client.chatJsonWithMeta === "function") {
 				meta = await client.chatJsonWithMeta(req);
 				// For Gary, prefer the server-extracted parsed JSON when available.
@@ -1215,11 +1836,14 @@ export function createAutoTraderAgentDriver({
 			: (kind === "sell")
 				? _validateSellDecision(parsed)
 				: (kind === "config_scan")
-					? _validateConfigScanDecision(parsed)
+					? _validateConfigScanDecision(parsed, payload?.allowedKeys)
 					: null;
 		const res = validated
 			? { ok: true, decision: validated }
 			: { ok: false, err: "invalid_json" };
+		try {
+			if (_decisionMemoryEnabled()) _updateDecisionMemoryAfterDecision({ kind, payload, decision: validated, ok: res.ok });
+		} catch {}
 
 		try {
 			const shouldCapture = !!TRAINING_CAPTURE?.enabled && (res.ok || !!TRAINING_CAPTURE?.includeBad);

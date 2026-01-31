@@ -111,6 +111,12 @@ export function createAgentOutcomesStore({
           winRate: null,
           avgPnlSol: null,
           text: "EVOLVE: no outcomes recorded yet.",
+          payload: {
+            v: 1,
+            stats: { n: 0, winRate: null, avgPnlSol: null, best: null, worst: null, pendingCritiques: 0 },
+            todo: null,
+            rules: [],
+          },
         };
       }
 
@@ -158,24 +164,32 @@ export function createAgentOutcomesStore({
       const winRate = wins / Math.max(1, n);
       const avgPnlSol = sum / Math.max(1, n);
 
-      const recentCr = crits.slice(0, 4).map(s => `- ${s.slice(0, 140)}`);
-      const recentLs = lessons.slice(0, 4).map(s => `- ${s.slice(0, 140)}`);
 
-      const todoLine = todo
-        ? `EVOLVE TODO: outcomeTs=${todo.outcomeTs} mint=${todo.mint.slice(0, 8)}… kind=${todo.kind} pnlSol=${todo.pnlSol.toFixed(4)} action=${todo.decisionAction || "?"} reason=${String(todo.reason || "").slice(0, 120)}`
+      const todoObj = todo
+        ? {
+          outcomeTs: _safeNum(todo.outcomeTs, 0) || null,
+          mint: _safeStr(todo.mint, "").slice(0, 44) || null,
+          mint8: _safeStr(todo.mint, "").slice(0, 8) || null,
+          kind: _safeStr(todo.kind, "").slice(0, 24) || null,
+          pnlSol: _safeNum(todo.pnlSol, 0),
+          decisionAction: _safeStr(todo.decisionAction, "").slice(0, 24) || null,
+          reason: _safeStr(todo.reason, "").slice(0, 160) || null,
+        }
         : null;
+
+      // Provide BOTH a structured payload (preferred) and a tiny prompt string (compat/debug).
+      const prompt = (
+        `EVOLVE stats n=${n} winRate=${(100 * winRate).toFixed(0)}% avgPnlSol=${avgPnlSol.toFixed(4)} ` +
+        `best=${Number.isFinite(best) ? best.toFixed(4) : "0.0000"} worst=${Number.isFinite(worst) ? worst.toFixed(4) : "0.0000"} ` +
+        `pendingCritiques=${todoCount}` +
+        (todoObj ? ` todo={outcomeTs:${todoObj.outcomeTs},mint:'${todoObj.mint8}',kind:'${todoObj.kind}',pnlSol:${todoObj.pnlSol.toFixed(4)}}` : "")
+      ).slice(0, 520);
 
       const text = [
         `EVOLVE: last ${n} outcomes: winRate=${(100 * winRate).toFixed(0)}% avgPnlSol=${avgPnlSol.toFixed(4)} best=${Number.isFinite(best) ? best.toFixed(4) : "0.0000"} worst=${Number.isFinite(worst) ? worst.toFixed(4) : "0.0000"}`,
         (todoCount > 0) ? `EVOLVE: pendingCritiques=${todoCount} (batch; do not reflect every trade)` : `EVOLVE: pendingCritiques=0`,
-        todoLine || "EVOLVE TODO: none",
-        recentCr.length ? "EVOLVE (recent self-critiques):" : "EVOLVE: no self-critiques yet.",
-        ...recentCr,
-        recentLs.length ? "EVOLVE (recent lessons):" : "EVOLVE: no lessons yet.",
-        ...recentLs,
-        "EVOLVE OUTPUT (optional): you may include { evolve: { outcomeTs, selfCritique, lesson } } ONLY for the EVOLVE TODO outcomeTs.",
+        todoObj ? `EVOLVE TODO: outcomeTs=${todoObj.outcomeTs} mint=${todoObj.mint8}… kind=${todoObj.kind} pnlSol=${todoObj.pnlSol.toFixed(4)} action=${todoObj.decisionAction || "?"} reason=${String(todoObj.reason || "").slice(0, 120)}` : "EVOLVE TODO: none",
         rulesText ? String(rulesText) : "EVOLVE RULES: none yet (auto-promotes from repeated lessons).",
-        "EVOLVE RULES META: prefer stable, high-leverage constraints; avoid overfitting.",
       ].join("\n");
 
       return {
@@ -185,7 +199,22 @@ export function createAgentOutcomesStore({
         avgPnlSol,
         best,
         worst,
+        pendingCritiques: todoCount,
+        todo: todoObj,
+        prompt,
         text: String(text || "").slice(0, 1600),
+        payload: {
+          v: 1,
+          stats: {
+            n,
+            winRate,
+            avgPnlSol,
+            best: Number.isFinite(best) ? best : null,
+            worst: Number.isFinite(worst) ? worst : null,
+            pendingCritiques: todoCount,
+          },
+          todo: todoObj,
+        },
       };
     } catch {
       return { ts: Date.now(), n: 0, winRate: null, avgPnlSol: null, text: "EVOLVE: summary unavailable." };
@@ -210,6 +239,20 @@ export function createAgentOutcomesStore({
 
       const rulesText = rules.toPromptText({ maxLines: promptMaxLines });
       const summary = _buildRollingSummary(list, rulesText);
+
+      // Also attach structured rules (for better LLM consumption).
+      try {
+        const ruleList = rules.readAll().slice(0, promptMaxLines).map((r) => ({
+          text: _safeStr(r?.text, "").slice(0, 180),
+          hits: _safeNum(r?.hitCount, 0),
+          updatedAt: _safeNum(r?.updatedAt, 0) || null,
+        })).filter((r) => r.text);
+        if (summary && typeof summary === "object") {
+          if (!summary.payload || typeof summary.payload !== "object") summary.payload = { v: 1 };
+          summary.payload.rules = ruleList;
+        }
+      } catch {}
+
       _writeSummary(summary);
       return summary;
     } catch {
