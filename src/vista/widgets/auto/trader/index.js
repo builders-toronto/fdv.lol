@@ -2332,12 +2332,43 @@ async function _maybeRunAgentConfigScanAtStart() {
     const keyHints = _agentConfigScanKeyHints(allowedKeys);
     const market = _agentConfigScanMarketSummary();
     const stateSummary = _agentConfigScanStateSummary(allowedKeys);
+    try {
+      const g = (typeof window !== "undefined") ? window : globalThis;
+      const owner = String(state?.autoWalletPub || "").trim();
+      if (owner) {
+        const lastPub = String(g?._fdvLastSolBalPub || "");
+        const lastAt = Number(g?._fdvLastSolBalAt || 0);
+        const lastBal = Number(g?._fdvLastSolBal);
+        const fresh = lastAt > 0 && (Date.now() - lastAt) < 60_000;
+        let solBal = (Number.isFinite(lastBal) && fresh && (!lastPub || lastPub === owner)) ? lastBal : NaN;
+        if (!Number.isFinite(solBal)) {
+          solBal = await fetchSolBalance(owner).catch(() => NaN);
+        }
+        if (Number.isFinite(solBal)) {
+          const ceiling = await computeSpendCeiling(owner, { solBalHint: solBal }).catch(() => null);
+          const totalResLamports = Number(ceiling?.reserves?.totalResLamports || 0);
+          stateSummary.autoWallet = {
+            pub: owner,
+            solBal,
+            spendableSol: Number.isFinite(Number(ceiling?.spendableSol)) ? Number(ceiling.spendableSol) : null,
+            reserveSol: totalResLamports > 0 ? (totalResLamports / 1e9) : null,
+            posCount: Number(ceiling?.reserves?.posCount || 0),
+            balAt: lastAt || Date.now(),
+          };
+          stateSummary.runtime = {
+            minOperatingSol: Number(MIN_OPERATING_SOL || 0),
+            feeReserveMinSol: Number(FEE_RESERVE_MIN || 0),
+            feeReservePct: Number(FEE_RESERVE_PCT || 0),
+          };
+        }
+      }
+    } catch {}
 
     const res = await agent.scanConfig({
       market,
       allowedKeys,
       keyHints,
-      note: "Startup scan: propose a conservative, working config for the current memecoin market microstructure.",
+      note: "Startup scan: propose a conservative, working config for the current memecoin market microstructure. Must respect state.autoWallet.solBal/spendableSol so buys don't stall from insufficient SOL.",
       stateSummary,
     });
 
@@ -2397,6 +2428,37 @@ async function _maybeRunAgentConfigScanPeriodic({ force = false } = {}) {
     const keyHints = _agentConfigScanKeyHints(allowedKeys);
     const market = _agentConfigScanMarketSummary();
     const stateSummary = _agentConfigScanStateSummary(allowedKeys);
+    try {
+      const g = (typeof window !== "undefined") ? window : globalThis;
+      const owner = String(state?.autoWalletPub || "").trim();
+      if (owner) {
+        const lastPub = String(g?._fdvLastSolBalPub || "");
+        const lastAt = Number(g?._fdvLastSolBalAt || 0);
+        const lastBal = Number(g?._fdvLastSolBal);
+        const fresh = lastAt > 0 && (Date.now() - lastAt) < 60_000;
+        let solBal = (Number.isFinite(lastBal) && fresh && (!lastPub || lastPub === owner)) ? lastBal : NaN;
+        if (!Number.isFinite(solBal)) {
+          solBal = await fetchSolBalance(owner).catch(() => NaN);
+        }
+        if (Number.isFinite(solBal)) {
+          const ceiling = await computeSpendCeiling(owner, { solBalHint: solBal }).catch(() => null);
+          const totalResLamports = Number(ceiling?.reserves?.totalResLamports || 0);
+          stateSummary.autoWallet = {
+            pub: owner,
+            solBal,
+            spendableSol: Number.isFinite(Number(ceiling?.spendableSol)) ? Number(ceiling.spendableSol) : null,
+            reserveSol: totalResLamports > 0 ? (totalResLamports / 1e9) : null,
+            posCount: Number(ceiling?.reserves?.posCount || 0),
+            balAt: lastAt || Date.now(),
+          };
+          stateSummary.runtime = {
+            minOperatingSol: Number(MIN_OPERATING_SOL || 0),
+            feeReserveMinSol: Number(FEE_RESERVE_MIN || 0),
+            feeReservePct: Number(FEE_RESERVE_PCT || 0),
+          };
+        }
+      }
+    } catch {}
     const recentOutcomes = (() => {
       try { return agentOutcomes && typeof agentOutcomes.summarize === "function" ? agentOutcomes.summarize(8) : []; } catch { return []; }
     })();
@@ -2405,7 +2467,7 @@ async function _maybeRunAgentConfigScanPeriodic({ force = false } = {}) {
       market,
       allowedKeys,
       keyHints,
-      note: "Periodic scan: update config for current conditions. Also pick good auto-release timings (coolDownSecsAfterBuy, minHoldSecs/maxHoldSecs, warmingAutoReleaseSecs) to reduce churn while staying responsive.",
+      note: "Periodic scan: update config for current conditions. Also pick good auto-release timings (coolDownSecsAfterBuy, minHoldSecs/maxHoldSecs, warmingAutoReleaseSecs) to reduce churn while staying responsive. Must respect state.autoWallet.solBal/spendableSol so buys don't stall from insufficient SOL.",
       stateSummary,
       recentOutcomes,
     });

@@ -48,11 +48,13 @@ export function createGaryPredictionsChatClient({
 	timeoutMs = 45_000,
 	fetchFn,
 	hmacSecret = "",
+	sendSystem = false,
 } = {}) {
 	const key = String(apiKey || "").trim();
 	if (!key) throw new Error("Missing Gary API key");
 	const urlBase = _trimSlash(baseUrl) || "";
 	const m = String(model || "gary-predictions-v1").trim() || "gary-predictions-v1";
+	const defaultSendSystem = Boolean(sendSystem);
 	const _fetch = typeof fetchFn === "function" ? fetchFn : (typeof fetch !== "undefined" ? fetch : null);
 	if (!_fetch) throw new Error("fetch unavailable");
 
@@ -104,7 +106,7 @@ export function createGaryPredictionsChatClient({
 		}
 	}
 
-	async function chatJsonWithMeta({ system, user, temperature = 0.2, maxTokens = 220 } = {}) {
+	async function chatJsonWithMeta({ system, user, temperature = 0.2, maxTokens = 220, sendSystem: sendSystemOverride } = {}) {
 		let userMsg = null;
 		try { userMsg = JSON.parse(String(user || "{}")); } catch { userMsg = null; }
 		const kind = String(userMsg?.kind || "").trim().toLowerCase();
@@ -113,9 +115,12 @@ export function createGaryPredictionsChatClient({
 		// Give the model enough room to close braces, but rely on server stop-on-JSON.
 		const maxNew = Math.max(96, Math.min(700, Math.floor(_safeNum(maxTokens, 220) + 120)));
 
+		const sys = String(system || "").trim();
+		const sendSys = (typeof sendSystemOverride === "boolean") ? sendSystemOverride : defaultSendSystem;
+
 		const payload = {
 			kind: kind || "buy",
-			system: String(system || ""),
+			...(sendSys && sys ? { system: sys } : {}),
 			userMsg: (userMsg && typeof userMsg === "object") ? userMsg : undefined,
 			// fallbacks if userMsg wasn't parseable
 			state: (userMsg && typeof userMsg === "object") ? (userMsg.state || {}) : {},

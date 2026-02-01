@@ -299,8 +299,9 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-feat(agents): refactor prompts + support reasoning models;
-;
-Tune prompts and add lightweight benchmarking hooks;
-Refactor prompt construction to smaller, cleaner payloads (dedupe/noise reduction);
-Fix Responses API wiring so reasoning models work end-to-end;
+
+real-time: live Gary predictions training for team members
+
+Stream captures + mixed-dataset prep for continuous fine-tuning
+Add training suppression after model promotion with admin override
+Improve compatibility for browser upload probes (accept POST on info endpoints)
