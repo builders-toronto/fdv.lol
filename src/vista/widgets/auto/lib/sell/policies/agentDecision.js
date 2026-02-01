@@ -6,6 +6,7 @@ export function createAgentDecisionPolicy({
   getAgent,
 } = {}) {
   const _longHoldUntilByMint = new Map();
+  const LONG_HOLD_RECHECK_MAX_SECS = 3;
   let _evolveOutcomes;
   const _getEvolveOutcomes = () => {
     try {
@@ -183,7 +184,8 @@ export function createAgentDecisionPolicy({
       if (action === "long_hold") {
         try {
           const hsRaw = Number(d.holdSeconds ?? d.holdSecs ?? d?.hold?.seconds ?? d?.hold?.secs);
-          const holdSeconds = Math.max(5, Math.min(120, Number.isFinite(hsRaw) ? Math.floor(hsRaw) : 30));
+          const want = Number.isFinite(hsRaw) ? Math.floor(hsRaw) : LONG_HOLD_RECHECK_MAX_SECS;
+          const holdSeconds = Math.max(1, Math.min(LONG_HOLD_RECHECK_MAX_SECS, want));
           const until = nowTs + holdSeconds * 1000;
           if (mintStr) _longHoldUntilByMint.set(mintStr, until);
           ctx.agentLongHoldUntilTs = until;
