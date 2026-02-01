@@ -87,8 +87,10 @@ const _TRAIN_CAPTURE_INCLUDE_BAD = getEnv([
 export const TRAINING_CAPTURE = {
   enabled: toBool(_TRAIN_CAPTURE_ENABLED, false),
   storageKey: String(_TRAIN_CAPTURE_KEY || 'fdv_gary_training_captures_v1'),
-  // localStorage is small; keep this bounded.
-  maxEntries: Math.max(25, Math.min(5000, Math.floor(toNum(_TRAIN_CAPTURE_MAX, 750)))),
+  // NOTE: We store primarily in IndexedDB (can be much larger). localStorage is a fallback and is small.
+  // Keep both caps so datasets don't mysteriously shrink when the app is running normally.
+  maxEntries: Math.max(25, Math.min(250_000, Math.floor(toNum(_TRAIN_CAPTURE_MAX, 750)))),
+  maxEntriesLocalStorage: Math.max(25, Math.min(5000, Math.floor(toNum(_TRAIN_CAPTURE_MAX, 750)))),
   includeBad: toBool(_TRAIN_CAPTURE_INCLUDE_BAD, false),
 };
 

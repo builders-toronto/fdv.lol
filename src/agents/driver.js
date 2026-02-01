@@ -783,7 +783,6 @@ function _compactUserMsgForGary(userMsg) {
 			out.payload.signals = signals;
 		}
 
-		// For config_scan, keep extra minimal: only market/allowedKeys/note.
 		if (kind === "config_scan") {
 			try {
 				const pp = out.payload && typeof out.payload === "object" ? out.payload : {};
@@ -793,6 +792,10 @@ function _compactUserMsgForGary(userMsg) {
 				if (pp.note) keep.note = pp.note;
 				if (pp.evolve && typeof pp.evolve === "object") keep.evolve = _compactEvolveAnyForPrompt(pp.evolve) || _redactDeep(pp.evolve, { maxDepth: 5, maxKeys: 60 });
 				out.payload = keep;
+				try {
+					const st = userMsg.state && typeof userMsg.state === "object" ? userMsg.state : null;
+					if (st && Object.keys(st).length) out.state = st;
+				} catch {}
 			} catch {}
 		}
 
@@ -817,13 +820,17 @@ function _compactUserMsgForLlm(userMsg) {
 			if (p.evolve && typeof p.evolve === "object") payload.evolve = _compactEvolveAnyForPrompt(p.evolve) || _redactDeep(p.evolve, { maxDepth: 5, maxKeys: 60 });
 		} catch {}
 
-		// For config_scan, keep extra minimal: only market/allowedKeys/note.
+		// For config_scan, keep extra minimal but include stateOverride so the model can size to balance.
 		if (kind === "config_scan") {
 			try {
 				if (p.market && typeof p.market === "object") payload.market = p.market;
 				if (p.allowedKeys && Array.isArray(p.allowedKeys)) payload.allowedKeys = p.allowedKeys.slice(0, 80);
 				if (p.note) payload.note = String(p.note || "").slice(0, 500);
 				if (p.evolve && typeof p.evolve === "object") payload.evolve = _compactEvolveAnyForPrompt(p.evolve) || _redactDeep(p.evolve, { maxDepth: 5, maxKeys: 60 });
+				try {
+					const st = userMsg.state && typeof userMsg.state === "object" ? userMsg.state : null;
+					if (st && Object.keys(st).length) out.state = st;
+				} catch {}
 				if (Object.keys(payload).length) out.payload = payload;
 				return out;
 			} catch {
@@ -1786,14 +1793,14 @@ export function createAutoTraderAgentDriver({
 				if (TRAINING_CAPTURE?.enabled) {
 					let uploadToGary = null;
 					try {
-						const cfgN = normalizeLlmConfig(_getConfig() || {});
-						if (String(cfgN.provider || "").toLowerCase() === "gary" && String(cfgN.apiKey || "").trim()) {
-							uploadToGary = {
-								provider: "gary",
-								baseUrl: String(cfgN.baseUrl || "").trim(),
-								apiKey: String(cfgN.apiKey || "").trim(),
-								hmacSecret: String(cfgN.hmacSecret || "").trim(),
-							};
+						// Auto-enable upload-to-gary when Gary config is populated, regardless of the active LLM provider.
+						const g = (typeof window !== "undefined") ? window : globalThis;
+						const o = g && g.__fdvAgentOverrides && typeof g.__fdvAgentOverrides === "object" ? g.__fdvAgentOverrides : null;
+						const baseUrl = String((o && (o.garyBaseUrl || o.garyUrl)) ? (o.garyBaseUrl || o.garyUrl) : _readLs("fdv_gary_base_url", "")).trim();
+						const apiKey = String((o && (o.garyApiKey || o.garyKey)) ? (o.garyApiKey || o.garyKey) : _readLs("fdv_gary_key", "")).trim();
+						const hmacSecret = String((o && (o.garyHmacSecret || o.hmacSecret)) ? (o.garyHmacSecret || o.hmacSecret) : _readLs("fdv_gary_hmac_secret", "")).trim();
+						if (baseUrl && apiKey) {
+							uploadToGary = { provider: "gary", baseUrl, apiKey, hmacSecret };
 						}
 					} catch {}
 					appendTrainingCapture({
@@ -1850,14 +1857,14 @@ export function createAutoTraderAgentDriver({
 			if (shouldCapture) {
 				let uploadToGary = null;
 				try {
-					const cfgN = normalizeLlmConfig(_getConfig() || {});
-					if (String(cfgN.provider || "").toLowerCase() === "gary" && String(cfgN.apiKey || "").trim()) {
-						uploadToGary = {
-							provider: "gary",
-							baseUrl: String(cfgN.baseUrl || "").trim(),
-							apiKey: String(cfgN.apiKey || "").trim(),
-							hmacSecret: String(cfgN.hmacSecret || "").trim(),
-						};
+					// Auto-enable upload-to-gary when Gary config is populated, regardless of the active LLM provider.
+					const g = (typeof window !== "undefined") ? window : globalThis;
+					const o = g && g.__fdvAgentOverrides && typeof g.__fdvAgentOverrides === "object" ? g.__fdvAgentOverrides : null;
+					const baseUrl = String((o && (o.garyBaseUrl || o.garyUrl)) ? (o.garyBaseUrl || o.garyUrl) : _readLs("fdv_gary_base_url", "")).trim();
+					const apiKey = String((o && (o.garyApiKey || o.garyKey)) ? (o.garyApiKey || o.garyKey) : _readLs("fdv_gary_key", "")).trim();
+					const hmacSecret = String((o && (o.garyHmacSecret || o.hmacSecret)) ? (o.garyHmacSecret || o.hmacSecret) : _readLs("fdv_gary_hmac_secret", "")).trim();
+					if (baseUrl && apiKey) {
+						uploadToGary = { provider: "gary", baseUrl, apiKey, hmacSecret };
 					}
 				} catch {}
 				appendTrainingCapture({

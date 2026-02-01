@@ -188,6 +188,67 @@ function _lsSet(key, val) {
 	}
 }
 
+function _autoUploadCfgFromLocalStorage() {
+	try {
+		if (typeof localStorage === "undefined") return null;
+		const baseUrl = String(localStorage.getItem("fdv_gary_base_url") || "").trim();
+		const apiKey = String(localStorage.getItem("fdv_gary_key") || "").trim();
+		const hmacSecret = String(localStorage.getItem("fdv_gary_hmac_secret") || "").trim();
+		if (!baseUrl || !apiKey) return null;
+		const u = baseUrl.toLowerCase();
+		if (!(u.startsWith("http://") || u.startsWith("https://"))) return null;
+		return { provider: "gary", baseUrl, apiKey, hmacSecret };
+	} catch {
+		return null;
+	}
+}
+
+async function getTrainingStorageInfo() {
+	try {
+		const nav = (typeof navigator !== "undefined") ? navigator : null;
+		const storage = nav && nav.storage ? nav.storage : null;
+		const out = { ok: true };
+		try {
+			if (storage && typeof storage.estimate === "function") {
+				const est = await storage.estimate();
+				out.usageBytes = Number(est?.usage || 0) || 0;
+				out.quotaBytes = Number(est?.quota || 0) || 0;
+			}
+		} catch {}
+		try {
+			if (storage && typeof storage.persisted === "function") {
+				out.persisted = !!(await storage.persisted());
+			}
+		} catch {}
+		return out;
+	} catch (e) {
+		return { ok: false, err: String(e?.message || e || "storage_info_error") };
+	}
+}
+
+async function requestTrainingStoragePersistence() {
+	try {
+		const nav = (typeof navigator !== "undefined") ? navigator : null;
+		const storage = nav && nav.storage ? nav.storage : null;
+		if (!storage || typeof storage.persist !== "function") return { ok: false, skipped: true, why: "no_storage_persist" };
+		const granted = !!(await storage.persist());
+		return { ok: true, granted };
+	} catch (e) {
+		return { ok: false, err: String(e?.message || e || "persist_error") };
+	}
+}
+
+let _persistProbeDone = false;
+async function _bestEffortPersistOnce() {
+	try {
+		if (_persistProbeDone) return;
+		_persistProbeDone = true;
+		// Only attempt when capture is enabled; avoids doing this for normal users.
+		if (!isTrainingCaptureEnabled()) return;
+		await requestTrainingStoragePersistence();
+	} catch {}
+}
+
 function _downloadTextFile(filename, text, mime = "application/json;charset=utf-8") {
 	try {
 		if (typeof document === "undefined") return false;
@@ -289,6 +350,12 @@ async function _garyPostJson({ baseUrl, apiKey, path, bodyObj, hmacSecret = "", 
 			e.status = res.status;
 			throw e;
 		}
+		// Safety: these endpoints are expected to return JSON. If they don't, treat the target as invalid.
+		if (!js || typeof js !== "object") {
+			const e = new Error("bad_json_response");
+			e.status = res.status;
+			throw e;
+		}
 		return js;
 	} finally {
 		if (timer) clearTimeout(timer);
@@ -302,6 +369,9 @@ function _queueGaryUpload(entry, uploadCfg) {
 		const baseUrl = String(cfg.baseUrl || "").trim();
 		const apiKey = String(cfg.apiKey || "").trim();
 		if (!baseUrl || !apiKey) return;
+		// Safety: only allow explicit http(s) URLs.
+		const u = baseUrl.toLowerCase();
+		if (!(u.startsWith("http://") || u.startsWith("https://"))) return;
 
 		const keySig = `${baseUrl}::${apiKey.slice(0, 8)}`;
 		if (_garyUploadLastKey && _garyUploadLastKey !== keySig) {
@@ -328,26 +398,30 @@ async function _flushGaryUploads(cfg) {
 
 	_garyUploadInFlight = true;
 	try {
-		// If we recently succeeded, don't re-probe auth.
+		// Always verify the target before uploading (users can accidentally paste bad domains/keys).
 		const needAuthProbe = !_garyUploadAuthOkUntil || nowMs >= _garyUploadAuthOkUntil;
 		if (needAuthProbe) {
 			try {
-				await _garyPostJson({
+				const info = await _garyPostJson({
 					baseUrl: cfg.baseUrl,
 					apiKey: cfg.apiKey,
-					path: "/v1/model/info",
+					path: "/v1/captures/info",
 					bodyObj: {},
 					hmacSecret: cfg.hmacSecret || "",
 					timeoutMs: 8000,
 				});
+				if (!info || info.ok !== true) throw new Error("bad_model_info");
 				_garyUploadAuthOkUntil = nowMs + 5 * 60 * 1000;
 			} catch (e) {
 				const status = Number(e?.status || 0);
 				if (status === 401 || status === 403) {
 					_garyUploadAuthFailUntil = nowMs + 10 * 60 * 1000;
+					_garyUploadQueue = [];
 					return;
 				}
-				// transient; try sending anyway later
+				// Don't upload unless the probe succeeded. Keep queued entries and retry later.
+				_garyUploadAuthFailUntil = nowMs + 2 * 60 * 1000;
+				return;
 			}
 		}
 
@@ -422,7 +496,11 @@ export async function clearTrainingCaptures({ storageKey } = {}) {
 export async function appendTrainingCapture(entry, { storageKey, maxEntries, uploadToGary } = {}) {
 	try {
 		if (!isTrainingCaptureEnabled()) return { ok: false, skipped: true };
-		const uploadCfg = uploadToGary && typeof uploadToGary === "object" ? uploadToGary : null;
+		try { await _bestEffortPersistOnce(); } catch {}
+		// If caller didn't pass upload cfg, auto-enable from user-supplied Gary settings.
+		const uploadCfg = (uploadToGary && typeof uploadToGary === "object")
+			? uploadToGary
+			: _autoUploadCfgFromLocalStorage();
 		const key = String(storageKey || TRAINING_CAPTURE?.storageKey || "fdv_gary_training_captures_v1");
 		const limit = Math.max(
 			25,
@@ -449,7 +527,8 @@ export async function appendTrainingCapture(entry, { storageKey, maxEntries, upl
 	// Fallback to localStorage (small).
 	try {
 		const key = String(storageKey || TRAINING_CAPTURE?.storageKey || "fdv_gary_training_captures_v1");
-		const limit = Math.max(25, Math.min(5000, Number.isFinite(Number(maxEntries)) ? Math.floor(Number(maxEntries)) : (TRAINING_CAPTURE?.maxEntries || 750)));
+		const maxLs = TRAINING_CAPTURE?.maxEntriesLocalStorage || 750;
+		const limit = Math.max(25, Math.min(5000, Number.isFinite(Number(maxEntries)) ? Math.floor(Number(maxEntries)) : maxLs));
 
 		const prev = await getTrainingCaptures({ storageKey: key });
 		const rec = (entry && typeof entry === "object") ? { ...entry } : { value: entry };
@@ -510,6 +589,8 @@ export function installTrainingDebugGlobal({ force = false } = {}) {
 			get: () => getTrainingCaptures(),
 			clear: () => clearTrainingCaptures(),
 			downloadJsonl: () => downloadTrainingCapturesJsonl({ filenamePrefix: "fdv-gary-captures" }),
+			storage: () => getTrainingStorageInfo(),
+			persist: () => requestTrainingStoragePersistence(),
 			cfg: () => {
 				try { return TRAINING_CAPTURE || {}; } catch { return {}; }
 			},
