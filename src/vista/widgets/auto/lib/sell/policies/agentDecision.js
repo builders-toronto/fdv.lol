@@ -7,6 +7,11 @@ export function createAgentDecisionPolicy({
 } = {}) {
   const _longHoldUntilByMint = new Map();
   const LONG_HOLD_RECHECK_MAX_SECS = 3;
+  const HOLD_VETO_TOLERANCE_LOSS_PCT = Object.freeze({
+    safe: 3,
+    medium: 10,
+    degen: 20,
+  });
   let _evolveOutcomes;
   const _getEvolveOutcomes = () => {
     try {
@@ -387,8 +392,9 @@ export function createAgentDecisionPolicy({
       }
     } catch {}
 
-        // Agent HOLD veto: in volatile regimes, allow Gary to suppress some system exits
-        // (e.g., SL / Trail / FAST_ fades) within bounded risk.
+        // Agent HOLD veto: if the system wants to exit (SL/TP/Trail/FAST_),
+        // allow the agent to override within bounded risk. In AI mode, the agent
+        // is treated as the final decision-maker.
         try {
           const decision = ctx?.decision;
           const hardExit = !!(
@@ -405,24 +411,22 @@ export function createAgentDecisionPolicy({
             return;
           }
 
-          if (!fullAiControl) {
-            const softExit = _isSystemSoftExit(decision);
-            if (softExit) {
-              const enabled = (state?.agentHoldVetoEnabled !== false);
-              const minConf = Math.max(0, Math.min(1, Number(state?.agentHoldVetoMinConfidence ?? 0.72)));
-              const maxLossPct = Math.max(1, Number(state?.agentHoldVetoMaxLossPct ?? 18));
-              const conf = Number(d.confidence || 0);
-              const pnl = Number.isFinite(ctx?.pnlNetPct) ? Number(ctx?.pnlNetPct) : Number(ctx?.pnlPct);
+          const softExit = _isSystemSoftExit(decision);
+          if (softExit) {
+            const pnl = Number.isFinite(ctx?.pnlNetPct) ? Number(ctx?.pnlNetPct) : Number(ctx?.pnlPct);
+            const tol = Number(HOLD_VETO_TOLERANCE_LOSS_PCT?.[_riskLevel] ?? HOLD_VETO_TOLERANCE_LOSS_PCT.safe);
+            const tolClamped = Math.max(0.5, Math.min(50, tol));
 
-              const withinLossBand = Number.isFinite(pnl) ? (pnl > -maxLossPct) : false;
-              if (!enabled || conf < minConf || !withinLossBand) {
-                try {
-                  _log(
-                    `hold ignored (soft exit active; veto=${enabled ? "on" : "off"} conf=${conf.toFixed(2)}>=${minConf.toFixed(2)} pnl=${Number.isFinite(pnl) ? pnl.toFixed(2) : "?"}% > -${maxLossPct}%)`
-                  );
-                } catch {}
-                return;
-              }
+            // If pnl is unknown, default to allowing the system exit (safer).
+            if (!Number.isFinite(pnl)) {
+              try { _log(`hold ignored (soft exit active; pnl unknown)`); } catch {}
+              return;
+            }
+
+            // Only tolerate losses down to -tolClamped. Past that, allow the system to exit.
+            if (pnl <= -tolClamped) {
+              try { _log(`hold ignored (soft exit active; pnl=${pnl.toFixed(2)}% <= -${tolClamped}%)`); } catch {}
+              return;
             }
           }
         } catch {}
