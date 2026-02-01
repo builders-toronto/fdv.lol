@@ -4,6 +4,7 @@ export const GARY_CONFIG_SYSTEM_PROMPT = [
 	"- Return ONLY valid JSON (no markdown, no prose, no trailing commas).",
 	"- Return JSON: { action:'apply'|'skip', confidence:0..1, reason?:'...', config?:{...} }",
 	"- Only include config keys listed in payload.allowedKeys.",
+	"- If payload.allowedKeys includes 'maxBuySol' and you include it in config, it MUST be >= 1.",
 	"- Values must be primitive: number|boolean|string. No nested objects/arrays.",
 	"- IMPORTANT: config must be small: include ONLY keys you would change (max 16 keys).",
 	"- Keep reason short (<= 120 chars) or omit it.",

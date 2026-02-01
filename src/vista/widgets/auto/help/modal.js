@@ -347,7 +347,7 @@ export function getAutoHelpModalHtml() {
                  <ul style="margin:6px 0 0 18px;">
                    <li><b>A. Conservative swing / warming rider</b><br/>
                      <ul style="margin:4px 0 0 18px;">
-                       <li>Buy: <code>buyPct ≈ 0.15</code>, <code>minBuySol = 0.06</code>, <code>maxBuySol = 0.3-0.5</code>.</li>
+                       <li>Buy: <code>buyPct ≈ 0.15</code>, <code>minBuySol = 0.06</code>, <code>maxBuySol = 1-2</code>.</li>
                        <li>Edge: <code>minNetEdgePct ≈ -3</code>, <code>edgeSafetyBufferPct ≈ 0.25</code>,
                          <code>warmingEdgeMinExclPct ≈ -1.5</code>.</li>
                        <li>Warming: <code>rideWarming = true</code>, <code>warmingMinProfitPct ≈ 100</code>,
@@ -359,7 +359,7 @@ export function getAutoHelpModalHtml() {
                    </li>
                    <li><b>B. High-frequency scalper with fast exits</b><br/>
                      <ul style="margin:4px 0 0 18px;">
-                       <li>Buy: <code>buyPct ≈ 0.25-0.30</code>, <code>maxBuySol = 0.1-0.2</code>.</li>
+                       <li>Buy: <code>buyPct ≈ 0.25-0.30</code>, <code>maxBuySol = 1</code>.</li>
                        <li>Edge: <code>minNetEdgePct ≈ -5</code>, <code>edgeSafetyBufferPct ≈ 0.10</code>.</li>
                        <li>Warming (optional): <code>warmingMinProfitPct ≈ 40-60</code>, higher decay (≈0.4), autoRelease ≈ 60s.</li>
                        <li>Fast Exit: tighter (hard stop 2-3%, trail arm 4-5%, trail 8-10%, TP1≈10%, TP2≈20%).</li>

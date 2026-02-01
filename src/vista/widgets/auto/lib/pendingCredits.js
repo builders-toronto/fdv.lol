@@ -102,6 +102,10 @@ export function createPendingCreditManager({
     const prev = pendingCredits.get(key);
     const add = Number(addCostSol || 0);
 
+    const baseCostSol = Number(basePos?.costSol || 0);
+    const targetCostSol = baseCostSol + add;
+    const nextTargetCostSol = Math.max(Number(prev?._targetCostSol || 0), Number.isFinite(targetCostSol) ? targetCostSol : 0);
+
     pendingCredits.set(key, {
       owner,
       mint,
@@ -110,6 +114,7 @@ export function createPendingCreditManager({
       addCostSol: Number(prev?.addCostSol || 0) + add,
       decimalsHint: Number.isFinite(decimalsHint) ? decimalsHint : (prev?.decimalsHint ?? 6),
       basePos: Object.assign({}, basePos || {}, { awaitingSizeSync: true }),
+      _targetCostSol: nextTargetCostSol,
       startedAt: prev?.startedAt || nowTs,
       until,
       lastTriedAt: 0,
@@ -192,15 +197,25 @@ export function createPendingCreditManager({
           const prevPos = state?.positions?.[entry.mint] || entry.basePos || { costSol: 0, hwmSol: 0, acquiredAt: now() };
 
           const alreadySynced = prevPos.awaitingSizeSync === false && Number(prevPos.sizeUi || 0) > 0;
-          const nextCost = alreadySynced
-            ? Number(prevPos.costSol || 0)
-            : Number(prevPos.costSol || 0) + Number(entry.addCostSol || 0);
+
+          const prevCostSol = Number(prevPos.costSol || 0);
+          const desiredCostSol = Number(entry._targetCostSol || 0) || (prevCostSol + Number(entry.addCostSol || 0));
+          let nextCostSol = prevCostSol;
+          if (!alreadySynced && Number.isFinite(desiredCostSol) && desiredCostSol > prevCostSol) {
+            nextCostSol = desiredCostSol;
+          } else if (alreadySynced && Number.isFinite(desiredCostSol) && desiredCostSol > (prevCostSol + 1e-9)) {
+            try {
+              log?.(
+                `Pending-credit: cost skip ${entry.mint.slice(0, 4)}… already synced cost=${prevCostSol.toFixed(6)} target=${desiredCostSol.toFixed(6)}`
+              );
+            } catch {}
+          }
 
           const pos = {
             ...prevPos,
             sizeUi,
             decimals: dec,
-            costSol: nextCost,
+            costSol: nextCostSol,
             hwmSol: Math.max(Number(prevPos.hwmSol || 0), Number(entry.addCostSol || 0)),
             lastBuyAt: now(),
             lastSeenAt: now(),
