@@ -1302,7 +1302,7 @@ function configureAutoProfileForRisk(riskLevel, existing = {}) {
 
   if (rl === "safe") {
     out.buyPct = 0.15;
-    out.maxBuySol = 0.18;
+    out.maxBuySol = 1;
     out.slippageBps = 220;
     out.takeProfitPct = 10;
     out.stopLossPct = 4;
@@ -1311,7 +1311,7 @@ function configureAutoProfileForRisk(riskLevel, existing = {}) {
     out.maxHoldSecs = 120;
   } else if (rl === "medium") {
     out.buyPct = 0.22;
-    out.maxBuySol = 0.28;
+    out.maxBuySol = 1.25;
     out.slippageBps = 300;
     out.takeProfitPct = 14;
     out.stopLossPct = 6;
@@ -1320,7 +1320,7 @@ function configureAutoProfileForRisk(riskLevel, existing = {}) {
     out.maxHoldSecs = 90;
   } else {
     out.buyPct = 0.32;
-    out.maxBuySol = 0.55;
+    out.maxBuySol = 2;
     out.slippageBps = 450;
     out.takeProfitPct = 22;
     out.stopLossPct = 12;
@@ -1415,8 +1415,8 @@ async function configureAutoProfileInteractive(existing = {}) {
   });
 
   out.maxBuySol = await promptNumber("maxBuySol (cap per buy in SOL)", {
-    defaultValue: Number.isFinite(Number(out.maxBuySol)) ? Number(out.maxBuySol) : 0.24,
-    min: 0.0,
+    defaultValue: Number.isFinite(Number(out.maxBuySol)) ? Number(out.maxBuySol) : 1,
+    min: 1,
     max: 50,
   });
 

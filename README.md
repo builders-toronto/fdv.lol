@@ -300,8 +300,9 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
 
-real-time: live Gary predictions training for team members
+Knob turns, AI config fixes, timing bugs, and pending PnL fix;
 
-Stream captures + mixed-dataset prep for continuous fine-tuning
-Add training suppression after model promotion with admin override
-Improve compatibility for browser upload probes (accept POST on info endpoints)
+Clamp/default max buy spend to >= 1 SOL and expose tuning knobs;
+Tighten Agent Gary config-scan constraints and validation behavior;
+Fix timer/interval edge cases causing inconsistent scheduling;
+Fix pending PnL accounting/display bug during in-flight buys/sells;

@@ -56,6 +56,42 @@ export function createQuoteAndEdgePolicy({
     ctx.pxNowNet  = sz > 0 ? (ctx.curSolNet / sz) : 0;
     ctx.pnlNetPct = (ctx.pxNowNet > 0 && ctx.pxCost > 0) ? ((ctx.pxNowNet - ctx.pxCost) / ctx.pxCost) * 100 : 0;
 
+    try {
+      const clampDropPct = Math.max(0, Number(state.pnlClampDropPct ?? 35));
+      const clampWindowMs = Math.max(0, Number(state.pnlClampWindowMs ?? 6500));
+      const lastAt = Number(ctx.pos._pnlSanityAt || 0);
+
+      const sameSz = Math.abs(Number(ctx.pos._pnlSanitySz || 0) - sz) <= 1e-12;
+      const sameCost = Math.abs(Number(ctx.pos._pnlSanityCostSol || 0) - Number(ctx.pos.costSol || 0)) <= 1e-9;
+      const withinWindow = lastAt > 0 && clampWindowMs > 0 && (ctx.nowTs - lastAt) <= clampWindowMs;
+
+      if (clampDropPct > 0 && withinWindow && sameSz && sameCost) {
+        const prevPct = Number(ctx.pos._pnlSanityPct || 0);
+        const prevNetPct = Number(ctx.pos._pnlSanityNetPct || 0);
+
+        if (Number.isFinite(prevPct) && Number.isFinite(ctx.pnlPct)) {
+          const minAllowed = prevPct - clampDropPct;
+          if (ctx.pnlPct < minAllowed) {
+            log(`PnL clamp ${ctx.mint.slice(0,4)}… gross ${ctx.pnlPct.toFixed(2)}% → ${minAllowed.toFixed(2)}% (sz/cost unchanged)`);
+            ctx.pnlPct = minAllowed;
+          }
+        }
+        if (Number.isFinite(prevNetPct) && Number.isFinite(ctx.pnlNetPct)) {
+          const minAllowed = prevNetPct - clampDropPct;
+          if (ctx.pnlNetPct < minAllowed) {
+            log(`PnL clamp ${ctx.mint.slice(0,4)}… net ${ctx.pnlNetPct.toFixed(2)}% → ${minAllowed.toFixed(2)}% (sz/cost unchanged)`);
+            ctx.pnlNetPct = minAllowed;
+          }
+        }
+      }
+
+      ctx.pos._pnlSanityAt = ctx.nowTs;
+      ctx.pos._pnlSanitySz = sz;
+      ctx.pos._pnlSanityCostSol = Number(ctx.pos.costSol || 0);
+      ctx.pos._pnlSanityPct = ctx.pnlPct;
+      ctx.pos._pnlSanityNetPct = ctx.pnlNetPct;
+    } catch {}
+
     // Maintain high-water marks from live valuation ticks.
     // - `hwmSol` is used as a peak value hint (prefer net for conservatism).
     // - `hwmPx` is used by several drawdown/trailing checks.

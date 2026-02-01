@@ -146,6 +146,7 @@ async function _assessMintOnchainSellRisk(mintStr, { cacheMs = 10 * 60 * 1000 } 
     const program = ownerStr === token2022Pid ? "token-2022" : (ownerStr === tokenPid ? "token" : (ownerStr ? "unknown" : "unknown"));
 
     const u8 = (ai.data instanceof Uint8Array) ? ai.data : new Uint8Array(ai.data);
+
     // Base mint layout is 82 bytes for both Token and Token-2022 (extensions come after).
     if (u8.length < 82) {
       const res = { ok: false, why: "mint_data_too_small", program, owner: ownerStr, dataLen: u8.length };
@@ -1702,7 +1703,8 @@ let state = {
   tickMs: 10,
   budgetUi: 0.5,  
   maxTrades: 6,  // legacy
-  minSecsBetween: 90,
+  // Cooldown between swaps/buys to reduce rate-limit / router thrash
+  minSecsBetween: 10,
   buyScore: 1.2,
   takeProfitPct: 12,
   stopLossPct: 4,
@@ -1735,7 +1737,7 @@ let state = {
   endAt: 0,                 
   buyPct: 0.2,              
   minBuySol: 0.12,
-  maxBuySol: 0.24,       
+  maxBuySol: 1,       
   rpcUrl: "",    
   // Jupiter API key (required for api.jup.ag)
   jupiterApiKey: "",
@@ -2279,6 +2281,23 @@ function _applyAgentConfigPatch(patch = {}, { source = "agent" } = {}) {
       }
     }
 
+    if ("minSecsBetween" in picked) {
+      const raw = Number(picked.minSecsBetween);
+      if (!Number.isFinite(raw)) {
+        _dropKey("minSecsBetween");
+      } else {
+        const min = 0;
+        const max = 10;
+        const clamped = Math.min(max, Math.max(min, raw));
+        if (clamped !== raw) {
+          picked.minSecsBetween = clamped;
+          log(`[AGENT GARY] config clamp (${source}) minSecsBetween ${raw.toFixed(0)}s→${clamped.toFixed(0)}s (target ${min}..${max}s)`, "warn");
+        } else {
+          picked.minSecsBetween = raw;
+        }
+      }
+    }
+
     if (!keys.length) return { applied: false, keys: [] };
 
     state = normalizeState({ ...state, ...picked });
@@ -2542,10 +2561,10 @@ const CONFIG_SCHEMA = {
   mint:                     { type: "string",  def: "" },
   tickMs:                   { type: "number",  def: 10, min: 5, max: 5000 },
   budgetUi:                 { type: "number",  def: 0.5,  min: 0, max: 1 },
-  minSecsBetween:           { type: "number",  def: 90,   min: 0, max: 3600 },
+  minSecsBetween:           { type: "number",  def: 10,   min: 0, max: 3600 },
   buyPct:                   { type: "number",  def: 0.2,  min: 0.01, max: 0.5 },
   minBuySol:                { type: "number",  def: 0.12, min: 0.01, max: 1 },
-  maxBuySol:                { type: "number",  def: 0.24, min: 0.06, max: 5 },
+  maxBuySol:                { type: "number",  def: 1, min: 1, max: 5 },
   slippageBps:              { type: "number",  def: 200,  min: 50, max: 2000 },
   coolDownSecsAfterBuy:     { type: "number",  def: 3,    min: 0, max: 120 },
   pendingGraceMs:           { type: "number",  def: 120_000, min: 10_000, max: 600_000 },
@@ -2657,7 +2676,7 @@ function normalizeState(raw = {}) {
       const rawMinBuy = Number(raw?.minBuySol);
       const rawMaxBuy = Number(raw?.maxBuySol);
       if (rawMinBuy === 0.06) out.minBuySol = 0.12;
-      if (rawMaxBuy === 0.12) out.maxBuySol = 0.24;
+      if (rawMaxBuy === 0.12) out.maxBuySol = 1;
 
       const rawFloor = Number(raw?.warmingMinProfitFloorPct);
       if (rawFloor === 0) out.warmingMinProfitFloorPct = 1.0;
@@ -2669,14 +2688,13 @@ function normalizeState(raw = {}) {
   out.tickMs = Math.max(1200, Math.min(5000, coerceNumber(out.tickMs, 2000)));
   out.slippageBps = Math.min(250, Math.max(150, coerceNumber(out.slippageBps, 200)));
   out.minBuySol = Math.max(UI_LIMITS.MIN_BUY_SOL_MIN, coerceNumber(out.minBuySol, 0.12));
-  out.maxBuySol = Math.max(out.minBuySol, coerceNumber(out.maxBuySol, 0.24));
+  out.maxBuySol = Math.max(1, out.minBuySol, coerceNumber(out.maxBuySol, 1));
   out.coolDownSecsAfterBuy = Math.max(0, Math.min(12, coerceNumber(out.coolDownSecsAfterBuy, 5)));
   out.pendingGraceMs = Math.max(120_000, coerceNumber(out.pendingGraceMs, 120_000));
   out.fricSnapEpsSol = coerceNumber(out.fricSnapEpsSol, 0.0020, { min: 0, max: 0.05 });
 
   // Holds (seconds)
   out.minHoldSecs = coerceNumber(out.minHoldSecs, 5, { min: 0, max: HOLD_MAX_SECS });
-  // Migration: older configs were capped at 500s (and defaulted to 300s). Promote those legacy values to the new default.
   const rawMaxHold = Number(raw?.maxHoldSecs);
   const isLegacyMaxHold = !Number.isFinite(rawMaxHold) || rawMaxHold === 300 || rawMaxHold === 500;
   out.maxHoldSecs = coerceNumber(out.maxHoldSecs, isLegacyMaxHold ? HOLD_MAX_SECS : 50, { min: 0, max: HOLD_MAX_SECS });
@@ -2958,9 +2976,23 @@ async function processPendingCredits() {
               lastSeenAt: now(),
             };
             if (Number(rec.addCostSol || 0) > 0) {
-              pos.costSol = Number(pos.costSol || 0) + Number(rec.addCostSol || 0);
-              pos.hwmSol  = Math.max(Number(pos.hwmSol || 0), Number(rec.addCostSol || 0));
+              const addCost = Math.max(0, Number(rec.addCostSol || 0));
+
+              // Idempotent cost reconciliation:
+              const baseCost = Math.max(0, Number(rec?.basePos?.costSol || 0));
+              const wantCost = baseCost + addCost;
+              const curCost = Math.max(0, Number(pos.costSol || 0));
+              if (curCost > 0 && wantCost > 0 && curCost > wantCost + 1e-9) {
+                log(
+                  `Pending-credit cost skip ${mint.slice(0,4)}… ` +
+                  `(cur=${curCost.toFixed(6)} >= want=${wantCost.toFixed(6)}; sig=${String(rec.sig||"?").slice(0,8)}…)`,
+                  "warn"
+                );
+              }
+              pos.costSol = Math.max(curCost, wantCost);
+              pos.hwmSol = Math.max(Math.max(0, Number(pos.hwmSol || 0)), addCost);
               pos.lastBuyAt = now();
+              if (pos._pendingCostAug) delete pos._pendingCostAug;
             }
             state.positions[mint] = pos;
             updatePosCache(owner, mint, pos.sizeUi, pos.decimals);
@@ -3012,9 +3044,21 @@ async function reconcileFromOwnerScan(ownerPubkeyStr) {
               lastSeenAt: now(),
             };
             if (Number(rec.addCostSol || 0) > 0) {
-              pos.costSol = Number(pos.costSol || 0) + Number(rec.addCostSol || 0);
-              pos.hwmSol  = Math.max(Number(pos.hwmSol || 0), Number(rec.addCostSol || 0));
+              const addCost = Math.max(0, Number(rec.addCostSol || 0));
+              const baseCost = Math.max(0, Number(rec?.basePos?.costSol || 0));
+              const wantCost = baseCost + addCost;
+              const curCost = Math.max(0, Number(pos.costSol || 0));
+              if (curCost > 0 && wantCost > 0 && curCost > wantCost + 1e-9) {
+                log(
+                  `Owner-scan cost skip ${rec.mint.slice(0,4)}… ` +
+                  `(cur=${curCost.toFixed(6)} >= want=${wantCost.toFixed(6)}; sig=${String(rec.sig||"?").slice(0,8)}…)`,
+                  "warn"
+                );
+              }
+              pos.costSol = Math.max(curCost, wantCost);
+              pos.hwmSol = Math.max(Math.max(0, Number(pos.hwmSol || 0)), addCost);
               pos.lastBuyAt = now();
+              if (pos._pendingCostAug) delete pos._pendingCostAug;
             }
             state.positions[rec.mint] = pos;
             updatePosCache(rec.owner, rec.mint, pos.sizeUi, pos.decimals);
@@ -7564,6 +7608,20 @@ async function tick() {
   // const endIn = state.endAt ? ((state.endAt - now())/1000).toFixed(0) : "0";
   if (!state.enabled) return;
 
+  // If a lifetime is configured but endAt is missing, initialize it once while running.
+  try {
+    if (!state.endAt && Number(state.lifetimeMins || 0) > 0) {
+      state.endAt = now() + Number(state.lifetimeMins || 0) * 60_000;
+      save();
+      traceOnce(
+        "lifetime:init",
+        `Initialized lifetime timer (lifetimeMins=${Number(state.lifetimeMins || 0)}).`,
+        15000,
+        "info"
+      );
+    }
+  } catch {}
+
   try { await maybeSampleStableHealth({ force: false }); } catch {}
 
   traceOnce(
@@ -7611,11 +7669,16 @@ async function tick() {
     log("Lifetime ended. Unwinding…");
     try { await sweepAllToSolAndReturn(); } catch(e){ log(`Unwind failed: ${e.message||e}`); }
     return;
-  } else {
+  } else if (state.endAt && now() < state.endAt) {
     const endInSec = Math.max(0, Math.floor((state.endAt - now()) / 1000));
-    const remMins = Math.max(0, Math.floor(endInSec / 60));
     log(`Bot active. Time until end: ${endInSec}s :: hit "refresh" to reset all stats.`);
-    if (lifeEl) lifeEl.value = String(remMins);
+  } else {
+    const life = Number(state.lifetimeMins || 0);
+    if (life > 0) {
+      log(`Bot active. Lifetime configured (${life}m) but timer not initialized yet.`);
+    } else {
+      log('Bot active. Lifetime: unlimited :: hit "refresh" to reset all stats.');
+    }
   }
   if (depBalEl && state.autoWalletPub) {
     if (!_lastDepFetchTs || (now() - _lastDepFetchTs) > 5000) {
@@ -7936,7 +7999,17 @@ async function tick() {
       if (p) picks = [p];
     }
   }
-  if (!picks.length) return;
+  if (!picks.length) {
+    try {
+      traceOnce(
+        "buy:no-picks",
+        `No buy candidates (kpiSelectEnabled=${(state.kpiSelectEnabled !== false) ? 1 : 0}, snapshotLen=${Array.isArray(kpiSnapshot) ? kpiSnapshot.length : 0}, leaderMode=${leaderMode ? 1 : 0}).`,
+        12000,
+        "info"
+      );
+    } catch {}
+    return;
+  }
 
   // If Flamebar is enabled, ensure it is at least considered when we have other picks.
   try {
@@ -7957,7 +8030,23 @@ async function tick() {
   }
 
   const withinBatch = state.allowMultiBuy && now() <= _buyBatchUntil;
-  if (state.lastTradeTs && (now() - state.lastTradeTs)/1000 < state.minSecsBetween && !withinBatch && !ignoreCooldownForLeaderBuy) return;
+  // Make cooldown behavior explicit (otherwise it can look like the bot "stopped scanning").
+  try {
+    if (state.lastTradeTs && !withinBatch && !ignoreCooldownForLeaderBuy) {
+      const sinceSec = (now() - state.lastTradeTs) / 1000;
+      const minSec = Math.max(0, Number(state.minSecsBetween || 0));
+      if (sinceSec < minSec) {
+        const left = Math.max(0, Math.ceil(minSec - sinceSec));
+        traceOnce(
+          "buy:cooldown",
+          `buy cooldown active (${left}s left; minSecsBetween=${minSec}s)` ,
+          4000,
+          "info"
+        );
+        return;
+      }
+    }
+  } catch {}
 
   // Hard safety: if a buy/sell/leader-switch is already in flight, do not start another buy pass.
   // (The buy lock can expire while an async buy is still running.)
@@ -10342,6 +10431,9 @@ function updateStatsHeader() {
         const mm = Math.floor(sec / 60);
         const ss = sec % 60;
         left = `${mm}:${String(ss).padStart(2,"0")}`;
+      } else {
+        const life = Number(state.lifetimeMins || 0);
+        if (!(life > 0)) left = "∞";
       }
 
       const lastTradeAgo = Number(state.lastTradeTs || 0) ? Math.max(0, Math.floor((now() - state.lastTradeTs) / 1000)) : null;
@@ -11600,9 +11692,23 @@ export function initTraderWidget(container = document.body) {
   });
 
   const saveField = () => {
+    const prevLife = Number(state.lifetimeMins || 0);
     const life = _clamp(parseInt(lifeEl.value || "0", 10), UI_LIMITS.LIFE_MINS_MIN, UI_LIMITS.LIFE_MINS_MAX);
     state.lifetimeMins = life;
     lifeEl.value = String(life);
+
+    // Keep endAt in sync with lifetime changes.
+    // - life <= 0 means unlimited (clear endAt)
+    // - when running, apply immediately so Time left reflects the new setting
+    try {
+      if (life !== prevLife) {
+        if (life > 0) {
+          state.endAt = now() + life * 60_000;
+        } else {
+          state.endAt = 0;
+        }
+      }
+    } catch {}
 
     const rawPct = normalizePercent(buyPctEl.value);
     const pct = _clamp(rawPct, UI_LIMITS.BUY_PCT_MIN, UI_LIMITS.BUY_PCT_MAX);
