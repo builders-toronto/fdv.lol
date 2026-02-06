@@ -389,7 +389,7 @@ export function getAutoHelpModalHtml() {
                <div>
                  <strong>Support, updates & community</strong>
                  <p style="margin:6px 0 0 0;">
-                   • Code & issues: <a href="https://github.com/builders-toronto/fdv.lol" target="_blank">github.com/builders-toronto/fdv.lol</a><br/>
+                   • Code & issues: <a href="https://github.com/build23w/fdv.lol" target="_blank">github.com/build23w/fdv.lol</a><br/>
                    • Telegram (questions / help / feedback): <a href="https://t.me/fdvlolgroup" target="_blank">t.me/fdvlolgroup</a><br/>
                    • X / Twitter (updates & strategy notes): <a href="https://twitter.com/fdvlol" target="_blank">@fdvlol</a>
                  </p>
@@ -437,7 +437,7 @@ export function getAutoHelpModalHtml() {
                      <li><b>Config schema & normalization</b>: Central <code>CONFIG_SCHEMA</code> plus <code>normalizeState</code> with min/max clamps for all user-facing fields (tick, buy %, min/max buy, edge, warming, rebound, fast exit, dynamic hard stop, final pump gate, dust, etc.), ensuring safe defaults and upgrade paths.</li>
                      <li><b>Logging & UX polish</b>: Structured logs for edge thresholds, warming decisions, rebound defers, router cooldowns, blacklist stages, stealth rotation, and money-made tracking; log panel gains an “Expand” toggle and copy utility, footer bumped to <b>Version: 0.0.4.0</b>.</li>
                      <li><b>Community & updates</b>: The in-app Guide now links directly to the codebase and support channels:<br/>
-                       • GitHub: <a href="https://github.com/builders-toronto/fdv.lol" target="_blank">github.com/builders-toronto/fdv.lol</a><br/>
+                       • GitHub: <a href="https://github.com/build23w/fdv.lol" target="_blank">github.com/build23w/fdv.lol</a><br/>
                        • Telegram group (help / questions): <a href="https://t.me/fdvlolgroup" target="_blank">t.me/fdvlolgroup</a><br/>
                        • X / Twitter (updates & strategy notes): <a href="https://twitter.com/fdvlol" target="_blank">@fdvlol</a>
                      </li>
@@ -460,7 +460,7 @@ export function getAutoHelpModalHtml() {
                      <li>Improved warming extension messaging and release clarity.</li>
                      <li>Refined rebound signal slope normalization (per-minute). </li>
                      <li>Safer owner scan disable detection for restricted RPC plans.</li>
-                     <li>Follow us on Github for all updates and changes: <a href="https://github.com/builders-toronto/fdv.lol" target="_blank">github.com/builders-toronto/fdv.lol</a></li>
+                     <li>Follow us on Github for all updates and changes: <a href="https://github.com/build23w/fdv.lol" target="_blank">github.com/build23w/fdv.lol</a></li>
                    </ul>
                  </div>
                  <div style="margin-top:10px;">

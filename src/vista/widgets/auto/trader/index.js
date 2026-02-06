@@ -58,6 +58,7 @@ import {
 } from "../lib/constants.js";
 import { createDex } from "../lib/dex.js";
 import { getAutoHelpModalHtml, wireAutoHelpModal } from "../help/modal.js";
+// Giscus disabled in Auto Trader (mounting it can lag ticks/cycles)
 
 import { createPreflightSellPolicy } from "../lib/sell/policies/preflight.js";
 import { createLeaderModePolicy } from "../lib/sell/policies/leaderMode.js";
@@ -1003,6 +1004,17 @@ function _applyAgentTune(tune, { source = "", mint = "", confidence = 0, reason 
 
     // Risk / exit
     setNum("takeProfitPct", tune.takeProfitPct, 0, 250, 0.25);
+    // In volatile markets, keep SL wide enough to avoid churn.
+    try {
+      const v = _computeVolatileMarketStopLossTarget();
+      if (_isAgentConfigAutosetEnabled() && v?.ok && v?.volatile) {
+        const wanted = Number(tune.stopLossPct);
+        const floor = Number(v.target || 0);
+        if (Number.isFinite(wanted) && Number.isFinite(floor) && floor > 0) {
+          tune = { ...tune, stopLossPct: Math.max(wanted, floor) };
+        }
+      }
+    } catch {}
     setNum("stopLossPct", tune.stopLossPct, 0, 99, 0.25);
     setNum("trailPct", tune.trailPct, 0, 99, 0.25);
     setNum("minProfitToTrailPct", tune.minProfitToTrailPct, 0, 200, 0.25);
@@ -1027,6 +1039,7 @@ function _applyAgentTune(tune, { source = "", mint = "", confidence = 0, reason 
     if (changed) {
       g._fdvAgentTuneLastAt = nowTs;
       try { save(); } catch {}
+      try { _refreshUiFromStateSafe(); } catch {}
       try {
         const mintShort = String(mint || "").slice(0, 4);
         log(`[AGENT GARY] tune(${source}) keys=[${changedKeys.join(", ")}] mint=${mintShort}… conf=${conf.toFixed(2)} ${String(reason || "").slice(0, 120)}`);
@@ -2066,6 +2079,81 @@ let _agentConfigScanInFlight = false;
 let _agentConfigScanLastAt = 0;
 let _agentConfigScanNextAt = 0;
 
+const AGENT_CONFIG_WARMUP_MS = 10_000;
+let _agentConfigWarmupStartedAt = 0;
+let _agentConfigWarmupDone = false;
+
+function _isAgentConfigAutosetEnabled() {
+  try {
+    // Default: keep historical behavior (autoset ON) unless user opts out.
+    if (typeof localStorage === "undefined") return true;
+    const raw = String(localStorage.getItem("fdv_agent_config_autoset") || "").trim().toLowerCase();
+    if (!raw) return true;
+    if (raw === "manual" || raw === "off" || raw === "no" || raw === "0" || raw === "false") return false;
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+async function _agentConfigWarmupSampleOnce() {
+  try {
+    const leaders = computePumpingLeaders(3) || [];
+    for (const it of leaders) {
+      const kp = it?.kp || {};
+      if (it?.mint) {
+        try {
+          if (_isMintQuarantined(it.mint, { allowHeld: true })) continue;
+        } catch {}
+        recordLeaderSample(it.mint, {
+          pumpScore: Number(it?.pumpScore || 0),
+          liqUsd:    safeNum(kp.liqUsd, 0),
+          v1h:       safeNum(kp.v1hTotal, 0),
+          chg5m:     safeNum(kp.change5m, 0),
+          chg1h:     safeNum(kp.change1h, 0),
+        });
+      }
+    }
+    try { await runFinalPumpGateBackground(); } catch {}
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function _agentConfigWarmupCollect({ durationMs = AGENT_CONFIG_WARMUP_MS } = {}) {
+  try {
+    if (_agentConfigWarmupDone) return { ok: true, skipped: true, why: "already_done" };
+    if (!_isAgentGaryEffective()) return { ok: true, skipped: true, why: "agent_not_effective" };
+    if (!_isAgentConfigAutosetEnabled()) return { ok: true, skipped: true, why: "autoset_off" };
+
+    const startTs = now();
+    if (!_agentConfigWarmupStartedAt) _agentConfigWarmupStartedAt = startTs;
+
+    // Match the bot's effective tick cadence (it clamps to >= 1200ms).
+    const gapMs = Math.max(1200, Number(state?.tickMs || 1000));
+
+    log(`[AGENT GARY] config warmup: collecting ~${Math.ceil(durationMs / gapMs)} ticks (~${Math.round(durationMs/1000)}s) before autoset…`, "info");
+
+    let n = 0;
+    while ((now() - startTs) < durationMs) {
+      await _agentConfigWarmupSampleOnce();
+      n++;
+      const left = durationMs - (now() - startTs);
+      if (left <= 0) break;
+      await new Promise((r) => setTimeout(r, Math.min(gapMs, left)));
+    }
+
+    _agentConfigWarmupDone = true;
+    log(`[AGENT GARY] config warmup: done (samples=${n}).`, "help");
+    return { ok: true, skipped: false, samples: n };
+  } catch {
+    // If warmup fails, don't block the bot forever.
+    _agentConfigWarmupDone = true;
+    return { ok: false, skipped: false, why: "exception" };
+  }
+}
+
 const AGENT_CONFIG_SCAN_KEYS = [
   // sizing / friction
   "buyPct",
@@ -2194,6 +2282,82 @@ function _agentConfigScanMarketSummary() {
     };
   } catch {
     return { ts: Date.now(), topLeaders: [] };
+  }
+}
+
+function _computeVolatileMarketStopLossTarget() {
+  try {
+    const leaders = (computePumpingLeaders(4) || []).slice(0, 4);
+    if (!leaders.length) return { ok: false, why: "no_leaders" };
+
+    const vols = [];
+    let volatileCount = 0;
+    let sampleN = 0;
+
+    for (const it of leaders) {
+      const mint = String(it?.mint || "").trim();
+      if (!mint) continue;
+
+      const past = _summarizePastCandlesForMint(mint, 24);
+      const v = Number(past?.features?.volStdPct1h ?? NaN);
+      if (!Number.isFinite(v)) continue;
+
+      vols.push(v);
+      sampleN++;
+
+      const regime = String(past?.regime || "").toLowerCase();
+      if (v >= 3.0 || /volatile/.test(regime)) volatileCount++;
+    }
+
+    if (sampleN < 2) return { ok: false, why: "insufficient_vol_samples", sampleN };
+
+    const avgVol = vols.reduce((a, b) => a + b, 0) / Math.max(1, vols.length);
+    const maxVol = Math.max(...vols);
+
+    const isVolatile = (volatileCount >= 2) || (avgVol >= 3.0) || (maxVol >= 4.0);
+    if (!isVolatile) return { ok: true, volatile: false, target: null, avgVol, maxVol, volatileCount, sampleN };
+
+    // Volatile markets need wider SL to avoid instant churn from quote noise + impact.
+    // Use 10% for volatile, 12% for extreme.
+    const isExtreme = (avgVol >= 4.5) || (maxVol >= 6.0) || (volatileCount >= 3);
+    const target = isExtreme ? 12 : 10;
+
+    return { ok: true, volatile: true, target, avgVol, maxVol, volatileCount, sampleN };
+  } catch {
+    return { ok: false, why: "exception" };
+  }
+}
+
+function _ensureVolatileMarketStopLossFloor({ source = "autoset" } = {}) {
+  try {
+    if (!_isAgentConfigAutosetEnabled()) return { ok: true, skipped: true, why: "autoset_off" };
+
+    const cur = Number(state?.stopLossPct ?? 0);
+    const sig = _computeVolatileMarketStopLossTarget();
+    if (!(sig && sig.ok)) return { ok: false, skipped: true, why: sig?.why || "no_signal" };
+    if (!sig.volatile) return { ok: true, skipped: true, why: "not_volatile" };
+
+    const target = Number(sig.target || 0);
+    if (!(Number.isFinite(target) && target > 0)) return { ok: false, skipped: true, why: "bad_target" };
+
+    if (Number.isFinite(cur) && cur >= target - 1e-9) {
+      return { ok: true, skipped: true, why: "already_high", cur, target, sig };
+    }
+
+    state.stopLossPct = target;
+    save();
+    _refreshUiFromStateSafe();
+    try { updateStatsHeader(); } catch {}
+    log(
+      `[AGENT GARY] volatile-market SL floor (${source}) stopLossPct ` +
+      `${(Number.isFinite(cur) ? cur : 0).toFixed(2)}%→${target.toFixed(2)}% ` +
+      `(avgVol≈${Number(sig.avgVol || 0).toFixed(2)}% maxVol≈${Number(sig.maxVol || 0).toFixed(2)}% ` +
+      `volatileLeaders=${Number(sig.volatileCount || 0)}/${Number(sig.sampleN || 0)})`,
+      "warn"
+    );
+    return { ok: true, applied: true, cur, target, sig };
+  } catch {
+    return { ok: false, skipped: false, why: "exception" };
   }
 }
 
@@ -2341,6 +2505,8 @@ async function _maybeRunAgentConfigScanAtStart() {
   try {
     if (_agentConfigScanDone) return { ok: true, skipped: true, why: "already_done" };
     if (!_isAgentGaryEffective()) return { ok: true, skipped: true, why: "agent_not_effective" };
+    if (!_isAgentConfigAutosetEnabled()) return { ok: true, skipped: true, why: "autoset_off" };
+    if (!_agentConfigWarmupDone) return { ok: true, skipped: true, why: "warmup_not_done" };
 
     const agent = getAutoTraderAgent();
     if (!agent || typeof agent.scanConfig !== "function") return { ok: true, skipped: true, why: "no_agent" };
@@ -2413,6 +2579,7 @@ async function _maybeRunAgentConfigScanAtStart() {
     }
 
     const applied = _applyAgentConfigPatch(d.config, { source: "market-scan" });
+    try { _ensureVolatileMarketStopLossFloor({ source: "market-scan" }); } catch {}
     log(`[AGENT GARY] market scan: ${applied.applied ? "APPLIED" : "NOOP"} conf=${conf.toFixed(2)} ${reason}`);
     _agentConfigScanDone = true;
     _agentConfigScanLastAt = now();
@@ -2430,6 +2597,8 @@ async function _maybeRunAgentConfigScanAtStart() {
 async function _maybeRunAgentConfigScanPeriodic({ force = false } = {}) {
   try {
     if (!_isAgentGaryEffective()) return { ok: true, skipped: true, why: "agent_not_effective" };
+    if (!_isAgentConfigAutosetEnabled()) return { ok: true, skipped: true, why: "autoset_off" };
+    if (!_agentConfigWarmupDone) return { ok: true, skipped: true, why: "warmup_not_done" };
     if (_agentConfigScanInFlight) return { ok: true, skipped: true, why: "in_flight" };
     if (_inFlight || _buyInFlight || _sellEvalRunning) return { ok: true, skipped: true, why: "trading_busy" };
 
@@ -2511,6 +2680,7 @@ async function _maybeRunAgentConfigScanPeriodic({ force = false } = {}) {
     }
 
     const applied = _applyAgentConfigPatch(d.config, { source: "periodic-scan" });
+    try { _ensureVolatileMarketStopLossFloor({ source: "periodic-scan" }); } catch {}
     log(`[AGENT GARY] periodic config scan: ${applied.applied ? "APPLIED" : "NOOP"} conf=${conf.toFixed(2)} ${reason}`);
     _agentConfigScanLastAt = nowTs;
     _scheduleNextAgentConfigScan(_agentConfigScanLastAt);
@@ -5901,20 +6071,20 @@ function pickTpSlForMint(mint) {
     user.trailPct > 50 || user.arm > 30 ||
     (user.tp <= user.sl); // tp should generally be > sl
 
-  const tpDiff    = Math.abs(user.tp - dyn.tp) / Math.max(5, dyn.tp);
-  const slDiff    = Math.abs(user.sl - dyn.sl) / Math.max(1, dyn.sl);
-  const trlDiff   = Math.abs(user.trailPct - dyn.trailPct) / Math.max(2, dyn.trailPct || 1);
-  const armDiff   = Math.abs(user.arm - dyn.arm) / Math.max(1, dyn.arm || 1);
-  const totalDiff = tpDiff + slDiff + trlDiff + armDiff;
-
-  const goodFit = !hardWacked && totalDiff <= 0.60;
-
-  if (goodFit) {
-    log(`TP/SL check ${mint.slice(0,4)}… looks solid — keeping your config (TP=${user.tp}% SL=${user.sl}% Trail=${user.trailPct}% Arm=${user.arm}%).`);
-    return { ...user, used: "user" };
+  // Respect user configuration unless it's clearly invalid.
+  // The dynamic model is meant as a safety fallback, not an aggressive override.
+  if (!hardWacked) {
+    log(
+      `TP/SL check ${mint.slice(0,4)}… using your config ` +
+      `(TP=${user.tp}% SL=${user.sl}% Trail=${user.trailPct}% Arm=${user.arm}%).`
+    );
+    return { ...user, used: "user", tier: dyn.tier, intensity: dyn.intensity };
   }
 
-  log(`TP/SL check ${mint.slice(0,4)}… your settings look off — applying dynamic: TP=${dyn.tp}% SL=${dyn.sl}% Trail=${dyn.trailPct}% Arm=${dyn.arm}% (${dyn.tier} I=${dyn.intensity.toFixed(2)})`);
+  log(
+    `TP/SL check ${mint.slice(0,4)}… your settings look off — applying dynamic: ` +
+    `TP=${dyn.tp}% SL=${dyn.sl}% Trail=${dyn.trailPct}% Arm=${dyn.arm}% (${dyn.tier} I=${dyn.intensity.toFixed(2)})`
+  );
   return { ...dyn, used: "dynamic" };
 }
 
@@ -6042,7 +6212,7 @@ function ensureFinalPumpGateTracking(mint, nowTs = now()) {
 //   return isFinalPumpGateReady(mint);
 // }
 
-async function focusMintAndRecord(mint, { refresh = true, ttlMs = 2000, signal } = {}) {
+async function focusMintAndRecord(mint, { refresh = true, ttlMs = 50, signal } = {}) {
   try {
     if (!mint) return null;
 
@@ -6097,7 +6267,7 @@ async function observeMintOnce(mint, opts = {}) {
   let it0 = findLeader();
   if (!it0) {
     try {
-      const foc = await focusMint(mint, { refresh: true, ttlMs: 2000 });
+      const foc = await focusMint(mint, { refresh: true, ttlMs: 50 });
       if (foc?.ok && foc.row) {
         it0 = {
           pumpScore: Number(foc.pumpScore || 0),
@@ -6133,7 +6303,7 @@ async function observeMintOnce(mint, opts = {}) {
     let itN = findLeader();
     if (!itN) {
       try {
-        const foc = await focusMint(mint, { refresh: true, ttlMs: 2000 });
+        const foc = await focusMint(mint, { refresh: true, ttlMs: 50 });
         if (foc?.ok && foc.row) {
           itN = {
             pumpScore: Number(foc.pumpScore || 0),
@@ -7608,6 +7778,19 @@ async function tick() {
   // const endIn = state.endAt ? ((state.endAt - now())/1000).toFixed(0) : "0";
   if (!state.enabled) return;
 
+  // Agent-config warmup: ensure we only allow autoset config scans after ~10s of live ticks.
+  // (Startup path also runs a dedicated warmup loop, but this covers any edge cases.)
+  try {
+    if (_isAgentGaryEffective() && _isAgentConfigAutosetEnabled() && !_agentConfigWarmupDone) {
+      const ts = now();
+      if (!_agentConfigWarmupStartedAt) _agentConfigWarmupStartedAt = ts;
+      if ((ts - _agentConfigWarmupStartedAt) >= AGENT_CONFIG_WARMUP_MS) {
+        _agentConfigWarmupDone = true;
+        log("[AGENT GARY] config warmup: ready (10s ticks collected).", "help");
+      }
+    }
+  } catch {}
+
   // If a lifetime is configured but endAt is missing, initialize it once while running.
   try {
     if (!state.endAt && Number(state.lifetimeMins || 0) > 0) {
@@ -7635,7 +7818,7 @@ async function tick() {
     return;
   }
 
-  try { if (_isAgentGaryEffective()) _maybeRunAgentConfigScanPeriodic().catch(() => {}); } catch {}
+  try { if (_isAgentGaryEffective() && _isAgentConfigAutosetEnabled()) _maybeRunAgentConfigScanPeriodic().catch(() => {}); } catch {}
 
   try {
     const leaders = computePumpingLeaders(3) || [];
@@ -7659,7 +7842,7 @@ async function tick() {
   try {
     const held = Object.keys(state.positions || {}).filter(m => m && m !== SOL_MINT);
     for (const m of held) {
-      await focusMintAndRecord(m, { refresh: true, ttlMs: 2000 }).catch(()=>{});
+      await focusMintAndRecord(m, { refresh: true, ttlMs: 50 }).catch(()=>{});
     }
   } catch {}
 
@@ -8748,7 +8931,7 @@ async function tick() {
             log(
               `Skip ${mint.slice(0,4)}… (manual edge gate: edgeExcl=${excl.toFixed(2)}% < minNetEdgePct=${manualMinEdgePct.toFixed(2)}%)`
             );
-            if (!fullAiControl) continue;
+            continue;
           }
 
           try {
@@ -8791,7 +8974,7 @@ async function tick() {
               log(
                 `Skip ${mint.slice(0,4)}… (entry cost gate: edgeCost=${entryEdgeCostPct.toFixed(2)}% > maxEntryCostPct=${maxCost.toFixed(2)}% for risk=${risk})`
               );
-              if (!fullAiControl) continue;
+              continue;
             }
           }
         } catch {}
@@ -8809,17 +8992,16 @@ async function tick() {
           let _seriesN = 0;
           try { _seriesN = (getLeaderSeries(mint, 3) || []).length; } catch {}
           if (_seriesN < 3) {
-            try { await focusMintAndRecord(mint, { refresh: true, ttlMs: 2000 }); } catch {}
+            try { await focusMintAndRecord(mint, { refresh: true, ttlMs: 60 }); } catch {}
             try { _seriesN = (getLeaderSeries(mint, 3) || []).length; } catch {}
             if (_seriesN < 3) {
-              // Hard requirement: do not buy without enough samples.
               const msg = `Skip ${mint.slice(0,4)}… (need leader series >=3; have ${_seriesN}/3)`;
               log(msg);
               try {
                 agentGates.sim = { ready: false, seriesN: _seriesN, needSeriesN: 3, mode: String(simMode || "").toLowerCase() };
               } catch {}
-              if (!fullAiControl) continue;
-              simEnabled = false; // proceed without sim gating
+              if (simMode === "enforce") continue;
+              simEnabled = false; // proceed without sim gating when not enforcing
             }
           }
 
@@ -8863,14 +9045,12 @@ async function tick() {
               entrySim = sim;
 
           if (!sim) {
-            // Hard requirement: do not buy without a sim model (insufficient leader series).
-            // Agent Gary can tune sizing/slippage and veto, but cannot override missing data.
             const msg = `Skip ${mint.slice(0,4)}… (sim: insufficient leader series)`;
             log(msg);
             try {
               agentGates.sim = { ready: false, mode: String(simMode || "").toLowerCase(), why: "insufficient leader series" };
             } catch {}
-            if (!fullAiControl) continue;
+            if (simMode === "enforce") continue;
           } else {
             try {
               agentGates.sim = {
@@ -8896,7 +9076,7 @@ async function tick() {
                 `Skip ${mint.slice(0,4)}… sim P(hit goal) ${(Number(sim.pHit) * 100).toFixed(1)}% < ${(minWinProb * 100).toFixed(0)}% ` +
                 `(goal≈${requiredGrossTp.toFixed(2)}% = baseGoal + edgeCost + buf)`;
               // Enforce means enforce (do not allow agent overrides here).
-              if (simMode === "enforce") { log(msg); if (!fullAiControl) continue; }
+              if (simMode === "enforce") { log(msg); continue; }
               log(msg.replace(/^Skip /, "Sim warn "));
             }
 
@@ -8904,7 +9084,7 @@ async function tick() {
               const msg =
                 `Skip ${mint.slice(0,4)}… sim P(terminal goal) ${(Number(sim.pTerminal) * 100).toFixed(1)}% < ${(minTerminalProb * 100).toFixed(0)}% ` +
                 `(goal≈${requiredGrossTp.toFixed(2)}%)`;
-              if (simMode === "enforce") { log(msg); if (!fullAiControl) continue; }
+              if (simMode === "enforce") { log(msg); continue; }
               log(msg.replace(/^Skip /, "Sim warn "));
             }
           }
@@ -9163,6 +9343,30 @@ async function tick() {
                 continue;
               }
 
+              try {
+                const reasons = [];
+                if (agentGates?.manualEdge && agentGates.manualEdge.ok === false) reasons.push("manualEdge");
+                if (agentGates?.entryCost && agentGates.entryCost.on && Number.isFinite(agentGates.entryCost.edgeCostPct) && Number.isFinite(agentGates.entryCost.maxEntryCostPct)) {
+                  if (agentGates.entryCost.edgeCostPct > agentGates.entryCost.maxEntryCostPct) reasons.push("entryCost");
+                }
+                if (agentGates?.sim && String(agentGates.sim.mode || "").toLowerCase() === "enforce") {
+                  const ready = agentGates.sim.ready;
+                  if (ready === false) reasons.push("sim:insufficient");
+                  if (ready === true) {
+                    const pHit = Number(agentGates.sim.pHit);
+                    const pTerminal = Number(agentGates.sim.pTerminal);
+                    const minWin = Number(agentGates.sim.minWinProb);
+                    const minTerm = Number(agentGates.sim.minTerminalProb);
+                    if (Number.isFinite(pHit) && Number.isFinite(minWin) && pHit < minWin) reasons.push("sim:pHit");
+                    if (Number.isFinite(pTerminal) && Number.isFinite(minTerm) && minTerm > 0 && pTerminal < minTerm) reasons.push("sim:pTerminal");
+                  }
+                }
+                if (reasons.length) {
+                  log(`[AGENT GARY] override denied ${mint.slice(0,4)}… (failed gates: ${reasons.join(",")})`);
+                  continue;
+                }
+              } catch {}
+
               let tuneBits = [];
               if (d.buy && Number.isFinite(Number(d.buy.slippageBps))) {
                 const s = Math.max(50, Math.min(2500, Math.floor(Number(d.buy.slippageBps))));
@@ -9393,7 +9597,7 @@ async function tick() {
           pos.slPct = dyn.sl;
           pos.trailPct = dyn.trailPct;
           pos.minProfitToTrailPct = dyn.arm;
-          log(`Dynamic TP/SL ${mint.slice(0,4)}…: TP=${pos.tpPct}% (base ${dyn.tp}% + bump ${Number(entryTpBumpPct||0).toFixed(2)}%) SL=${dyn.sl}% Trail=${dyn.trailPct}% Arm=${dyn.arm}% (${dyn.tier} I=${dyn.intensity.toFixed(2)})`);
+          log(`TP/SL (${String(dyn.used || "?")}) ${mint.slice(0,4)}…: TP=${pos.tpPct}% (base ${dyn.tp}% + bump ${Number(entryTpBumpPct||0).toFixed(2)}%) SL=${dyn.sl}% Trail=${dyn.trailPct}% Arm=${dyn.arm}% (${dyn.tier} I=${Number(dyn.intensity||0).toFixed(2)})`);
         } catch {}
         state.positions[mint] = pos;
         updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
@@ -9450,7 +9654,7 @@ async function tick() {
           pos.slPct = dyn.sl;
           pos.trailPct = dyn.trailPct;
           pos.minProfitToTrailPct = dyn.arm;
-          log(`Dynamic TP/SL ${mint.slice(0,4)}…: TP=${pos.tpPct}% (base ${dyn.tp}% + bump ${Number(entryTpBumpPct||0).toFixed(2)}%) SL=${dyn.sl}% Trail=${dyn.trailPct}% Arm=${dyn.arm}% (${dyn.tier} I=${dyn.intensity.toFixed(2)})`);
+          log(`TP/SL (${String(dyn.used || "?")}) ${mint.slice(0,4)}…: TP=${pos.tpPct}% (base ${dyn.tp}% + bump ${Number(entryTpBumpPct||0).toFixed(2)}%) SL=${dyn.sl}% Trail=${dyn.trailPct}% Arm=${dyn.arm}% (${dyn.tier} I=${Number(dyn.intensity||0).toFixed(2)})`);
         } catch {}
         state.positions[mint] = pos;
         save();
@@ -9546,10 +9750,12 @@ async function startAutoAsync() {
 
     log("Join us on telegram: https://t.me/fdvlolgroup for community discussions!"); 
 
-    // Agent Gary startup: scan market and apply best config once per page load.
+    // Agent Gary startup: warm up on live ticks (~10s) then scan market and apply best config.
+    // This prevents "instant" configs based on a single snapshot.
     // Must happen before the trading timer starts so gates use the new settings.
     try {
-      if (_isAgentGaryEffective()) {
+      if (_isAgentGaryEffective() && _isAgentConfigAutosetEnabled()) {
+        await _agentConfigWarmupCollect({ durationMs: AGENT_CONFIG_WARMUP_MS });
         await _maybeRunAgentConfigScanAtStart();
       }
     } catch {}
@@ -10103,6 +10309,7 @@ function _ensureStatsHeader() {
         hdr.dataset.fdvAgentWired = "1";
         const root = hdr.closest?.(".fdv-auto-body") || document;
         const enabledEl = root.querySelector("[data-auto-agent-enabled]");
+        const cfgEl = root.querySelector("[data-auto-agent-config]");
         const fullEl = root.querySelector("[data-auto-agent-full-control]");
         const riskEl = root.querySelector("[data-auto-agent-risk]");
         const keyLabelEl = root.querySelector("[data-auto-llm-key-label]");
@@ -10125,6 +10332,32 @@ function _ensureStatsHeader() {
           } catch {
             return true;
           }
+        };
+
+        const _readAgentConfigMode = () => {
+          try {
+            if (!cfgEl) return "auto";
+            const tag = String(cfgEl.tagName || "").toLowerCase();
+            if (tag === "select") {
+              const v = String(cfgEl.value || "auto").trim().toLowerCase();
+              return (v === "manual") ? "manual" : "auto";
+            }
+            // checkbox-like fallback: checked => auto
+            return cfgEl.checked ? "auto" : "manual";
+          } catch {
+            return "auto";
+          }
+        };
+
+        const _writeAgentConfigModeUi = (mode) => {
+          try {
+            if (!cfgEl) return;
+            const m = String(mode || "auto").trim().toLowerCase();
+            const v = (m === "manual") ? "manual" : "auto";
+            const tag = String(cfgEl.tagName || "").toLowerCase();
+            if (tag === "select") { cfgEl.value = v; return; }
+            cfgEl.checked = (v === "auto");
+          } catch {}
         };
 
         const _readFullAiControl = () => {
@@ -10237,6 +10470,11 @@ function _ensureStatsHeader() {
           _writeAgentEnabledUi(!!en);
         } catch {}
         try {
+          const raw = typeof localStorage !== "undefined" ? String(localStorage.getItem("fdv_agent_config_autoset") || "") : "";
+          const v = String(raw || "auto").trim().toLowerCase();
+          _writeAgentConfigModeUi(v === "manual" ? "manual" : "auto");
+        } catch {}
+        try {
           const raw = typeof localStorage !== "undefined" ? String(localStorage.getItem("fdv_agent_full_control") || "") : "";
           const on = /^(1|true|yes|on)$/i.test(raw);
           _writeFullAiControlUi(!!on);
@@ -10286,6 +10524,19 @@ function _ensureStatsHeader() {
             } catch {}
           });
         }
+
+        if (cfgEl) {
+          cfgEl.addEventListener("change", () => {
+            try {
+              if (typeof localStorage === "undefined") return;
+              const mode = _readAgentConfigMode();
+              localStorage.setItem("fdv_agent_config_autoset", mode);
+              try { updateAgentUi(); } catch {}
+              try { log(`AI config autoset ${mode === "auto" ? "enabled" : "disabled"}.`, mode === "auto" ? "help" : "warn"); } catch {}
+            } catch {}
+          });
+        }
+
         if (fullEl) {
           fullEl.addEventListener("change", () => {
             try {
@@ -10475,6 +10726,9 @@ function updateStatsHeader() {
 export function initTraderWidget(container = document.body) {
   load();
 
+  const OFFICIAL_THREAD_TERM = "Trader Widget Official Thread";
+  const CHAT_MOUNT_ID = "fdv_trader_chat";
+
   if (!state.positions || typeof state.positions !== "object") state.positions = {};
 
   const wrap = container;
@@ -10624,6 +10878,13 @@ export function initTraderWidget(container = document.body) {
           <select data-auto-agent-enabled>
             <option value="yes">On</option>
             <option value="no">Off</option>
+          </select>
+        </label>
+        <label class="fdv-agent-item fdv-agent-config">
+          AI Config
+          <select data-auto-agent-config>
+            <option value="auto">Autoset</option>
+            <option value="manual">Manual</option>
           </select>
         </label>
         <label class="fdv-agent-item fdv-agent-full">
@@ -10807,6 +11068,8 @@ export function initTraderWidget(container = document.body) {
   startBtn  = wrap.querySelector("[data-auto-start]");
   stopBtn   = wrap.querySelector("[data-auto-stop]");
   mintEl    = { value: "" }; // not used in auto-wallet mode
+
+  // Official thread (Giscus) wiring disabled for performance.
 
   depAddrEl = wrap.querySelector("[data-auto-dep]");
   depBalEl  = wrap.querySelector("[data-auto-bal]");
@@ -11697,9 +11960,6 @@ export function initTraderWidget(container = document.body) {
     state.lifetimeMins = life;
     lifeEl.value = String(life);
 
-    // Keep endAt in sync with lifetime changes.
-    // - life <= 0 means unlimited (clear endAt)
-    // - when running, apply immediately so Time left reflects the new setting
     try {
       if (life !== prevLife) {
         if (life > 0) {

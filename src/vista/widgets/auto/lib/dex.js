@@ -834,14 +834,18 @@ export function createDex(deps = {}) {
 		}
 	}
 
-	async function pollSigStatus(sig, { commitment = "confirmed", timeoutMs = 22_000 } = {}) {
+	async function pollSigStatus(sig, { commitment = "confirmed", timeoutMs = 22_000, searchTransactionHistory = false } = {}) {
 		try {
 			const conn = await getConn();
 			const start = now();
 			const hardMs = Math.max(4000, Number(timeoutMs || 0));
 			while (now() - start < hardMs) {
 				try {
-					const st = await withTimeout(conn.getSignatureStatuses([sig]), 5000, { label: "sigStatus" });
+					const st = await withTimeout(
+						conn.getSignatureStatuses([sig], searchTransactionHistory ? { searchTransactionHistory: true } : undefined),
+						5000,
+						{ label: "sigStatus" },
+					);
 					const v = st?.value?.[0];
 					if (v?.err) return { ok: false, err: v.err, status: "TX_ERR" };
 					const c = v?.confirmationStatus;
@@ -870,12 +874,40 @@ export function createDex(deps = {}) {
 					{ label: "confirmSig" },
 				).catch(() => false);
 				if (ok) return true;
+
+				// Some RPCs fail to surface signature status quickly unless searchTransactionHistory is enabled.
+				const okHist = await withTimeout(
+					confirmSig(sig, { commitment, timeoutMs: hardMs, requireFinalized, searchTransactionHistory: true }),
+					hardMs + 6000,
+					{ label: "confirmSig_hist" },
+				).catch(() => false);
+				if (okHist) return true;
 			}
 		} catch (e) {
 			markRpcStress?.(e, 2000);
 		}
-		const polled = await pollSigStatus(sig, { commitment: want, timeoutMs: hardMs });
-		return !!polled?.ok;
+
+		// Poll status without and with history-search.
+		const polled = await pollSigStatus(sig, { commitment: want, timeoutMs: hardMs, searchTransactionHistory: false });
+		if (polled?.ok) return true;
+		const polledHist = await pollSigStatus(sig, { commitment: want, timeoutMs: Math.min(10_000, hardMs), searchTransactionHistory: true });
+		if (polledHist?.ok) return true;
+
+		// Final fallback: if RPC can't provide statuses, a confirmed transaction lookup is still authoritative.
+		try {
+			const conn = await getConn();
+			const tx = await withTimeout(
+				conn.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }),
+				8000,
+				{ label: "getTransaction" },
+			).catch(() => null);
+			if (tx?.meta?.err) return false;
+			if (tx) return true;
+		} catch (e) {
+			markRpcStress?.(e, 1500);
+		}
+
+		return false;
 	}
 
 	async function getJupBase() {
@@ -1148,7 +1180,7 @@ export function createDex(deps = {}) {
 		}
 	}
 
-	async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, slippageBps }) {
+	async function jupSwapWithKeypair({ signer, inputMint, outputMint, amountUi, slippageBps, onSent } = {}) {
 		const state = getState();
 
 		const { PublicKey, VersionedTransaction, Transaction } = await loadWeb3();
@@ -1275,6 +1307,12 @@ export function createDex(deps = {}) {
 					});
 				}
 			} catch {}
+		}
+
+		function _afterSent(sig) {
+			try { if (sig) onSent?.(sig); } catch {}
+			try { Promise.resolve().then(() => notePendingBuySeed()).catch(() => {}); } catch {}
+			try { Promise.resolve().then(() => seedCacheIfBuy()).catch(() => {}); } catch {}
 		}
 
 		async function _reconcileSplitSellRemainder(sig) {
@@ -1505,7 +1543,8 @@ export function createDex(deps = {}) {
 					rpcTimeoutMs("sendRawTransaction"),
 					{ label: "sendRawTransaction" },
 				);
-				log(`Swap sent: ${sig}`);
+				try { if (sig) onSent?.(sig); } catch {}
+				log(`Swap submitted: ${sig}`);
 				try { log(`Explorer: https://solscan.io/tx/${sig}`); } catch {}
 				try {
 					const meta = _computeReferralPayoutMeta();
@@ -1531,7 +1570,8 @@ export function createDex(deps = {}) {
 							rpcTimeoutMs("sendRawTransaction"),
 							{ label: "sendRawTransaction_skipPreflight" },
 						);
-						log(`Swap sent (skipPreflight): ${sig2}`);
+						try { if (sig2) onSent?.(sig2); } catch {}
+						log(`Swap submitted (skipPreflight): ${sig2}`);
 						try { log(`Explorer: https://solscan.io/tx/${sig2}`); } catch {}
 						try {
 							const meta = _computeReferralPayoutMeta();
@@ -1968,8 +2008,7 @@ export function createDex(deps = {}) {
 
 			const first = await buildAndSend(false);
 			if (first.ok) {
-				await notePendingBuySeed();
-				await seedCacheIfBuy();
+				_afterSent(first.sig);
 				return first.sig;
 			}
 			noteLastErr(first);
@@ -1983,8 +2022,7 @@ export function createDex(deps = {}) {
 					log("Primary swap NOT_SUPPORTED. Fallback: shared accounts …");
 					const second = await buildAndSend(true);
 					if (second.ok) {
-						await notePendingBuySeed();
-						await seedCacheIfBuy();
+						_afterSent(second.sig);
 						return second.sig;
 					}
 					noteLastErr(second);
@@ -2002,8 +2040,7 @@ export function createDex(deps = {}) {
 					log("Primary swap failed. Fallback: shared accounts …");
 					const fallback = await buildAndSend(true);
 					if (fallback.ok) {
-						await notePendingBuySeed();
-						await seedCacheIfBuy();
+						_afterSent(fallback.sig);
 						return fallback.sig;
 					}
 					noteLastErr(fallback);
@@ -2031,14 +2068,14 @@ export function createDex(deps = {}) {
 						quote = await r2.json();
 						const a = await buildAndSend(false, true);
 						if (a.ok) {
-							await seedCacheIfBuy();
+							_afterSent(a.sig);
 							return a.sig;
 						}
 						noteLastErr(a);
 						if (canTryShared()) {
 							const b = await buildAndSend(true, true);
 							if (b.ok) {
-								await seedCacheIfBuy();
+								_afterSent(b.sig);
 								return b.sig;
 							}
 							noteLastErr(b);
@@ -2123,7 +2160,7 @@ export function createDex(deps = {}) {
 						if (!a.ok) lastErrCode = a.code || lastErrCode;
 						const b = await buildAndSend(true, true);
 						if (b.ok) {
-							await seedCacheIfBuy();
+								_afterSent(b.sig);
 							return b.sig;
 						}
 						if (!b.ok) lastErrCode = b.code || lastErrCode;
@@ -2133,12 +2170,12 @@ export function createDex(deps = {}) {
 				try {
 					const a = await buildAndSend(false, true);
 					if (a.ok) {
-						await seedCacheIfBuy();
+								_afterSent(c.sig);
 						return a.sig;
 					}
 					const b = await buildAndSend(true);
 					if (b.ok) {
-						await seedCacheIfBuy();
+								_afterSent(d.sig);
 						return b.sig;
 					}
 				} catch {}
@@ -2378,7 +2415,13 @@ export function createDex(deps = {}) {
 			for (let attempt = 0; attempt <= retries; attempt++) {
 				try {
 					const sig = await withTimeout(
-						jupSwapWithKeypair({ ...opts, slippageBps: slip }),
+						jupSwapWithKeypair({
+							...opts,
+							slippageBps: slip,
+							onSent: (s) => {
+								try { if (s) lastSig = String(s); } catch {}
+							},
+						}),
 						totalAttemptMs,
 						{ label: "swapAttempt" },
 					);
@@ -2436,7 +2479,26 @@ export function createDex(deps = {}) {
 				} catch (e) {
 					const msg = String(e?.message || e || "");
 					if (/swapAttempt_TIMEOUT_/i.test(msg) || /sendRawTransaction_TIMEOUT_/i.test(msg)) {
-						log(`Swap attempt ${attempt + 1} stalled; retrying (${msg})`);
+						log(`Swap attempt ${attempt + 1} stalled${lastSig ? ` (sig=${String(lastSig).slice(0, 12)}…)` : ""}; retrying (${msg})`);
+						// If we have a signature, try to confirm it even though the swap attempt wrapper timed out.
+						if (lastSig) {
+							const okLate = await safeConfirmSig(lastSig, {
+								commitment: "confirmed",
+								timeoutMs: Math.max(Number(confirmMs || 0), minConfirmMs),
+								requireFinalized: needFinal,
+							}).catch(() => false);
+							if (okLate) {
+								const out = { ok: true, sig: lastSig, slip, recoveredFromTimeout: true };
+								try { noteLedgerSwap({ signer: opts?.signer, inputMint: opts?.inputMint, outputMint: opts?.outputMint, amountUi: opts?.amountUi, slippageBps: slip, res: out, stage: "confirmed_after_timeout" }); } catch {}
+								return out;
+							}
+							if (isBuy) {
+								log("Buy submitted but not confirmed yet; relying on pending credit.");
+								const out = { ok: false, sig: lastSig, slip, sent: true, timeout: true };
+								try { noteLedgerSwap({ signer: opts?.signer, inputMint: opts?.inputMint, outputMint: opts?.outputMint, amountUi: opts?.amountUi, slippageBps: slip, res: out, stage: "unconfirmed_timeout" }); } catch {}
+								return out;
+							}
+						}
 					}
 					const isNoRoute = _isNoRouteLike(msg);
 					const isInsufficient = _isInsufficientLamportsLike(msg);

@@ -188,11 +188,12 @@ export const shortAddr=(m)=>m.slice(0,4)+'…'+m.slice(-4);
 export const ts=()=>new Date().toISOString();
 
 export const GISCUS = {
-  repo:        (typeof window !== 'undefined' && (window.GISCUS_REPO        || "builders-toronto/fdv.lol")),
+  repo:        (typeof window !== 'undefined' && (window.GISCUS_REPO        || "build23w/fdv.lol")),
   repoId:      (typeof window !== 'undefined' && (window.GISCUS_REPO_ID     || "R_kgDOPnY0_Q")),
   category:    (typeof window !== 'undefined' && (window.GISCUS_CATEGORY    || "Show and tell")),
   categoryId:  (typeof window !== 'undefined' && (window.GISCUS_CATEGORY_ID || "DIC_kwDOPnY0_c4Cu2mD")),
   theme:       (typeof window !== 'undefined' && (window.GISCUS_THEME       || "dark")),
+  traderThreadNumber: (typeof window !== 'undefined' ? toNum(window.GISCUS_TRADER_THREAD_NUMBER, 322) : 322),
 };
 
 export const MEME_KEYWORDS = [

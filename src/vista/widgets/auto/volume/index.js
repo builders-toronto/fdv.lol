@@ -88,15 +88,15 @@ function _readAutoStateRaw() {
   }
 }
 
-function _writeAutoStateRaw(obj) {
-  try {
-    if (typeof localStorage === 'undefined') return false;
-    localStorage.setItem(AUTO_LS_KEY, JSON.stringify(obj || {}));
-    return true;
-  } catch {
-    return false;
-  }
-}
+// function _writeAutoStateRaw(obj) {
+//   try {
+//     if (typeof localStorage === 'undefined') return false;
+//     localStorage.setItem(AUTO_LS_KEY, JSON.stringify(obj || {}));
+//     return true;
+//   } catch {
+//     return false;
+//   }
+// }
 
 function getExistingAutoWalletMeta() {
   try {

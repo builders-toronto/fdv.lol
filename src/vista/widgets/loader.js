@@ -1,3 +1,5 @@
+import { GISCUS } from "../../config/env.js";
+
 const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (fn)=>setTimeout(fn,16);
 const ric = typeof requestIdleCallback === 'function' ? requestIdleCallback : (fn)=>setTimeout(()=>fn({ didTimeout:false, timeRemaining:()=>8 }), 48);
 
@@ -397,10 +399,15 @@ export function registerCoreWidgets() {
         container.id = containerId;
         mountHost.appendChild(container);
       }
+      const useMintThread = !!(props?.useMintThread || props?.perMint || props?.mintThread);
       mod.mountGiscus({
-        mint: props?.mint || 'lobby',
+        discussionNumber: !useMintThread ? (GISCUS?.traderThreadNumber || undefined) : undefined,
+        mint: useMintThread ? (props?.mint || 'lobby') : undefined,
+        allowMintThread: useMintThread,
         containerId,
         theme: props?.theme,
+        loading: props?.loading,
+        lockId: props?.lockId || 'site-official-thread',
       });
     },
     once: true,

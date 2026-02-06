@@ -1,5 +1,6 @@
 import { addKpiAddon, getLatestSnapshot } from '../ingest.js';
 import { fetchTokenInfoLive } from '../../../../data/dexscreener.js';
+import { getRpcConfigFromStorage, sampleMintRpc } from '../../../../data/rpc.js';
 
 const CRYPTO_FACTS = [
   'Bitcoins genesis block was mined in Jan 2009.',
@@ -51,7 +52,9 @@ export const FOCUS_STORAGE_KEY   = 'pump_focus_top_v1';
 export const FOCUS_TOP_LIMIT     = 3;
 export const FOCUS_REFRESH_MS    = 6000;    // refresh the focused mints at most every 6s
 export const FOCUS_MIN_SCORE     = 0.6;     // ignore very weak candidates
-export const FOCUS_TICK_MS       = 1; 
+// Keep this reasonably small, but not a 1ms busy loop.
+// Actual refresh cadence is gated by FOCUS_REFRESH_MS and in-flight guards.
+export const FOCUS_TICK_MS       = 25;
 
 export const PUMP_STORAGE_KEY     = 'pump_history_v1';
 export const PUMP_WINDOW_DAYS     = 1.5;       // short lookback favors immediacy
@@ -408,36 +411,126 @@ export async function focusMint(mint, { refresh = true, ttlMs = 2000, signal } =
   const id = String(mint || '').trim();
   if (!id) return { ok: false, error: 'Missing mint' };
 
+  // Per-mint refresh de-dupe so callers can tick aggressively without piling up network.
+  if (!globalThis.__fdvFocusRefreshInflight) globalThis.__fdvFocusRefreshInflight = new Map();
+  const inflight = globalThis.__fdvFocusRefreshInflight;
+
+  const debugRpc = (() => {
+    try {
+      const g = (typeof window !== 'undefined') ? window : globalThis;
+      if (g && g._fdvDebugRpcMintSampler) return true;
+    } catch {}
+    try {
+      const v = String(localStorage.getItem('fdv_debug_rpc_mint') || '').trim().toLowerCase();
+      return v === '1' || v === 'true' || v === 'yes';
+    } catch {}
+    return false;
+  })();
+
+  if (!globalThis.__fdvFocusRpcLogLast) globalThis.__fdvFocusRpcLogLast = new Map();
+  const rpcLogLast = globalThis.__fdvFocusRpcLogLast;
+
   try {
+    const awaitRefresh = (typeof arguments?.[1] === 'object' && arguments[1] && 'awaitRefresh' in arguments[1])
+      ? !!arguments[1].awaitRefresh
+      : true;
+
+    const includeRpc = (typeof arguments?.[1] === 'object' && arguments[1] && 'rpc' in arguments[1])
+      ? !!arguments[1].rpc
+      : true;
+
+    const rpcOpts = (typeof arguments?.[1] === 'object' && arguments[1] && arguments[1].rpcOpts && typeof arguments[1].rpcOpts === 'object')
+      ? arguments[1].rpcOpts
+      : null;
+
+    let rpcRes = null;
+
+    const runRefresh = async () => {
+      // Start RPC sampling alongside Dexscreener if user has configured an RPC.
+      const { rpcUrl, rpcHeaders } = includeRpc ? getRpcConfigFromStorage() : { rpcUrl: '', rpcHeaders: {} };
+      const rpcPromise = (includeRpc && rpcUrl)
+        ? sampleMintRpc(id, {
+            rpcUrl,
+            rpcHeaders,
+            commitment: (rpcOpts && rpcOpts.commitment) ? rpcOpts.commitment : 'processed',
+            timeoutMs: (rpcOpts && Number.isFinite(Number(rpcOpts.timeoutMs))) ? Number(rpcOpts.timeoutMs) : 900,
+            cacheMs: (rpcOpts && Number.isFinite(Number(rpcOpts.cacheMs))) ? Number(rpcOpts.cacheMs) : 200,
+            retries: (rpcOpts && Number.isFinite(Number(rpcOpts.retries))) ? Number(rpcOpts.retries) : 0,
+            retryDelayMs: (rpcOpts && Number.isFinite(Number(rpcOpts.retryDelayMs))) ? Number(rpcOpts.retryDelayMs) : 40,
+            signal,
+            debug: debugRpc,
+          }).catch(() => ({ ok: false, error: 'rpc_failed' }))
+        : Promise.resolve(rpcUrl ? ({ ok: false, error: 'rpc_unavailable' }) : ({ ok: false, error: 'rpc_not_configured' }));
+      console.log('[focusMint] refresh', { mint: id, rpc: rpcUrl ? 'configured' : 'not configured', debugRpc });
+      const dsPromise = (async () => {
+        try {
+          const live = await fetchTokenInfoLive(id, { ttlMs, signal });
+          if (live && !live.error) {
+            const item = {
+              mint: live.mint,
+              symbol: live.symbol,
+              name: live.name,
+              imageUrl: live.imageUrl,
+              pairUrl: live.headlineUrl,
+              priceUsd: live.priceUsd,
+              liquidityUsd: live.liquidityUsd,
+              liqUsd: live.liquidityUsd, // ensure mapper sees it
+              change5m: live.change5m,
+              change1h: live.change1h,
+              change6h: live.change6h,
+              change24h: live.change24h,
+              v5mTotal: live.v5mTotal,
+              v1hTotal: live.v1hTotal,
+              v6hTotal: live.v6hTotal,
+              vol24hUsd: live.v24hTotal,
+              buySell24h: live.buySell24h,
+            };
+            ingestPumpingSnapshot([item]);
+            return { ok: true };
+          }
+        } catch {}
+        return { ok: false };
+      })();
+
+      const [rpcOut] = await Promise.all([rpcPromise, dsPromise]);
+      return { rpcOut };
+    };
+
     if (refresh) {
-      try {
-        const live = await fetchTokenInfoLive(id, { ttlMs, signal });
-        if (live && !live.error) {
-          const item = {
-            mint: live.mint,
-            symbol: live.symbol,
-            name: live.name,
-            imageUrl: live.imageUrl,
-            pairUrl: live.headlineUrl,
-            priceUsd: live.priceUsd,
-            liquidityUsd: live.liquidityUsd,
-            liqUsd: live.liquidityUsd, // ensure mapper sees it
-            change5m: live.change5m,
-            change1h: live.change1h,
-            change6h: live.change6h,
-            change24h: live.change24h,
-            v5mTotal: live.v5mTotal,
-            v1hTotal: live.v1hTotal,
-            v6hTotal: live.v6hTotal,
-            vol24hUsd: live.v24hTotal,
-            buySell24h: live.buySell24h,
-          };
-          ingestPumpingSnapshot([item]);
+      // De-dupe refresh per mint to keep high-frequency callers lightweight.
+      let p = inflight.get(id);
+      if (!p) {
+        p = Promise.resolve().then(runRefresh).finally(() => inflight.delete(id));
+        inflight.set(id, p);
+      }
+
+      if (awaitRefresh) {
+        try {
+          const r = await p;
+          rpcRes = r?.rpcOut || null;
+        } catch {
         }
-      } catch {
+      } else {
+        // Fire in background; surface RPC data only opportunistically.
+        p.then((r) => {
+          const out = r?.rpcOut || null;
+          if (out && out.ok) {
+            try {
+              const last = Number(rpcLogLast.get(id) || 0);
+              const now = Date.now();
+              if (debugRpc && (now - last > 5000)) {
+                rpcLogLast.set(id, now);
+                console.debug('[focusMint][rpc] bg sample', { mint: id, parsed: out.parsed, slot: out.slot, ms: out?.timing?.ms });
+              }
+            } catch {}
+          }
+        }).catch(() => {});
       }
     }
+    console.log('[focusMint] compute score', { mint: id });
 
+
+    
     const h = prunePumpHistory(loadPumpHistory());
     const recs = (h?.byMint && h.byMint[id]) ? h.byMint[id] : [];
     const now = Date.now();
@@ -454,6 +547,7 @@ export async function focusMint(mint, { refresh = true, ttlMs = 2000, signal } =
       pumpScore,
       badge: badge || '📉 Calm',
       kp: latest,
+      rpc: rpcRes,
       meta: meta || {},
       row, 
       payload: {
@@ -750,7 +844,8 @@ async function refreshFocusTracked(store, now = Date.now(), { ttlMs = 2000, sign
     const lastEval = Number(e.lastEvalTs || 0);
     if (now - lastEval < FOCUS_REFRESH_MS) continue;
     promises.push(
-      focusMint(e.mint, { refresh: true, ttlMs, signal })
+      // Non-blocking refresh: schedule network work, then recompute from history.
+      focusMint(e.mint, { refresh: true, ttlMs, signal, awaitRefresh: false, rpc: true })
         .catch(() => ({ ok: false }))
         .then(() => {
           // after refresh, recompute locally from history
