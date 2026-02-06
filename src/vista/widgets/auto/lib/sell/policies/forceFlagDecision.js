@@ -2,6 +2,34 @@ export function createForceFlagDecisionPolicy({ log, getState }) {
   return function forceFlagDecisionPolicy(ctx) {
     const state = getState();
 
+    const pnlNetPct = (() => {
+      try {
+        const n = Number.isFinite(ctx?.pnlNetPct) ? Number(ctx.pnlNetPct) : Number(ctx?.pnlPct);
+        return Number.isFinite(n) ? n : NaN;
+      } catch {
+        return NaN;
+      }
+    })();
+
+    const stopLossPct = (() => {
+      try {
+        const posSl = Math.max(0, Number(ctx?.pos?.slPct ?? 0));
+        const stateSl = Math.max(0, Number(state?.stopLossPct ?? 0));
+        const base = Math.max(10, posSl, stateSl);
+        return Number.isFinite(base) ? base : 10;
+      } catch {
+        return 10;
+      }
+    })();
+
+    const inWarmingHold = (() => {
+      try {
+        return !!(state?.rideWarming && ctx?.pos?.warmingHold === true);
+      } catch {
+        return false;
+      }
+    })();
+
     const agentRisk = (() => {
       try {
         const raw = String(ctx?.agentSignals?.agentRisk || ctx?.agentRisk || "").trim().toLowerCase();
@@ -64,14 +92,34 @@ export function createForceFlagDecisionPolicy({ log, getState }) {
         ctx.decision = { action: "sell_all", reason: "pump->calm" };
       }
     } else if (ctx.forceObserverDrop) {
+      const obsReason = String(ctx?.observerReason || "observer detection system");
+
       if (inMinHold) {
         try {
-          const rsn = String(ctx.earlyReason || "observer detection system");
-          log(`Min-hold active; suppressing observer force sell for ${ctx.mint.slice(0,4)}… (${rsn})`);
+          log(`Min-hold active; suppressing observer force sell for ${ctx.mint.slice(0,4)}… (${obsReason})`);
         } catch {}
-      } else {
-        ctx.decision = { action: "sell_all", reason: ctx.earlyReason || "observer detection system" };
+        void state;
+        return;
       }
+
+      // Avoid churn: observer-based force sells should not front-run the configured stop-loss.
+      // Let standard SL/fast-exit/rug logic handle early/noisy conditions.
+      if (Number.isFinite(pnlNetPct) && pnlNetPct > -stopLossPct) {
+        try {
+          log(
+            `${inWarmingHold ? "Warming" : "Observer"}: suppressing force sell for ${ctx.mint.slice(0,4)}… ` +
+            `netPnL=${pnlNetPct.toFixed(2)}% > -${stopLossPct.toFixed(2)}% (${obsReason})`
+          );
+        } catch {}
+        try {
+          ctx.observerDropSuppressed = true;
+          ctx.forceObserverDrop = false;
+        } catch {}
+        void state;
+        return;
+      }
+
+      ctx.decision = { action: "sell_all", reason: obsReason };
     } else if (ctx.forceExpire && (!ctx.decision || ctx.decision.action === "none")) {
       const inPostWarmGrace = Number(ctx.pos.postWarmGraceUntil || 0) > ctx.nowTs;
       if (!inPostWarmGrace) {

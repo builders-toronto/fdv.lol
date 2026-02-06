@@ -12,7 +12,7 @@
   --brand2: #7dffcf;
 
   /* Backwards-compat variable names used throughout the app */
-  --neon: #00ff74;
+  --neon: rgb(0 255 179 / 40%);
   --neon2: var(--brand2);
 
   --text: rgba(244, 255, 250, .96);
@@ -364,7 +364,7 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
   margin-bottom:8px;
   gap:10px;
 }
-.fdv-hold-chat-title{ font-weight:800; letter-spacing:.2px; color:var(--text); }
+.fdv-hold-chat-title{ font-size:8px; font-weight:800; letter-spacing:.2px; color:var(--text); }
 .fdv-hold-chat-right{ display:flex; align-items:center; gap:8px; }
 .fdv-hold-chat-meta{ font-size:12px; color:var(--muted); }
 .fdv-hold-chat-refresh{

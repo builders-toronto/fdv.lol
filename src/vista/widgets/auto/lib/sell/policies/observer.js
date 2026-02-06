@@ -43,6 +43,7 @@ export function createObserverPolicy({
           }
           if (hardBypass) {
             ctx.forceObserverDrop = true;
+            ctx.observerReason = `observer hard drop (${p}/5 <= ${bypassAt})`;
             setMintBlacklist(ctx.mint);
             log(`Observer hard drop for ${ctx.mint.slice(0,4)}… (${p}/5 <= ${bypassAt}) forcing sell (staged blacklist).`);
           } else if (ctx.inSellGuard) {
@@ -52,6 +53,7 @@ export function createObserverPolicy({
             noteObserverConsider(ctx.mint, 30_000);
           } else {
             ctx.forceObserverDrop = true;
+            ctx.observerReason = `observer drop (${p}/5 <= 2) debounce ${lowConsec}/${needLowConsec}`;
             setMintBlacklist(ctx.mint);
             log(`Observer drop for ${ctx.mint.slice(0,4)}… (${p}/5 <= 2) forcing sell (staged blacklist).`);
           }

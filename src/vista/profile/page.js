@@ -1,4 +1,4 @@
-import { BUY_RULES, FDV_LIQ_PENALTY } from "../../config/env.js";
+import { BUY_RULES, FDV_LIQ_PENALTY, GISCUS } from "../../config/env.js";
 import { fetchTokenInfo, fetchTokenInfoLive } from "../../data/dexscreener.js";
 import { scoreAndRecommendOne } from "../../core/calculate.js";
 import sanitizeToken from "./sanitizeToken.js";
@@ -141,7 +141,7 @@ export async function renderProfileView(input, { onBack } = {}) {
     (async () => {
       try {
         const { mountGiscus } = await import("../widgets/chat/chat.js");
-			mountGiscus({ mint, containerId: "chatMount", theme: "dark" });
+          mountGiscus({ discussionNumber: GISCUS?.traderThreadNumber || 0, containerId: "chatMount", theme: "dark", lockId: "site-official-thread" });
       } catch {}
     })();
     try { autoStartProfileMetrics({ mint }); } catch {}

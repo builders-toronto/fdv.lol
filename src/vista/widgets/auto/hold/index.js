@@ -935,6 +935,15 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 	function _unmountChat() {
 		try {
 			if (!_chatMountId) return;
+			try {
+				const el = typeof document !== "undefined" ? document.getElementById(_chatMountId) : null;
+				const inAuto = !!(el && el.closest && el.closest(".fdv-auto-wrap"));
+				const allowAuto = !!(el && (el.getAttribute?.("data-fdv-giscus-allow-auto") || el.closest?.("[data-fdv-giscus-allow-auto='1'],[data-fdv-giscus-allow-auto='true']")));
+				if (inAuto && !allowAuto) {
+					el.innerHTML = "";
+					return;
+				}
+			} catch {}
 			unmountGiscus({ containerId: _chatMountId });
 		} catch {}
 		_chatLastMint = "";
@@ -943,6 +952,12 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 	function _syncChat(opts = null) {
 		try {
 			if (!_chatMountId) return;
+			try {
+				const el = typeof document !== "undefined" ? document.getElementById(_chatMountId) : null;
+				const inAuto = !!(el && el.closest && el.closest(".fdv-auto-wrap"));
+				const allowAuto = !!(el && (el.getAttribute?.("data-fdv-giscus-allow-auto") || el.closest?.("[data-fdv-giscus-allow-auto='1'],[data-fdv-giscus-allow-auto='true']")));
+				if (inAuto && !allowAuto) return;
+			} catch {}
 			const force = !!opts?.force;
 			const m = _currentChatMint();
 			if (!m) {
@@ -955,7 +970,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			}
 			if (!force && _chatLastMint === m) return;
 			_chatLastMint = m;
-			mountGiscus({ mint: m, containerId: _chatMountId, theme: "dark", force });
+			mountGiscus({ mint: m, allowMintThread: true, containerId: _chatMountId, theme: "dark", loading: "eager", force });
 		} catch {}
 	}
 
@@ -1993,6 +2008,8 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			if (chatEl) {
 				_chatMountId = _safeDomId(`fdv_hold_chat_${botId}`);
 				chatEl.id = _chatMountId;
+				// Allow this specific Giscus embed to run inside the Auto tools panel.
+				chatEl.setAttribute("data-fdv-giscus-allow-auto", "1");
 			}
 		} catch {}
 
