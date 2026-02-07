@@ -277,10 +277,10 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
 
-chore(ui): tighten labels + small responsive tweaks;
+hore(training): persist responses + fix Gary upload reliability;
 
-Shorten Hold action toggles for mobile (Repeat → ∞, Uptick → Up);
-Simplify Sniper label wording (Trigger score slope → Trigger slope);
-Rename Auto Trader KPI tag (HIGH → AI);
-Silence RPC mint sampler debug logs by default;
-globalThis.__fdvTraining (should be an object);
+Auto-install __fdvTraining console helper and add isTrainingCaptureEnabled() alias;
+Fix appendTrainingCapture() upload config scoping so localStorage fallback can still enqueue uploads;
+Make upload queue non-destructive on transient failures; only dequeue after successful append;
+Reduce Gary upload batch size (10) to stay under server max-body limits;
+Ensure inference captures always store a response by falling back to validated decision JSON when raw text is empty;

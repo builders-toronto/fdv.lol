@@ -462,8 +462,10 @@ async function _flushGaryUploads(cfg) {
 			}
 		}
 
-		// Send up to 50 captures per request.
-		const batch = _garyUploadQueue.splice(0, Math.min(50, _garyUploadQueue.length));
+		// Send small batches to stay under the server max-body limit.
+		// Also: don't drop queued entries on transient failures.
+		const n = Math.max(1, Math.min(10, _garyUploadQueue.length));
+		const batch = _garyUploadQueue.slice(0, n);
 		await _garyPostJson({
 			baseUrl: cfg.baseUrl,
 			apiKey: cfg.apiKey,
@@ -472,6 +474,7 @@ async function _flushGaryUploads(cfg) {
 			hmacSecret: cfg.hmacSecret || "",
 			timeoutMs: 12_000,
 		});
+		_garyUploadQueue.splice(0, n);
 		_garyUploadAuthOkUntil = nowMs + 5 * 60 * 1000;
 	} catch (e) {
 		const status = Number(e?.status || 0);
@@ -531,13 +534,20 @@ export async function clearTrainingCaptures({ storageKey } = {}) {
 }
 
 export async function appendTrainingCapture(entry, { storageKey, maxEntries, uploadToGary } = {}) {
+	// Compute once so both IndexedDB and localStorage paths can enqueue uploads.
+	const uploadCfg = (() => {
+		try {
+			return (uploadToGary && typeof uploadToGary === "object")
+				? uploadToGary
+				: _autoUploadCfgFromRuntime();
+		} catch {
+			return null;
+		}
+	})();
 	try {
 		if (!isTrainingCaptureEnabled()) return { ok: false, skipped: true };
 		try { await _bestEffortPersistOnce(); } catch {}
 		// If caller didn't pass upload cfg, auto-enable from user-supplied Gary settings.
-		const uploadCfg = (uploadToGary && typeof uploadToGary === "object")
-			? uploadToGary
-			: _autoUploadCfgFromRuntime();
 		const key = String(storageKey || TRAINING_CAPTURE?.storageKey || "fdv_gary_training_captures_v1");
 		const limit = Math.max(
 			25,
@@ -638,8 +648,6 @@ export function installTrainingDebugGlobal({ force = false } = {}) {
 	}
 }
 
-// Make the debug helper available in the browser console by default.
-// This is intentionally lightweight and only installs when missing.
 try {
 	if (typeof window !== "undefined") installTrainingDebugGlobal({ force: false });
 } catch {}
