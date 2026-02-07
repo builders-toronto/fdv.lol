@@ -446,7 +446,6 @@ export async function focusMint(mint, { refresh = true, ttlMs = 2000, signal } =
     let rpcRes = null;
 
     const runRefresh = async () => {
-      // Start RPC sampling alongside Dexscreener if user has configured an RPC.
       const { rpcUrl, rpcHeaders } = includeRpc ? getRpcConfigFromStorage() : { rpcUrl: '', rpcHeaders: {} };
       const rpcPromise = (includeRpc && rpcUrl)
         ? sampleMintRpc(id, {
@@ -461,7 +460,7 @@ export async function focusMint(mint, { refresh = true, ttlMs = 2000, signal } =
             debug: debugRpc,
           }).catch(() => ({ ok: false, error: 'rpc_failed' }))
         : Promise.resolve(rpcUrl ? ({ ok: false, error: 'rpc_unavailable' }) : ({ ok: false, error: 'rpc_not_configured' }));
-      console.log('[focusMint] refresh', { mint: id, rpc: rpcUrl ? 'configured' : 'not configured', debugRpc });
+      if (debugRpc) console.debug('[focusMint] refresh', { mint: id, rpc: rpcUrl ? 'configured' : 'not configured', debugRpc });
       const dsPromise = (async () => {
         try {
           const live = await fetchTokenInfoLive(id, { ttlMs, signal });
@@ -527,7 +526,8 @@ export async function focusMint(mint, { refresh = true, ttlMs = 2000, signal } =
         }).catch(() => {});
       }
     }
-    console.log('[focusMint] compute score', { mint: id });
+
+    if (debugRpc) console.debug('[focusMint] compute score', { mint: id });
 
 
     
@@ -767,7 +767,9 @@ function updateFocusFromCandidates(store, candidateMints, now = Date.now()) {
         lastScore: res.pumpScore,
         lastBadge: res.badge,
         lastSeenTs: res.lastSeenTs,
-        lastEvalTs: now,
+        // Keep lastEvalTs as the last *refresh* timestamp (network pull). If we
+        // set it on every snapshot update, the refresh loop will never run.
+        lastEvalTs: Number(prev.lastEvalTs || 0) || 0,
         kp: {
           symbol: res.kp?.symbol || prev.kp?.symbol || '',
           name: res.kp?.name || prev.kp?.name || '',
@@ -791,7 +793,8 @@ function updateFocusFromCandidates(store, candidateMints, now = Date.now()) {
           lastScore: res.pumpScore,
           lastBadge: res.badge,
           lastSeenTs: res.lastSeenTs,
-          lastEvalTs: now,
+          // Force immediate refresh for new entrants.
+          lastEvalTs: 0,
           kp: {
             symbol: res.kp?.symbol || '',
             name: res.kp?.name || '',
@@ -815,7 +818,8 @@ function updateFocusFromCandidates(store, candidateMints, now = Date.now()) {
             lastScore: res.pumpScore,
             lastBadge: res.badge,
             lastSeenTs: res.lastSeenTs,
-            lastEvalTs: now,
+            // Force immediate refresh for replacements.
+            lastEvalTs: 0,
             kp: {
               symbol: res.kp?.symbol || '',
               name: res.kp?.name || '',
@@ -845,7 +849,8 @@ async function refreshFocusTracked(store, now = Date.now(), { ttlMs = 2000, sign
     if (now - lastEval < FOCUS_REFRESH_MS) continue;
     promises.push(
       // Non-blocking refresh: schedule network work, then recompute from history.
-      focusMint(e.mint, { refresh: true, ttlMs, signal, awaitRefresh: false, rpc: true })
+      // Await refresh so the recompute sees the new ingested snapshot.
+      focusMint(e.mint, { refresh: true, ttlMs, signal, awaitRefresh: true, rpc: true })
         .catch(() => ({ ok: false }))
         .then(() => {
           // after refresh, recompute locally from history

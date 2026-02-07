@@ -1,5 +1,5 @@
 import { getTokenLogoPlaceholder, queueTokenLogoLoad } from '../../../../core/ipfs.js';
-import { getRugSignalForMint } from '../../../meme/metrics/kpi/pumping.js';
+import { focusMint, getRugSignalForMint } from '../../../meme/metrics/kpi/pumping.js';
 import { MINT_RUG_BLACKLIST_MS, RUG_FORCE_SELL_SEVERITY, RUG_QUOTE_SHOCK_FRAC } from './constants.js';
 
 const DEFAULTS = {
@@ -314,6 +314,11 @@ export function initFlamebar(mountEl, opts = {}) {
   let leaderMode = 'pump';
   let timer = null;
   let bootstrappedOnce = false;
+
+	// Optional per-leader refresh to avoid waiting on full snapshot feeds.
+	let _leaderFocusAt = 0;
+	let _leaderFocusInflight = false;
+	let _leaderFocusMint = '';
 
   const getSnapshot = typeof options.getSnapshot === 'function' ? options.getSnapshot : () => null;
   const isActive = typeof options.isActive === 'function' ? options.isActive : () => true;
@@ -795,6 +800,35 @@ export function initFlamebar(mountEl, opts = {}) {
       render({ rec: null, pnlPct: null, recentPnlPct: null, sampleCount: 0 });
       return;
     }
+
+    // If the snapshot source is slow, refresh the current leader mint directly.
+    // This still uses Dexscreener under the hood, but it's per-mint and cached/deduped.
+    try {
+      const m = String(leaderMint || '').trim();
+      const minIntervalMs = 3500;
+      if (m && !_leaderFocusInflight && (nowTs - _leaderFocusAt) >= minIntervalMs) {
+        _leaderFocusAt = nowTs;
+        _leaderFocusInflight = true;
+        _leaderFocusMint = m;
+        Promise.resolve()
+          .then(() => focusMint(m, { refresh: true, ttlMs: 2000, awaitRefresh: true, rpc: true }))
+          .then((foc) => {
+            try {
+              if (!foc || foc.ok !== true) return;
+              const px = _num(foc?.kp?.priceUsd ?? foc?.row?.priceUsd);
+              if (!(px > 0)) return;
+              pushPoint(m, Date.now(), px, {
+                symbol: String(foc?.kp?.symbol || '').trim(),
+                name: String(foc?.kp?.name || '').trim(),
+                image: String(foc?.kp?.imageUrl || '').trim(),
+              });
+            } catch {}
+          })
+          .finally(() => {
+            _leaderFocusInflight = false;
+          });
+      }
+    } catch {}
 
     if (!leaderMint) {
       const boot = bootstrapLeaderFromSnapshot(items, nowTs);

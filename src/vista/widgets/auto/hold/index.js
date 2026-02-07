@@ -24,7 +24,7 @@ import {
 } from "../lib/constants.js";
 import { createDex } from "../lib/dex.js";
 import { getAutoTraderState } from "../trader/index.js";
-import { getRugSignalForMint } from "../../../meme/metrics/kpi/pumping.js";
+import { focusMint, getRugSignalForMint } from "../../../meme/metrics/kpi/pumping.js";
 import { createPnlFadeExitPolicy, pushPnlFadeSample } from "../lib/sell/policies/pnlFadeExit.js";
 import { preflightBuyLiquidity, DEFAULT_BUY_EXIT_CHECK_FRACTION, DEFAULT_BUY_MAX_PRICE_IMPACT_PCT } from "../lib/liquidity.js";
 import { withTimeout } from "../lib/async.js";
@@ -196,6 +196,16 @@ function _queueHoldTrainingCapture({ event, mint, episodeId, input, outcome } = 
 		}).catch(() => {});
 	} catch {}
 }
+
+	function _safeFixed(n, d = 2) {
+		try {
+			const x = Number(n);
+			if (!Number.isFinite(x)) return "—";
+			return x.toFixed(Math.max(0, Math.min(8, Number(d || 0) | 0)));
+		} catch {
+			return "—";
+		}
+	}
 
 // === ATA-rent-aware sizing (copied from Sniper’s swap sizing helpers) ===
 async function tokenAccountRentLamports(len = 165) {
@@ -683,6 +693,9 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 
 	let _timer = null;
 	let _tickInFlight = false;
+	let _focusAt = 0;
+	let _focusInflight = false;
+	let _lastFocus = null;
 	let _runNonce = 0;
 	let _acceptLogs = true;
 	let _lastProbe = null; // { outRawBig, at }
@@ -1234,6 +1247,36 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				log("Missing mint.", "warn");
 				return;
 			}
+
+			// Background: refresh Pumping Focus for this mint so Hold's rug/pump reads stay current.
+			// Do NOT await in the tick loop.
+			try {
+				const t = now();
+				const minIntervalMs = 12_000;
+				if (!_focusInflight && (t - _focusAt >= minIntervalMs)) {
+					_focusAt = t;
+					_focusInflight = true;
+					Promise.resolve()
+						.then(() => focusMint(mint, { refresh: true, ttlMs: 2500, awaitRefresh: true, rpc: false }))
+						.then((foc) => {
+							_lastFocus = (foc && typeof foc === "object") ? foc : null;
+							try {
+								if (_lastFocus?.ok && _lastFocus?.row) {
+									const r = _lastFocus.row;
+									traceOnce(
+										`hold:${botId}:focus:${mint}`,
+										`Focus ${_shortMint(mint)}: PUMP=${_safeFixed(_lastFocus.pumpScore, 2)} ${String(_lastFocus.badge || "")} · liq=$${_safeFixed(r.liqUsd, 0)} · v1h=$${_safeFixed(r.v1hTotal || r.v1h, 0)} · 5m=${_safeFixed(r.chg5m, 2)}% 1h=${_safeFixed(r.chg1h, 2)}%`,
+										30_000,
+										"help",
+									);
+								}
+							} catch {}
+						})
+						.finally(() => {
+							_focusInflight = false;
+						});
+				}
+			} catch {}
 
 			// If a sell was already sent (fast mode), do not re-submit; wait for debit.
 			try {

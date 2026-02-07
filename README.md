@@ -300,10 +300,9 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
 
-fix(chat/liquid): probe giscus discussion once to stop 404 spam;
-First commit: Agent Gary hard train prompt/endpoint;
-Cache giscus discussion-existence probes per mapping+term+repo+category and reuse results to avoid repeated 404s.;
-Remove the periodic re-check retry after missing threads.;
-Migrate Jupiter quote handling to current api.jup.ag behavior (safe JSON parsing + viability checks) and read APIkey from Auto Trader localStorage key when config key is absent.;
-Make Hold + liquidity preflight treat missing quotes as quote-failed (not no-route) to prevent false liquidity blocks.;
-Hold: faster stop liquidation (send + debit watch), decimals hinting, and add async Agent Gary training capture events/prompt.;
+feat(rpc): refresh focused mints when RPC enabled;
+
+Make Pumping “top 3” focus entries actually trigger focusMint() refreshes on the existing cadence (no more refresh loop getting starved by snapshot updates);
+Force immediate refresh for new/replacement focus entrants, then recompute after the refresh completes for fresher scores;
+Use focusMint() in Flamebar to periodically refresh the current leader mint (throttled + deduped) so leader stats update even when the snapshot feed is slow;
+Reduce console noise by gating focusMint refresh/compute logs behind the RPC debug flag;
