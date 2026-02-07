@@ -3220,7 +3220,7 @@ export function initSniperWidget(container = document.body) {
 				<label>Target Mint <input id="sniper-mint" type="text" placeholder="Mint address"></label>
 				<label>Poll (ms) <input id="sniper-poll" type="number" min="250" max="60000" step="50"></label>
 				<label>Buy % (1-70%) <input id="sniper-buy-pct" type="number" min="1" max="70" step="1"></label>
-				<label>Trigger score slope (/min) <input id="sniper-trigger" type="number" min="0" max="20" step="0.1"></label>
+				<label>Trigger slope <input id="sniper-trigger" type="number" min="0" max="20" step="0.1"></label>
 				<label>Target start %<input id="sniper-max-profit" type="number" min="2" max="50" step="0.25"></label>
 			</div>
 

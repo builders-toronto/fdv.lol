@@ -561,7 +561,6 @@ export async function appendTrainingCapture(entry, { storageKey, maxEntries, upl
 		}
 	} catch {}
 
-	// Fallback to localStorage (small).
 	try {
 		const key = String(storageKey || TRAINING_CAPTURE?.storageKey || "fdv_gary_training_captures_v1");
 		const maxLs = TRAINING_CAPTURE?.maxEntriesLocalStorage || 750;
@@ -623,6 +622,7 @@ export function installTrainingDebugGlobal({ force = false } = {}) {
 		}
 		g.__fdvTraining = {
 			enabled: () => isTrainingCaptureEnabled(),
+			isTrainingCaptureEnabled: () => isTrainingCaptureEnabled(),
 			get: () => getTrainingCaptures(),
 			clear: () => clearTrainingCaptures(),
 			downloadJsonl: () => downloadTrainingCapturesJsonl({ filenamePrefix: "fdv-gary-captures" }),
@@ -637,3 +637,9 @@ export function installTrainingDebugGlobal({ force = false } = {}) {
 		return false;
 	}
 }
+
+// Make the debug helper available in the browser console by default.
+// This is intentionally lightweight and only installs when missing.
+try {
+	if (typeof window !== "undefined") installTrainingDebugGlobal({ force: false });
+} catch {}

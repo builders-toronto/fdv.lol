@@ -4,7 +4,7 @@
 
 BLAZING-FAST client-side SOL memecoin radar with explainable GOOD/WATCH/SHILL.
 
-Trader (Auto), Sentry (Sniper), Hold, Follow, and Volume.
+Trader (Auto), Sentry (Sniper), Hold, and Follow.
 
 - No build step
 - No backend
@@ -53,7 +53,7 @@ Note: This project is for research/education. Nothing here is financial advice.
 
 This repo contains both 'read-only' widgets (boards, KPIs) and 'active' bots (that can trade). If you enable trading bots, use a burner wallet and keep balances small.
 
-### Auto Tools Panel (Trader / Sentry / Hold / Follow / Volume)
+### Auto Tools Panel (Trader / Sentry / Hold / Follow)
 
 Implementation entrypoint: `src/vista/widgets/auto/index.js`
 
@@ -98,14 +98,6 @@ Best for: mirroring a target wallet using your Auto wallet.
 - Watches a target wallet and mirrors buys with configurable sizing
 - Designed to reuse the Auto wallet secret (headless-friendly)
 
-#### Volume
-
-Best for: controlled volume cycling on a specific mint (with pacing + caps).
-
-- Can run multiple bot wallets (1–10) to cycle buys/sells
-- Configurable caps: target volume, min/max buy sizing, pacing delays, slippage cap
-- Optional 'hold tokens' amount to keep inventory instead of full cycling
-
 ### Flamebar (Top PnL Leader)
 
 Implementation: `src/vista/widgets/auto/lib/flamebar.js`
@@ -141,7 +133,6 @@ Implementation: `src/vista/widgets/favboard/index.js`
 - Track a runner: watch Flamebar and open Hold for the leader to manage a lightweight plan.
 - Mirror a wallet: use Follow with a small buy percentage and strict max-hold.
 - Signal-driven entries: use Sentry for short-term setups and rotate based on momentum.
-- Controlled cycling: use Volume with pacing and a strict cap; treat it as an experiment tool.
 
 ---
 
@@ -220,20 +211,19 @@ Implementation: `src/vista/meme/metrics/kpi/degen.js`
   - Profiles file can be a local JSON path or an `https://` URL (defaults to `./fdv.profiles.json` or `FDV_PROFILES`).
   - Example: `node tools/trader.mjs --run-profile --profiles tools/profiles/fdv.profiles.example.json --profile dev --log-to-console`
 
-### Headless follow + volume (via `--run-profile`)
+### Headless follow (via `--run-profile`)
 
-`--run-profile` can run **Auto**, **Follow**, and **Volume** together from a *single* profile.
+`--run-profile` can run **Auto** and **Follow** together from a *single* profile.
 
 Common/shared keys (top-level inside your chosen profile):
 - `rpcUrl` (recommended): Solana RPC endpoint.
 - `rpcHeaders` (optional): Object of headers for your RPC.
-- `autoWalletSecret` (required for Follow/Volume): Auto wallet secret used for signing swaps.
+- `autoWalletSecret` (required for Follow): Auto wallet secret used for signing swaps.
   - Accepts either a base58 secret, or a JSON array string like `[12,34,...]`.
 
 Enable/disable rules:
 - Auto runs by default unless you set `"auto": false`.
 - Follow runs when `follow` is an object and `follow.enabled !== false`.
-- Volume runs when `volume` is an object and `volume.enabled !== false`.
 
 Follow config (profile key: `follow`):
 - `enabled`: `true/false` (default: enabled if present)
@@ -242,26 +232,13 @@ Follow config (profile key: `follow`):
 - `maxHoldMin` (optional): max minutes to hold before exiting
 - `pollMs` (optional): polling interval (min 250ms)
 
-Volume config (profile key: `volume`):
-- `enabled`: `true/false` (default: enabled if present)
-- `mint` (required): token mint to generate volume on
-- `bots` (optional): number of bot wallets to run (1–10)
-- `targetVolumeSol` (optional): stop after generating this amount of SOL volume (0 = unlimited)
-- `minBuyAmountSol` / `maxBuyAmountSol` (optional): random buy sizing bounds
-- `sellAmountPct` (optional): percent to sell on each cycle (default 100)
-- `maxSlippageBps` (optional): slippage cap
-- `holdTokens` (optional): keep this many tokens (0 = sell all)
-- `holdDelayMs` / `cycleDelayMs` (optional): pacing
-
 Example profiles file:
 - See `tools/profiles/fdv.profiles.example.json` for a starting point.
 
 Example commands:
 - Follow-only (profile must set `"auto": false` and enable follow):
   - `node tools/trader.mjs --run-profile --profiles tools/profiles/fdv.profiles.example.json --profile follow_only --log-to-console`
-- Volume-only:
-  - `node tools/trader.mjs --run-profile --profiles tools/profiles/fdv.profiles.example.json --profile volume_only --log-to-console`
-- Auto + Follow + Volume:
+- Auto + Follow:
   - `node tools/trader.mjs --run-profile --profiles tools/profiles/fdv.profiles.example.json --profile all_bots --log-to-console`
 
 - Help:
@@ -300,9 +277,10 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
 
-feat(rpc): refresh focused mints when RPC enabled;
+chore(ui): tighten labels + small responsive tweaks;
 
-Make Pumping “top 3” focus entries actually trigger focusMint() refreshes on the existing cadence (no more refresh loop getting starved by snapshot updates);
-Force immediate refresh for new/replacement focus entrants, then recompute after the refresh completes for fresher scores;
-Use focusMint() in Flamebar to periodically refresh the current leader mint (throttled + deduped) so leader stats update even when the snapshot feed is slow;
-Reduce console noise by gating focusMint refresh/compute logs behind the RPC debug flag;
+Shorten Hold action toggles for mobile (Repeat → ∞, Uptick → Up);
+Simplify Sniper label wording (Trigger score slope → Trigger slope);
+Rename Auto Trader KPI tag (HIGH → AI);
+Silence RPC mint sampler debug logs by default;
+globalThis.__fdvTraining (should be an object);
