@@ -300,9 +300,10 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
 
-Knob turns, AI config fixes, timing bugs, and pending PnL fix;
-
-Clamp/default max buy spend to >= 1 SOL and expose tuning knobs;
-Tighten Agent Gary config-scan constraints and validation behavior;
-Fix timer/interval edge cases causing inconsistent scheduling;
-Fix pending PnL accounting/display bug during in-flight buys/sells;
+fix(chat/liquid): probe giscus discussion once to stop 404 spam;
+First commit: Agent Gary hard train prompt/endpoint;
+Cache giscus discussion-existence probes per mapping+term+repo+category and reuse results to avoid repeated 404s.;
+Remove the periodic re-check retry after missing threads.;
+Migrate Jupiter quote handling to current api.jup.ag behavior (safe JSON parsing + viability checks) and read APIkey from Auto Trader localStorage key when config key is absent.;
+Make Hold + liquidity preflight treat missing quotes as quote-failed (not no-route) to prevent false liquidity blocks.;
+Hold: faster stop liquidation (send + debit watch), decimals hinting, and add async Agent Gary training capture events/prompt.;

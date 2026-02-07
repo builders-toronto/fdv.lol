@@ -2,6 +2,45 @@ import { GISCUS } from "../../../config/env.js";
 
 const GISCUS_ORIGIN = "https://giscus.app";
 
+const _discussionProbeCache = new Map();
+
+const _DISCUSSION_PROBE_TTL_OK_MS = 10 * 60_000;
+
+const _DISCUSSION_PROBE_TTL_MISSING_MS = 24 * 60 * 60_000;
+
+const _DISCUSSION_PROBE_TTL_UNKNOWN_MS = 2 * 60_000;
+
+
+function _probeCacheGet(key) {
+  try {
+    const k = String(key || "");
+    if (!k) return null;
+    const v = _discussionProbeCache.get(k);
+    if (!v || typeof v !== "object") return null;
+    const age = Date.now() - Math.floor(Number(v.ts || 0));
+    const ttl = v.ok
+      ? (v.missing ? _DISCUSSION_PROBE_TTL_MISSING_MS : _DISCUSSION_PROBE_TTL_OK_MS)
+      : _DISCUSSION_PROBE_TTL_UNKNOWN_MS;
+    if (age >= ttl) {
+      _discussionProbeCache.delete(k);
+      return null;
+    }
+    return v;
+  } catch {
+    return null;
+  }
+}
+
+function _probeCacheSet(key, value) {
+  try {
+    const k = String(key || "");
+    if (!k) return;
+    const v = (value && typeof value === "object") ? value : { ok: false };
+    v.ts = Date.now();
+    _discussionProbeCache.set(k, v);
+  } catch {}
+}
+
 function isGiscusDisabledByHost(containerId) {
   try {
     const id = String(containerId || "chatMount");
@@ -250,8 +289,23 @@ export function mountGiscus(opts) {
     const repo = String(GISCUS?.repo || "").trim();
     const cat = String(GISCUS?.category || "").trim();
     const checkKey = `${resolvedMapping}|${resolvedTerm}|${repo}|${cat}`;
+    // Probe at most once per key (and cache results) to avoid repeated 404 spam.
     if (!force && inst.missingCheckKey === checkKey) return;
     inst.missingCheckKey = checkKey;
+
+    try {
+      const cached = _probeCacheGet(checkKey);
+      if (cached) {
+        const mount = ensureContainer(key);
+        if (!mount) return;
+        if (cached.ok && cached.missing) {
+          _setMissingDiscussionHint({ mount, repo, term: resolvedTerm, number: 0, mapping: resolvedMapping });
+        } else if (cached.ok && cached.missing === false) {
+          _removeFdVHints(mount);
+        }
+        return;
+      }
+    } catch {}
 
     try {
       if (inst.missingRecheckTimer) {
@@ -265,15 +319,11 @@ export function mountGiscus(opts) {
         const mount = ensureContainer(key);
         if (!mount) return;
         const probed = await _probeDiscussionExists({ repo, category: cat, term: resolvedTerm, number: 0, strict: resolvedStrict });
+        // Cache all outcomes so we don't keep probing and generating noisy network 404 logs.
+        try { _probeCacheSet(checkKey, probed || { ok: false, unknown: true }); } catch {}
         if (!probed?.ok) return;
         if (probed.missing) {
           _setMissingDiscussionHint({ mount, repo, term: resolvedTerm, number: 0, mapping: resolvedMapping });
-          // One re-check later in case the user just posted the first comment.
-          try {
-            inst.missingRecheckTimer = setTimeout(() => {
-              try { scheduleMissingCheck(); } catch {}
-            }, 15_000);
-          } catch {}
           return;
         }
         _removeFdVHints(mount);

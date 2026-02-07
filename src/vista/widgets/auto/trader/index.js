@@ -8807,9 +8807,11 @@ async function tick() {
           const wantLamportsForMin = Math.floor(Math.max(0, requiredSol) * 1e9);
           const maxLamportsForMin = Math.floor(Math.max(0, Number(state.maxBuySol || 0)) * 1e9);
           const cappedLamportsForMin = Math.min(candidateBudgetLamports, maxLamportsForMin, wantLamportsForMin);
+          const fixedPctAtBuy0 = (edgeSol > 0 && buySol0 > 0) ? (edgeSol / buySol0) * 100 : null;
           edgeSizingHint = {
             fixedEdgeLamports: Math.max(0, Number(edge.totalLamports || 0)),
             fixedEdgeSolUi: Number.isFinite(edgeSol) ? edgeSol : null,
+            fixedEdgePctAtBuySolUi: Number.isFinite(fixedPctAtBuy0) ? fixedPctAtBuy0 : null,
             suggestedMinBuySolUi: Number.isFinite(requiredSol) ? requiredSol : null,
             suggestedMinBuySolUiCapped: cappedLamportsForMin > 0 ? (cappedLamportsForMin / 1e9) : null,
             suggestedMinBuyLamportsCapped: cappedLamportsForMin > 0 ? cappedLamportsForMin : null,
@@ -8832,8 +8834,15 @@ async function tick() {
             const pctPrev = buySol0 > 0 ? (edgeSol / buySol0) * 100 : 0;
             const pctNext = nextSol > 0 ? (edgeSol / nextSol) * 100 : 0;
             buyLamports = nextLamports;
+
+            try {
+              if (edgeSizingHint && Number.isFinite(edgeSol) && nextSol > 0) {
+                edgeSizingHint.fixedEdgePctAtBuySolUi = (edgeSol / nextSol) * 100;
+              }
+            } catch {}
+
             log(
-              `Edge-size bump ${mint.slice(0,4)}… ${prevSol.toFixed(6)}→${nextSol.toFixed(6)} SOL ` +
+              `Edge-size bump (fixed-cost) ${mint.slice(0,4)}… ${prevSol.toFixed(6)}→${nextSol.toFixed(6)} SOL ` +
               `(fixed≈${edgeSol.toFixed(6)} SOL: ${pctPrev.toFixed(2)}%→${pctNext.toFixed(2)}%; ` +
               `tpTarget=${tpTargetPct.toFixed(2)}% buf=${bufPct.toFixed(2)}% cap=${costCapPct.toFixed(2)}%)`
             );
@@ -8918,7 +8927,7 @@ async function tick() {
         entryEdgeExclPct = excl;
 
           // Manual edge gating (before Agent Gary sees the coin).
-          // Edge is a first-pass gate: if it fails, we do not proceed further.
+          // NOTE: this is quote-derived roundtrip edge (pctNoOnetime), not the fixed-cost % from the size bump.
           const manualMinEdgePct = Number.isFinite(Number(state.minNetEdgePct)) ? Number(state.minNetEdgePct) : null;
           if (Number.isFinite(manualMinEdgePct) && Number.isFinite(excl) && excl < manualMinEdgePct) {
             try {
@@ -8928,8 +8937,14 @@ async function tick() {
                 minNetEdgePct: manualMinEdgePct,
               };
             } catch {}
+
+            const fixedSolUi = Number(edgeSizingHint?.fixedEdgeSolUi);
+            const fixedPctUi = Number(edgeSizingHint?.fixedEdgePctAtBuySolUi);
+            const fixedNote = (Number.isFinite(fixedSolUi) && Number.isFinite(fixedPctUi))
+              ? `; fixed≈${fixedSolUi.toFixed(6)} SOL (${fixedPctUi.toFixed(2)}%)`
+              : "";
             log(
-              `Skip ${mint.slice(0,4)}… (manual edge gate: edgeExcl=${excl.toFixed(2)}% < minNetEdgePct=${manualMinEdgePct.toFixed(2)}%)`
+              `Skip ${mint.slice(0,4)}… (manual quote-edge gate: quoteEdgeExcl=${excl.toFixed(2)}% < minNetEdgePct=${manualMinEdgePct.toFixed(2)}%${fixedNote})`
             );
             continue;
           }
