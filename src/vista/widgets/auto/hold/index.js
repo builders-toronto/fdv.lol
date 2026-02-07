@@ -2203,8 +2203,8 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				<div class="fdv-log" data-hold-log></div>
 				<div class="fdv-actions fdv-hold-actions">
 					<div class="fdv-actions-left fdv-hold-actions-left">
-						<label class="fdv-hold-toggle">Repeat<input data-hold-repeat type="checkbox"></label>
-						<label class="fdv-hold-toggle">Uptick<input data-hold-uptick type="checkbox"></label>
+						<label class="fdv-hold-toggle">∞<input data-hold-repeat type="checkbox"></label>
+						<label class="fdv-hold-toggle">Up<input data-hold-uptick type="checkbox"></label>
 					</div>
 					<div class="fdv-actions-right">
 						<button data-hold-start>Start</button>

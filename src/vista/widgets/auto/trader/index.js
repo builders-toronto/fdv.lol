@@ -8681,7 +8681,7 @@ async function tick() {
             if (hitToken2022) {
               try { _kpiLabelMintOnce(mint, { text: "TOKEN-2022", cls: "warn" }, { ttlMs: 30 * 60 * 1000, cls: "warn" }, 15_000); } catch {}
               try { _kpiLabelMintOnce(mint, { text: "AUTO", cls: "warn" }, { ttlMs: 30 * 60 * 1000, cls: "warn" }, 15_000); } catch {}
-              try { _kpiLabelMintOnce(mint, { text: "HIGH", cls: "warn" }, { ttlMs: 30 * 60 * 1000, cls: "warn" }, 20_000); } catch {}
+              try { _kpiLabelMintOnce(mint, { text: "AI", cls: "warn" }, { ttlMs: 30 * 60 * 1000, cls: "warn" }, 20_000); } catch {}
             }
             if (hitFreeze && blockFreezeAuth) {
               const fa = String(hp?.freezeAuthority || "").trim();

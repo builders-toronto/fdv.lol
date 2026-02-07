@@ -205,7 +205,7 @@ export async function sampleMintRpc(
 		retryDelayMs = 40,
 	} = {}
 ) {
-	console.log('[sampleMintRpc] start', { mint, rpcUrl });	
+	// console.log('[sampleMintRpc] start', { mint, rpcUrl });	
 	const id = String(mint || '').trim();
 	const url = String(rpcUrl || '').trim();
 	const dbg = (debug != null) ? !!debug : shouldDebugRpcMint();
@@ -288,7 +288,7 @@ export async function sampleMintRpc(
 			debug: dbg ? { shape } : undefined,
 		};
 
-		console.log('[sampleMintRpc] success', { mint: id, slot: res.slot, timingMs: res.timing.ms });
+		// console.log('[sampleMintRpc] success', { mint: id, slot: res.slot, timingMs: res.timing.ms });
 
 		
 
