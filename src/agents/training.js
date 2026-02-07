@@ -188,12 +188,49 @@ function _lsSet(key, val) {
 	}
 }
 
-function _autoUploadCfgFromLocalStorage() {
+
+function _autoUploadCfgFromRuntime() {
 	try {
-		if (typeof localStorage === "undefined") return null;
-		const baseUrl = String(localStorage.getItem("fdv_gary_base_url") || "").trim();
-		const apiKey = String(localStorage.getItem("fdv_gary_key") || "").trim();
-		const hmacSecret = String(localStorage.getItem("fdv_gary_hmac_secret") || "").trim();
+		const g = (typeof window !== "undefined") ? window : globalThis;
+		const o = (g && g.__fdvAgentOverrides && typeof g.__fdvAgentOverrides === "object") ? g.__fdvAgentOverrides : null;
+
+		const readLs = (k) => {
+			try {
+				if (typeof localStorage === "undefined") return "";
+				return String(localStorage.getItem(String(k || "")) || "");
+			} catch {
+				return "";
+			}
+		};
+
+		const providerHint = String((o && (o.llmProvider || o.provider)) ? (o.llmProvider || o.provider) : readLs("fdv_llm_provider")).trim().toLowerCase();
+		const modelHint = String((o && (o.llmModel || o.model)) ? (o.llmModel || o.model) : readLs("fdv_llm_model")).trim().toLowerCase();
+		const likelyGary = providerHint === "gary" || modelHint === "gary-predictions-v1" || modelHint.startsWith("gary-");
+
+		let baseUrl = String(
+			(o && (o.garyBaseUrl || o.garyUrl || (likelyGary ? (o.llmBaseUrl || o.baseUrl) : "")))
+				? (o.garyBaseUrl || o.garyUrl || o.llmBaseUrl || o.baseUrl)
+				: readLs("fdv_gary_base_url")
+		).trim();
+
+		const apiKey = String(
+			(o && (o.garyApiKey || o.garyKey || (likelyGary ? (o.llmApiKey || o.apiKey) : "")))
+				? (o.garyApiKey || o.garyKey || o.llmApiKey || o.apiKey)
+				: readLs("fdv_gary_key")
+		).trim();
+
+		const hmacSecret = String(
+			(o && (o.garyHmacSecret || o.hmacSecret))
+				? (o.garyHmacSecret || o.hmacSecret)
+				: readLs("fdv_gary_hmac_secret")
+		).trim();
+
+		// If the user has initialized Gary Predictions but didn't explicitly set a base URL,
+		// fall back to the local dev server default used by the agent driver.
+		if (!baseUrl && apiKey && likelyGary) {
+			baseUrl = "http://127.0.0.1:8088";
+		}
+
 		if (!baseUrl || !apiKey) return null;
 		const u = baseUrl.toLowerCase();
 		if (!(u.startsWith("http://") || u.startsWith("https://"))) return null;
@@ -500,7 +537,7 @@ export async function appendTrainingCapture(entry, { storageKey, maxEntries, upl
 		// If caller didn't pass upload cfg, auto-enable from user-supplied Gary settings.
 		const uploadCfg = (uploadToGary && typeof uploadToGary === "object")
 			? uploadToGary
-			: _autoUploadCfgFromLocalStorage();
+			: _autoUploadCfgFromRuntime();
 		const key = String(storageKey || TRAINING_CAPTURE?.storageKey || "fdv_gary_training_captures_v1");
 		const limit = Math.max(
 			25,

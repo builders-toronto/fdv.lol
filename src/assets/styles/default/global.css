@@ -215,10 +215,10 @@ a:hover{text-decoration:none; filter:brightness(1.1)}
 }
 
 .loader-wrap {
-  display: grid; place-items: center; gap: 14px;
-  padding: 18px 22px; border-radius: 16px;
-  background: var(--card, #0f1729);
-  box-shadow: 0 10px 30px rgba(0,0,0,.45), inset 0 0 0 1px rgba(122,222,255,.1);
+  display: grid; 
+  place-items: center; 
+  gap: 14px;
+  padding: 18px 22px;
 }
 
 .quick-spinner-wrap { display:flex; padding:14px; }
