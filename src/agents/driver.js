@@ -1855,6 +1855,11 @@ export function createAutoTraderAgentDriver({
 		try {
 			const shouldCapture = !!TRAINING_CAPTURE?.enabled && (res.ok || !!TRAINING_CAPTURE?.includeBad);
 			if (shouldCapture) {
+				let captureText = String(text || "");
+				try {
+					// Some providers return parsed JSON but no raw `text`. Ensure we still store the response.
+					if (!captureText && validated && typeof validated === "object") captureText = JSON.stringify(validated);
+				} catch {}
 				let uploadToGary = null;
 				try {
 					// Auto-enable upload-to-gary when Gary config is populated, regardless of the active LLM provider.
@@ -1875,7 +1880,7 @@ export function createAutoTraderAgentDriver({
 					err: res.ok ? "" : String(res.err || ""),
 					userMsg,
 					system: String(systemPromptFinal || "").slice(0, 8000),
-					text: String(text || "").slice(0, 20000),
+					text: String(captureText || "").slice(0, 20000),
 					parsed: _redactDeep(parsed),
 					decision: _redactDeep(validated),
 					meta: _redactDeep(meta),
