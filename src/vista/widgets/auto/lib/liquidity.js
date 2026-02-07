@@ -42,6 +42,7 @@ export async function preflightBuyLiquidity({
 
 		const inLamports = BigInt(Math.max(1, Math.floor(solUi * 1e9)));
 		const qBuy = await dex.quoteGeneric(sol, m, inLamports.toString(), slip);
+		if (!qBuy) return { ok: false, reason: "quote-failed" };
 		const buyOutRawNum = Number(qBuy?.outAmount || 0);
 		const buyRouteLen = Array.isArray(qBuy?.routePlan) ? qBuy.routePlan.length : 0;
 		if (!(buyOutRawNum > 0) || buyRouteLen <= 0) return { ok: false, reason: "no-route" };
@@ -70,6 +71,7 @@ export async function preflightBuyLiquidity({
 		if (checkRaw <= 0n) return { ok: false, reason: "exit-no-route" };
 
 		const qExit = await dex.quoteGeneric(m, sol, checkRaw.toString(), slip);
+		if (!qExit) return { ok: false, reason: "exit-quote-failed" };
 		const exitOutRawNum = Number(qExit?.outAmount || 0);
 		const exitRouteLen = Array.isArray(qExit?.routePlan) ? qExit.routePlan.length : 0;
 		if (!(exitOutRawNum > 0) || exitRouteLen <= 0) return { ok: false, reason: "exit-no-route" };

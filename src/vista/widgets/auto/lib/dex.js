@@ -918,7 +918,16 @@ export function createDex(deps = {}) {
 	async function getJupApiKey() {
 		try {
 			const cfg = (typeof getCfg === "function") ? await getCfg() : (typeof getCfg === "object" ? getCfg : {});
-			return String(cfg?.jupiterApiKey || cfg?.jupApiKey || "").trim();
+			const fromCfg = String(cfg?.jupiterApiKey || cfg?.jupApiKey || "").trim();
+			if (fromCfg) return fromCfg;
+			// Align with Auto Trader UI storage.
+			try {
+				if (typeof localStorage !== "undefined") {
+					const fromLs = String(localStorage.getItem("fdv_jup_api_key") || "").trim();
+					if (fromLs) return fromLs;
+				}
+			} catch {}
+			return "";
 		} catch {
 			return "";
 		}
@@ -1121,6 +1130,24 @@ export function createDex(deps = {}) {
 			const baseUrl = await getJupBase();
 			const isLite = /lite-api\.jup\.ag/i.test(String(baseUrl || ''));
 
+			const isViableQuote = (q) => {
+				try {
+					const out = Number(q?.outAmount || 0);
+					const rlen = Array.isArray(q?.routePlan) ? q.routePlan.length : 0;
+					return out > 0 && rlen > 0;
+				} catch {
+					return false;
+				}
+			};
+
+			const safeJson = async (res) => {
+				try {
+					return await res.json();
+				} catch {
+					return null;
+				}
+			};
+
 			let amtStr = "1";
 			try {
 				if (typeof amountRaw === "string") {
@@ -1146,15 +1173,24 @@ export function createDex(deps = {}) {
 
 			const u1 = mk(true);
 			const r1 = await jupFetch(u1.pathname + u1.search);
-			if (r1?.ok) return await r1.json();
+			let q1 = null;
+			if (r1?.ok) {
+				q1 = await safeJson(r1);
 
-			// lite-api free tier does not support restrictIntermediateTokens=false
-			if (isLite) return null;
+				if (isViableQuote(q1)) return q1;
+			}
+
 
 			const u2 = mk(false);
 			const r2 = await jupFetch(u2.pathname + u2.search);
-			if (r2?.ok) return await r2.json();
-			return null;
+			let q2 = null;
+			if (r2?.ok) {
+				q2 = await safeJson(r2);
+				if (isViableQuote(q2)) return q2;
+			}
+
+
+			return q1 || q2 || null;
 		} catch {
 			return null;
 		}

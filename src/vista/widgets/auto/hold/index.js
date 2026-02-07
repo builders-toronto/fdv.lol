@@ -33,6 +33,8 @@ import { loadSplToken } from "../../../../core/solana/splToken.js";
 import { createDextoolsCandlestickEmbed } from "../lib/tools/dextoolsCandlestickEmbed.js";
 import { FDV_PLATFORM_FEE_BPS } from "../../../../config/env.js";
 import { createRoundtripEdgeEstimator } from "../lib/honeypot.js";
+import { appendTrainingCapture } from "../../../../agents/training.js";
+import { GARY_TRAIN_SYSTEM_PROMPT } from "../../../../agents/personas/strategies/agent.gary.train.js";
 
 const HOLD_SINGLE_LS_KEY = "fdv_hold_bot_v1";
 const HOLD_TABS_LS_KEY = "fdv_hold_tabs_v1";
@@ -74,8 +76,6 @@ const HOLD_FADE_MIN_SAMPLES = 5;
 const HOLD_FADE_DOWNTREND_POINTS = 3;
 const HOLD_FADE_EPS_PCT = 0.05;
 
-// Trade execution should match Sniper: long-timeout swaps, liquidity preflight,
-// and dynamic slippage that responds to RPC backoff.
 const DYN_SLIP_MIN_BPS = 50;
 const DYN_SLIP_MAX_BPS = 2500;
 
@@ -167,6 +167,34 @@ function getDynamicSlippageBps(kind = "buy") {
 	} catch {
 		return 250;
 	}
+}
+
+function _safeShortMint(m) {
+	try {
+		const s = String(m || "").trim();
+		return s ? (s.slice(0, 8) + "…") : "";
+	} catch {
+		return "";
+	}
+}
+
+function _queueHoldTrainingCapture({ event, mint, episodeId, input, outcome } = {}) {
+	try {
+		const m = String(mint || "").trim();
+		appendTrainingCapture({
+			mode: "training",
+			source: "fdv_hold_bot",
+			kind: "hold",
+			event: String(event || ""),
+			mint: m,
+			mint8: m ? m.slice(0, 8) : "",
+			episodeId: String(episodeId || ""),
+			prompt: String(GARY_TRAIN_SYSTEM_PROMPT || "").slice(0, 4000),
+			input: (input && typeof input === "object") ? input : (input == null ? null : { value: input }),
+			outcome: (outcome && typeof outcome === "object") ? outcome : (outcome == null ? null : { value: outcome }),
+			ts: Date.now(),
+		}).catch(() => {});
+	} catch {}
 }
 
 // === ATA-rent-aware sizing (copied from Sniper’s swap sizing helpers) ===
@@ -1403,6 +1431,8 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 					return;
 				}
 
+				const episodeId = `hold:${String(botId || "").slice(0, 24)}:${String(mint || "").slice(0, 8)}:${now()}`;
+
 				log(
 					`Hold BUY ${mint.slice(0, 6)}… ~${buySol.toFixed(4)} SOL (slip=${slip}bps)`,
 					"ok",
@@ -1431,6 +1461,33 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 					}
 					return;
 				}
+				try {
+					_queueHoldTrainingCapture({
+						event: "entry_sent",
+						mint,
+						episodeId,
+						input: {
+							phase: "entry",
+							status: "sent",
+							sig: String(sig || ""),
+							buySol,
+							slippageBps: slip,
+							roundtripEdge: edge ? {
+								pct: Number.isFinite(edge.pct) ? Number(edge.pct) : null,
+								pctNoOnetime: Number.isFinite(edge.pctNoOnetime) ? Number(edge.pctNoOnetime) : null,
+								sol: Number.isFinite(edge.sol) ? Number(edge.sol) : null,
+								platformBpsApplied: Number.isFinite(edge.platformBpsApplied) ? Number(edge.platformBpsApplied) : null,
+							} : null,
+							cfg: {
+								pollMs: Number(state.pollMs || DEFAULTS.pollMs),
+								buyPct: Number(state.buyPct || DEFAULTS.buyPct),
+								profitPct: Number(state.profitPct || DEFAULTS.profitPct),
+								uptickEnabled: !!state.uptickEnabled,
+								repeatBuy: !!state.repeatBuy,
+							},
+						},
+					});
+				} catch {}
 
 				const res = { ok: false, sig };
 				try {
@@ -1444,6 +1501,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 						const graceMs = Math.max(60_000, Number(autoSt?.pendingGraceMs || 120_000));
 						_pendingEntry = {
 							mint,
+							episodeId,
 							sig: res.sig,
 							at: now(),
 							until: now() + graceMs,
@@ -1486,6 +1544,22 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 								`Buy credited for ${_shortMint(mint)}: size≈${Number(got.sizeUi).toFixed(6)} (dec=${Number(got.decimals || 0) || 6}).`,
 								"ok",
 							);
+							try {
+								const ep = String(_pendingEntry?.episodeId || episodeId || "");
+								_queueHoldTrainingCapture({
+									event: "entry_credited",
+									mint,
+									episodeId: ep,
+									input: {
+										phase: "entry",
+										status: "credited",
+										sig: String(res?.sig || sig || ""),
+										buySol,
+										sizeUi: Number(got.sizeUi || 0),
+										decimals: Number(got.decimals || 0) || 6,
+									},
+								});
+							} catch {}
 							_pendingEntry = null;
 						} else {
 							traceOnce(
@@ -1652,6 +1726,17 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			} else {
 				log(String(fade?.reason || "PnL fading under target. Selling…"), "help");
 			}
+			const exitReason = hitTarget ? "target" : (fade?.ok ? "fade" : "unknown");
+			const exitEpisodeId = (() => {
+				try {
+					const enteredAt = Number(active?.enteredAt || active?.lastBuyAt || active?.acquiredAt || _cycle?.enteredAt || 0) || 0;
+					return enteredAt > 0
+						? `hold:${String(botId || "").slice(0, 24)}:${String(mint || "").slice(0, 8)}:${enteredAt}`
+						: `hold:${String(botId || "").slice(0, 24)}:${String(mint || "").slice(0, 8)}:unknown`;
+				} catch {
+					return "";
+				}
+			})();
 			const ownerStr = (() => {
 				try { return kp.publicKey.toBase58(); } catch { return ""; }
 			})();
@@ -1683,6 +1768,30 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 
 			if (res?.ok) {
 				log(`Sell confirmed (${res.sig || "no-sig"}).`, "ok");
+				try {
+					_queueHoldTrainingCapture({
+						event: "exit_confirmed",
+						mint,
+						episodeId: exitEpisodeId,
+						input: {
+							phase: "exit",
+							status: "confirmed",
+							reason: exitReason,
+							sig: String(res.sig || ""),
+							sellUi,
+							slippageBps: slip,
+							costSol: cost,
+							estOutSol: estOut,
+							pnlPct,
+							targetPct,
+							mintShort: _safeShortMint(mint),
+						},
+						outcome: {
+							win: Number.isFinite(pnlPct) ? (pnlPct > 0) : null,
+							pnlPct: Number.isFinite(pnlPct) ? pnlPct : null,
+						},
+					});
+				} catch {}
 				_lastProbe = null;
 				_lastExitQuote = null;
 				_pendingEntry = null;
@@ -1709,6 +1818,30 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 						});
 						if (deb?.debited) {
 							log(`Sell debited (remain≈${Number(deb.remainUi || 0).toFixed(6)}).`, "ok");
+							try {
+								const pnl2 = Number(_lastPnlPct);
+								_queueHoldTrainingCapture({
+									event: "exit_debited",
+									mint,
+									episodeId: exitEpisodeId,
+									input: {
+										phase: "exit",
+										status: "debited",
+										reason: exitReason,
+										sig: String(res.sig || ""),
+										prevSizeUi,
+										remainUi: Number(deb.remainUi || 0),
+										slippageBps: slip,
+										lastPnlPct: Number.isFinite(pnl2) ? pnl2 : null,
+										lastCostSol: Number.isFinite(Number(_lastPnlCostSol)) ? Number(_lastPnlCostSol) : null,
+										lastEstOutSol: Number.isFinite(Number(_lastPnlEstOutSol)) ? Number(_lastPnlEstOutSol) : null,
+									},
+									outcome: {
+										win: Number.isFinite(pnl2) ? (pnl2 > 0) : null,
+										pnlPct: Number.isFinite(pnl2) ? pnl2 : null,
+									},
+								});
+							} catch {}
 							_lastProbe = null;
 							_lastExitQuote = null;
 							_pendingEntry = null;
@@ -1799,6 +1932,16 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 			try {
 				_acceptLogs = true;
 				log(`Stop requested; liquidating ${_shortMint(mint)}…`, "warn", true);
+				const stopEpisodeId = (() => {
+					try {
+						const enteredAt = Number(_cycle?.enteredAt || _getPosForMint(mint)?.acquiredAt || 0) || 0;
+						return enteredAt > 0
+							? `hold:${String(botId || "").slice(0, 24)}:${String(mint || "").slice(0, 8)}:${enteredAt}`
+							: `hold:${String(botId || "").slice(0, 24)}:${String(mint || "").slice(0, 8)}:stop:${now()}`;
+					} catch {
+						return "";
+					}
+				})();
 
 				// If a tick/swap is in progress, give it a moment to settle.
 				try {
@@ -1835,21 +1978,59 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				if (kp) {
 					const baseSlip = Math.max(1500, getDynamicSlippageBps("sell"));
 
-					const trySell = async (slippageBps) => {
-						let sellUi = 0;
+					const decimalsHint = (() => {
 						try {
-							const ownerStr = kp.publicKey.toBase58();
-							const b = await getDex().getAtaBalanceUi(ownerStr, mint, 6);
+							if (_cycle && _cycle.mint === mint && Number.isFinite(_cycle.decimals)) return Number(_cycle.decimals);
+							const p = _getPosForMint(mint);
+							if (p && Number.isFinite(p.decimals)) return Number(p.decimals);
+						} catch {}
+						return 6;
+					})();
+
+					const trySellFast = async (slippageBps) => {
+						let sellUi = 0;
+						let ownerStr = "";
+						let prevSizeUi = 0;
+						try {
+							ownerStr = kp.publicKey.toBase58();
+							const b = await getDex().getAtaBalanceUi(ownerStr, mint, decimalsHint);
 							sellUi = Number(b?.sizeUi || 0);
+							prevSizeUi = sellUi;
 						} catch {}
 						if (!(sellUi > 0)) return { ok: false, noBalance: true, sig: "" };
-						return await getDex().executeSwapWithConfirm(
-							{ signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps },
-							{ retries: 2, confirmMs: 45_000 },
-						);
+
+						let sig = "";
+						try {
+							sig = await withTimeout(
+								getDex().jupSwapWithKeypair({
+									signer: kp,
+									inputMint: mint,
+									outputMint: SOL_MINT,
+									amountUi: sellUi,
+									slippageBps,
+								}),
+								75_000,
+								{ label: "hold_stop_liquidate" },
+							);
+						} catch (e) {
+							return { ok: false, sig: "", code: "SEND_FAIL", msg: String(e?.message || e || "sell error") };
+						}
+
+						// Don't block stop() on long confirms; just wait briefly for debit.
+						try {
+							if (ownerStr) {
+								const deb = await getDex().waitForTokenDebit(ownerStr, mint, prevSizeUi, {
+									timeoutMs: HOLD_EXIT_DEBIT_TIMEOUT_MS,
+									pollMs: HOLD_EXIT_DEBIT_POLL_MS,
+								});
+								if (deb?.debited) return { ok: true, sig };
+							}
+						} catch {}
+
+						return { ok: false, sig, code: "DEBIT_PENDING", msg: "sell sent; debit not observed yet" };
 					};
 
-					let res = await trySell(baseSlip);
+					let res = await trySellFast(baseSlip);
 					if (!res?.ok && !res?.noBalance) {
 						const code = String(res?.code || "");
 						const msg = String(res?.msg || "");
@@ -1862,12 +2043,25 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 						const slip2 = Math.max(baseSlip, Math.min(3000, Math.floor(baseSlip * 1.6)));
 						if (slip2 !== baseSlip) {
 							await new Promise((r) => setTimeout(r, 400));
-							res = await trySell(slip2);
+							res = await trySellFast(slip2);
 						}
 					}
 
 					if (res?.ok) {
 						log(`Stop-liquidation sell confirmed (${res.sig || "no-sig"}).`, "ok", true);
+						try {
+							_queueHoldTrainingCapture({
+								event: "stop_liquidate",
+								mint,
+								episodeId: stopEpisodeId,
+								input: {
+									status: "confirmed",
+									sig: String(res.sig || ""),
+									baseSlipBps: baseSlip,
+									decimalsHint,
+								},
+							});
+						} catch {}
 						// Only clear cycle/pending when we know the exit happened.
 						_lastProbe = null;
 						_lastExitQuote = null;
@@ -1875,6 +2069,18 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 						_clearCycle();
 					} else if (res?.noBalance) {
 						log(`Stop-liquidation: no on-chain balance to sell for ${_shortMint(mint)}.`, "warn", true);
+						try {
+							_queueHoldTrainingCapture({
+								event: "stop_liquidate",
+								mint,
+								episodeId: stopEpisodeId,
+								input: {
+									status: "no_balance",
+									baseSlipBps: baseSlip,
+									decimalsHint,
+								},
+							});
+						} catch {}
 						// If we were waiting on a credit, don't discard that state.
 						if (!_pendingEntry) {
 							_lastProbe = null;
@@ -1889,6 +2095,21 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 							"warn",
 							true,
 						);
+						try {
+							_queueHoldTrainingCapture({
+								event: "stop_liquidate",
+								mint,
+								episodeId: stopEpisodeId,
+								input: {
+									status: "not_confirmed",
+									sig: String(res?.sig || ""),
+									code,
+									msg,
+									baseSlipBps: baseSlip,
+									decimalsHint,
+								},
+							});
+						} catch {}
 						// Intentionally keep _cycle/_pendingEntry so a later restart won't re-buy.
 					}
 				}
@@ -2423,16 +2644,21 @@ export function initHoldWidget(container = document.body) {
 				return true;
 			}
 
-			// 2) Otherwise, optionally offer to replace a green (pnl>=0) tab.
 			if (allowGreen) {
 				const green = all
 					.map((b) => ({ b, pnl: _botLastPnlPct(b) }))
 					.filter((x) => x.b && Number.isFinite(x.pnl) && x.pnl >= 0)
 					.sort((a, b) => {
+
+
 						const aActive = isActive(a.b) ? 1 : 0;
+
+
 						const bActive = isActive(b.b) ? 1 : 0;
+
+
 						if (aActive !== bActive) return aActive - bActive;
-						// prefer more green (higher pnl) since we're "safe" to take profit
+
 						return Number(b.pnl) - Number(a.pnl);
 					});
 				if (green.length) {
