@@ -8926,34 +8926,44 @@ async function tick() {
 
         entryEdgeExclPct = excl;
 
-          // Manual edge gating (before Agent Gary sees the coin).
-          // NOTE: this is quote-derived roundtrip edge (pctNoOnetime), not the fixed-cost % from the size bump.
           const manualMinEdgePct = Number.isFinite(Number(state.minNetEdgePct)) ? Number(state.minNetEdgePct) : null;
-          if (Number.isFinite(manualMinEdgePct) && Number.isFinite(excl) && excl < manualMinEdgePct) {
-            try {
-              agentGates.manualEdge = {
-                ok: false,
-                edgeExclPct: excl,
-                minNetEdgePct: manualMinEdgePct,
-              };
-            } catch {}
+          const manualMode = fullAiControl ? "warn" : "enforce";
 
-            const fixedSolUi = Number(edgeSizingHint?.fixedEdgeSolUi);
-            const fixedPctUi = Number(edgeSizingHint?.fixedEdgePctAtBuySolUi);
-            const fixedNote = (Number.isFinite(fixedSolUi) && Number.isFinite(fixedPctUi))
-              ? `; fixed≈${fixedSolUi.toFixed(6)} SOL (${fixedPctUi.toFixed(2)}%)`
-              : "";
-            log(
-              `Skip ${mint.slice(0,4)}… (manual quote-edge gate: quoteEdgeExcl=${excl.toFixed(2)}% < minNetEdgePct=${manualMinEdgePct.toFixed(2)}%${fixedNote})`
-            );
-            continue;
-          }
+          const fixedSolUi = Number(edgeSizingHint?.fixedEdgeSolUi);
+          const fixedPctUi = Number(edgeSizingHint?.fixedEdgePctAtBuySolUi);
+          const fixedNote = (Number.isFinite(fixedSolUi) && Number.isFinite(fixedPctUi))
+            ? `; fixed≈${fixedSolUi.toFixed(6)} SOL (${fixedPctUi.toFixed(2)}%)`
+            : "";
 
           try {
-            if (!agentGates.manualEdge && Number.isFinite(manualMinEdgePct) && Number.isFinite(excl)) {
-              agentGates.manualEdge = { ok: true, edgeExclPct: excl, minNetEdgePct: manualMinEdgePct };
+            if (Number.isFinite(manualMinEdgePct) && Number.isFinite(excl)) {
+              const incl = Number(edge?.pct);
+              agentGates.manualEdge = {
+                ok: !(excl < manualMinEdgePct),
+                mode: manualMode,
+                edgeExclPct: excl,
+                edgeInclPct: Number.isFinite(incl) ? incl : null,
+                minNetEdgePct: manualMinEdgePct,
+                slippageBps: Number(state.slippageBps),
+                dynamicFee: true,
+                buySolUi: Number.isFinite(buySol) ? buySol : null,
+                reqRentLamports: Number.isFinite(Number(reqRent)) ? Number(reqRent) : null,
+                // Raw edge details so the agent can reason about fee routing and one-time overhead.
+                edgeRaw: (() => {
+                  try { return _snapshotSafeClone(edge, 80_000) || null; } catch { return null; }
+                })(),
+                fixedNote,
+              };
             }
           } catch {}
+
+          if (Number.isFinite(manualMinEdgePct) && Number.isFinite(excl) && excl < manualMinEdgePct) {
+            const msg = fullAiControl
+              ? `Manual edge WARN ${mint.slice(0,4)}… (quoteEdgeExcl=${excl.toFixed(2)}% < minNetEdgePct=${manualMinEdgePct.toFixed(2)}%${fixedNote})`
+              : `Skip ${mint.slice(0,4)}… (manual quote-edge gate: quoteEdgeExcl=${excl.toFixed(2)}% < minNetEdgePct=${manualMinEdgePct.toFixed(2)}%${fixedNote})`;
+            log(msg, "warn");
+            if (!fullAiControl) continue;
+          }
 
         entryEdgeCostPct = Math.max(0, -excl);
 
@@ -8979,6 +8989,7 @@ async function tick() {
             try {
               agentGates.entryCost = {
                 on: !!gateOn,
+                mode: gateOn ? (enforceForRisk ? "enforce" : "warn") : "off",
                 enforceForRisk: !!enforceForRisk,
                 risk,
                 edgeCostPct: Number.isFinite(entryEdgeCostPct) ? entryEdgeCostPct : null,
@@ -9248,11 +9259,24 @@ async function tick() {
                 }
               } catch {}
 
+              const tradeMechanics = (
+                "Trade mechanics (Solana/Jupiter): Buys are SOL->token swaps via Jupiter; slippage is in bps. " +
+                "We estimate roundtrip edge by quoting SOL->token then token->SOL under the same slippage/fee assumptions. " +
+                "edge.pctNoOnetime excludes one-time ATA rent; edge.pct includes ATA rent. " +
+                "reqRentLamports>0 means opening a new token account (one-time). " +
+                "Fixed entry overhead (tx fees + buffers + possible ATA rent) shrinks as size increases, but quote-derived edge can worsen with size due to price impact/spread/route fees. " +
+                "Dynamic fees are enabled for quotes."
+              );
+              const edgeRawSafe = (() => {
+                try { return _snapshotSafeClone(entryEdge, 120_000) || null; } catch { return null; }
+              })();
+
               adec = await agent.decideBuy({
                 mint,
                 proposedBuySolUi: buySol,
                 proposedSlippageBps: dynSlip,
                 signals: {
+                  tradeMechanics,
                   marketHealth: getMarketHealthSummary(),
                   narrative: {
                     bucket: getNarrativeBucketForMint(mint),
@@ -9297,6 +9321,12 @@ async function tick() {
                   entryTpBumpPct: Number.isFinite(entryTpBumpPct) ? entryTpBumpPct : null,
                   entrySim,
                   edge: entryEdgeSummary,
+                  edgeRaw: edgeRawSafe,
+                  edgeQuoteParams: {
+                    slippageBps: Number(state.slippageBps),
+                    dynamicFee: true,
+                    ataRentLamports: Number.isFinite(Number(reqRent)) ? Number(reqRent) : 0,
+                  },
                   liqUsd: Number.isFinite(liqUsdHint) ? liqUsdHint : null,
                   solUsd: Number.isFinite(solUsdHint) ? solUsdHint : null,
                   priceImpactProxy,
@@ -9360,8 +9390,14 @@ async function tick() {
 
               try {
                 const reasons = [];
-                if (agentGates?.manualEdge && agentGates.manualEdge.ok === false) reasons.push("manualEdge");
-                if (agentGates?.entryCost && agentGates.entryCost.on && Number.isFinite(agentGates.entryCost.edgeCostPct) && Number.isFinite(agentGates.entryCost.maxEntryCostPct)) {
+                const manualEdgeEnforced = !(fullAiControl && agentGates?.manualEdge && String(agentGates.manualEdge.mode || "").toLowerCase() === "warn");
+                if (manualEdgeEnforced && agentGates?.manualEdge && agentGates.manualEdge.ok === false) reasons.push("manualEdge");
+                const entryCostEnforced = !!(
+                  agentGates?.entryCost &&
+                  agentGates.entryCost.on &&
+                  String(agentGates.entryCost.mode || "").toLowerCase() === "enforce"
+                );
+                if (entryCostEnforced && Number.isFinite(agentGates.entryCost.edgeCostPct) && Number.isFinite(agentGates.entryCost.maxEntryCostPct)) {
                   if (agentGates.entryCost.edgeCostPct > agentGates.entryCost.maxEntryCostPct) reasons.push("entryCost");
                 }
                 if (agentGates?.sim && String(agentGates.sim.mode || "").toLowerCase() === "enforce") {
@@ -9377,6 +9413,18 @@ async function tick() {
                   }
                 }
                 if (reasons.length) {
+                  try {
+                    if (reasons.includes("entryCost") && agentGates?.entryCost) {
+                      const ec = Number(agentGates.entryCost.edgeCostPct);
+                      const mc = Number(agentGates.entryCost.maxEntryCostPct);
+                      if (Number.isFinite(ec) && Number.isFinite(mc)) {
+                        log(
+                          `[AGENT GARY] entryCost block ${mint.slice(0,4)}… (edgeCost=${ec.toFixed(2)}% > maxEntryCostPct=${mc.toFixed(2)}% risk=${String(agentGates.entryCost.risk || "")})`,
+                          "warn"
+                        );
+                      }
+                    }
+                  } catch {}
                   log(`[AGENT GARY] override denied ${mint.slice(0,4)}… (failed gates: ${reasons.join(",")})`);
                   continue;
                 }

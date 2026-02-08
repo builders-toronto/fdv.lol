@@ -1067,13 +1067,37 @@ function _compactUserMsgForLlm(userMsg) {
 		try {
 			const past = (s.past && typeof s.past === "object") ? s.past : null;
 			if (past) {
-				const last = Array.isArray(past.candles) && past.candles.length ? past.candles[past.candles.length - 1] : (Array.isArray(past.lastCandle) ? past.lastCandle : null);
+				const candles = Array.isArray(past.candles) ? past.candles : null;
+				const format = Array.isArray(past.format) ? past.format : null;
+				const last = Array.isArray(candles) && candles.length ? candles[candles.length - 1] : (Array.isArray(past.lastCandle) ? past.lastCandle : null);
+				let candlesTail = null;
+				try {
+					if (Array.isArray(candles) && candles.length) {
+						const tailN = 12;
+						const tail = candles.slice(Math.max(0, candles.length - tailN));
+						const idxTs = Array.isArray(format) ? Math.max(0, format.indexOf("ts")) : 0;
+						const idxO = Array.isArray(format) ? Math.max(0, format.indexOf("oUsd")) : 1;
+						const idxC = Array.isArray(format) ? Math.max(0, format.indexOf("cUsd")) : 4;
+						candlesTail = tail
+							.map((row) => {
+								if (!Array.isArray(row)) return null;
+								return {
+									ts: row[idxTs] ?? null,
+									o: row[idxO] ?? null,
+									c: row[idxC] ?? null,
+								};
+							})
+							.filter(Boolean);
+					}
+				} catch {}
 				signals.past = {
 					source: past.source ?? null,
 					timeframe: past.timeframe ?? null,
+					tsUnit: past.tsUnit ?? null,
 					stats: past.stats ?? null,
 					quality: past.quality ?? null,
 					lastCandle: last ?? null,
+					candlesTail: candlesTail,
 				};
 			}
 		} catch {}
