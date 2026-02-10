@@ -20,7 +20,6 @@ function _safeJsonParse(s) {
 	try {
 		return JSON.parse(String(s || ""));
 	} catch {
-		// Heuristic recovery: strip code fences / surrounding prose and parse the first JSON object/array.
 		try {
 			const _stripTrailingCommas = (t) => {
 				try {
@@ -547,6 +546,228 @@ function _buildDecisionSchema(kind, allowedConfigKeys = []) {
 		}
 
 		return null;
+	} catch {
+		return null;
+	}
+}
+
+function _buildAgenticNegotiationSchema(kind) {
+	try {
+		const k = String(kind || "").trim().toLowerCase();
+		// A compact, strict schema for a pre-decision negotiation pass.
+		// All fields are required but allow nulls to reduce truncation failures.
+		return {
+			name: "fdv_agentic_negotiation_v1",
+			strict: true,
+			schema: {
+				type: "object",
+				additionalProperties: false,
+				properties: {
+					mode: { type: ["string", "null"], enum: ["agentic_prepass", null] },
+					role: { type: ["string", "null"] },
+					kind: { type: ["string", "null"] },
+					actionPreference: { type: ["string", "null"] },
+					confidence: { type: ["number", "null"] },
+					intent: { type: ["string", "null"] },
+					keyDrivers: { anyOf: [{ type: "array", items: { type: "string" }, maxItems: 10 }, { type: "null" }] },
+					guardrails: { anyOf: [{ type: "array", items: { type: "string" }, maxItems: 10 }, { type: "null" }] },
+					proposed: {
+						anyOf: [
+							{
+								type: "object",
+								additionalProperties: false,
+								properties: {
+									buy: {
+										anyOf: [
+											{
+												type: "object",
+												additionalProperties: false,
+												properties: {
+													solUi: { type: ["number", "null"] },
+													slippageBps: { type: ["integer", "null"] },
+												},
+												required: ["solUi", "slippageBps"],
+											},
+											{ type: "null" },
+										],
+									},
+									sell: {
+										anyOf: [
+											{
+												type: "object",
+												additionalProperties: false,
+												properties: {
+													pct: { type: ["integer", "null"] },
+													holdSeconds: { type: ["integer", "null"] },
+												},
+												required: ["pct", "holdSeconds"],
+											},
+											{ type: "null" },
+										],
+									},
+									tune: { type: ["object", "null"] },
+									forecast: { type: ["object", "null"] },
+								},
+								required: ["buy", "sell", "tune", "forecast"],
+							},
+							{ type: "null" },
+						],
+					},
+					note: { type: ["string", "null"] },
+				},
+				required: ["mode", "role", "kind", "actionPreference", "confidence", "intent", "keyDrivers", "guardrails", "proposed", "note"],
+			},
+		};
+	} catch {
+		return null;
+	}
+}
+
+function _agenticNegotiationEnabled({ provider, kind } = {}) {
+	try {
+		const p = String(provider || "").trim().toLowerCase();
+		const k = String(kind || "").trim().toLowerCase();
+		if (p !== "openai") return false;
+		if (k !== "buy" && k !== "sell") return false;
+		try {
+			if (globalThis && globalThis.__fdvAgenticNegotiation === false) return false;
+			if (globalThis && globalThis.__fdvAgenticNegotiation === true) return true;
+		} catch {}
+		// Default ON for OpenAI: creates a lightweight "negotiate -> decide" loop.
+		return _readBoolLs("fdv_agent_agentic_negotiation", true);
+	} catch {
+		return false;
+	}
+}
+
+function _buildAgenticNegotiationSystemPrompt(systemPromptFinal) {
+	const base = String(systemPromptFinal || "").trim();
+	return (
+		base +
+		"\n\n" +
+		[
+			"AGENTIC NEGOTIATION PRE-PASS (do NOT output the final decision object):",
+			"- Goal: negotiate tradeoffs (risk vs reward, route/liq vs momentum, size vs slippage) using ONLY provided inputs.",
+			"- Identify hard blockers (no-route/quote failures, extreme rug signals, illiquidity) vs soft concerns.",
+			"- Produce a compact plan + guardrails the final decision should obey.",
+			"- Output ONLY valid JSON matching the provided schema.",
+			"- Ignore any earlier output-format rules for the final decision; this is a pre-pass.",
+			"- Keep strings short; no markdown; no extra keys.",
+		].join("\n")
+	);
+}
+
+function _buildSwarmMemberSystemPrompt(systemPromptFinal, role) {
+	const base = _buildAgenticNegotiationSystemPrompt(systemPromptFinal);
+	const r = String(role || "").trim().toLowerCase();
+	const focus = (r === "leader")
+		? [
+			"ROLE: TEAM_LEADER",
+			"- Synthesize overall plan and the single best actionPreference.",
+			"- Emphasize tradeoffs and decisive guardrails.",
+		]
+		: (r === "meme_flow")
+			? [
+				"ROLE: MEME_FLOW_ANALYST",
+				"- Specialize in momentum/flow/leader-series/tape and entry timing.",
+				"- If candlesTail exists, use it lightly; do not overfit.",
+			]
+			: [
+				"ROLE: RISK_GUARD_ANALYST",
+				"- Specialize in route viability, liquidity, quote failures, and rug/honeypot risk.",
+				"- Prefer SKIP/HOLD when hard safety blockers appear.",
+			];
+	return (
+		base +
+		"\n\n" +
+		focus.join("\n") +
+		"\n" +
+		"- Include top-level JSON key role with this role name."
+	);
+}
+
+function _swarmEnabled({ provider, kind } = {}) {
+	try {
+		const p = String(provider || "").trim().toLowerCase();
+		const k = String(kind || "").trim().toLowerCase();
+		if (k !== "buy" && k !== "sell") return false;
+		// Do not swarm local Gary model; keep it lean.
+		if (p === "gary") return false;
+		try {
+			if (globalThis && globalThis.__fdvAgentSwarm === false) return false;
+			if (globalThis && globalThis.__fdvAgentSwarm === true) return true;
+		} catch {}
+		// Default ON for non-Gary providers.
+		return _readBoolLs("fdv_agent_swarm", true);
+	} catch {
+		return false;
+	}
+}
+
+function _validateAgenticNegotiation(obj) {
+	try {
+		if (!obj || typeof obj !== "object") return null;
+		const mode = String(obj.mode || "").trim();
+		if (mode !== "agentic_prepass") return null;
+		const role = String(obj.role || "").trim().slice(0, 40);
+		const kind = String(obj.kind || "").trim().toLowerCase();
+		const actionPreference = String(obj.actionPreference || "").trim().toLowerCase();
+		const confidence = _clampNum(obj.confidence, 0, 1);
+		const intent = String(obj.intent || "").trim().slice(0, 220);
+		const note = String(obj.note || "").trim().slice(0, 220);
+		const keyDrivers = Array.isArray(obj.keyDrivers)
+			? obj.keyDrivers.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 8)
+			: [];
+		const guardrails = Array.isArray(obj.guardrails)
+			? obj.guardrails.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 8)
+			: [];
+
+		let proposed = null;
+		if (obj.proposed && typeof obj.proposed === "object") {
+			const out = { buy: null, sell: null };
+			try {
+				if (obj.proposed.buy && typeof obj.proposed.buy === "object") {
+					const solUi = _safeNum(obj.proposed.buy.solUi, NaN);
+					const slippageBps = _safeNum(obj.proposed.buy.slippageBps, NaN);
+					out.buy = {
+						solUi: Number.isFinite(solUi) ? Math.max(0, solUi) : null,
+						slippageBps: Number.isFinite(slippageBps) ? Math.max(0, Math.floor(slippageBps)) : null,
+					};
+				}
+			} catch {}
+			try {
+				if (obj.proposed.sell && typeof obj.proposed.sell === "object") {
+					const pct = _safeNum(obj.proposed.sell.pct, NaN);
+					const holdSeconds = _safeNum(obj.proposed.sell.holdSeconds, NaN);
+					out.sell = {
+						pct: Number.isFinite(pct) ? Math.max(0, Math.min(100, Math.floor(pct))) : null,
+						holdSeconds: Number.isFinite(holdSeconds) ? Math.max(0, Math.floor(holdSeconds)) : null,
+					};
+				}
+			} catch {}
+			try {
+				const tune = _validateTune(obj.proposed.tune);
+				if (tune) out.tune = tune;
+			} catch {}
+			try {
+				const forecast = _validateForecast(obj.proposed.forecast);
+				if (forecast) out.forecast = forecast;
+			} catch {}
+			proposed = out;
+		}
+
+		return {
+			mode: "agentic_prepass",
+			role: role || null,
+			kind: kind || null,
+			actionPreference: actionPreference || null,
+			confidence,
+			intent: intent || null,
+			keyDrivers,
+			guardrails,
+			proposed,
+			note: note || null,
+		};
 	} catch {
 		return null;
 	}
@@ -1185,6 +1406,7 @@ export function createAutoTraderAgentDriver({
 
 	const cache = new Map();
 	const CACHE_TTL_MS = 2500;
+	const swarmCache = new Map();
 
 	let _reasoningSessionKey = "";
 	let _reasoningSessionModel = "";
@@ -1198,21 +1420,25 @@ export function createAutoTraderAgentDriver({
 		recentOutcomes: [],
 		recentDecisions: [],
 		recentBuySkips: [],
+		recentSwarm: [],
 	};
 
-	// Default OFF (prompt stability). Enable via:
-	// localStorage.setItem('fdv_agent_decision_memory','1')
 	function _decisionMemoryEnabled() {
 		try {
+			if (globalThis && globalThis.__fdvAgentDecisionMemory === false) return false;
 			if (globalThis && globalThis.__fdvAgentDecisionMemory === true) return true;
 		} catch {}
 		try {
 			const ls = globalThis && globalThis.localStorage;
-			if (!ls || typeof ls.getItem !== "function") return false;
-			const v = String(ls.getItem("fdv_agent_decision_memory") || "").trim().toLowerCase();
+			if (!ls || typeof ls.getItem !== "function") return true;
+			const vRaw = ls.getItem("fdv_agent_decision_memory");
+			const v = String(vRaw || "").trim().toLowerCase();
+			// Default ON if unset/empty.
+			if (!v) return true;
+			if (v === "0" || v === "false" || v === "no" || v === "off") return false;
 			return (v === "1" || v === "true" || v === "yes" || v === "on");
 		} catch {
-			return false;
+			return true;
 		}
 	}
 
@@ -1445,6 +1671,7 @@ export function createAutoTraderAgentDriver({
 					updatedAt: _decisionMemory.riskPosture.updatedAt || 0,
 				},
 				outcomes: (Array.isArray(_decisionMemory.recentOutcomes) ? _decisionMemory.recentOutcomes.slice(0, 3) : []),
+				swarm: (Array.isArray(_decisionMemory.recentSwarm) ? _decisionMemory.recentSwarm.slice(0, 2) : []),
 				skipBuysLately: {
 					window: recent.length,
 					reasons: skipReasons,
@@ -1757,6 +1984,10 @@ export function createAutoTraderAgentDriver({
 
 		let text = "";
 		let meta = null;
+		let agenticMeta = null;
+		let agenticText = "";
+		let agenticParsed = null;
+		let agenticValidated = null;
 		try {
 			const cfgModel = (() => {
 				try { return String(cfgN?.model || "").trim(); } catch { return ""; }
@@ -1766,32 +1997,216 @@ export function createAutoTraderAgentDriver({
 			const reasoningReset = wantsReasoning && _reasoningSessionModel && _reasoningSessionModel !== normModel;
 			if (wantsReasoning) _reasoningSessionModel = normModel;
 			else _reasoningSessionModel = "";
+			const provider = String(cfgN?.provider || "").trim().toLowerCase();
+			const swarmOn = _swarmEnabled({ provider, kind });
+			const agenticOn = !swarmOn && _agenticNegotiationEnabled({ provider, kind });
 
-			const req = {
+			const baseTemperature = Number.isFinite(Number(options.temperature)) ? Number(options.temperature) : 0.15;
+			const baseMaxTokens = Math.max(
+				120,
+				Number.isFinite(Number(options.maxTokens))
+					? Number(options.maxTokens)
+					: Number((_getConfig() || {}).maxTokens || 350)
+			);
+
+			const reasoningSessionKey = wantsReasoning ? _ensureReasoningSessionKey() : "";
+			const reasoningArgsBase = wantsReasoning
+				? { reasoningSessionKey, reasoningIncludeEncrypted: true }
+				: {};
+			const reasoningArgsForFirstCall = wantsReasoning
+				? { ...reasoningArgsBase, reasoningReset: !!reasoningReset }
+				: {};
+			const reasoningArgsForFollowupCall = wantsReasoning
+				? { ...reasoningArgsBase, reasoningReset: false }
+				: {};
+
+			let didAwaitedReasoningPrepass = false;
+
+			const reqFinal = {
 				system: systemPromptFinal,
 				user: JSON.stringify(userMsg),
-				temperature: Number.isFinite(Number(options.temperature)) ? Number(options.temperature) : 0.15,
-				maxTokens: Math.max(
-					120,
-					Number.isFinite(Number(options.maxTokens))
-						? Number(options.maxTokens)
-						: Number((_getConfig() || {}).maxTokens || 350)
-				),
+				temperature: baseTemperature,
+				maxTokens: baseMaxTokens,
+				...(provider === "openai" ? { verbosity: "medium" } : {}),
 			};
 			try {
 				const allowed = (kind === "config_scan" && Array.isArray(payload?.allowedKeys))
 					? payload.allowedKeys
 					: [];
-				req.responseSchema = _buildDecisionSchema(kind, allowed);
+				reqFinal.responseSchema = _buildDecisionSchema(kind, allowed);
 			} catch {}
-			if (wantsReasoning) {
-				req.reasoningSessionKey = _ensureReasoningSessionKey();
-				req.reasoningReset = !!reasoningReset;
-				// Default ON: request encrypted reasoning content when supported.
-				req.reasoningIncludeEncrypted = true;
+
+			if (swarmOn && client && typeof client.chatJsonWithMeta === "function") {
+				try {
+					_log(`swarm prepass(SWR) kind=${String(kind)} model=${String(cfgModel || "") || provider}`, "info");
+				} catch {}
+				const roles = [
+					{ role: "leader", tempAdd: 0.02 },
+					{ role: "meme_flow", tempAdd: 0.05 },
+					{ role: "risk_guard", tempAdd: -0.02 },
+				];
+				const mintFull = String(payload?.mint || payload?.targetMint || "").slice(0, 64);
+				const swarmKey = `${provider}:${String(cfgModel || "").trim().toLowerCase()}:${String(kind || "").trim().toLowerCase()}:${mintFull}`;
+				const nowTs = now();
+				const swarmTtlMs = (() => {
+					try {
+						const raw = _safeNum(_readLs("fdv_agent_swarm_cache_ttl_ms", "12000"), 12000);
+						return Math.max(1500, Math.min(120000, Math.floor(raw)));
+					} catch {
+						return 12000;
+					}
+				})();
+				const swarmRevalMs = (() => {
+					try {
+						const raw = _safeNum(_readLs("fdv_agent_swarm_reval_ms", "4500"), 4500);
+						return Math.max(500, Math.min(60000, Math.floor(raw)));
+					} catch {
+						return 4500;
+					}
+				})();
+
+				const prevSwarmRec = (() => {
+					try {
+						const r = swarmCache.get(swarmKey);
+						return (r && typeof r === "object") ? r : null;
+					} catch {
+						return null;
+					}
+				})();
+				const prevAge = prevSwarmRec ? Math.max(0, nowTs - _safeNum(prevSwarmRec.at, 0)) : Number.POSITIVE_INFINITY;
+				const hasPrev = !!(prevSwarmRec && prevSwarmRec.swarm && typeof prevSwarmRec.swarm === "object");
+				const prevFresh = hasPrev && prevAge <= swarmTtlMs;
+
+				// Immediate: attach cached swarm (stale or fresh) so the final decision can use it.
+				if (hasPrev) {
+					try {
+						userMsg.swarm = prevSwarmRec.swarm;
+						userMsg.swarmCache = { ageMs: prevAge, fresh: !!prevFresh };
+					} catch {}
+					try { reqFinal.user = JSON.stringify(userMsg); } catch {}
+				}
+
+				const shouldRevalidate = (!hasPrev) || (prevAge >= swarmRevalMs);
+				const inFlight = !!(prevSwarmRec && prevSwarmRec.inFlight);
+				if (shouldRevalidate && !inFlight) {
+					const mkReq = (role, tempAdd = 0) => {
+						const sys = _buildSwarmMemberSystemPrompt(systemPromptFinal, role);
+						const rKey = (wantsReasoning && reasoningSessionKey)
+							? `${String(reasoningSessionKey)}:swarm:${String(role)}`
+							: "";
+						return {
+							system: sys,
+							user: JSON.stringify(userMsg),
+							temperature: Math.max(0, Math.min(0.45, baseTemperature + tempAdd)),
+							maxTokens: Math.max(220, Math.min(900, Math.floor(baseMaxTokens + 220))),
+							verbosity: "medium",
+							...(wantsReasoning && rKey
+								? { reasoningSessionKey: rKey, reasoningReset: !!reasoningReset, reasoningIncludeEncrypted: true }
+								: {}),
+						};
+					};
+
+					const promise = (async () => {
+						const settled = await Promise.allSettled(
+							roles.map((rr) => client.chatJsonWithMeta(mkReq(rr.role, rr.tempAdd)))
+						);
+						const members = [];
+						for (let i = 0; i < settled.length; i++) {
+							const rr = roles[i];
+							const s = settled[i];
+							if (!s || s.status !== "fulfilled") continue;
+							const mm = s.value;
+							const t = String(mm?.text || "");
+							const p = _safeJsonParse(t);
+							const v = _validateAgenticNegotiation(p);
+							if (v) {
+								v.role = v.role || String(rr.role);
+								members.push(v);
+							}
+						}
+						if (!members.length) return null;
+						return {
+							v: 1,
+							createdAt: now(),
+							members: members.map((m) => ({
+								role: m.role || null,
+								actionPreference: m.actionPreference || null,
+								confidence: Number.isFinite(Number(m.confidence)) ? _clampNum(m.confidence, 0, 1) : null,
+								keyDrivers: Array.isArray(m.keyDrivers) ? m.keyDrivers.slice(0, 6) : [],
+								guardrails: Array.isArray(m.guardrails) ? m.guardrails.slice(0, 6) : [],
+								proposed: m.proposed || null,
+							})),
+						};
+					})();
+
+					try { swarmCache.set(swarmKey, { at: prevSwarmRec?.at || 0, swarm: prevSwarmRec?.swarm || null, inFlight: promise }); } catch {}
+
+					promise
+						.then((swarmObj) => {
+							try {
+								if (!swarmObj) return;
+								swarmCache.set(swarmKey, { at: now(), swarm: swarmObj, inFlight: null });
+							} catch {}
+							try {
+								if (_decisionMemoryEnabled()) {
+									_pushRing(_decisionMemory.recentSwarm, {
+										at: now(),
+										kind: String(kind || ""),
+										mint: mintFull || null,
+										members: swarmObj?.members || [],
+									}, 6);
+								}
+							} catch {}
+						})
+						.catch(() => {
+							try {
+								const cur = swarmCache.get(swarmKey);
+								if (cur && typeof cur === "object") swarmCache.set(swarmKey, { at: cur.at || 0, swarm: cur.swarm || null, inFlight: null });
+							} catch {}
+						});
+				}
 			}
+			// Fallback: single agentic pre-pass (legacy), only when swarm is disabled.
+			else if (agenticOn && client && typeof client.chatJsonWithMeta === "function") {
+				try {
+					_log(`agentic prepass kind=${String(kind)} model=${String(cfgModel || "") || provider}`, "info");
+				} catch {}
+				const sysAgentic = _buildAgenticNegotiationSystemPrompt(systemPromptFinal);
+				const reqAgentic = {
+					system: sysAgentic,
+					user: JSON.stringify(userMsg),
+					temperature: Math.max(0, Math.min(0.35, baseTemperature + 0.05)),
+					maxTokens: Math.max(220, Math.min(900, Math.floor(baseMaxTokens + 220))),
+					verbosity: "medium",
+					...reasoningArgsForFirstCall,
+				};
+				agenticMeta = await client.chatJsonWithMeta(reqAgentic);
+				if (wantsReasoning) didAwaitedReasoningPrepass = true;
+				agenticText = String(agenticMeta?.text || "");
+				agenticParsed = _safeJsonParse(agenticText);
+				agenticValidated = _validateAgenticNegotiation(agenticParsed);
+				if (agenticValidated) {
+					try {
+						userMsg.agentic = {
+							v: 1,
+							negotiatedAt: now(),
+							prepass: agenticValidated,
+						};
+					} catch {}
+					try { reqFinal.user = JSON.stringify(userMsg); } catch {}
+				}
+			}
+
+
+			if (wantsReasoning) {
+				Object.assign(
+					reqFinal,
+					didAwaitedReasoningPrepass ? reasoningArgsForFollowupCall : reasoningArgsForFirstCall
+				);
+			}
+
 			if (client && typeof client.chatJsonWithMeta === "function") {
-				meta = await client.chatJsonWithMeta(req);
+				meta = await client.chatJsonWithMeta(reqFinal);
 				// For Gary, prefer the server-extracted parsed JSON when available.
 				try {
 					if (String(cfgN?.provider || "").toLowerCase() === "gary") {
@@ -1808,7 +2223,7 @@ export function createAutoTraderAgentDriver({
 					text = String(meta?.text || "");
 				}
 			} else {
-				text = await client.chatJson(req);
+				text = await client.chatJson(reqFinal);
 			}
 		} catch (e) {
 			try { _log(`request failed: ${String(e?.message || e || "")}` , "warn"); } catch {}
