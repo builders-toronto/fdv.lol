@@ -277,10 +277,4 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
 
-hore(training): persist responses + fix Gary upload reliability;
-
-Auto-install __fdvTraining console helper and add isTrainingCaptureEnabled() alias;
-Fix appendTrainingCapture() upload config scoping so localStorage fallback can still enqueue uploads;
-Make upload queue non-destructive on transient failures; only dequeue after successful append;
-Reduce Gary upload batch size (10) to stay under server max-body limits;
-Ensure inference captures always store a response by falling back to validated decision JSON when raw text is empty;
+git commit -m "gary agent swarm v0: 3-role SWR prepass + default memory" -m "Add 3-member swarm prepass (leader/meme_flow/risk_guard) and inject compact summary into final strict decision prompt." -m "Implement SWR-style swarm caching: attach cached swarm immediately; revalidate in background (3 parallel calls); track inFlight per cache key." -m "Persist swarm outputs into decision micro-memory (recentSwarm); keep provider compatibility by avoiding json_schema in swarm/prepass; add localStorage tunables for TTL/reval + default-on swarm/memory."
