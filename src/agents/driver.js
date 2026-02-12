@@ -1,6 +1,7 @@
 import { createChatClientFromConfig, normalizeLlmConfig } from "./frameworks/index.js";
 import { TRAINING_CAPTURE } from "../config/env.js";
 import { appendTrainingCapture, clearTrainingCaptures, downloadTrainingCapturesJsonl, getTrainingCaptures, isTrainingCaptureEnabled } from "./training.js";
+import { createDecisionMemory } from "./memory.js";
 
 function now() {
 	return Date.now();
@@ -1468,6 +1469,11 @@ export function createAutoTraderAgentDriver({
 	const swarmCache = new Map();
 	let _lastSwarmPruneAt = 0;
 
+	const decisionMemory = createDecisionMemory({
+		storageKey: "fdv_agent_decision_memory_v1",
+		persist: true,
+	});
+
 	let _reasoningSessionKey = "";
 	let _reasoningSessionModel = "";
 
@@ -1501,17 +1507,7 @@ export function createAutoTraderAgentDriver({
 		} catch {}
 	}
 
-	// Stable, tiny memory to carry decision context across turns.
-	// This is intentionally small and safe to include in every prompt.
-	const _decisionMemory = {
-		v: 1,
-		startedAt: now(),
-		riskPosture: { agentRisk: "safe", fullAiControl: false, updatedAt: 0 },
-		recentOutcomes: [],
-		recentDecisions: [],
-		recentBuySkips: [],
-		recentSwarm: [],
-	};
+	// Decision memory is implemented in memory.js (ring-buffered + prompt-safe snapshot).
 
 	function _decisionMemoryEnabled() {
 		try {
@@ -1657,120 +1653,16 @@ export function createAutoTraderAgentDriver({
 	// 	}
 	// }
 
-	function _pushRing(arr, item, maxN) {
-		try {
-			if (!Array.isArray(arr)) return;
-			arr.unshift(item);
-			if (arr.length > maxN) arr.length = maxN;
-		} catch {}
-	}
-
-	function _deriveSkipCodeFromPayload(p) {
-		try {
-			const g = p && p.signals && p.signals.gates && typeof p.signals.gates === "object" ? p.signals.gates : null;
-			if (!g) return "unknown";
-			if (g.cooldown && g.cooldown.ok === false) return "cooldown";
-			if (g.buyWarmup && g.buyWarmup.ready === false) return "warmup";
-			if (g.manualEdge && g.manualEdge.ok === false) return "manual_edge";
-			if (g.entryCost && g.entryCost.ok === false) return "entry_cost";
-			if (g.sim && g.sim.ready === false) return "entry_sim";
-			if (g.finalGateReady === false) return "final_gate";
-			if (g.onchainLabels && Array.isArray(g.onchainLabels.labels) && g.onchainLabels.labels.length) return "onchain_label_risk";
-			return "unknown";
-		} catch {
-			return "unknown";
-		}
-	}
-
 	function _updateDecisionMemoryFromPayload(payload) {
-		try {
-			const p = payload && typeof payload === "object" ? payload : null;
-			if (!p) return;
-			if (p.signals && typeof p.signals === "object") {
-				const s = p.signals;
-				if (s.agentRisk) _decisionMemory.riskPosture.agentRisk = String(s.agentRisk || "").slice(0, 16) || _decisionMemory.riskPosture.agentRisk;
-				if (typeof s.fullAiControl === "boolean") _decisionMemory.riskPosture.fullAiControl = s.fullAiControl;
-				_decisionMemory.riskPosture.updatedAt = now();
-
-				if (s.outcomes && typeof s.outcomes === "object" && s.outcomes.lastTrade && typeof s.outcomes.lastTrade === "object") {
-					const lt = s.outcomes.lastTrade;
-					const ts = _safeNum(lt.ts, 0);
-					if (ts > 0) {
-						_pushRing(_decisionMemory.recentOutcomes, {
-							ts,
-							kind: lt.kind ? String(lt.kind).slice(0, 24) : null,
-							decisionAction: lt.decisionAction ? String(lt.decisionAction).slice(0, 20) : null,
-							pnlSol: (typeof lt.pnlSol === "number") ? lt.pnlSol : null,
-							upDown: lt.upDown ? String(lt.upDown).slice(0, 8) : null,
-						}, 3);
-					}
-				}
-			}
-		} catch {}
+		try { decisionMemory.updateFromPayload(payload); } catch {}
 	}
 
 	function _updateDecisionMemoryAfterDecision({ kind, payload, decision, ok }) {
-		try {
-			const k = String(kind || "").trim().toLowerCase();
-			const d = (decision && typeof decision === "object") ? decision : null;
-			const p = (payload && typeof payload === "object") ? payload : null;
-			const mint = (() => {
-				try {
-					const m = String(p?.mint || p?.targetMint || p?.proposed?.mint || "").trim();
-					return m ? m.slice(0, 44) : "";
-				} catch { return ""; }
-			})();
-
-		_updateDecisionMemoryFromPayload(p);
-		_pushRing(_decisionMemory.recentDecisions, {
-			at: now(),
-			ok: !!ok,
-			kind: k,
-			mint: mint || null,
-			action: d?.action ? String(d.action).slice(0, 20) : null,
-			confidence: (typeof d?.confidence === "number") ? d.confidence : null,
-			reason: d?.reason ? String(d.reason).slice(0, 160) : null,
-		}, 10);
-
-		if (k === "buy" && d && String(d.action || "").toLowerCase() === "skip") {
-			const code = _deriveSkipCodeFromPayload(p);
-			_pushRing(_decisionMemory.recentBuySkips, { at: now(), mint: mint || null, code }, 12);
-		}
-	} catch {}
+		try { decisionMemory.updateAfterDecision({ kind, payload, decision, ok }); } catch {}
 	}
 
 	function _decisionMemorySnapshot() {
-		try {
-			const recent = Array.isArray(_decisionMemory.recentBuySkips) ? _decisionMemory.recentBuySkips.slice(0, 10) : [];
-			const counts = new Map();
-			for (const r of recent) {
-				const c = String(r?.code || "unknown");
-				counts.set(c, (counts.get(c) || 0) + 1);
-			}
-			const skipReasons = Array.from(counts.entries())
-				.sort((a, b) => (b[1] - a[1]))
-				.slice(0, 4)
-				.map(([code, count]) => ({ code, count }));
-
-			return {
-				v: _decisionMemory.v,
-				startedAt: _decisionMemory.startedAt,
-				riskPosture: {
-					agentRisk: String(_decisionMemory.riskPosture.agentRisk || "safe"),
-					fullAiControl: !!_decisionMemory.riskPosture.fullAiControl,
-					updatedAt: _decisionMemory.riskPosture.updatedAt || 0,
-				},
-				outcomes: (Array.isArray(_decisionMemory.recentOutcomes) ? _decisionMemory.recentOutcomes.slice(0, 3) : []),
-				swarm: (Array.isArray(_decisionMemory.recentSwarm) ? _decisionMemory.recentSwarm.slice(0, 2) : []),
-				skipBuysLately: {
-					window: recent.length,
-					reasons: skipReasons,
-				},
-				recentDecisions: (Array.isArray(_decisionMemory.recentDecisions) ? _decisionMemory.recentDecisions.slice(0, 6) : []),
-			};
-		} catch {
-			return { v: 1, startedAt: now() };
-		}
+		try { return decisionMemory.snapshotForPrompt(); } catch { return { v: 2, startedAt: now() }; }
 	}
 	function _ensureReasoningSessionKey() {
 		try {
@@ -2242,12 +2134,7 @@ export function createAutoTraderAgentDriver({
 							} catch {}
 							try {
 								if (_decisionMemoryEnabled()) {
-									_pushRing(_decisionMemory.recentSwarm, {
-										at: now(),
-										kind: String(kind || ""),
-										mint: mintFull || null,
-										members: swarmObj?.members || [],
-									}, 6);
+										decisionMemory.recordSwarm({ kind: String(kind || ""), mint: mintFull || null, members: swarmObj?.members || [] });
 								}
 							} catch {}
 						})
