@@ -277,4 +277,4 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
 
-git commit -m "gary agent swarm v0: 3-role SWR prepass + default memory" -m "Add 3-member swarm prepass (leader/meme_flow/risk_guard) and inject compact summary into final strict decision prompt." -m "Implement SWR-style swarm caching: attach cached swarm immediately; revalidate in background (3 parallel calls); track inFlight per cache key." -m "Persist swarm outputs into decision micro-memory (recentSwarm); keep provider compatibility by avoiding json_schema in swarm/prepass; add localStorage tunables for TTL/reval + default-on swarm/memory."
+git commit -m "swarm: tighten prepass contract and add consensus summary" -m "prune stale cache entries by TTL"
