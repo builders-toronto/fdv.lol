@@ -227,7 +227,8 @@ function _autoUploadCfgFromRuntime() {
 
 		// If the user has initialized Gary Predictions but didn't explicitly set a base URL,
 		// fall back to the local dev server default used by the agent driver.
-		if (!baseUrl && apiKey && likelyGary) {
+		// Note: upload-to-gary is used for centralized logging even when the active LLM provider isn't Gary.
+		if (!baseUrl && apiKey) {
 			baseUrl = "http://127.0.0.1:8088";
 		}
 
@@ -544,8 +545,21 @@ export async function appendTrainingCapture(entry, { storageKey, maxEntries, upl
 			return null;
 		}
 	})();
+
 	try {
-		if (!isTrainingCaptureEnabled()) return { ok: false, skipped: true };
+		if (!isTrainingCaptureEnabled()) {
+			if (uploadCfg && typeof uploadCfg === "object") {
+				const key = String(storageKey || TRAINING_CAPTURE?.storageKey || "fdv_gary_training_captures_v1");
+				const rec = (entry && typeof entry === "object") ? { ...entry } : { value: entry };
+				rec.ts = Number.isFinite(Number(rec.ts)) ? Number(rec.ts) : now();
+				rec.storageKey = key;
+				try { _queueGaryUpload(rec, uploadCfg); } catch {}
+				return { ok: true, skipped: true, queuedUpload: true };
+			}
+			return { ok: false, skipped: true };
+		}
+	} catch {}
+	try {
 		try { await _bestEffortPersistOnce(); } catch {}
 		// If caller didn't pass upload cfg, auto-enable from user-supplied Gary settings.
 		const key = String(storageKey || TRAINING_CAPTURE?.storageKey || "fdv_gary_training_captures_v1");

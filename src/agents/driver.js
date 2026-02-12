@@ -2322,19 +2322,19 @@ export function createAutoTraderAgentDriver({
 			try { _log(`request failed: ${String(e?.message || e || "")}` , "warn"); } catch {}
 			const res = { ok: false, err: String(e?.message || e || "") };
 			try {
-				if (TRAINING_CAPTURE?.enabled) {
-					let uploadToGary = null;
-					try {
-						// Auto-enable upload-to-gary when Gary config is populated, regardless of the active LLM provider.
-						const g = (typeof window !== "undefined") ? window : globalThis;
-						const o = g && g.__fdvAgentOverrides && typeof g.__fdvAgentOverrides === "object" ? g.__fdvAgentOverrides : null;
-						const baseUrl = String((o && (o.garyBaseUrl || o.garyUrl)) ? (o.garyBaseUrl || o.garyUrl) : _readLs("fdv_gary_base_url", "")).trim();
-						const apiKey = String((o && (o.garyApiKey || o.garyKey)) ? (o.garyApiKey || o.garyKey) : _readLs("fdv_gary_key", "")).trim();
-						const hmacSecret = String((o && (o.garyHmacSecret || o.hmacSecret)) ? (o.garyHmacSecret || o.hmacSecret) : _readLs("fdv_gary_hmac_secret", "")).trim();
-						if (baseUrl && apiKey) {
-							uploadToGary = { provider: "gary", baseUrl, apiKey, hmacSecret };
-						}
-					} catch {}
+				let uploadToGary = null;
+				try {
+					// Auto-enable upload-to-gary when Gary config is populated, regardless of the active LLM provider.
+					const g = (typeof window !== "undefined") ? window : globalThis;
+					const o = g && g.__fdvAgentOverrides && typeof g.__fdvAgentOverrides === "object" ? g.__fdvAgentOverrides : null;
+					let baseUrl = String((o && (o.garyBaseUrl || o.garyUrl)) ? (o.garyBaseUrl || o.garyUrl) : _readLs("fdv_gary_base_url", "")).trim();
+					const apiKey = String((o && (o.garyApiKey || o.garyKey)) ? (o.garyApiKey || o.garyKey) : _readLs("fdv_gary_key", "")).trim();
+					const hmacSecret = String((o && (o.garyHmacSecret || o.hmacSecret)) ? (o.garyHmacSecret || o.hmacSecret) : _readLs("fdv_gary_hmac_secret", "")).trim();
+					if (!baseUrl && apiKey) baseUrl = "http://127.0.0.1:8088";
+					if (baseUrl && apiKey) uploadToGary = { provider: "gary", baseUrl, apiKey, hmacSecret };
+				} catch {}
+
+				if (TRAINING_CAPTURE?.enabled || uploadToGary) {
 					appendTrainingCapture({
 						mode: "inference",
 						source: "fdv_auto_trader",
@@ -2345,7 +2345,7 @@ export function createAutoTraderAgentDriver({
 						system: String(systemPromptFinal || "").slice(0, 8000),
 						text: "",
 						meta: _redactDeep(meta),
-					}, { storageKey: TRAINING_CAPTURE.storageKey, maxEntries: TRAINING_CAPTURE.maxEntries, uploadToGary }).catch(() => {});
+					}, { storageKey: TRAINING_CAPTURE?.storageKey, maxEntries: TRAINING_CAPTURE?.maxEntries, uploadToGary }).catch(() => {});
 				}
 			} catch {}
 			if (cacheEnabled && cacheKey) cache.set(cacheKey, { at: now(), res });
@@ -2385,24 +2385,25 @@ export function createAutoTraderAgentDriver({
 		} catch {}
 
 		try {
-			const shouldCapture = !!TRAINING_CAPTURE?.enabled && (res.ok || !!TRAINING_CAPTURE?.includeBad);
-			if (shouldCapture) {
+			let uploadToGary = null;
+			try {
+				// Auto-enable upload-to-gary when Gary config is populated, regardless of the active LLM provider.
+				const g = (typeof window !== "undefined") ? window : globalThis;
+				const o = g && g.__fdvAgentOverrides && typeof g.__fdvAgentOverrides === "object" ? g.__fdvAgentOverrides : null;
+				let baseUrl = String((o && (o.garyBaseUrl || o.garyUrl)) ? (o.garyBaseUrl || o.garyUrl) : _readLs("fdv_gary_base_url", "")).trim();
+				const apiKey = String((o && (o.garyApiKey || o.garyKey)) ? (o.garyApiKey || o.garyKey) : _readLs("fdv_gary_key", "")).trim();
+				const hmacSecret = String((o && (o.garyHmacSecret || o.hmacSecret)) ? (o.garyHmacSecret || o.hmacSecret) : _readLs("fdv_gary_hmac_secret", "")).trim();
+				if (!baseUrl && apiKey) baseUrl = "http://127.0.0.1:8088";
+				if (baseUrl && apiKey) uploadToGary = { provider: "gary", baseUrl, apiKey, hmacSecret };
+			} catch {}
+
+			const wantLocal = !!TRAINING_CAPTURE?.enabled && (res.ok || !!TRAINING_CAPTURE?.includeBad);
+			const wantRemote = !!uploadToGary;
+			if (wantLocal || wantRemote) {
 				let captureText = String(text || "");
 				try {
 					// Some providers return parsed JSON but no raw `text`. Ensure we still store the response.
 					if (!captureText && validated && typeof validated === "object") captureText = JSON.stringify(validated);
-				} catch {}
-				let uploadToGary = null;
-				try {
-					// Auto-enable upload-to-gary when Gary config is populated, regardless of the active LLM provider.
-					const g = (typeof window !== "undefined") ? window : globalThis;
-					const o = g && g.__fdvAgentOverrides && typeof g.__fdvAgentOverrides === "object" ? g.__fdvAgentOverrides : null;
-					const baseUrl = String((o && (o.garyBaseUrl || o.garyUrl)) ? (o.garyBaseUrl || o.garyUrl) : _readLs("fdv_gary_base_url", "")).trim();
-					const apiKey = String((o && (o.garyApiKey || o.garyKey)) ? (o.garyApiKey || o.garyKey) : _readLs("fdv_gary_key", "")).trim();
-					const hmacSecret = String((o && (o.garyHmacSecret || o.hmacSecret)) ? (o.garyHmacSecret || o.hmacSecret) : _readLs("fdv_gary_hmac_secret", "")).trim();
-					if (baseUrl && apiKey) {
-						uploadToGary = { provider: "gary", baseUrl, apiKey, hmacSecret };
-					}
 				} catch {}
 				appendTrainingCapture({
 					mode: "inference",
@@ -2416,7 +2417,7 @@ export function createAutoTraderAgentDriver({
 					parsed: _redactDeep(parsed),
 					decision: _redactDeep(validated),
 					meta: _redactDeep(meta),
-				}, { storageKey: TRAINING_CAPTURE.storageKey, maxEntries: TRAINING_CAPTURE.maxEntries, uploadToGary }).catch(() => {});
+				}, { storageKey: TRAINING_CAPTURE?.storageKey, maxEntries: TRAINING_CAPTURE?.maxEntries, uploadToGary }).catch(() => {});
 			}
 		} catch {}
 		try {
@@ -2809,6 +2810,18 @@ export function createAgentJsonRunner({
 		} catch (e) {
 			try { _log(`request failed: ${String(e?.message || e || "")}`, "warn"); } catch {}
 			const res = { ok: false, err: String(e?.message || e || "") };
+			try {
+				appendTrainingCapture({
+					mode: "runner",
+					source: String(prefix || "AGENT"),
+					ok: false,
+					err: String(res.err || ""),
+					system: String(system || "").slice(0, 8000),
+					user: String(user || "").slice(0, 20000),
+					text: "",
+					meta: null,
+				}, { storageKey: TRAINING_CAPTURE?.storageKey, maxEntries: TRAINING_CAPTURE?.maxEntries }).catch(() => {});
+			} catch {}
 			if (ck) _cacheSet(ck, res);
 			return res;
 		}
@@ -2831,6 +2844,20 @@ export function createAgentJsonRunner({
 
 		const parsed = _safeJsonParse(text);
 		const res = { ok: true, text, parsed, meta };
+
+		try {
+			appendTrainingCapture({
+				mode: "runner",
+				source: String(prefix || "AGENT"),
+				ok: true,
+				err: "",
+				system: String(system || "").slice(0, 8000),
+				user: String(user || "").slice(0, 20000),
+				text: String(text || "").slice(0, 20000),
+				parsed: _redactDeep(parsed),
+				meta: _redactDeep(meta),
+			}, { storageKey: TRAINING_CAPTURE?.storageKey, maxEntries: TRAINING_CAPTURE?.maxEntries }).catch(() => {});
+		} catch {}
 
 		try {
 			const logPrompts = _shouldLogPrompts(cfg, { logRequest });
