@@ -657,9 +657,15 @@ function _buildAgenticNegotiationSystemPrompt(systemPromptFinal) {
 	);
 }
 
-function _buildSwarmMemberSystemPrompt(systemPromptFinal, role) {
+function _buildSwarmMemberSystemPrompt(systemPromptFinal, role, kind) {
 	const base = _buildAgenticNegotiationSystemPrompt(systemPromptFinal);
 	const r = String(role || "").trim().toLowerCase();
+	const k = String(kind || "").trim().toLowerCase();
+	const allowedPref = (k === "buy")
+		? "buy | skip"
+		: (k === "sell")
+			? "sell_all | sell_partial | hold | long_hold"
+			: "(unset)";
 	const focus = (r === "leader")
 		? [
 			"ROLE: TEAM_LEADER",
@@ -681,6 +687,10 @@ function _buildSwarmMemberSystemPrompt(systemPromptFinal, role) {
 		base +
 		"\n\n" +
 		focus.join("\n") +
+		"\n" +
+		"- REQUIRED: set JSON keys mode='agentic_prepass' and kind='" + String(k || "") + "'." +
+		"\n" +
+		"- REQUIRED: actionPreference MUST be one of: " + allowedPref + "." +
 		"\n" +
 		"- Include top-level JSON key role with this role name."
 	);
@@ -704,14 +714,20 @@ function _swarmEnabled({ provider, kind } = {}) {
 	}
 }
 
-function _validateAgenticNegotiation(obj) {
+function _validateAgenticNegotiation(obj, expectedKind = "") {
 	try {
 		if (!obj || typeof obj !== "object") return null;
 		const mode = String(obj.mode || "").trim();
 		if (mode !== "agentic_prepass") return null;
 		const role = String(obj.role || "").trim().slice(0, 40);
-		const kind = String(obj.kind || "").trim().toLowerCase();
+		const kind = String(obj.kind || expectedKind || "").trim().toLowerCase();
 		const actionPreference = String(obj.actionPreference || "").trim().toLowerCase();
+		if (kind === "buy") {
+			if (actionPreference !== "buy" && actionPreference !== "skip") return null;
+		}
+		if (kind === "sell") {
+			if (actionPreference !== "sell_all" && actionPreference !== "sell_partial" && actionPreference !== "hold" && actionPreference !== "long_hold") return null;
+		}
 		const confidence = _clampNum(obj.confidence, 0, 1);
 		const intent = String(obj.intent || "").trim().slice(0, 220);
 		const note = String(obj.note || "").trim().slice(0, 220);
@@ -772,6 +788,49 @@ function _validateAgenticNegotiation(obj) {
 		return null;
 	}
 }
+
+	function _summarizeSwarm(members = []) {
+		try {
+			const ms = Array.isArray(members) ? members : [];
+			const clean = ms.filter((m) => m && typeof m === "object");
+			if (!clean.length) return null;
+
+			const actionScores = new Map();
+			const byRole = {};
+			for (const m of clean) {
+				const ap = String(m.actionPreference || "").trim().toLowerCase();
+				const conf = _clampNum(m.confidence, 0, 1);
+				if (ap) actionScores.set(ap, (actionScores.get(ap) || 0) + (Number.isFinite(conf) ? conf : 0));
+				const r = String(m.role || "").trim().slice(0, 40);
+				if (r) {
+					byRole[r] = {
+						actionPreference: ap || null,
+						confidence: Number.isFinite(conf) ? conf : null,
+						keyDrivers: Array.isArray(m.keyDrivers) ? m.keyDrivers.slice(0, 3) : [],
+						guardrails: Array.isArray(m.guardrails) ? m.guardrails.slice(0, 3) : [],
+					};
+				}
+			}
+
+			const consensus = Array.from(actionScores.entries())
+				.sort((a, b) => (b[1] - a[1]))
+				.map(([actionPreference, score]) => ({ actionPreference, score }))
+				.slice(0, 3);
+
+			const top = consensus[0] || null;
+			const runnerUp = consensus[1] || null;
+			const margin = (top && runnerUp) ? (top.score - runnerUp.score) : null;
+
+			return {
+				v: 1,
+				consensus: top ? { actionPreference: top.actionPreference, score: top.score, margin } : null,
+				rank: consensus,
+				byRole,
+			};
+		} catch {
+			return null;
+		}
+	}
 
 function _compactUserMsgForGary(userMsg) {
 	try {
@@ -1407,9 +1466,40 @@ export function createAutoTraderAgentDriver({
 	const cache = new Map();
 	const CACHE_TTL_MS = 2500;
 	const swarmCache = new Map();
+	let _lastSwarmPruneAt = 0;
 
 	let _reasoningSessionKey = "";
 	let _reasoningSessionModel = "";
+
+	function _pruneSwarmCache(nowTs, ttlMs) {
+		try {
+			const n = Number.isFinite(Number(nowTs)) ? Number(nowTs) : now();
+			const ttl = Math.max(500, Math.min(120000, Math.floor(Number(ttlMs) || 0)));
+			// Throttle: avoid O(N) scans too frequently.
+			if (n - _lastSwarmPruneAt < 1000) return;
+			_lastSwarmPruneAt = n;
+			for (const [k, rec] of swarmCache.entries()) {
+				try {
+					if (!rec || typeof rec !== "object") {
+						swarmCache.delete(k);
+						continue;
+					}
+					const at = _safeNum(rec.at, 0);
+					const age = at > 0 ? Math.max(0, n - at) : Number.POSITIVE_INFINITY;
+					// Delete stale completed entries once they exceed TTL.
+					if (!rec.inFlight && age > ttl) {
+						swarmCache.delete(k);
+						continue;
+					}
+					// Safety valve: if an in-flight entry is *very* old, drop it too.
+					if (rec.inFlight && age > Math.max(ttl * 3, 60000)) {
+						swarmCache.delete(k);
+						continue;
+					}
+				} catch {}
+			}
+		} catch {}
+	}
 
 	// Stable, tiny memory to carry decision context across turns.
 	// This is intentionally small and safe to include in every prompt.
@@ -1551,21 +1641,21 @@ export function createAutoTraderAgentDriver({
 		}
 	}
 
-	function _compactEvolveAnyForPrompt(e) {
-		try {
-			const obj = (e && typeof e === "object") ? e : null;
-			if (!obj) return null;
-			// If this is a stored summary shape, use the existing compactor.
-			if (obj.payload && typeof obj.payload === "object") return _compactEvolveForPrompt(obj);
-			// If this already looks like the compact evolve payload shape, normalize it.
-			if (obj.stats || obj.todo || obj.rules || obj.text || obj.prompt) {
-				return _compactEvolveForPrompt({ payload: obj, text: obj.text, prompt: obj.prompt });
-			}
-			return null;
-		} catch {
-			return null;
-		}
-	}
+	// function _compactEvolveAnyForPrompt(e) {
+	// 	try {
+	// 		const obj = (e && typeof e === "object") ? e : null;
+	// 		if (!obj) return null;
+	// 		// If this is a stored summary shape, use the existing compactor.
+	// 		if (obj.payload && typeof obj.payload === "object") return _compactEvolveForPrompt(obj);
+	// 		// If this already looks like the compact evolve payload shape, normalize it.
+	// 		if (obj.stats || obj.todo || obj.rules || obj.text || obj.prompt) {
+	// 			return _compactEvolveForPrompt({ payload: obj, text: obj.text, prompt: obj.prompt });
+	// 		}
+	// 		return null;
+	// 	} catch {
+	// 		return null;
+	// 	}
+	// }
 
 	function _pushRing(arr, item, maxN) {
 		try {
@@ -2056,6 +2146,7 @@ export function createAutoTraderAgentDriver({
 						return 12000;
 					}
 				})();
+				_pruneSwarmCache(nowTs, swarmTtlMs);
 				const swarmRevalMs = (() => {
 					try {
 						const raw = _safeNum(_readLs("fdv_agent_swarm_reval_ms", "4500"), 4500);
@@ -2090,7 +2181,7 @@ export function createAutoTraderAgentDriver({
 				const inFlight = !!(prevSwarmRec && prevSwarmRec.inFlight);
 				if (shouldRevalidate && !inFlight) {
 					const mkReq = (role, tempAdd = 0) => {
-						const sys = _buildSwarmMemberSystemPrompt(systemPromptFinal, role);
+						const sys = _buildSwarmMemberSystemPrompt(systemPromptFinal, role, kind);
 						const rKey = (wantsReasoning && reasoningSessionKey)
 							? `${String(reasoningSessionKey)}:swarm:${String(role)}`
 							: "";
@@ -2118,16 +2209,18 @@ export function createAutoTraderAgentDriver({
 							const mm = s.value;
 							const t = String(mm?.text || "");
 							const p = _safeJsonParse(t);
-							const v = _validateAgenticNegotiation(p);
+							const v = _validateAgenticNegotiation(p, kind);
 							if (v) {
 								v.role = v.role || String(rr.role);
 								members.push(v);
 							}
 						}
 						if (!members.length) return null;
+						const swarmSummary = _summarizeSwarm(members);
 						return {
 							v: 1,
 							createdAt: now(),
+							summary: swarmSummary,
 							members: members.map((m) => ({
 								role: m.role || null,
 								actionPreference: m.actionPreference || null,
@@ -2139,7 +2232,7 @@ export function createAutoTraderAgentDriver({
 						};
 					})();
 
-					try { swarmCache.set(swarmKey, { at: prevSwarmRec?.at || 0, swarm: prevSwarmRec?.swarm || null, inFlight: promise }); } catch {}
+					try { swarmCache.set(swarmKey, { at: nowTs, swarm: prevSwarmRec?.swarm || null, inFlight: promise }); } catch {}
 
 					promise
 						.then((swarmObj) => {
@@ -2184,7 +2277,7 @@ export function createAutoTraderAgentDriver({
 				if (wantsReasoning) didAwaitedReasoningPrepass = true;
 				agenticText = String(agenticMeta?.text || "");
 				agenticParsed = _safeJsonParse(agenticText);
-				agenticValidated = _validateAgenticNegotiation(agenticParsed);
+				agenticValidated = _validateAgenticNegotiation(agenticParsed, kind);
 				if (agenticValidated) {
 					try {
 						userMsg.agentic = {
