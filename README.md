@@ -277,4 +277,10 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
 
-git commit -m "swarm: tighten prepass contract and add consensus summary" -m "prune stale cache entries by TTL"
+feat: add gary api-only mode, model selection, and capture logging;
+Add --model {distilgpt,phi} + --api-only flags and env support (GARY_MODEL_TYPE, GARY_API_ONLY);
+Default away from Phi unless explicitly configured; expose model type + apiOnly in /health + /v1/model/info;
+Disable /v1/predict and /v1/model/reload in API-only while keeping captures endpoints working;
+Remove remaining hardcoded Phi fallbacks in train/tune defaults;
+Improve agent swarm: TTL pruning, stricter kind-based action contracts, and consensus summary;
+Ensure bot responses are always captured and uploaded to Gary (/v1/captures/append), even when local training;capture storage is off (includes sentry/config/runner paths);
