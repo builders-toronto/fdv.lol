@@ -2839,6 +2839,22 @@ function normalizeState(raw = {}) {
     out[k] = coerceByType(raw[k], s);
   }
 
+  try {
+    const rawMaxEntryCost = Number(out.maxEntryCostPct);
+
+    if (Number.isFinite(rawMaxEntryCost) && rawMaxEntryCost > 0) {
+
+      const converted = rawMaxEntryCost * 100;
+
+      if (rawMaxEntryCost <= 0.08 && converted >= 1 && converted <= 8) {
+
+        out.maxEntryCostPct = Math.min(10, Math.max(0, converted));
+
+      }
+    }
+    
+  } catch {}
+
   // Migration: if the user never changed legacy defaults, promote them to safer defaults.
   try {
     const legacyCfg = !Number.isFinite(Number(raw?._cfgVersion));
