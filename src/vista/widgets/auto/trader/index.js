@@ -10663,9 +10663,36 @@ function _ensureStatsHeader() {
           const saveUrl = () => {
             try {
               if (typeof localStorage === "undefined") return;
-              const v = String(garyUrlEl.value || "").trim() || "http://127.0.0.1:8088";
-              localStorage.setItem("fdv_gary_base_url", v);
-              try { log(`Gary URL set to ${v}`, "help"); } catch {}
+
+              const raw = String(garyUrlEl.value || "").trim();
+              if (!raw) {
+                try { localStorage.removeItem("fdv_gary_base_url"); } catch {}
+                try { log("Gary URL cleared.", "help"); } catch {}
+                return;
+              }
+
+              let parsed;
+              try { parsed = new URL(raw); } catch {
+                try {
+                  const prev = String(localStorage.getItem("fdv_gary_base_url") || "");
+                  garyUrlEl.value = prev;
+                } catch {}
+                try { log("Gary URL not saved (invalid URL).", "warn"); } catch {}
+                return;
+              }
+
+              const proto = String(parsed.protocol || "").toLowerCase();
+              if (proto !== "http:" && proto !== "https:") {
+                try {
+                  const prev = String(localStorage.getItem("fdv_gary_base_url") || "");
+                  garyUrlEl.value = prev;
+                } catch {}
+                try { log("Gary URL not saved (must be http/https).", "warn"); } catch {}
+                return;
+              }
+
+              localStorage.setItem("fdv_gary_base_url", raw);
+              try { log(`Gary URL set to ${raw}`, "help"); } catch {}
             } catch {}
           };
           garyUrlEl.addEventListener("change", saveUrl);
@@ -11053,6 +11080,7 @@ export function initTraderWidget(container = document.body) {
     <div class="fdv-actions-left">
         <button class="btn" data-auto-help title="How the bot works">Help</button>
         <button class="btn" data-auto-log-copy title="Copy log">Log</button>
+      <a class="btn" href="#" data-auto-fullscreen title="Open fullscreen">FS</a>
         <!-- TODO: fix help modal positioning -->
         ${ getAutoHelpModalHtml() }
     </div>
@@ -11142,6 +11170,94 @@ export function initTraderWidget(container = document.body) {
   const warmingEl = wrap.querySelector("[data-auto-warming]");
   const stealthEl = wrap.querySelector("[data-auto-stealth]");
   const expandBtn = wrap.querySelector("[data-auto-log-expand]");
+  const fullscreenLink = wrap.querySelector("[data-auto-fullscreen]");
+
+  // Fullscreen UX: ensure a black background behind the app.
+  // NOTE: requestFullscreen requires a user gesture; this link provides it.
+  try {
+    window._fdvAutoTraderFsTarget = wrap;
+
+    const getFsEl = () => {
+      try {
+        return document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement || null;
+      } catch {
+        return null;
+      }
+    };
+
+    const applyFsBg = (on) => {
+      try {
+        const html = document.documentElement;
+        const body = document.body;
+        const target = window._fdvAutoTraderFsTarget || null;
+
+        if (on) {
+          if (!window._fdvAutoTraderFsPrevBg) {
+            window._fdvAutoTraderFsPrevBg = {
+              htmlBg: html?.style?.background || "",
+              bodyBg: body?.style?.background || "",
+              targetBg: target?.style?.background || "",
+            };
+          }
+
+          if (html && html.style) html.style.background = "#000";
+          if (body && body.style) body.style.background = "#000";
+          if (target && target.style) target.style.background = "#000";
+        } else {
+          const prev = window._fdvAutoTraderFsPrevBg;
+          if (prev) {
+            if (html && html.style) html.style.background = prev.htmlBg || "";
+            if (body && body.style) body.style.background = prev.bodyBg || "";
+            if (target && target.style) target.style.background = prev.targetBg || "";
+          }
+          window._fdvAutoTraderFsPrevBg = null;
+        }
+      } catch {}
+    };
+
+    window._fdvAutoTraderFsApplyBg = () => {
+      try { applyFsBg(!!getFsEl()); } catch {}
+    };
+
+    if (!window._fdvAutoTraderFsHookInstalled) {
+      window._fdvAutoTraderFsHookInstalled = true;
+
+      const handler = () => {
+        try { window._fdvAutoTraderFsApplyBg?.(); } catch {}
+      };
+      window._fdvAutoTraderFsHandler = handler;
+
+      try { document.addEventListener("fullscreenchange", handler); } catch {}
+      try { document.addEventListener("webkitfullscreenchange", handler); } catch {}
+      try { document.addEventListener("mozfullscreenchange", handler); } catch {}
+      try { document.addEventListener("MSFullscreenChange", handler); } catch {}
+    }
+
+    try { window._fdvAutoTraderFsApplyBg?.(); } catch {}
+
+    if (fullscreenLink && !fullscreenLink.__fdvBound) {
+      fullscreenLink.__fdvBound = true;
+      fullscreenLink.addEventListener("click", async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        try {
+          if (getFsEl()) return;
+          const el = document.documentElement;
+          const req = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen;
+          if (!req) {
+            try { log("Fullscreen is not supported in this browser.", "warn"); } catch {}
+            return;
+          }
+
+          await req.call(el);
+          try { window._fdvAutoTraderFsApplyBg?.(); } catch {}
+        } catch (err) {
+          try { log(`Fullscreen failed: ${err?.message || err}`, "warn"); } catch {}
+        }
+      });
+    }
+  } catch {}
 
   wireAutoHelpModal({ wrap, openPumpKpi });
   startBtn  = wrap.querySelector("[data-auto-start]");
