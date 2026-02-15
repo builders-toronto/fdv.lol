@@ -6456,15 +6456,47 @@ async function syncPositionsFromChain(ownerPubkeyStr) {
     log("Syncing positions from cache …");
     const nowTs = now();
 
+    const dustUiEps = (() => {
+      const v = Number(typeof process !== "undefined" ? process?.env?.FDV_DUST_UI_EPS : 0);
+      return Number.isFinite(v) && v > 0 ? v : 1e-6;
+    })();
+    const dustRawMax = (() => {
+      const v = Number(typeof process !== "undefined" ? process?.env?.FDV_DUST_RAW_MAX : 0);
+      return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 1;
+    })();
+
     const cachedListRaw = cacheToList(ownerPubkeyStr);
     const cachedList = [];
     for (const it of cachedListRaw) {
       const ok = await isValidPubkeyStr(it.mint).catch(()=>false);
-      if (ok) cachedList.push(it);
-      else {
+      if (!ok) {
         log(`Cache mint invalid, pruning: ${String(it.mint).slice(0,6)}…`);
         removeFromPosCache(ownerPubkeyStr, it.mint);
+        continue;
       }
+
+      // Dust cache hygiene: don't treat single-raw-unit leftovers as active positions.
+      try {
+        const uiAmt = Number(it?.sizeUi || 0);
+        const dec = Number.isFinite(Number(it?.decimals)) ? Number(it.decimals) : 6;
+        const rawApprox = (Number.isFinite(uiAmt) && dec >= 0 && dec <= 9)
+          ? Math.round(uiAmt * Math.pow(10, dec))
+          : null;
+        const isDust = (Number.isFinite(rawApprox) && rawApprox !== null)
+          ? rawApprox <= dustRawMax
+          : (Number.isFinite(uiAmt) && uiAmt > 0 && uiAmt <= dustUiEps);
+        if (isDust) {
+          moveRemainderToDust(ownerPubkeyStr, it.mint, uiAmt, dec);
+          removeFromPosCache(ownerPubkeyStr, it.mint);
+          if (state.positions?.[it.mint]) {
+            delete state.positions[it.mint];
+            save();
+          }
+          continue;
+        }
+      } catch {}
+
+      cachedList.push(it);
     }
     const cachedSet = new Set(cachedList.map(x => x.mint));
 
@@ -6954,6 +6986,39 @@ async function verifyRealTokenBalance(ownerPub, mint, pos) {
     const bal = await getAtaBalanceUi(ownerPub, mint, pos.decimals, "confirmed");
     const chainUi = Number(bal.sizeUi || 0);
     const exists = !!bal.exists;
+
+    // Dust hygiene: prevent single-unit leftovers from being treated as active positions.
+    try {
+      const dustUiEps = (() => {
+        const v = Number(typeof process !== "undefined" ? process?.env?.FDV_DUST_UI_EPS : 0);
+        return Number.isFinite(v) && v > 0 ? v : 1e-6;
+      })();
+      const dec = Number.isFinite(Number(bal.decimals)) ? Number(bal.decimals) : Number(pos.decimals ?? 6);
+      const rawApprox = (Number.isFinite(chainUi) && dec >= 0 && dec <= 9)
+        ? Math.round(chainUi * Math.pow(10, dec))
+        : null;
+      const dustRawMax = (() => {
+        const v = Number(typeof process !== "undefined" ? process?.env?.FDV_DUST_RAW_MAX : 0);
+        return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 1;
+      })();
+      const isDust = (Number.isFinite(rawApprox) && rawApprox !== null)
+        ? rawApprox <= dustRawMax
+        : (Number.isFinite(chainUi) && chainUi > 0 && chainUi <= dustUiEps);
+
+      const ageMs0 = now() - Number(pos.lastBuyAt || pos.acquiredAt || 0);
+      const graceMs0 = Math.max(10_000, Number(state.pendingGraceMs || 20_000));
+      const pending0 = hasPendingCredit(ownerPub, mint);
+      if (exists && isDust && !pending0 && ageMs0 > graceMs0) {
+        try { moveRemainderToDust(ownerPub, mint, chainUi, dec); } catch {}
+        try { removeFromPosCache(ownerPub, mint); } catch {}
+        try { clearPendingCredit(ownerPub, mint); } catch {}
+        if (state.positions?.[mint]) {
+          delete state.positions[mint];
+          save();
+        }
+        return { ok: false, purged: true, reason: "dust" };
+      }
+    } catch {}
 
     const ageMs = now() - Number(pos.lastBuyAt || pos.acquiredAt || 0);
     const graceMs = Math.max(10_000, Number(state.pendingGraceMs || 20_000));
@@ -10028,7 +10093,8 @@ function __fdvCli_tickFloorMs() {
 }
 
 function __fdvCli_kpiMinIntervalMs() {
-  const base = __fdvCli_fastEnabled() ? 250 : 2000;
+  // Keep this high enough to avoid API rate-limit spam; KPI is for candidate selection, not per-tick execution.
+  const base = __fdvCli_fastEnabled() ? 500 : 2000;
   const lvl = __fdvCli_fastEnabled() ? __fdvCli_fastLevel() : 0;
   const step = Math.max(0, Number(__fdvCli_envNum("FDV_CLI_KPI_STEP_MS", 250)) || 250);
   const cap = Math.max(2000, Number(__fdvCli_envNum("FDV_CLI_KPI_MIN_CAP_MS", 10_000)) || 10_000);
@@ -10036,7 +10102,7 @@ function __fdvCli_kpiMinIntervalMs() {
 }
 
 function __fdvCli_kpiIntervalMs() {
-  const base = __fdvCli_fastEnabled() ? 750 : 10_000;
+  const base = __fdvCli_fastEnabled() ? 2500 : 10_000;
   const lvl = __fdvCli_fastEnabled() ? __fdvCli_fastLevel() : 0;
   const step = Math.max(0, Number(__fdvCli_envNum("FDV_CLI_KPI_INTERVAL_STEP_MS", 500)) || 500);
   const cap = Math.max(2000, Number(__fdvCli_envNum("FDV_CLI_KPI_INTERVAL_CAP_MS", 20_000)) || 20_000);
@@ -10056,11 +10122,13 @@ async function __fdvCli_startKpiFeeder() {
     const topNDefault = fast ? 20 : 60;
     const topN = Math.max(12, Number(state.kpiFeedTopN || topNDefault));
 
-    const desired = { intervalMs, minIntervalMs, topN };
+    const desired = { intervalMs, minIntervalMs, topN, source: "hybrid", window: "5m" };
     const same = _cliKpiFeederCfg
       && Number(_cliKpiFeederCfg.intervalMs) === Number(desired.intervalMs)
       && Number(_cliKpiFeederCfg.minIntervalMs) === Number(desired.minIntervalMs)
-      && Number(_cliKpiFeederCfg.topN) === Number(desired.topN);
+      && Number(_cliKpiFeederCfg.topN) === Number(desired.topN)
+      && String(_cliKpiFeederCfg.source || "") === String(desired.source || "")
+      && String(_cliKpiFeederCfg.window || "") === String(desired.window || "");
 
     // If already running with the same parameters, keep it.
     if (typeof _cliKpiFeederStop === "function" && same) return true;
@@ -10076,6 +10144,8 @@ async function __fdvCli_startKpiFeeder() {
       intervalMs,
       topN,
       minIntervalMs,
+      source: desired.source,
+      window: desired.window,
       onRateLimit: (e) => { try { __fdvCli_noteRateLimit("kpi", e?.message || e || ""); } catch {} },
     });
     return true;

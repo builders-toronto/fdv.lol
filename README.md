@@ -277,11 +277,4 @@ fdv.lol is open-source and community-driven. You can help by:
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
 
-feat(cli/auto): migrate JUP key + wizard opts; add adaptive headless fast mode;
-
-Prompt for Jupiter API key early (like RPC) and persist to localStorage as fdv_jup_api_key; mirror to env for Node helpers (JUP_API_KEY / FDV_JUP_API_KEY);
-Extend Auto AI (Agent Gary) wizard with “Full AI control” toggle, persisted as fdv_agent_full_control and applied via runtime overrides;
-Align CLI auto-trader default profile to the latest recommended settings; keep Final gate OFF by default and add an interactive toggle + Δscore prompt when enabled;
-Speed up headless/CLI trading loop without affecting browser mode: replace hard tick clamps with headless-only fast pacing plus adaptive backoff on rate-limit signals and gradual recovery;
-Improve KPI feeder pacing for headless runs and surface rate-limit events to drive adaptive backoff;
-Reduce CLI log spam by suppressing repetitive Twitter promo and lifetime heartbeat logs in headless mode;
+cli: focus RPC selection; cut dexscreener spam; fix unwind + inventory handling

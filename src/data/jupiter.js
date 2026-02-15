@@ -3,6 +3,37 @@ import { JUP_API_BASE, JUP_API_KEY } from '../config/env.js'
 
 const JUP_TRENDING_BASE = `${String(JUP_API_BASE || "https://api.jup.ag").replace(/\/+$/, "")}/tokens/v2/toptrending`;
 
+export function getJupiterApiKey() {
+  try {
+    const pe = (typeof process !== 'undefined' && process?.env) ? process.env : null;
+    const v = String(
+      pe?.JUP_API_KEY ||
+      pe?.FDV_JUP_API_KEY ||
+      pe?.VITE_JUP_API_KEY ||
+      pe?.jup_api_key ||
+      ''
+    ).trim();
+    if (v) return v;
+  } catch {}
+
+  try {
+    const v = String(JUP_API_KEY || '').trim();
+    if (v) return v;
+  } catch {}
+
+  try {
+    const ls = globalThis?.localStorage;
+    const v = String(
+      ls?.getItem?.('fdv_jup_api_key') ||
+      ls?.getItem?.('jup_api_key') ||
+      ''
+    ).trim();
+    if (v) return v;
+  } catch {}
+
+  return '';
+}
+
 const WIN_TO_FIELD = {
   '5m': 'stats5m',
   '1h': 'stats1h',
@@ -193,12 +224,13 @@ function mapTrendingTokenToModel(t, headlineWindow = '5m') {
 export async function fetchJupiterTrendingModels({ window = '5m', limit = 50, signal } = {}) {
   // Avoid hard-failing the main feed if the user hasn't configured a key.
   // Auto bot widgets enforce the key separately.
-  if (!String(JUP_API_KEY || "").trim()) return [];
+  const apiKey = getJupiterApiKey();
+  if (!String(apiKey || "").trim()) return [];
   const url = `${JUP_TRENDING_BASE}/${encodeURIComponent(window)}?limit=${encodeURIComponent(limit)}`;
   const data = await getJSON(url, {
     signal,
     timeout: 15_000,
-    headers: { accept: 'application/json', 'x-api-key': String(JUP_API_KEY || "").trim() },
+    headers: { accept: 'application/json', 'x-api-key': String(apiKey || "").trim() },
   });
   const arr = Array.isArray(data) ? data : [];
   return arr
