@@ -7,6 +7,15 @@ function sleep(ms) {
 	return new Promise((r) => setTimeout(r, ms));
 }
 
+function isRateLimitError(e) {
+	try {
+		const msg = String(e?.message || e || "");
+		return /429|too\s*many|rate\s*limit/i.test(msg);
+	} catch {
+		return false;
+	}
+}
+
 async function mapWithLimit(items, limit, fn, { spacingMs = 0 } = {}) {
 	const arr = Array.isArray(items) ? items : [];
 	const results = new Array(arr.length);
@@ -77,10 +86,12 @@ function toSnapshotItem(info, fallbackHit) {
 export function startKpiFeeder({
 	log = () => {},
 	intervalMs = 10_000,
+	minIntervalMs = 2000,
 	topN = 60,
 	maxConcurrent = 4,
 	spacingMs = 150,
 	ttlMs = 15_000,
+	onRateLimit = null,
 } = {}) {
 	const state = {
 		stopped: false,
@@ -110,7 +121,10 @@ export function startKpiFeeder({
 			const ac = new AbortController();
 			state.ac = ac;
 
-			const hits = await collectInstantSolana({ limit: Math.max(120, topN * 3), signal: ac.signal }).catch(() => []);
+			const hits = await collectInstantSolana({ limit: Math.max(120, topN * 3), signal: ac.signal }).catch((e) => {
+				try { if (typeof onRateLimit === "function" && isRateLimitError(e)) onRateLimit(e); } catch {}
+				return [];
+			});
 			const sorted = (Array.isArray(hits) ? hits : [])
 				.slice()
 				.sort((a, b) => Number(b?.bestLiq || 0) - Number(a?.bestLiq || 0));
@@ -128,7 +142,10 @@ export function startKpiFeeder({
 				Math.max(1, maxConcurrent | 0),
 				async (mint) => {
 					if (ac.signal.aborted) return null;
-					return await fetchTokenInfo(String(mint), { signal: ac.signal, ttlMs }).catch(() => null);
+					return await fetchTokenInfo(String(mint), { signal: ac.signal, ttlMs }).catch((e) => {
+						try { if (typeof onRateLimit === "function" && isRateLimitError(e)) onRateLimit(e); } catch {}
+						return null;
+					});
 				},
 				{ spacingMs }
 			);
@@ -164,10 +181,10 @@ export function startKpiFeeder({
 		}
 	};
 
-	try { log(`KPI feeder started (interval=${intervalMs}ms topN=${topN}).`); } catch {}
+	try { log(`KPI feeder started (interval=${intervalMs}ms min=${minIntervalMs}ms topN=${topN}).`); } catch {}
 
 	Promise.resolve().then(tick);
-	state.timer = setInterval(tick, Math.max(2000, Number(intervalMs) || 10_000));
+	state.timer = setInterval(tick, Math.max(Math.max(100, Number(minIntervalMs) || 0), Number(intervalMs) || 10_000));
 
 	return stop;
 }
