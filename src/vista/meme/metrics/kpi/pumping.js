@@ -17,6 +17,15 @@ const CRYPTO_FACTS = [
 
 let nextFactIdx = 0;
 
+function _isCliHeadless() {
+  try {
+    const o = globalThis && globalThis.__fdvAutoBotOverrides;
+    return !!(o && typeof o === 'object' && o.headless);
+  } catch {
+    return false;
+  }
+}
+
 function makeFactRow(text) {
   return {
     mint: `fact:${Date.now()}:${Math.random().toString(36).slice(2)}`,
@@ -439,6 +448,11 @@ export async function focusMint(mint, { refresh = true, ttlMs = 2000, signal } =
       ? !!arguments[1].rpc
       : true;
 
+    // CLI/headless should not hammer Dexscreener; KPI snapshots are fed separately under Node.
+    const includeDex = (typeof arguments?.[1] === 'object' && arguments[1] && 'dex' in arguments[1])
+      ? !!arguments[1].dex
+      : !_isCliHeadless();
+
     const rpcOpts = (typeof arguments?.[1] === 'object' && arguments[1] && arguments[1].rpcOpts && typeof arguments[1].rpcOpts === 'object')
       ? arguments[1].rpcOpts
       : null;
@@ -461,35 +475,37 @@ export async function focusMint(mint, { refresh = true, ttlMs = 2000, signal } =
           }).catch(() => ({ ok: false, error: 'rpc_failed' }))
         : Promise.resolve(rpcUrl ? ({ ok: false, error: 'rpc_unavailable' }) : ({ ok: false, error: 'rpc_not_configured' }));
       if (debugRpc) console.debug('[focusMint] refresh', { mint: id, rpc: rpcUrl ? 'configured' : 'not configured', debugRpc });
-      const dsPromise = (async () => {
-        try {
-          const live = await fetchTokenInfoLive(id, { ttlMs, signal });
-          if (live && !live.error) {
-            const item = {
-              mint: live.mint,
-              symbol: live.symbol,
-              name: live.name,
-              imageUrl: live.imageUrl,
-              pairUrl: live.headlineUrl,
-              priceUsd: live.priceUsd,
-              liquidityUsd: live.liquidityUsd,
-              liqUsd: live.liquidityUsd, // ensure mapper sees it
-              change5m: live.change5m,
-              change1h: live.change1h,
-              change6h: live.change6h,
-              change24h: live.change24h,
-              v5mTotal: live.v5mTotal,
-              v1hTotal: live.v1hTotal,
-              v6hTotal: live.v6hTotal,
-              vol24hUsd: live.v24hTotal,
-              buySell24h: live.buySell24h,
-            };
-            ingestPumpingSnapshot([item]);
-            return { ok: true };
-          }
-        } catch {}
-        return { ok: false };
-      })();
+      const dsPromise = includeDex
+        ? (async () => {
+            try {
+              const live = await fetchTokenInfoLive(id, { ttlMs, signal });
+              if (live && !live.error) {
+                const item = {
+                  mint: live.mint,
+                  symbol: live.symbol,
+                  name: live.name,
+                  imageUrl: live.imageUrl,
+                  pairUrl: live.headlineUrl,
+                  priceUsd: live.priceUsd,
+                  liquidityUsd: live.liquidityUsd,
+                  liqUsd: live.liquidityUsd, // ensure mapper sees it
+                  change5m: live.change5m,
+                  change1h: live.change1h,
+                  change6h: live.change6h,
+                  change24h: live.change24h,
+                  v5mTotal: live.v5mTotal,
+                  v1hTotal: live.v1hTotal,
+                  v6hTotal: live.v6hTotal,
+                  vol24hUsd: live.v24hTotal,
+                  buySell24h: live.buySell24h,
+                };
+                ingestPumpingSnapshot([item]);
+                return { ok: true };
+              }
+            } catch {}
+            return { ok: false };
+          })()
+        : Promise.resolve({ ok: false, skipped: true });
 
       const [rpcOut] = await Promise.all([rpcPromise, dsPromise]);
       return { rpcOut };

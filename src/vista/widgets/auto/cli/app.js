@@ -900,18 +900,37 @@ async function _jupSwapSellToSol({ conn, signerKp, mintStr, amountRawStr, slippa
   q.searchParams.set("slippageBps", String(Math.max(1, slippageBps | 0)));
   q.searchParams.set("restrictIntermediateTokens", "true");
 
-  const quote = await _fetchJsonWith429(q.toString(), { method: "GET", headers: { "x-api-key": apiKey } });
+  let quote = null;
+  try {
+    quote = await _fetchJsonWith429(q.toString(), { method: "GET", headers: { "x-api-key": apiKey } });
+  } catch (e) {
+    const msg = String(e?.message || e || "");
+    // Jupiter uses 400 + {errorCode:"NO_ROUTES_FOUND"} for unsellable/dust.
+    if (/NO_ROUTES_FOUND/i.test(msg) || /No\s+routes\s+found/i.test(msg)) {
+      return { ok: false, code: "NO_ROUTE", msg: "No routes found" };
+    }
+    return { ok: false, code: "QUOTE_FAIL", msg: msg.slice(0, 260) };
+  }
   if (!quote) return { ok: false, code: "NO_QUOTE", msg: "empty quote" };
 
-  const swap = await _fetchJsonWith429(`${base.replace(/\/+$/, "")}/swap/v1/swap`, {
-    method: "POST",
-    headers: { "x-api-key": apiKey },
-    body: {
-      quoteResponse: quote,
-      userPublicKey: signerKp.publicKey.toBase58(),
-      dynamicComputeUnitLimit: true,
-    },
-  });
+  let swap = null;
+  try {
+    swap = await _fetchJsonWith429(`${base.replace(/\/+$/, "")}/swap/v1/swap`, {
+      method: "POST",
+      headers: { "x-api-key": apiKey },
+      body: {
+        quoteResponse: quote,
+        userPublicKey: signerKp.publicKey.toBase58(),
+        dynamicComputeUnitLimit: true,
+      },
+    });
+  } catch (e) {
+    const msg = String(e?.message || e || "");
+    if (/NO_ROUTES_FOUND/i.test(msg) || /No\s+routes\s+found/i.test(msg)) {
+      return { ok: false, code: "NO_ROUTE", msg: "No routes found" };
+    }
+    return { ok: false, code: "SWAP_BUILD_FAIL", msg: msg.slice(0, 260) };
+  }
 
   const b64 = String(swap?.swapTransaction || "").trim();
   if (!b64) return { ok: false, code: "NO_TX", msg: "swapTransaction missing" };
@@ -968,7 +987,13 @@ async function __fdvCli_nodeSellAllToSolReport({ rpcUrl, rpcHeaders, autoWalletS
       try {
         await _consolidateMintAccountsToAta(conn, signerKp, mint, pid, accounts);
       } catch {}
-      const res = await _jupSwapSellToSol({ conn, signerKp, mintStr: mint, amountRawStr: totalRaw, slippageBps });
+      let res = null;
+      try {
+        res = await _jupSwapSellToSol({ conn, signerKp, mintStr: mint, amountRawStr: totalRaw, slippageBps });
+      } catch (e) {
+        const msg = String(e?.message || e || "");
+        res = { ok: false, code: /NO_ROUTES_FOUND/i.test(msg) ? "NO_ROUTE" : "FAIL", msg: msg.slice(0, 260) };
+      }
       if (res?.ok) sold.push({ mint, programId: pid, amountRaw: totalRaw, sig: res.sig });
       else failed.push({ mint, programId: pid, amountRaw: totalRaw, code: res?.code || "FAIL", msg: res?.msg || "" });
       await _sleep(250);
@@ -1928,6 +1953,9 @@ async function parseWalletSecretToKeypair(secret) {
 }
 
 async function waitForFunding({ rpcUrl, rpcHeaders, pubkey }) {
+  try {
+    if (pubkey) console.log(`Checking wallet: ${String(pubkey)}`);
+  } catch {}
   while (true) {
     const bal = await getSolBalanceUi({ rpcUrl, rpcHeaders, pubkey }).catch(() => 0);
     console.log(`Balance: ${_fmtSol(bal)} SOL`);
@@ -2258,6 +2286,7 @@ async function unwindAllHoldingsToSol({ rpcUrl, rpcHeaders, autoWalletSecret, re
     const start = Date.now();
     let lastNonEmptyAt = 0;
     let pass = 0;
+    let lastReport = null;
     while (Date.now() - start < maxMs) {
       pass++;
 
@@ -2272,7 +2301,7 @@ async function unwindAllHoldingsToSol({ rpcUrl, rpcHeaders, autoWalletSecret, re
         }
       } catch {}
 
-      await __fdvCli_nodeSellAllToSolReport({ rpcUrl, rpcHeaders, autoWalletSecret, slippageBps: opts.slippageBps });
+      lastReport = await __fdvCli_nodeSellAllToSolReport({ rpcUrl, rpcHeaders, autoWalletSecret, slippageBps: opts.slippageBps }).catch(() => null);
 
       // Verify via Node-only parsed token accounts (Token + Token-2022).
       const st = await __fdvCli_nodeWalletStatusSnapshot({ rpcUrl, rpcHeaders, autoWalletSecret }).catch(() => null);
@@ -2282,6 +2311,22 @@ async function unwindAllHoldingsToSol({ rpcUrl, rpcHeaders, autoWalletSecret, re
           console.log("Unwind complete.");
           return;
         }
+
+        // If we didn't sell anything and Jupiter reports no routes for everything,
+        // stop retrying (these are effectively unsellable dust positions).
+        try {
+          const soldN = Array.isArray(lastReport?.sold) ? lastReport.sold.length : 0;
+          const failed = Array.isArray(lastReport?.failed) ? lastReport.failed : [];
+          if (soldN === 0 && failed.length) {
+            const noRouteMints = new Set(failed.filter((f) => String(f?.code || "") === "NO_ROUTE").map((f) => String(f?.mint || "")));
+            const allNoRoute = n > 0 && st.balances.every((b) => noRouteMints.has(String(b?.mint || "")));
+            if (allNoRoute) {
+              console.log(`Unwind stopped: ${n} token(s) appear unsellable (no Jupiter routes).`);
+              return;
+            }
+          }
+        } catch {}
+
         lastNonEmptyAt = Date.now();
         const sample = st.balances.slice(0, 3).map((b) => `${String(b?.mint || "").slice(0, 4)}…`).join(", ");
         console.log(`Unwind: ${n} token(s) still held after pass ${pass}${sample ? ` (${sample})` : ""}`);
@@ -3091,15 +3136,46 @@ async function quickStart(argv = []) {
   console.log(`  ${w.secretJson}`);
   console.log("\nIMPORTANT: Save the secret now. Anyone with it can drain funds.");
 
-  const next = await promptLine(
+  let next = await promptLine(
     "Once saved, fund the wallet with SOL and press Enter to continue (or type 'import' to use an existing wallet)",
     { defaultValue: "" },
   );
 
-  if (String(next || "").trim().toLowerCase() === "import") {
+  let startMode = "fund"; // fund | import
+  let pastedSecret = "";
+  while (true) {
+    const raw = String(next || "").trim();
+    const low = raw.toLowerCase();
+    if (!raw) {
+      startMode = "fund";
+      break;
+    }
+    if (low === "import") {
+      startMode = "import";
+      break;
+    }
+    if (low === "q" || low === "quit" || low === "cancel") throw new Error("quick-start aborted");
+
+    // Many people paste the secret directly here (instead of typing 'import'). Treat that as an import.
+    try {
+      await parseWalletSecretToKeypair(raw);
+      pastedSecret = raw;
+      startMode = "import";
+      break;
+    } catch {
+      console.log("Unrecognized input. Press Enter to continue with the generated wallet, type 'import', or paste your wallet secret.");
+      next = await promptLine(
+        "Enter = continue (generated wallet) | 'import' | paste secret (or 'q' to quit)",
+        { defaultValue: "" },
+      );
+    }
+  }
+
+  if (startMode === "import") {
     while (true) {
-      const rawSecret = await promptLine("Import wallet secret (base58 secretKey, or JSON array) (or 'q' to cancel)", { defaultValue: "" });
+      const rawSecret = pastedSecret || await promptLine("Import wallet secret (base58 secretKey, or JSON array) (or 'q' to cancel)", { defaultValue: "" });
       const s = String(rawSecret || "").trim();
+      pastedSecret = "";
       if (!s || s.toLowerCase() === "q") break;
       try {
         const imported = await parseWalletSecretToKeypair(s);
