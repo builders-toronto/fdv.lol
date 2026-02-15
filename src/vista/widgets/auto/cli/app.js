@@ -1,3 +1,96 @@
+
+function applyRecipientToStorage(recipientPub) {
+  try {
+    if (typeof localStorage === "undefined") return;
+    const r = String(recipientPub || "").trim();
+    if (!r) return;
+
+    let cur = {};
+    try {
+      const raw = localStorage.getItem(AUTO_LS_KEY);
+      cur = raw ? JSON.parse(raw) || {} : {};
+    } catch {
+      cur = {};
+    }
+
+    cur = { ...(cur || {}), recipientPub: r };
+    try { localStorage.setItem(AUTO_LS_KEY, JSON.stringify(cur)); } catch {}
+  } catch {}
+}
+
+function _applyJupApiKeyForHeadlessRuntime(apiKey) {
+  const k = String(apiKey || "").trim();
+  if (!k) return;
+  try { applyJupApiKeyToStorage(k); } catch {}
+  try {
+    // Some modules read env first under Node.
+    if (process?.env) {
+      if (!process.env.FDV_JUP_API_KEY) process.env.FDV_JUP_API_KEY = k;
+      if (!process.env.JUP_API_KEY) process.env.JUP_API_KEY = k;
+      if (!process.env.jup_api_key) process.env.jup_api_key = k;
+    }
+  } catch {}
+}
+
+function _pickJupApiKeyFromProfile(profile = {}) {
+  try {
+    const p = profile && typeof profile === "object" ? profile : {};
+    const j = p?.jupiter && typeof p.jupiter === "object" ? p.jupiter : null;
+    const cand =
+      p?.jupApiKey ??
+      p?.jupiterApiKey ??
+      p?.jup_api_key ??
+      j?.apiKey ??
+      j?.key ??
+      j?.api_key;
+    return cand != null ? String(cand || "").trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+function _applyAgentGaryFromProfile(profile = {}) {
+  try {
+    const p = profile && typeof profile === "object" ? profile : {};
+    const a =
+      (p?.agentGaryFullAi && typeof p.agentGaryFullAi === "object") ? p.agentGaryFullAi
+      : (p?.agent && typeof p.agent === "object") ? p.agent
+      : (p?.llm && typeof p.llm === "object") ? p.llm
+      : null;
+    if (!a) return;
+
+    const enabled = a?.enabled;
+    // If profile provides agent config, assume intent is enabled unless explicitly false.
+    const on = enabled === false ? false : true;
+    if (!on) {
+      try { localStorage.setItem("fdv_agent_enabled", "false"); } catch {}
+      return;
+    }
+
+    const model = String(a?.model || a?.llmModel || a?.openaiModel || "").trim();
+    const provider = String(a?.provider || "").trim();
+    const riskLevel = String(a?.riskLevel || a?.risk || "safe").trim().toLowerCase();
+    const apiKey = String(a?.apiKey || a?.llmApiKey || a?.openaiApiKey || "").trim();
+    const fullAiControl = a?.fullAiControl != null ? !!a.fullAiControl : (a?.fullControl != null ? !!a.fullControl : false);
+
+    applyAgentGaryFullAiToStorage({
+      provider: provider || undefined,
+      model: model || undefined,
+      riskLevel,
+      apiKey: apiKey || undefined,
+      fullAiControl,
+    });
+
+    // Also apply runtime overrides (avoids relying solely on LS for some processes).
+    applyAgentGaryFullAiOverrides({
+      provider: provider || undefined,
+      model: model || undefined,
+      riskLevel,
+      apiKey: apiKey || undefined,
+      fullAiControl,
+    });
+  } catch {}
+}
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import { openSync, closeSync, readSync, constants as fsConstants } from "node:fs";
 import { createInterface } from "node:readline";
@@ -58,13 +151,19 @@ function usage() {
     "fdv-trader (CLI)",
     "", 
     "Usage:",
-    "  node tools/trader.mjs --validate-sell-bypass",
-    "  node tools/trader.mjs --dry-run-sell --snapshot tools/snapshots/sample-sell.json",
-    "  node tools/trader.mjs --sim-index",
-    "  node tools/trader.mjs --quick-start",
-    "  node tools/trader.mjs --flame",
-    "  node tools/trader.mjs --run-profile --profile <name> [--profiles <pathOrUrl>]",
-    "  node tools/trader.mjs --help",
+    "  node cli.mjs --help",
+    "  node cli.mjs --quick-start",
+    "  node cli.mjs --run-profile --profile-url <httpsUrl>",
+    "", 
+    "Direct-link (no files):",
+    "  curl -fsSL https://fdv.lol/cli.mjs | node - run-profile --profile-url <httpsUrl>",
+    "", 
+    "Dev / self-tests:",
+    "  node cli.mjs --validate-sell-bypass",
+    "  node cli.mjs --dry-run-sell --snapshot tools/snapshots/sample-sell.json",
+    "  node cli.mjs --sim-index",
+    "  node cli.mjs --flame",
+    "  node cli.mjs --help",
     "", 
     "Options:",
     "  --validate-sell-bypass   Runs a local self-test that urgent/hard-exit sells bypass router cooldown gates.",
@@ -85,8 +184,9 @@ function usage() {
     "    --rpc-headers <json>    Optional JSON headers for RPC (or set FDV_RPC_HEADERS).",
     "    --wallet-secret <val>   Wallet secret (base58 64-byte secretKey, or json array string). (or set FDV_WALLET_SECRET).",
     "  --run-profile            Runs bots headlessly (no UI) using a named profile (auto/follow/sniper/hold/volume).",
-    "    --profiles <pathOrUrl>  Profiles JSON file path or https URL.",
-    "    --profile <name>        Profile name to select from the profiles file.",
+    "    --profile-url <url>     Recommended: a single JSON profile (https://… or /path under FDV_BASE_URL).",
+    "    --profiles <pathOrUrl>  Advanced: profiles JSON file path or https URL (multi-profile doc).",
+    "    --profile <name>        Profile name inside the multi-profile doc.",
     "    --log-to-console        Mirrors widget logs to stdout.",
     "  --no-splash              Disables the startup splash banner.",
     "  --help                   Shows this help.",
@@ -3286,6 +3386,28 @@ async function readTextFromPathOrUrl(pathOrUrl) {
   return await readFile(s, "utf8");
 }
 
+function _resolveMaybeRelativeUrl(spec, { baseUrl = "" } = {}) {
+  const s = String(spec || "").trim();
+  if (!s) return "";
+  if (/^https?:\/\//i.test(s)) return s;
+  if (s.startsWith("/")) {
+    const b = String(baseUrl || "").trim().replace(/\/+$/, "");
+    if (!b) return s;
+    return `${b}${s}`;
+  }
+  return s;
+}
+
+function _pickSingleProfileFromDoc(doc) {
+  if (!doc || typeof doc !== "object") return null;
+  const profiles = doc.profiles && typeof doc.profiles === "object" ? doc.profiles : null;
+  if (!profiles) return null;
+  const keys = Object.keys(profiles || {}).filter(Boolean);
+  if (keys.length !== 1) return null;
+  const p = profiles[keys[0]];
+  return p && typeof p === "object" ? p : null;
+}
+
 function pickProfile(doc, name) {
   const n = String(name || "").trim();
   if (!n) throw new Error("--profile <name> is required");
@@ -3390,11 +3512,36 @@ function normalizeProfile(profile = {}) {
     if (!p.autoWalletSecret) {
       const cand =
         p?.walletSecret ??
+        p?.wallet?.secret ??
+        p?.wallet?.autoWalletSecret ??
+        p?.wallet?.walletSecret ??
         p?.auto?.walletSecret ??
         p?.trader?.walletSecret ??
         p?.trader?.autoWalletSecret ??
         p?.auto?.autoWalletSecret;
       if (cand != null) p.autoWalletSecret = String(cand || "").trim();
+    }
+
+    // Recipient aliases
+    if (!p.recipientPub) {
+      const cand =
+        p?.wallet?.recipientPub ??
+        p?.wallet?.recipient ??
+        p?.recipient ??
+        p?.recipientAddress;
+      if (cand != null) p.recipientPub = String(cand || "").trim();
+    }
+
+    // Jupiter API key aliases
+    if (!p.jupApiKey && !p.jupiterApiKey) {
+      const k = _pickJupApiKeyFromProfile(p);
+      if (k) p.jupApiKey = k;
+    }
+
+    // Agent Gary full AI config aliases (keep nested to avoid polluting auto state)
+    if (!p.agentGaryFullAi) {
+      const cand = p?.agentGary ?? p?.agent ?? p?.llm ?? null;
+      if (cand && typeof cand === "object") p.agentGaryFullAi = cand;
     }
 
     return p;
@@ -3461,8 +3608,7 @@ function pickAutoProfile(profile = {}) {
     delete out.rpcUrl;
     delete out.rpcHeaders;
     delete out.rpc;
-    delete out.autoWalletSecret;
-    delete out.walletSecret;
+    // Keep wallet/recipient on the auto profile: headless trader needs these.
     return out;
   } catch {
     return profile;
@@ -3483,17 +3629,66 @@ async function runProfile(argv) {
   await ensureSolanaWeb3Shim();
   await ensureBs58Shim();
   const { flags, getValue } = parseArgs(argv);
-  const profileName = getValue("--profile");
-  const profilesPathOrUrl = getValue("--profiles") || process.env.FDV_PROFILES || "./fdv.profiles.json";
+  const profileUrlRaw = getValue("--profile-url") || process.env.FDV_PROFILE_URL || "";
+  const profileName = getValue("--profile") || process.env.FDV_PROFILE_NAME || "";
+  const profilesPathOrUrlRaw = getValue("--profiles") || process.env.FDV_PROFILES || "";
+  const baseUrl = String(process?.env?.FDV_BASE_URL || "").trim();
   const logToConsole = flags.has("--log-to-console");
 
-  const raw = await readTextFromPathOrUrl(profilesPathOrUrl);
-  const doc = JSON.parse(raw);
-  const profile = normalizeProfile(pickProfile(doc, profileName));
+  let picked = null;
+  let sourceLabel = "";
+  if (profileUrlRaw) {
+    const resolved = _resolveMaybeRelativeUrl(profileUrlRaw, { baseUrl });
+    const raw = await readTextFromPathOrUrl(resolved);
+    const parsed = JSON.parse(raw);
+    // Allow either a single profile object OR { profiles: { name: profile } }.
+    if (parsed && typeof parsed === "object" && parsed.profiles && typeof parsed.profiles === "object") {
+      if (profileName) picked = pickProfile(parsed, profileName);
+      else picked = _pickSingleProfileFromDoc(parsed);
+      if (!picked) throw new Error("profile-url returned multiple profiles; pass --profile <name>");
+    } else {
+      picked = parsed;
+    }
+    sourceLabel = resolved;
+  } else if (profilesPathOrUrlRaw) {
+    const resolved = _resolveMaybeRelativeUrl(profilesPathOrUrlRaw, { baseUrl });
+    const raw = await readTextFromPathOrUrl(resolved);
+    const parsed = JSON.parse(raw);
+
+    if (profileName) {
+      picked = pickProfile(parsed, profileName);
+    } else {
+      // If it's a multi-profile doc with a single entry, pick it.
+      picked = _pickSingleProfileFromDoc(parsed);
+      // Or if it's just a single profile object, use it directly.
+      if (!picked && parsed && typeof parsed === "object" && !parsed.profiles) picked = parsed;
+    }
+
+    if (!picked || typeof picked !== "object") {
+      throw new Error("profiles doc did not yield a profile; pass --profile <name> or use --profile-url");
+    }
+    sourceLabel = resolved;
+  } else {
+    throw new Error(
+      [
+        "Missing profile source.",
+        "Use ONE of:",
+        "  --profile-url <https://.../my.profile.json>",
+        "  --profiles <pathOrUrl> --profile <name>",
+        "Or set env:",
+        "  FDV_PROFILE_URL / FDV_PROFILE_NAME / FDV_PROFILES",
+      ].join("\n")
+    );
+  }
+
+  const profile = normalizeProfile(picked);
 
   // Shared config across bots.
   applyGlobalRpcToStorage(profile);
   await applyAutoWalletToStorage(profile);
+  try { applyRecipientToStorage(profile?.recipientPub); } catch {}
+  try { _applyJupApiKeyForHeadlessRuntime(_pickJupApiKeyFromProfile(profile)); } catch {}
+  try { _applyAgentGaryFromProfile(profile); } catch {}
 
   if (logToConsole) {
     try { globalThis.window._fdvLogToConsole = true; } catch {}
@@ -3522,7 +3717,8 @@ async function runProfile(argv) {
     return 2;
   }
 
-  console.log(`Running profile '${String(profileName)}' from ${profilesPathOrUrl}`);
+  const nameLabel = profileName ? ` '${String(profileName)}'` : "";
+  console.log(`Running profile${nameLabel} from ${sourceLabel}`);
   console.log("Press Ctrl+C to stop.");
 
   let autoMod = null;
@@ -3539,7 +3735,18 @@ async function runProfile(argv) {
       rpcHeaders: profile?.rpcHeaders,
       autoWalletSecret: profile?.autoWalletSecret,
     });
-    autoMod.__fdvCli_applyProfile(pickAutoProfile(profile));
+
+    // Match interactive startup semantics: headless trader needs wallet secret in *state*.
+    // (localStorage alone is not sufficient; getAutoKeypair() reads state.autoWalletSecret.)
+    const autoCfg = pickAutoProfile(profile);
+    const apply = { ...(autoCfg && typeof autoCfg === "object" ? autoCfg : {}) };
+    if (profile && typeof profile === "object") {
+      if (profile.rpcUrl) apply.rpcUrl = profile.rpcUrl;
+      if (profile.rpcHeaders) apply.rpcHeaders = profile.rpcHeaders;
+      if (profile.autoWalletSecret) apply.autoWalletSecret = profile.autoWalletSecret;
+      if (profile.recipientPub) apply.recipientPub = profile.recipientPub;
+    }
+    autoMod.__fdvCli_applyProfile(apply);
 
     _startCliMintReconciler({
       rpcUrl: profile?.rpcUrl,
@@ -4244,7 +4451,6 @@ export async function runAutoTraderCli(argv = []) {
 
   if (flags.has("--run-profile")) {
     ensureNodeShims();
-    await ensureJupApiKeyInteractive({ getValue, allowSkip: false });
     await runProfile(argv);
     return 0;
   }

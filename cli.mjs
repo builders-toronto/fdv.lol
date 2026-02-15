@@ -23,6 +23,12 @@ function parseBootstrapArgs(argv) {
 		const a = String(args[i] ?? "");
 		const next = () => (i + 1 < args.length ? String(args[i + 1] ?? "") : "");
 
+		// Conventional separator: everything after "--" is for the inner CLI.
+		if (a === "--") {
+			for (let j = i + 1; j < args.length; j += 1) out.passthrough.push(args[j]);
+			break;
+		}
+
 		if (a === "--base-url") {
 			out.baseUrl = next();
 			out.explicitBaseUrl = true;
@@ -283,6 +289,10 @@ async function main() {
 	const cwd = typeof process?.cwd === "function" ? process.cwd() : "";
 	const localRoot = await findLocalRepoRoot({ fsPromises: _fsPromises, path: _path, startDir: cwd });
 	if (localRoot) {
+		try {
+			// Make base URL available to the inner CLI (used to resolve relative profile URLs).
+			if (process?.env && !process.env.FDV_BASE_URL) process.env.FDV_BASE_URL = String(opts.baseUrl || DEFAULT_BASE_URL);
+		} catch {}
 		const entryFs = _path.join(localRoot, opts.entry.replace(/^\/+/, ""));
 		const entryUrl = _pathToFileURL(entryFs).href;
 		const mod = await import(entryUrl);
@@ -359,6 +369,11 @@ async function main() {
 
 	const entryLocal = _path.join(rootDir, opts.entry.replace(/^\/+/, ""));
 	const entryUrl = _pathToFileURL(entryLocal).href;
+
+	try {
+		// Make base URL available to the inner CLI (used to resolve relative profile URLs).
+		if (process?.env && !process.env.FDV_BASE_URL) process.env.FDV_BASE_URL = String(opts.baseUrl || DEFAULT_BASE_URL);
+	} catch {}
 
 	const mod = await import(entryUrl);
 	const fn = mod?.runAutoTraderCli;
