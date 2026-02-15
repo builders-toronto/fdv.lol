@@ -207,19 +207,24 @@ Implementation: `src/vista/meme/metrics/kpi/degen.js`
   - Optional: `--steps 40 --dt-ms 1000 --throw-prune --debug-sell`
 
 - Run the real auto-bot headlessly using a named profile:
-  - `node tools/trader.mjs --run-profile --profile <name> [--profiles <pathOrUrl>] [--log-to-console]`
-  - Profiles file can be a local JSON path or an `https://` URL (defaults to `./fdv.profiles.json` or `FDV_PROFILES`).
-  - Example: `node tools/trader.mjs --run-profile --profiles tools/profiles/fdv.profiles.example.json --profile dev --log-to-console`
+  - Recommended (direct-link, single profile JSON):
+    - `node cli.mjs --run-profile --profile-url <httpsUrl> [--log-to-console]`
+    - Example: `node cli.mjs --run-profile --profile-url https://fdv.lol/tools/profiles/fdv.profiles.example.json --log-to-console`
+  - Advanced (multi-profile doc):
+    - `node cli.mjs --run-profile --profiles <pathOrUrl> --profile <name> [--log-to-console]`
 
 ### Headless follow (via `--run-profile`)
 
 `--run-profile` can run **Auto** and **Follow** together from a *single* profile.
 
 Common/shared keys (top-level inside your chosen profile):
-- `rpcUrl` (recommended): Solana RPC endpoint.
-- `rpcHeaders` (optional): Object of headers for your RPC.
-- `autoWalletSecret` (required for Follow): Auto wallet secret used for signing swaps.
+- `rpcUrl` (or `rpc.url`): Solana RPC endpoint.
+- `rpcHeaders` (or `rpc.headers`): Object of headers for your RPC.
+- `autoWalletSecret` (or `wallet.secret`) (required for headless bots that sign): Auto wallet secret used for signing swaps.
   - Accepts either a base58 secret, or a JSON array string like `[12,34,...]`.
+- `recipientPub` (or `wallet.recipientPub`) (optional): where “return SOL” features send SOL.
+- `jupApiKey` (or `jupiter.apiKey`) (recommended): Jupiter API key used for quotes/swaps.
+- `agentGaryFullAi` (or `agent`/`llm`) (optional): Agent Gary runtime config (model/provider/key/risk/fullAiControl).
 
 Enable/disable rules:
 - Auto runs by default unless you set `"auto": false`.
@@ -233,13 +238,13 @@ Follow config (profile key: `follow`):
 - `pollMs` (optional): polling interval (min 250ms)
 
 Example profiles file:
-- See `tools/profiles/fdv.profiles.example.json` for a starting point.
+- See `tools/profiles/fdv.profiles.example.json` for a minimal single-profile starting point.
 
 Example commands:
 - Follow-only (profile must set `"auto": false` and enable follow):
-  - `node tools/trader.mjs --run-profile --profiles tools/profiles/fdv.profiles.example.json --profile follow_only --log-to-console`
+  - `node cli.mjs --run-profile --profiles tools/profiles/dev.json --profile follow_only --log-to-console`
 - Auto + Follow:
-  - `node tools/trader.mjs --run-profile --profiles tools/profiles/fdv.profiles.example.json --profile all_bots --log-to-console`
+  - `node cli.mjs --run-profile --profiles tools/profiles/dev.json --profile all_bots --log-to-console`
 
 - Help:
   - `node tools/trader.mjs --help`

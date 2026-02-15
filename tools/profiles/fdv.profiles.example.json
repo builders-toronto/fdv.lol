@@ -1,53 +1,34 @@
 {
-  "profiles": {
-    "default": {
-      "rpcUrl": "https://solana-mainnet.core.chainstack.com/",
-      "rpcHeaders": {},
-      "auto": false,
-      "autoWalletSecret": "",
-      "recipientPub": "",
-      "stealthMode": false,
-      "tickMs": 100,
-      "budgetUi": 0.5,
-      "buyPct": 0.2,
-      "minBuySol": 0.06,
-      "maxBuySol": 0.12,
-
-      "finalPumpGateEnabled": false,
-
-      "takeProfitPct": 12,
-      "stopLossPct": 4,
-      "trailPct": 6,
-      "slippageBps": 250,
-
-      "follow": {
-        "enabled": true,
-        "targetWallet": "98T65wcMEjoNLDTJszBHGZEX75QRe8QaANXokv4yw3Mp",
-        "buyPct": 25,
-        "maxHoldMin": 5,
-        "pollMs": 1500
-      },
-      "sniper": { 
-        "enabled": false,
-        "mint": "...", 
-        "buyPct": 25, 
-        "pollMs": 1200, 
-        "slippageBps": 250, 
-        "triggerScoreSlopeMin": 0.6 
-      },
-      "volume": {
-        "enabled": false,
-        "mint": "",
-        "bots": 1,
-        "targetVolumeSol": 0,
-        "maxSlippageBps": 2000,
-        "minBuyAmountSol": 0.005,
-        "maxBuyAmountSol": 0.02,
-        "sellAmountPct": 100,
-        "holdTokens": 0,
-        "holdDelayMs": 2500,
-        "cycleDelayMs": 3000
-      }
-    }
+  "rpc": {
+    "url": "https://solana-mainnet.core.chainstack.com/",
+    "headers": {}
+  },
+  "wallet": {
+    "secret": "",
+    "recipientPub": ""
+  },
+  "jupiter": {
+    "apiKey": ""
+  },
+  "agentGaryFullAi": {
+    "enabled": false,
+    "model": "gpt-4o-mini",
+    "provider": "openai",
+    "riskLevel": "degen",
+    "fullAiControl": false,
+    "apiKey": ""
+  },
+  "auto": {
+    "enabled": true,
+    "tickMs": 1250,
+    "budgetUi": 0.5,
+    "buyPct": 0.2,
+    "minBuySol": 0.06,
+    "maxBuySol": 0.12,
+    "finalPumpGateEnabled": false,
+    "takeProfitPct": 12,
+    "stopLossPct": 4,
+    "trailPct": 6,
+    "slippageBps": 250
   }
 }
