@@ -1064,6 +1064,7 @@ function _markRpcStress(err, backoffMs = 1500) {
     const is403  = /403/.test(msg);
     const isPlan = /-32602|plan|upgrade|limit/i.test(msg);
     if (isRate || is403 || isPlan) {
+      try { __fdvCli_noteRateLimit("rpc", msg); } catch {}
       const until = now() + Math.max(300, backoffMs | 0);
       const prev = Number(window._fdvRpcBackoffUntil || 0);
       window._fdvRpcBackoffUntil = Math.max(prev, until);
@@ -2130,8 +2131,8 @@ async function _agentConfigWarmupCollect({ durationMs = AGENT_CONFIG_WARMUP_MS }
     const startTs = now();
     if (!_agentConfigWarmupStartedAt) _agentConfigWarmupStartedAt = startTs;
 
-    // Match the bot's effective tick cadence (it clamps to >= 1200ms).
-    const gapMs = Math.max(1200, Number(state?.tickMs || 1000));
+    // Match the bot's effective tick cadence (headless fast-mode can lower the floor).
+    const gapMs = Math.max(__fdvCli_tickFloorMs(), Number(state?.tickMs || 1000));
 
     log(`[AGENT GARY] config warmup: collecting ~${Math.ceil(durationMs / gapMs)} ticks (~${Math.round(durationMs/1000)}s) before autoset…`, "info");
 
@@ -6241,7 +6242,7 @@ async function focusMintAndRecord(mint, { refresh = true, ttlMs = 50, signal } =
     const nowTs = now();
     const last = Number(window._fdvFocusLast.get(mint) || 0);
     // throttle per-mint focus calls
-    if (nowTs - last < Math.max(1200, Number(state.tickMs || 2000))) return null;
+    if (nowTs - last < Math.max(__fdvCli_tickFloorMs(), Number(state.tickMs || 2000))) return null;
 
     const res = await focusMint(mint, { refresh, ttlMs, signal });
     window._fdvFocusLast.set(mint, nowTs);
@@ -7794,6 +7795,14 @@ async function tick() {
   // const endIn = state.endAt ? ((state.endAt - now())/1000).toFixed(0) : "0";
   if (!state.enabled) return;
 
+  // Headless adaptive fast-mode: recover toward faster cadence when quiet.
+  // (No-op in browser mode.)
+  try {
+    __fdvCli_maybeRecoverFastMode();
+    // If KPI feeder is enabled, allow it to restart with new adaptive params.
+    if (__fdvCli_isHeadless()) __fdvCli_startKpiFeeder().catch(() => {});
+  } catch {}
+
   // Agent-config warmup: ensure we only allow autoset config scans after ~10s of live ticks.
   // (Startup path also runs a dedicated warmup loop, but this covers any edge cases.)
   try {
@@ -7868,15 +7877,19 @@ async function tick() {
     log("Lifetime ended. Unwinding…");
     try { await sweepAllToSolAndReturn(); } catch(e){ log(`Unwind failed: ${e.message||e}`); }
     return;
-  } else if (state.endAt && now() < state.endAt) {
-    const endInSec = Math.max(0, Math.floor((state.endAt - now()) / 1000));
-    log(`Bot active. Time until end: ${endInSec}s :: hit "refresh" to reset all stats.`);
-  } else {
-    const life = Number(state.lifetimeMins || 0);
-    if (life > 0) {
-      log(`Bot active. Lifetime configured (${life}m) but timer not initialized yet.`);
+  }
+  const _cliHeadless = __fdvCli_isHeadless();
+  if (!_cliHeadless) {
+    if (state.endAt && now() < state.endAt) {
+      const endInSec = Math.max(0, Math.floor((state.endAt - now()) / 1000));
+      log(`Bot active. Time until end: ${endInSec}s :: hit "refresh" to reset all stats.`);
     } else {
-      log('Bot active. Lifetime: unlimited :: hit "refresh" to reset all stats.');
+      const life = Number(state.lifetimeMins || 0);
+      if (life > 0) {
+        log(`Bot active. Lifetime configured (${life}m) but timer not initialized yet.`);
+      } else {
+        log('Bot active. Lifetime: unlimited :: hit "refresh" to reset all stats.');
+      }
     }
   }
   if (depBalEl && state.autoWalletPub) {
@@ -7908,7 +7921,9 @@ async function tick() {
 
   try { updateStatsHeader(); } catch {}
 
-  log("Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!", "info");
+  if (!_cliHeadless) {
+    log("Follow us on twitter: https://twitter.com/fdvlol for updates and announcements!", "info");
+  }
 
   if (_buyInFlight || _inFlight || _switchingLeader) return;
 
@@ -9846,7 +9861,7 @@ async function startAutoAsync() {
       try { await sweepDustToSolAtStart(); } catch {}
     }
     if (!timer && state.enabled) {
-      timer = setInterval(tick, Math.max(1200, Number(state.tickMs || 1000)));
+      timer = setInterval(tick, Math.max(__fdvCli_tickFloorMs(), Number(state.tickMs || 1000)));
       log("Auto trading started");
 
       try {
@@ -9874,22 +9889,200 @@ function __fdvCli_isHeadless() {
   }
 }
 
+function __fdvCli_envStr(name) {
+  try {
+    if (typeof process === "undefined" || !process?.env) return "";
+    return String(process.env[name] ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function __fdvCli_envBool(name, defaultValue = false) {
+  const raw = __fdvCli_envStr(name);
+  if (!raw) return !!defaultValue;
+  if (/^(1|true|yes|y|on)$/i.test(raw)) return true;
+  if (/^(0|false|no|n|off)$/i.test(raw)) return false;
+  return !!defaultValue;
+}
+
+function __fdvCli_envNum(name, defaultValue = NaN) {
+  const raw = __fdvCli_envStr(name);
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : defaultValue;
+}
+
+function __fdvCli_fastEnabled() {
+  // Fast-mode is headless-only by design.
+  if (!__fdvCli_isHeadless()) return false;
+  // Default ON in headless CLI. Allow explicit opt-out.
+  const raw = __fdvCli_envStr("FDV_CLI_FAST");
+  if (!raw) return true;
+  return __fdvCli_envBool("FDV_CLI_FAST", true);
+}
+
+function __fdvCli__getAdaptive() {
+  try {
+    if (!__fdvCli_isHeadless()) return null;
+    const g = globalThis;
+    if (!g) return null;
+    if (!g.__fdvCliAdaptiveFast || typeof g.__fdvCliAdaptiveFast !== "object") {
+      g.__fdvCliAdaptiveFast = {
+        level: 0,
+        lastRateAt: 0,
+        lastRecoverAt: 0,
+        lastLogAt: 0,
+        rateEvents: 0,
+      };
+    }
+    return g.__fdvCliAdaptiveFast;
+  } catch {
+    return null;
+  }
+}
+
+function __fdvCli_noteRateLimit(kind = "rpc", details = "") {
+  try {
+    if (!__fdvCli_fastEnabled()) return false;
+    const st = __fdvCli__getAdaptive();
+    if (!st) return false;
+
+    const nowTs = now();
+    st.lastRateAt = nowTs;
+    st.rateEvents = Number(st.rateEvents || 0) + 1;
+
+    const maxLevel = Math.max(1, Math.min(20, Number(__fdvCli_envNum("FDV_CLI_FAST_MAX_LEVEL", 8)) || 8));
+    const bumpCooldownMs = Math.max(250, Number(__fdvCli_envNum("FDV_CLI_FAST_BUMP_COOLDOWN_MS", 1500)) || 1500);
+
+    // Prevent thrashing: only bump level occasionally.
+    const prevBumpAt = Number(st.lastBumpAt || 0);
+    if ((nowTs - prevBumpAt) >= bumpCooldownMs) {
+      st.lastBumpAt = nowTs;
+      st.level = Math.min(maxLevel, Math.max(0, (st.level | 0) + 1));
+    }
+
+    // Log (throttled)
+    const logEveryMs = Math.max(1500, Number(__fdvCli_envNum("FDV_CLI_FAST_LOG_MS", 8000)) || 8000);
+    if ((nowTs - Number(st.lastLogAt || 0)) >= logEveryMs) {
+      st.lastLogAt = nowTs;
+      try {
+        log(`[CLI FAST] rate-limit detected (kind=${String(kind || "").slice(0,24)} level=${st.level}). ${String(details || "").slice(0,120)}`, "warn");
+      } catch {}
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function __fdvCli_maybeRecoverFastMode() {
+  try {
+    if (!__fdvCli_fastEnabled()) return false;
+    const st = __fdvCli__getAdaptive();
+    if (!st) return false;
+
+    const nowTs = now();
+    const recoverEveryMs = Math.max(2000, Number(__fdvCli_envNum("FDV_CLI_FAST_RECOVER_EVERY_MS", 20000)) || 20000);
+    const quietMs = Math.max(2000, Number(__fdvCli_envNum("FDV_CLI_FAST_QUIET_MS", 25000)) || 25000);
+
+    if (st.level <= 0) return false;
+    if ((nowTs - Number(st.lastRateAt || 0)) < quietMs) return false;
+    if ((nowTs - Number(st.lastRecoverAt || 0)) < recoverEveryMs) return false;
+
+    st.lastRecoverAt = nowTs;
+    st.level = Math.max(0, (st.level | 0) - 1);
+
+    const logEveryMs = Math.max(1500, Number(__fdvCli_envNum("FDV_CLI_FAST_LOG_MS", 8000)) || 8000);
+    if ((nowTs - Number(st.lastLogAt || 0)) >= logEveryMs) {
+      st.lastLogAt = nowTs;
+      try { log(`[CLI FAST] recovering: level=${st.level} (quiet ${Math.round((nowTs - Number(st.lastRateAt || 0))/1000)}s)`, "help"); } catch {}
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function __fdvCli_fastLevel() {
+  try {
+    const st = __fdvCli__getAdaptive();
+    return st ? Math.max(0, Number(st.level || 0) | 0) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function __fdvCli_tickFloorMs() {
+  // Browser mode must remain conservative (CORS + shared infra), so only loosen
+  // the clamp when running headless under Node.
+  const baseDef = __fdvCli_fastEnabled() ? 200 : 1200;
+  const base = __fdvCli_envNum("FDV_CLI_TICK_FLOOR_MS", baseDef);
+  const baseMs = Math.max(100, Number.isFinite(base) ? base : baseDef);
+
+  // Adaptive penalty: each level adds 200ms (level 5 ~= old 1200ms floor).
+  const stepMs = Math.max(0, Number(__fdvCli_envNum("FDV_CLI_FAST_STEP_MS", 200)) || 200);
+  const lvl = __fdvCli_fastEnabled() ? __fdvCli_fastLevel() : 0;
+  const capMs = Math.max(1200, Number(__fdvCli_envNum("FDV_CLI_TICK_FLOOR_CAP_MS", 5000)) || 5000);
+  return Math.min(capMs, baseMs + lvl * stepMs);
+}
+
+function __fdvCli_kpiMinIntervalMs() {
+  const base = __fdvCli_fastEnabled() ? 250 : 2000;
+  const lvl = __fdvCli_fastEnabled() ? __fdvCli_fastLevel() : 0;
+  const step = Math.max(0, Number(__fdvCli_envNum("FDV_CLI_KPI_STEP_MS", 250)) || 250);
+  const cap = Math.max(2000, Number(__fdvCli_envNum("FDV_CLI_KPI_MIN_CAP_MS", 10_000)) || 10_000);
+  return Math.min(cap, Math.max(100, base + lvl * step));
+}
+
+function __fdvCli_kpiIntervalMs() {
+  const base = __fdvCli_fastEnabled() ? 750 : 10_000;
+  const lvl = __fdvCli_fastEnabled() ? __fdvCli_fastLevel() : 0;
+  const step = Math.max(0, Number(__fdvCli_envNum("FDV_CLI_KPI_INTERVAL_STEP_MS", 500)) || 500);
+  const cap = Math.max(2000, Number(__fdvCli_envNum("FDV_CLI_KPI_INTERVAL_CAP_MS", 20_000)) || 20_000);
+  return Math.min(cap, Math.max(__fdvCli_kpiMinIntervalMs(), base + lvl * step));
+}
+
 let _cliKpiFeederStop = null;
+let _cliKpiFeederCfg = null;
 
 async function __fdvCli_startKpiFeeder() {
   try {
     if (!_isNodeLike() || !__fdvCli_isHeadless()) return false;
-    if (typeof _cliKpiFeederStop === "function") return true;
+    const fast = __fdvCli_fastEnabled();
 
-    const intervalMs = Math.max(2000, Number(state.kpiFeedIntervalMs || 10_000));
-    const topN = Math.max(12, Number(state.kpiFeedTopN || 60));
+    const minIntervalMs = __fdvCli_kpiMinIntervalMs();
+    const intervalMs = Math.max(minIntervalMs, Number(state.kpiFeedIntervalMs || __fdvCli_kpiIntervalMs()));
+    const topNDefault = fast ? 20 : 60;
+    const topN = Math.max(12, Number(state.kpiFeedTopN || topNDefault));
+
+    const desired = { intervalMs, minIntervalMs, topN };
+    const same = _cliKpiFeederCfg
+      && Number(_cliKpiFeederCfg.intervalMs) === Number(desired.intervalMs)
+      && Number(_cliKpiFeederCfg.minIntervalMs) === Number(desired.minIntervalMs)
+      && Number(_cliKpiFeederCfg.topN) === Number(desired.topN);
+
+    // If already running with the same parameters, keep it.
+    if (typeof _cliKpiFeederStop === "function" && same) return true;
+
+    // Otherwise restart with the new parameters.
+    try { if (typeof _cliKpiFeederStop === "function") _cliKpiFeederStop(); } catch {}
+    _cliKpiFeederStop = null;
+    _cliKpiFeederCfg = desired;
 
     const { startKpiFeeder } = await import("../cli/helpers/kpiFeeder.node.js");
-    _cliKpiFeederStop = startKpiFeeder({ log, intervalMs, topN });
+    _cliKpiFeederStop = startKpiFeeder({
+      log,
+      intervalMs,
+      topN,
+      minIntervalMs,
+      onRateLimit: (e) => { try { __fdvCli_noteRateLimit("kpi", e?.message || e || ""); } catch {} },
+    });
     return true;
   } catch (e) {
     try { log(`KPI feeder failed to start: ${e?.message || e}`, "warn"); } catch {}
     _cliKpiFeederStop = null;
+    _cliKpiFeederCfg = null;
     return false;
   }
 }
@@ -9899,6 +10092,7 @@ function __fdvCli_stopKpiFeeder() {
     if (typeof _cliKpiFeederStop === "function") _cliKpiFeederStop();
   } catch {}
   _cliKpiFeederStop = null;
+  _cliKpiFeederCfg = null;
 }
 
 export function __fdvCli_applyProfile(profile = {}) {
@@ -9983,7 +10177,7 @@ export async function __fdvCli_start({ enable = true } = {}) {
     }
 
     if (!timer && state.enabled) {
-      timer = setInterval(tick, Math.max(1200, Number(state.tickMs || 1000)));
+      timer = setInterval(tick, Math.max(__fdvCli_tickFloorMs(), Number(state.tickMs || 1000)));
       log("Auto trading started (headless)");
     }
     try { startFastObserver(); } catch {}
@@ -12383,7 +12577,7 @@ export function initTraderWidget(container = document.body) {
   warmingEl.value = state.rideWarming ? "yes" : "no";
   startBtn.disabled = !!state.enabled;
   stopBtn.disabled = !state.enabled;
-  if (state.enabled && !timer) timer = setInterval(tick, Math.max(1200, Number(state.tickMs || 1000)));
+  if (state.enabled && !timer) timer = setInterval(tick, Math.max(__fdvCli_tickFloorMs(), Number(state.tickMs || 1000)));
 
   if (state.autoWalletPub) {
     fetchSolBalance(state.autoWalletPub).then(b => { depBalEl.value = `${b.toFixed(4)} SOL`; }).catch(()=>{});

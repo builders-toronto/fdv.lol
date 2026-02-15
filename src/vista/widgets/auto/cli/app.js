@@ -78,6 +78,7 @@ function usage() {
     "  --quick-start            Interactive setup: generates a new wallet, waits for funding, then starts a bot with defaults.",
     "    --rpc-url <url>         RPC URL to use (or set FDV_RPC_URL). Defaults to SOLANA_RPC_URL/mainnet.",
     "    --rpc-headers <json>    Optional JSON headers for RPC (or set FDV_RPC_HEADERS).",
+    "    --jup-api-key <val>     Jupiter API key (or set JUP_API_KEY / FDV_JUP_API_KEY).",
     "    --bot <name>            Which bot to start (auto|follow|hold|volume|sniper|flame).",
     "  --flame                  Starts Sniper in Flame mode (auto-picks mint from pumping leaders).",
     "    --rpc-url <url>         RPC URL to use (or set FDV_RPC_URL). Defaults to SOLANA_RPC_URL/mainnet.",
@@ -889,9 +890,9 @@ async function _jupSwapSellToSol({ conn, signerKp, mintStr, amountRawStr, slippa
   const amount = String(amountRawStr || "").trim();
   if (!inputMint || !amount || amount === "0") return { ok: false, code: "NO_AMOUNT", msg: "missing amount" };
 
-  const base = String(process?.env?.FDV_JUP_BASE_URL || "https://api.jup.ag").trim() || "https://api.jup.ag";
-  const apiKey = String(process?.env?.FDV_JUP_API_KEY || process?.env?.JUP_API_KEY || "").trim();
-  if (!apiKey) throw new Error("Missing Jupiter API key. Set FDV_JUP_API_KEY (get one at https://portal.jup.ag/)");
+  const base = String(process?.env?.JUP_API_BASE || process?.env?.FDV_JUP_API_BASE || process?.env?.FDV_JUP_BASE_URL || "https://api.jup.ag").trim() || "https://api.jup.ag";
+  const apiKey = String(_readJupApiKeyFromEnv() || _readJupApiKeyFromStorage() || "").trim();
+  if (!apiKey) throw new Error("Missing Jupiter API key. Use --jup-api-key, set JUP_API_KEY, or run --quick-start to configure.");
   const q = new URL(`${base.replace(/\/+$/, "")}/swap/v1/quote`);
   q.searchParams.set("inputMint", inputMint);
   q.searchParams.set("outputMint", outputMint);
@@ -1244,7 +1245,7 @@ function _lsKeyForProvider(provider) {
   return "fdv_openai_key";
 }
 
-function applyAgentGaryFullAiToStorage({ provider, model, riskLevel, apiKey } = {}) {
+function applyAgentGaryFullAiToStorage({ provider, model, riskLevel, apiKey, fullAiControl } = {}) {
   try {
     if (typeof localStorage === "undefined") return false;
     const p = String(provider || "").trim().toLowerCase() || "openai";
@@ -1257,7 +1258,8 @@ function applyAgentGaryFullAiToStorage({ provider, model, riskLevel, apiKey } = 
     localStorage.setItem("fdv_agent_risk", rl);
     localStorage.setItem("fdv_llm_provider", p);
     localStorage.setItem("fdv_llm_model", m);
-    localStorage.setItem("fdv_agent_full_control", "true");
+    const full = typeof fullAiControl === "boolean" ? fullAiControl : true;
+    localStorage.setItem("fdv_agent_full_control", full ? "true" : "false");
     if (k) localStorage.setItem(_lsKeyForProvider(p), k);
     return true;
   } catch {
@@ -1265,13 +1267,14 @@ function applyAgentGaryFullAiToStorage({ provider, model, riskLevel, apiKey } = 
   }
 }
 
-function applyAgentGaryFullAiOverrides({ provider, model, riskLevel, apiKey } = {}) {
+function applyAgentGaryFullAiOverrides({ provider, model, riskLevel, apiKey, fullAiControl } = {}) {
   try {
     const p = String(provider || "").trim().toLowerCase() || "openai";
     const m = String(model || "").trim();
     const r = String(riskLevel || "safe").trim().toLowerCase();
     const rl = (r === "safe" || r === "medium" || r === "degen") ? r : "safe";
     const k = String(apiKey || "").trim();
+    const full = typeof fullAiControl === "boolean" ? fullAiControl : undefined;
 
     if (!globalThis.__fdvAgentOverrides || typeof globalThis.__fdvAgentOverrides !== "object") {
       globalThis.__fdvAgentOverrides = {};
@@ -1287,6 +1290,7 @@ function applyAgentGaryFullAiOverrides({ provider, model, riskLevel, apiKey } = 
       llmApiKey: k,
       apiKey: k,
       openaiApiKey: p === "openai" ? k : "",
+      fullAiControl: full,
     };
     return true;
   } catch {
@@ -1297,37 +1301,75 @@ function applyAgentGaryFullAiOverrides({ provider, model, riskLevel, apiKey } = 
 function configureAutoProfileForRisk(riskLevel, existing = {}) {
   const out = existing && typeof existing === "object" ? { ...existing } : {};
   out.enabled = true;
-  const r = String(riskLevel || "safe").trim().toLowerCase();
-  const rl = (r === "safe" || r === "medium" || r === "degen") ? r : "safe";
 
-  if (rl === "safe") {
-    out.buyPct = 0.15;
-    out.maxBuySol = 1;
-    out.slippageBps = 220;
-    out.takeProfitPct = 10;
-    out.stopLossPct = 4;
-    out.coolDownSecsAfterBuy = 5;
-    out.minHoldSecs = 60;
-    out.maxHoldSecs = 120;
-  } else if (rl === "medium") {
-    out.buyPct = 0.22;
-    out.maxBuySol = 1.25;
-    out.slippageBps = 300;
-    out.takeProfitPct = 14;
-    out.stopLossPct = 6;
-    out.coolDownSecsAfterBuy = 3;
-    out.minHoldSecs = 45;
-    out.maxHoldSecs = 90;
-  } else {
-    out.buyPct = 0.32;
-    out.maxBuySol = 2;
-    out.slippageBps = 450;
-    out.takeProfitPct = 22;
-    out.stopLossPct = 12;
-    out.coolDownSecsAfterBuy = 2;
-    out.minHoldSecs = 30;
-    out.maxHoldSecs = 75;
-  }
+  // Core sizing / lifecycle
+  out.lifetimeMins = 0;
+  out.buyPct = 0.5;
+  out.minBuySol = 0.06;
+  out.maxBuySol = 1;
+
+  // Edge / exits
+  out.minNetEdgePct = -2;
+  out.edgeSafetyBufferPct = 0.1;
+  out.takeProfitPct = 10;
+  out.stopLossPct = 12;
+  out.trailPct = 5;
+  out.slippageBps = 250;
+
+  // Multi-buy / modes
+  out.allowMultiBuy = true;
+  out.holdUntilLeaderSwitch = false;
+  out.rideWarming = true;
+  out.stealthMode = false;
+
+  // “Gross TP base goal (%)” (stored as minProfitToTrailPct in the trader state)
+  out.minProfitToTrailPct = 0.5;
+
+  // Light entry
+  out.lightEntryEnabled = true;
+  out.lightEntryFraction = 0.7;
+  out.lightTopUpArmMs = 30000;
+  out.lightTopUpMinChg5m = 1.5;
+  out.lightTopUpMinChgSlope = 0.02;
+  out.lightTopUpMinScSlope = 0.04;
+
+  // Warming
+  out.warmingDecayPctPerMin = 0.03;
+  out.warmingMinProfitPct = 0.02;
+  out.warmingMinProfitFloorPct = 0.005;
+  out.warmingDecayDelaySecs = 120;
+  out.warmingAutoReleaseSecs = 0;
+  out.warmingMaxLossPct = 50;
+  out.warmingMaxLossWindowSecs = 120;
+  out.warmingPrimedConsec = 2;
+  out.warmingEdgeMinExclPct = null;
+
+  // Rebound
+  out.reboundGateEnabled = true;
+  out.reboundMinScore = 4;
+  out.reboundLookbackSecs = 180;
+
+  // Friction snap
+  out.fricSnapEpsSol = 0.002;
+
+  // Final pump gate (MUST default OFF in the CLI)
+  out.finalPumpGateEnabled = false;
+  out.finalPumpGateMinStart = 1;
+  out.finalPumpGateDelta = 0.5;
+  out.finalPumpGateWindowMs = 10000;
+
+  // Entry simulation
+  out.entrySimMode = "enforce";
+  out.maxEntryCostPct = 3;
+  out.entrySimHorizonSecs = 600;
+  out.entrySimMinWinProb = 0.8;
+  out.entrySimMinTerminalProb = 0.9;
+  out.entrySimSigmaFloorPct = 0.05;
+  out.entrySimMuLevelWeight = 0.8;
+
+  // Holds
+  out.minHoldSecs = 6700;
+  out.maxHoldSecs = 0;
 
   return out;
 }
@@ -1336,7 +1378,7 @@ async function configureAgentGaryFullAiWizard(existing = {}) {
   const ex = existing && typeof existing === "object" ? existing : {};
 
   console.log("\nAuto mode: Agent Gary (full AI) setup (required)");
-  console.log("You will pick: model, risk, and API key.\n");
+  console.log("You will pick: model, risk, Full AI toggle, Final gate toggle, and API key.\n");
 
   const supportedModels = [
     "gary-predictions-v1",
@@ -1378,6 +1420,44 @@ async function configureAgentGaryFullAiWizard(existing = {}) {
   if (!riskPick) return { canceled: true };
   const riskLevel = String(riskPick).trim().toLowerCase();
 
+  // Full AI control: gives the agent authority to bypass certain policy gates.
+  // Default to existing value (or localStorage) when available.
+  let fullAiControlDefault = false;
+  try {
+    if (typeof ex.fullAiControl === "boolean") {
+      fullAiControlDefault = ex.fullAiControl;
+    } else {
+      const raw = String(globalThis?.localStorage?.getItem?.("fdv_agent_full_control") || "").trim().toLowerCase();
+      if (raw === "true" || raw === "1" || raw === "yes" || raw === "on") fullAiControlDefault = true;
+      if (raw === "false" || raw === "0" || raw === "no" || raw === "off") fullAiControlDefault = false;
+    }
+  } catch {}
+
+  const fullAiPick = await promptChoice(
+    "Enable Full AI control?",
+    ["no", "yes"],
+    { defaultIndex: fullAiControlDefault ? 1 : 0, allowCancel: true }
+  );
+  if (!fullAiPick) return { canceled: true };
+  const fullAiControl = String(fullAiPick).trim().toLowerCase() === "yes";
+
+  // Final pump gate: do NOT default this ON.
+  const finalGatePick = await promptChoice(
+    "Enable Final gate?",
+    ["no", "yes"],
+    { defaultIndex: 0, allowCancel: true }
+  );
+  if (!finalGatePick) return { canceled: true };
+  const finalGateEnabled = String(finalGatePick).trim().toLowerCase() === "yes";
+  let finalGateDelta = 0.5;
+  if (finalGateEnabled) {
+    finalGateDelta = await promptNumber("Final gate Δscore", {
+      defaultValue: 0.5,
+      min: 0,
+      max: 50,
+    });
+  }
+
   let apiKey = "";
   while (true) {
     const raw = await promptLine(`${provider} API key (paste; input hidden not supported)`, { defaultValue: "" });
@@ -1395,8 +1475,10 @@ async function configureAgentGaryFullAiWizard(existing = {}) {
 
   return {
     canceled: false,
-    agent: { enabled: true, llmProvider: provider, llmModel: model, riskLevel },
+    agent: { enabled: true, llmProvider: provider, llmModel: model, riskLevel, fullAiControl },
     apiKey,
+    finalGateEnabled,
+    finalGateDelta,
   };
 }
 
@@ -1689,6 +1771,92 @@ async function requireRpcFromArgs({ flags, getValue }) {
   return { rpcUrl: finalUrl, rpcHeaders: rpcHeaders && typeof rpcHeaders === "object" ? rpcHeaders : null };
 }
 
+function _readJupApiKeyFromStorage() {
+  try {
+    return String(globalThis?.localStorage?.getItem?.("fdv_jup_api_key") || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function _readJupApiKeyFromEnv() {
+  try {
+    const env = (typeof process !== "undefined" && process && process.env) ? process.env : {};
+    const pick = (...names) => {
+      for (const n of names) {
+        const v = String(env?.[n] || "").trim();
+        if (v) return v;
+      }
+      return "";
+    };
+    return pick("JUP_API_KEY", "FDV_JUP_API_KEY", "jup_api_key");
+  } catch {
+    return "";
+  }
+}
+
+function getJupApiKeyFromArgsEnvOrStorage({ getValue } = {}) {
+  try {
+    const fromArg = typeof getValue === "function" ? String(getValue("--jup-api-key") || "").trim() : "";
+    if (fromArg) return { key: fromArg, source: "arg" };
+
+    const fromEnv = _readJupApiKeyFromEnv();
+    if (fromEnv) return { key: fromEnv, source: "env" };
+
+    const fromLs = _readJupApiKeyFromStorage();
+    if (fromLs) return { key: fromLs, source: "localStorage" };
+
+    return { key: "", source: "" };
+  } catch {
+    return { key: "", source: "" };
+  }
+}
+
+function applyJupApiKeyToStorage(jupApiKey) {
+  try {
+    const k = String(jupApiKey || "").trim();
+    if (!k) return false;
+    try { localStorage.setItem("fdv_jup_api_key", k); } catch {}
+    // Keep node-only helpers working even if they read env.
+    try { if (process?.env) process.env.JUP_API_KEY = k; } catch {}
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureJupApiKeyInteractive({ getValue, allowSkip = false } = {}) {
+  const cur = getJupApiKeyFromArgsEnvOrStorage({ getValue });
+  if (cur?.key) {
+    try { applyJupApiKeyToStorage(cur.key); } catch {}
+    return String(cur.key || "").trim();
+  }
+
+  console.log("\nJupiter API key setup:");
+  console.log("Jupiter now requires an API key for quote/swap endpoints.");
+  console.log("Get one at: https://portal.jup.ag/");
+  console.log("\nIMPORTANT: Treat this like a secret (do not share it).\n");
+
+  while (true) {
+    const raw = await promptLine(`Jupiter API key${allowSkip ? " (Enter = skip)" : ""} (paste; input hidden not supported)`, { defaultValue: "" });
+    const v = String(raw || "").trim();
+    if (!v) {
+      if (allowSkip) {
+        console.log("\nSkipping Jupiter API key. Swaps/quotes may fail until you set it (use --jup-api-key or env JUP_API_KEY).\n");
+        return "";
+      }
+      console.log("API key is required. Paste it or type 'q' to cancel.");
+      continue;
+    }
+    if (v.toLowerCase() === "q" || v.toLowerCase() === "quit" || v.toLowerCase() === "cancel") {
+      if (allowSkip) return "";
+      throw new Error("missing Jupiter API key");
+    }
+    applyJupApiKeyToStorage(v);
+    return v;
+  }
+}
+
 async function getSolBalanceUi({ rpcUrl, rpcHeaders, pubkey }) {
   await ensureSolanaWeb3Shim();
   const web3 = globalThis?.window?.solanaWeb3 || globalThis?.solanaWeb3;
@@ -1811,7 +1979,7 @@ async function startBotWithDefaults({ bot, rpcUrl, rpcHeaders, autoWalletSecret,
     const wiz = await configureAgentGaryFullAiWizard(existingAgent);
     if (wiz?.canceled) return { status: "menu" };
 
-    // Persist non-secret selections in the temp profile (provider/model/risk). Do NOT persist API keys.
+    // Persist non-secret selections in the temp profile (provider/model/risk/fullAiControl). Do NOT persist API keys.
     try {
       if (profileSink && typeof profileSink === "object") {
         profileSink.agent = { ...(profileSink.agent && typeof profileSink.agent === "object" ? profileSink.agent : {}), ...(wiz.agent || {}) };
@@ -1823,6 +1991,15 @@ async function startBotWithDefaults({ bot, rpcUrl, rpcHeaders, autoWalletSecret,
     applyAgentGaryFullAiToStorage({ ...(wiz.agent || {}), apiKey: wiz.apiKey });
 
     const configured = configureAutoProfileForRisk(wiz?.agent?.riskLevel || "safe", { ...(profile.auto || {}), ...(profile.trader || {}) });
+    // Apply wizard-chosen final gate toggle/threshold.
+    try {
+      if (typeof wiz?.finalGateEnabled === "boolean") {
+        configured.finalPumpGateEnabled = !!wiz.finalGateEnabled;
+        configured.finalPumpGateMinStart = 1;
+        configured.finalPumpGateDelta = Number.isFinite(Number(wiz.finalGateDelta)) ? Number(wiz.finalGateDelta) : 0.5;
+        configured.finalPumpGateWindowMs = 10000;
+      }
+    } catch {}
     profile.auto = configured;
     try {
       if (profileSink && typeof profileSink === "object") {
@@ -2866,6 +3043,16 @@ async function quickStart(argv = []) {
       try { applyGlobalRpcToStorage({ rpcUrl, rpcHeaders }); } catch {}
     }
   } catch {}
+
+  // Quick-start Jupiter: prompt early so swap/quote endpoints are ready.
+  // This stores into the shared setting (fdv_jup_api_key) used across the widget.
+  try {
+    await ensureJupApiKeyInteractive({ getValue, allowSkip: false });
+  } catch (e) {
+    const msg = String(e?.message || e || "");
+    if (msg) console.error(msg);
+    throw e;
+  }
 
   // If the user didn't provide an RPC explicitly, call out the default being used.
   try {
@@ -3945,6 +4132,7 @@ export async function runAutoTraderCli(argv = []) {
     ensureNodeShims();
     await ensureSolanaWeb3Shim();
     await ensureBs58Shim();
+    await ensureJupApiKeyInteractive({ getValue, allowSkip: false });
     const { rpcUrl, rpcHeaders } = await requireRpcFromArgs({ flags, getValue });
     const secret = String(getValue("--wallet-secret") || process?.env?.FDV_WALLET_SECRET || "").trim();
     if (!secret) {
@@ -3979,6 +4167,8 @@ export async function runAutoTraderCli(argv = []) {
   }
 
   if (flags.has("--run-profile")) {
+    ensureNodeShims();
+    await ensureJupApiKeyInteractive({ getValue, allowSkip: false });
     await runProfile(argv);
     return 0;
   }
