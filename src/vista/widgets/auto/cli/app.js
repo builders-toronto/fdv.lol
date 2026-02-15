@@ -3746,6 +3746,15 @@ async function runProfile(argv) {
       if (profile.autoWalletSecret) apply.autoWalletSecret = profile.autoWalletSecret;
       if (profile.recipientPub) apply.recipientPub = profile.recipientPub;
     }
+
+    // Headless profiles commonly omit these; default ON for parity with the interactive wizard.
+    // Do not override explicit false.
+    if (!("allowMultiBuy" in apply)) apply.allowMultiBuy = true;
+    if (!("rideWarming" in apply)) apply.rideWarming = true;
+
+    // CLI mode must run indefinitely (no lifetime timer) until the user stops the process.
+    apply.lifetimeMins = 0;
+    apply.endAt = 0;
     autoMod.__fdvCli_applyProfile(apply);
 
     _startCliMintReconciler({
