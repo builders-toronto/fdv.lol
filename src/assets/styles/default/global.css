@@ -3090,10 +3090,9 @@ details.fdv-auto-wrap { overflow: hidden; }
   }
 }
 
-/* Library */
 .fdv-lib-btn {
   display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px;
-  height: 36px; padding: 0 10px; border-radius: 10px;
+  height: 40px; padding: 0 10px; border-radius: 10px;
   background: transparent; border: none; color: var(--fdv-text, var(--text)); font-weight: 700;
   cursor: pointer; transition: filter .15s ease, border-color .15s ease, background .15s ease;
 }
