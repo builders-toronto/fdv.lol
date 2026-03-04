@@ -175,8 +175,8 @@
   display: flex;
   flex-direction: row;
   justify-content: space-between;
-  /* background: var(--card); */
-  border: 1px solid rgba(26, 255, 213, .55);
+  background: rgba(10, 20, 16, 0.31);
+  border: none;
   margin-top: 14px; 
   margin-bottom: 10px;
 }
@@ -606,6 +606,11 @@ svg.bars rect { fill: rgba(123,241,255,.8) }
     grid-row: 2;
     justify-self: start;
     align-self: end;
+}
+
+.backBox .btn {
+  border: none !important;
+  background: transparent !important;
 }
 
 .extraFeat {
