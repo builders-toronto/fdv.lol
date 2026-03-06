@@ -12,6 +12,7 @@ export function createAgentDecisionPolicy({
     medium: 10,
     degen: 20,
   });
+  const _pendingStopLossConfirmByMint = new Map();
   let _evolveOutcomes;
   const _getEvolveOutcomes = () => {
     try {
@@ -246,9 +247,10 @@ export function createAgentDecisionPolicy({
       const d = res.decision;
 
       const action = String(d.action || "").trim().toLowerCase();
+      try {
+        if (mintStr && action !== "sell_all") _pendingStopLossConfirmByMint.delete(mintStr);
+      } catch {}
 
-      // Timed long-hold: let the bot continue monitoring PnL/targets normally,
-      // and re-check with Gary after holdSeconds.
       if (action === "long_hold") {
         try {
           const hsRaw = Number(d.holdSeconds ?? d.holdSecs ?? d?.hold?.seconds ?? d?.hold?.secs);
@@ -500,6 +502,77 @@ export function createAgentDecisionPolicy({
       }
 
       if (_isSellAllAction(action)) {
+        // Anti-whipsaw guard: for non-urgent stop-loss exits, require a short
+        // persistence window before executing. This avoids one-tick quote shocks
+        // from forcing immediate full exits.
+        try {
+          const hardExit = !!(
+            ctx?.forceRug ||
+            ctx?.forcePumpDrop ||
+            ctx?.forceExpire ||
+            ctx?.isFastExit ||
+            ctx?.decision?.hardStop ||
+            !!hardUrg ||
+            _isSystemHardExit(ctx?.decision)
+          );
+
+          const pnl = Number.isFinite(ctx?.pnlNetPct) ? Number(ctx?.pnlNetPct) : Number(ctx?.pnlPct);
+          const slPct = Math.max(0, Number(ctx?.pos?.slPct ?? ctx?.agentSignals?.cfg?.stopLossPct ?? state?.stopLossPct ?? 0));
+          const reasonTxt = String(d.reason || "");
+          const reasonLooksLikeStop = /(stop\s*loss|\bsl\b|breach|pnlnetpct)/i.test(reasonTxt);
+          const stopBreached = Number.isFinite(pnl) && slPct > 0 && pnl <= -slPct;
+          const candidateStopExit = reasonLooksLikeStop || stopBreached;
+
+          if (!hardExit && mintStr && candidateStopExit && Number.isFinite(pnl) && slPct > 0 && stopBreached) {
+            const confirmMs = Math.max(0, Number(state?.agentStopLossConfirmMs ?? 2500));
+            const confirmWindowMs = Math.max(confirmMs, Number(state?.agentStopLossConfirmWindowMs ?? 15000));
+            const deepBypassPct = Math.max(slPct + 6, Number(state?.agentStopLossDeepBypassPct ?? 20));
+            const severeLoss = Math.abs(pnl) >= deepBypassPct;
+
+            if (!severeLoss && confirmMs > 0) {
+              const prev = _pendingStopLossConfirmByMint.get(mintStr);
+              const ageMs = prev ? (nowTs - Number(prev.firstAt || nowTs)) : 0;
+
+              if (!prev || ageMs > confirmWindowMs) {
+                _pendingStopLossConfirmByMint.set(mintStr, {
+                  firstAt: nowTs,
+                  firstPnl: pnl,
+                  lastAt: nowTs,
+                  lastPnl: pnl,
+                  slPct,
+                });
+                ctx.decision = {
+                  action: "none",
+                  reason: `agent-stoploss-pending pnl=${pnl.toFixed(2)}%<=-${slPct.toFixed(2)}%`,
+                };
+                try { _log(`sell_all deferred (stop-loss confirm start pnl=${pnl.toFixed(2)}% sl=${slPct.toFixed(2)}% wait=${confirmMs}ms)`); } catch {}
+                return;
+              }
+
+              _pendingStopLossConfirmByMint.set(mintStr, {
+                ...prev,
+                lastAt: nowTs,
+                lastPnl: pnl,
+                slPct,
+              });
+
+              if (ageMs < confirmMs) {
+                ctx.decision = {
+                  action: "none",
+                  reason: `agent-stoploss-pending ${Math.max(0, confirmMs - ageMs)}ms`,
+                };
+                try { _log(`sell_all deferred (stop-loss confirm pending ${Math.max(0, confirmMs - ageMs)}ms)`); } catch {}
+                return;
+              }
+
+              _pendingStopLossConfirmByMint.delete(mintStr);
+              try { _log(`stop-loss confirm passed (pnl=${pnl.toFixed(2)}% sl=${slPct.toFixed(2)}%)`); } catch {}
+            }
+          } else if (mintStr) {
+            _pendingStopLossConfirmByMint.delete(mintStr);
+          }
+        } catch {}
+
         ctx.decision = {
           action: "sell_all",
           reason: `agent-sell ${String(d.reason || "")}`.trim(),
