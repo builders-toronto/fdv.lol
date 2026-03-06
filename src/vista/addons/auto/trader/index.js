@@ -75,6 +75,7 @@ import { createMintLockStore } from "../lib/stores/mintLockStore.js";
 import { createVolatilityGuardPolicy } from "../lib/sell/policies/volatilityGuard.js";
 import { createQuoteAndEdgePolicy } from "../lib/sell/policies/quoteAndEdge.js";
 import { createFastExitPolicy } from "../lib/sell/policies/fastExit.js";
+import { createFastDropCheckPolicy } from "../lib/sell/policies/fastDropCheck.js";
 import { createProfitLockPolicy } from "../lib/sell/policies/profitLock.js";
 import { createFallbackSellPolicy } from "../lib/sell/policies/fallbackSell.js";
 import { createForceFlagDecisionPolicy } from "../lib/sell/policies/forceFlagDecision.js";
@@ -1315,6 +1316,16 @@ const quoteAndEdgePolicy = createQuoteAndEdgePolicy({
 const fastExitPolicy = createFastExitPolicy({
   log,
   checkFastExitTriggers,
+});
+
+const fastDropCheck = createFastDropCheckPolicy({
+  getState: () => state,
+  getRugSignalForMint,
+  rugForceSellSeverity: RUG_FORCE_SELL_SEVERITY,
+  normBadge,
+  getLeaderSeries,
+  slope3pm,
+  clamp: _clamp,
 });
 
 const profitLockPolicy = createProfitLockPolicy({
@@ -5010,10 +5021,10 @@ function isMintBlacklisted(mint) {
 
 function normBadge(b) {
   const s = String(b || "").toLowerCase();
-  if (s.includes("pumping")) return "pumping"; //// "🔥 Pumping" | "Warming" | "Calm"
-  if (s.includes("warming")) {
-    return "warming";
-  }
+  if (s.includes("pumping")) return "pumping"; //// "🔥 Pumping" | "Cooling" | "Warming" | "Calm"
+  if (s.includes("cooling")) return "cooling";
+  if (s.includes("warming")) return "warming";
+  if (s.includes("calm")) return "calm";
   return "calm";
 }
 
@@ -5022,7 +5033,7 @@ function markPumpDropBan(mint, ms = PUMP_TO_CALM_BAN_MS) {
   if (!window._fdvPumpDropBan) window._fdvPumpDropBan = new Map();
   const until = now() + Math.max(60_000, ms|0);
   window._fdvPumpDropBan.set(mint, until);
-  try { log(`Pump->Calm ban set for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`); } catch {}
+  try { log(`Pump->Cooling ban set for ${mint.slice(0,4)}… until ${new Date(until).toLocaleTimeString()}`); } catch {}
 }
 
 function isPumpDropBanned(mint) {
@@ -5044,7 +5055,7 @@ function recordBadgeTransition(mint, badge) {
   if (prevNorm !== curNorm) {            
     try { log(`Badge for ${mint.slice(0,4)}…: ${prevNorm} -> ${curNorm}`); } catch {}
   }
-  if (prevNorm === "pumping" && curNorm === "calm") {
+  if (prevNorm === "pumping" && curNorm === "cooling") {
     markPumpDropBan(mint, PUMP_TO_CALM_BAN_MS);
   }
 } 
@@ -6958,44 +6969,6 @@ function shouldSell(pos, curSol, nowTs) {
   }
 
   return { action: "none" };
-}
-
-function fastDropCheck(mint, pos) {
-  try {
-    const sig = getRugSignalForMint(mint);
-
-    const sev = Number(sig?.sev ?? 0);
-    if (sig?.rugged && sev >= RUG_FORCE_SELL_SEVERITY) {
-      return { trigger: true, reason: `rug sev=${sev.toFixed(2)}`, sev };
-    }
-
-    const badge = String(sig?.badge || "").toLowerCase();
-    if (badge.includes("calm")) {
-      const sz = Number(pos.sizeUi || 0);
-      const curSol = Number(pos.lastQuotedSol || 0);
-      if (sz > 0 && curSol > 0 && Number(pos.hwmPx || 0) > 0) {
-        const pxNow = curSol / sz;
-        const ddPct = ((pos.hwmPx - pxNow) / Math.max(1e-12, pos.hwmPx)) * 100;
-        if (ddPct >= Math.max(1.5, Number(state.observerDropTrailPct || 2.5))) {
-          return { trigger: true, reason: "pump->calm drawdown", sev: 1 };
-        }
-      }
-    }
-
-    const series = getLeaderSeries(mint, 3);
-    if (series && series.length >= 3) {
-      const a = series[0], c = series[series.length - 1];
-      const scSlopeMin = _clamp(slope3pm(series, "pumpScore"), -20, 20);
-      const chgSlopeMin= _clamp(slope3pm(series, "chg5m"),    -60, 60);
-      const passChg    = c.chg5m <= a.chg5m;
-      const passScore  = c.pumpScore <= a.pumpScore * 0.97;
-      if (passChg && passScore && (scSlopeMin < 0 || chgSlopeMin < 0)) {
-			// Momentum drops are informational only (used for risk/rug context), not exit triggers.
-			return { trigger: false, reason: "momentum drop (3/5)", sev: 0.55, momentum: true };
-      }
-    }
-  } catch {}
-  return { trigger: false };
 }
 
 function startFastObserver() {
