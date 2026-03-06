@@ -89,7 +89,11 @@ export function createForceFlagDecisionPolicy({ log, getState }) {
       if (inMinHold) {
         try { log(`Min-hold active; suppressing pump-drop force sell for ${ctx.mint.slice(0,4)}…`); } catch {}
       } else {
-        ctx.decision = { action: "sell_all", reason: "pump->calm" };
+        if (agentRisk === "degen" && Number.isFinite(pnlNetPct) && pnlNetPct > -Math.max(stopLossPct + 2, 10)) {
+          ctx.decision = { action: "sell_partial", pct: 35, reason: "pump->cooling de-risk" };
+        } else {
+          ctx.decision = { action: "sell_all", reason: "pump->cooling" };
+        }
       }
     } else if (ctx.forceObserverDrop) {
       const obsReason = String(ctx?.observerReason || "observer detection system");
@@ -119,7 +123,11 @@ export function createForceFlagDecisionPolicy({ log, getState }) {
         return;
       }
 
-      ctx.decision = { action: "sell_all", reason: obsReason };
+      if (agentRisk === "degen" && Number.isFinite(pnlNetPct) && pnlNetPct > -Math.max(stopLossPct + 2, 10)) {
+        ctx.decision = { action: "sell_partial", pct: 35, reason: `${obsReason} de-risk` };
+      } else {
+        ctx.decision = { action: "sell_all", reason: obsReason };
+      }
     } else if (ctx.forceExpire && (!ctx.decision || ctx.decision.action === "none")) {
       const inPostWarmGrace = Number(ctx.pos.postWarmGraceUntil || 0) > ctx.nowTs;
       if (!inPostWarmGrace) {

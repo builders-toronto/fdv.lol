@@ -28,9 +28,9 @@ export function createRugPumpDropPolicy({
       } else if (!ctx.leaderMode) {
         const curNorm = badgeNorm;
         // surface transition only in host logger; policy just sets pump-drop ban
-        if (curNorm === "calm" && isPumpDropBanned(ctx.mint)) {
+        if (curNorm === "cooling" && isPumpDropBanned(ctx.mint)) {
           ctx.forcePumpDrop = true;
-          log(`Pump->Calm drop for ${ctx.mint.slice(0,4)}… forcing sell and banning re-buys for 30m.`);
+          log(`Pump->Cooling drop for ${ctx.mint.slice(0,4)}… forcing sell and banning re-buys for 30m.`);
         }
       }
     } catch {}

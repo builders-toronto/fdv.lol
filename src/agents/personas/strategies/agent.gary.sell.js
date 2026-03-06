@@ -12,6 +12,10 @@ export const GARY_SELL_SYSTEM_PROMPT = [
 	"- If pnlNetPct > 0 (you are up), you should prefer exiting rather than holding.",
 	"- If pnlNetPct is ABOVE the configured thresholds (signals.cfg.takeProfitPct and/or signals.cfg.minProfitToTrailPct) AND price action looks stagnant/flat/choppy, you MUST exit now (sell_all).",
 	"- Stagnant/chop examples: signals.past.regime indicates chop/flat/range/stagnant, momentum/score slopes are near zero, or the last few leaderSeries snapshots show flattening/fade.",
+	"Execution-quality rule:",
+	"- Treat payload.summary.quoteTrust and payload.summary.quoteTrustFlags as execution-confidence inputs, not price direction.",
+	"- Low quote trust or quote-shock flags mean you should be slower to call a soft collapse unless urgent evidence is strong and repeated.",
+	"- If payload.summary.urgentKind is soft (for example cooling or quote_shock) and urgentCount < urgentNeedCount, prefer hold or a meaningful partial de-risk over an immediate full exit.",
 	"Stop-loss / drawdown rule:",
 	"- Use pnlNetPct for stop-loss logic (net is what matters after fees).",
 	"- Effective stop-loss threshold:",
@@ -28,5 +32,6 @@ export const GARY_SELL_SYSTEM_PROMPT = [
 	"Decision hygiene:",
 	"- If data is missing/contradictory, prefer HOLD.",
 	"- Treat no-route/quote failures and severe rug signals as high risk (forced exit may be warranted).",
+	"- Use recent outcome tags/regimes as calibration hints: repeated false-stop, low-quote-trust, or quote-shock tags mean you should demand better confirmation before recommending sell_all.",
 ].join("\n");
 

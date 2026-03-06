@@ -167,6 +167,10 @@ function _validateTune(tune) {
 		set("stopLossPct", tune.stopLossPct, 0, 99, 0.25);
 		set("trailPct", tune.trailPct, 0, 99, 0.25);
 		set("minProfitToTrailPct", tune.minProfitToTrailPct, 0, 200, 0.25);
+		set("partialTpPct", tune.partialTpPct, 0, 100, "int");
+		set("minNetEdgePct", tune.minNetEdgePct, -10, 10, 0.1);
+		set("edgeSafetyBufferPct", tune.edgeSafetyBufferPct, 0, 2, 0.05);
+		set("maxEntryCostPct", tune.maxEntryCostPct, 0, 10, 0.05);
 
 		// Hold tuning
 		set("minHoldSecs", tune.minHoldSecs, 0, 20_000, "int");
@@ -177,6 +181,7 @@ function _validateTune(tune) {
 
 		// Entry simulation tuning
 		set("entrySimMinWinProb", tune.entrySimMinWinProb, 0, 1, 0.01);
+		set("entrySimMinTerminalProb", tune.entrySimMinTerminalProb, 0, 1, 0.01);
 		set("entrySimHorizonSecs", tune.entrySimHorizonSecs, 30, 600, "int");
 
 		return Object.keys(out).length ? out : null;
@@ -397,10 +402,15 @@ function _buildDecisionSchema(kind, allowedConfigKeys = []) {
 				stopLossPct: { type: ["number", "null"] },
 				trailPct: { type: ["number", "null"] },
 				minProfitToTrailPct: { type: ["number", "null"] },
+				partialTpPct: { type: ["integer", "null"] },
+				minNetEdgePct: { type: ["number", "null"] },
+				edgeSafetyBufferPct: { type: ["number", "null"] },
+				maxEntryCostPct: { type: ["number", "null"] },
 				minHoldSecs: { type: ["integer", "null"] },
 				maxHoldSecs: { type: ["integer", "null"] },
 				buyPct: { type: ["number", "null"] },
 				entrySimMinWinProb: { type: ["number", "null"] },
+				entrySimMinTerminalProb: { type: ["number", "null"] },
 				entrySimHorizonSecs: { type: ["integer", "null"] },
 			},
 			required: [
@@ -408,10 +418,15 @@ function _buildDecisionSchema(kind, allowedConfigKeys = []) {
 				"stopLossPct",
 				"trailPct",
 				"minProfitToTrailPct",
+				"partialTpPct",
+				"minNetEdgePct",
+				"edgeSafetyBufferPct",
+				"maxEntryCostPct",
 				"minHoldSecs",
 				"maxHoldSecs",
 				"buyPct",
 				"entrySimMinWinProb",
+				"entrySimMinTerminalProb",
 				"entrySimHorizonSecs",
 			],
 		};
@@ -902,12 +917,15 @@ function _compactUserMsgForGary(userMsg) {
 				"curSolNet",
 				"pnlPct",
 				"pnlNetPct",
+				"quoteTrust",
 				"minNotionalSol",
 				"inMinHold",
 				"inSellGuard",
 				"hasPending",
 				"isFastExit",
 				"rugSev",
+				"regime",
+				"badge",
 				"forceRug",
 				"forcePumpDrop",
 				"forceObserverDrop",
@@ -916,6 +934,42 @@ function _compactUserMsgForGary(userMsg) {
 			]) {
 				if (k in c) keepCtx[k] = c[k];
 			}
+			try {
+				if (Array.isArray(c.quoteTrustFlags) && c.quoteTrustFlags.length) keepCtx.quoteTrustFlags = c.quoteTrustFlags.slice(0, 5).map((x) => String(x || "")).filter(Boolean);
+			} catch {}
+			try {
+				const qm = c.quoteMetrics;
+				if (qm && typeof qm === "object") {
+					keepCtx.quoteMetrics = {
+						shockFrac: qm.quoteShockFrac ?? null,
+						pnlClampApplied: ("pnlClampApplied" in qm) ? !!qm.pnlClampApplied : undefined,
+						feeDragPct: qm.feeDragPct ?? null,
+					};
+				}
+			} catch {}
+			try {
+				const urgent = c.urgentMeta;
+				if (urgent && typeof urgent === "object") {
+					const evidence = urgent.evidence && typeof urgent.evidence === "object" ? urgent.evidence : null;
+					keepCtx.urgent = {
+						kind: urgent.kind ?? null,
+						hard: ("hard" in urgent) ? !!urgent.hard : undefined,
+						sev: urgent.sev ?? null,
+						count: urgent.count ?? null,
+						needCount: urgent.needCount ?? null,
+						quoteTrustFloor: urgent.quoteTrustFloor ?? null,
+						evidence: evidence ? {
+							score: evidence.score ?? null,
+							ddPct: evidence.ddPct ?? null,
+							chgSlopeMin: evidence.chgSlopeMin ?? null,
+							scSlopeMin: evidence.scSlopeMin ?? null,
+							quoteShockFrac: evidence.quoteShockFrac ?? null,
+							passChg: ("passChg" in evidence) ? !!evidence.passChg : undefined,
+							passScore: ("passScore" in evidence) ? !!evidence.passScore : undefined,
+						} : undefined,
+					};
+				}
+			} catch {}
 			try {
 				const fg = c.finalGate;
 				if (fg && typeof fg === "object") keepCtx.finalGate = { intensity: fg.intensity ?? null, tier: fg.tier ?? null, chgSlope: fg.chgSlope ?? null, scSlope: fg.scSlope ?? null };
@@ -938,14 +992,25 @@ function _compactUserMsgForGary(userMsg) {
 				if (an && typeof an === "object") {
 					const outc = (an.outcomes && typeof an.outcomes === "object") ? an.outcomes : null;
 					const recent = outc && Array.isArray(outc.recent) ? outc.recent.slice(Math.max(0, outc.recent.length - 2)) : [];
+					const urgent = an.urgent && typeof an.urgent === "object" ? an.urgent : null;
 					keepCtx.agentSignals = {
 						fullAiControl: (typeof an.fullAiControl === "boolean") ? an.fullAiControl : undefined,
+						urgent: urgent ? {
+							kind: urgent.kind ?? null,
+							hard: ("hard" in urgent) ? !!urgent.hard : undefined,
+							count: urgent.count ?? null,
+							needCount: urgent.needCount ?? null,
+						} : undefined,
 						outcomes: recent.length ? {
 							sessionPnlSol: outc ? (outc.sessionPnlSol ?? null) : null,
 							recent: recent.map((r) => ({
 								pnlSol: r?.pnlSol ?? null,
 								kind: r?.kind ? String(r.kind).slice(0, 24) : undefined,
 								decisionAction: r?.decisionAction ? String(r.decisionAction).slice(0, 20) : undefined,
+								regime: r?.regime ? String(r.regime).slice(0, 24) : undefined,
+								quoteTrust: (typeof r?.quoteTrust === "number") ? r.quoteTrust : undefined,
+								urgentKind: r?.urgentKind ? String(r.urgentKind).slice(0, 24) : undefined,
+								tags: Array.isArray(r?.tags) ? r.tags.slice(0, 5).map((x) => String(x || "")).filter(Boolean) : undefined,
 							})),
 						} : undefined,
 					};
@@ -966,10 +1031,19 @@ function _compactUserMsgForGary(userMsg) {
 				payload.summary = {
 					agentRisk: c?.agentRisk ?? null,
 					pnlNetPct: c?.pnlNetPct ?? null,
+					quoteTrust: c?.quoteTrust ?? null,
+					quoteTrustFlags: Array.isArray(c?.quoteTrustFlags) ? c.quoteTrustFlags.slice(0, 4) : undefined,
 					inMinHold: c?.inMinHold ?? null,
 					inSellGuard: c?.inSellGuard ?? null,
 					hasPending: c?.hasPending ?? null,
 					rugSev: c?.rugSev ?? null,
+					regime: c?.regime ?? null,
+					badge: c?.badge ?? null,
+					urgentKind: c?.urgent?.kind ?? c?.agentSignals?.urgent?.kind ?? null,
+					urgentHard: c?.urgent?.hard ?? c?.agentSignals?.urgent?.hard ?? null,
+					urgentCount: c?.urgent?.count ?? c?.agentSignals?.urgent?.count ?? null,
+					urgentNeedCount: c?.urgent?.needCount ?? c?.agentSignals?.urgent?.needCount ?? null,
+					urgentScore: c?.urgent?.evidence?.score ?? null,
 					heldSecs: (nowTs != null && acquiredAt != null) ? Math.max(0, Math.floor((nowTs - acquiredAt) / 1000)) : null,
 					cfgTpPct: cfg?.takeProfitPct ?? null,
 					cfgSlPct: cfg?.stopLossPct ?? null,
@@ -1054,6 +1128,10 @@ function _compactUserMsgForGary(userMsg) {
 						decisionAction: last?.decisionAction ? String(last.decisionAction).slice(0, 20) : undefined,
 						pnlSol: pnl,
 						upDown: (typeof pnl === "number") ? (pnl > 0 ? "up" : pnl < 0 ? "down" : "flat") : undefined,
+						regime: last?.regime ? String(last.regime).slice(0, 24) : undefined,
+						quoteTrust: (typeof last?.quoteTrust === "number") ? last.quoteTrust : undefined,
+						urgentKind: last?.urgentKind ? String(last.urgentKind).slice(0, 24) : undefined,
+						tags: Array.isArray(last?.tags) ? last.tags.slice(0, 5).map((x) => String(x || "")).filter(Boolean) : undefined,
 					},
 				};
 			}
@@ -1178,12 +1256,15 @@ function _compactUserMsgForLlm(userMsg) {
 						"curSolNet",
 						"pnlPct",
 						"pnlNetPct",
+						"quoteTrust",
 						"minNotionalSol",
 						"inMinHold",
 						"inSellGuard",
 						"hasPending",
 						"isFastExit",
 						"rugSev",
+						"regime",
+						"badge",
 						"forceRug",
 						"forcePumpDrop",
 						"forceObserverDrop",
@@ -1192,6 +1273,42 @@ function _compactUserMsgForLlm(userMsg) {
 					]) {
 						if (k in c) keepCtx[k] = c[k];
 					}
+					try {
+						if (Array.isArray(c.quoteTrustFlags) && c.quoteTrustFlags.length) keepCtx.quoteTrustFlags = c.quoteTrustFlags.slice(0, 5).map((x) => String(x || "")).filter(Boolean);
+					} catch {}
+					try {
+						const qm = c.quoteMetrics;
+						if (qm && typeof qm === "object") {
+							keepCtx.quoteMetrics = {
+								shockFrac: qm.quoteShockFrac ?? null,
+								pnlClampApplied: ("pnlClampApplied" in qm) ? !!qm.pnlClampApplied : undefined,
+								feeDragPct: qm.feeDragPct ?? null,
+							};
+						}
+					} catch {}
+					try {
+						const urgent = c.urgentMeta;
+						if (urgent && typeof urgent === "object") {
+							const evidence = urgent.evidence && typeof urgent.evidence === "object" ? urgent.evidence : null;
+							keepCtx.urgent = {
+								kind: urgent.kind ?? null,
+								hard: ("hard" in urgent) ? !!urgent.hard : undefined,
+								sev: urgent.sev ?? null,
+								count: urgent.count ?? null,
+								needCount: urgent.needCount ?? null,
+								quoteTrustFloor: urgent.quoteTrustFloor ?? null,
+								evidence: evidence ? {
+									score: evidence.score ?? null,
+									ddPct: evidence.ddPct ?? null,
+									chgSlopeMin: evidence.chgSlopeMin ?? null,
+									scSlopeMin: evidence.scSlopeMin ?? null,
+									quoteShockFrac: evidence.quoteShockFrac ?? null,
+									passChg: ("passChg" in evidence) ? !!evidence.passChg : undefined,
+									passScore: ("passScore" in evidence) ? !!evidence.passScore : undefined,
+								} : undefined,
+							};
+						}
+					} catch {}
 					try {
 						const fg = c.finalGate;
 						if (fg && typeof fg === "object") keepCtx.finalGate = { intensity: fg.intensity ?? null, tier: fg.tier ?? null, chgSlope: fg.chgSlope ?? null, scSlope: fg.scSlope ?? null };
@@ -1214,14 +1331,25 @@ function _compactUserMsgForLlm(userMsg) {
 						if (an && typeof an === "object") {
 							const outc = (an.outcomes && typeof an.outcomes === "object") ? an.outcomes : null;
 							const recent = outc && Array.isArray(outc.recent) ? outc.recent.slice(Math.max(0, outc.recent.length - 2)) : [];
+							const urgent = an.urgent && typeof an.urgent === "object" ? an.urgent : null;
 							keepCtx.agentSignals = {
 								fullAiControl: (typeof an.fullAiControl === "boolean") ? an.fullAiControl : undefined,
+								urgent: urgent ? {
+									kind: urgent.kind ?? null,
+									hard: ("hard" in urgent) ? !!urgent.hard : undefined,
+									count: urgent.count ?? null,
+									needCount: urgent.needCount ?? null,
+								} : undefined,
 								outcomes: recent.length ? {
 									sessionPnlSol: outc ? (outc.sessionPnlSol ?? null) : null,
 									recent: recent.map((r) => ({
 										pnlSol: r?.pnlSol ?? null,
 										kind: r?.kind ? String(r.kind).slice(0, 24) : undefined,
 										decisionAction: r?.decisionAction ? String(r.decisionAction).slice(0, 20) : undefined,
+										regime: r?.regime ? String(r.regime).slice(0, 24) : undefined,
+										quoteTrust: (typeof r?.quoteTrust === "number") ? r.quoteTrust : undefined,
+										urgentKind: r?.urgentKind ? String(r.urgentKind).slice(0, 24) : undefined,
+										tags: Array.isArray(r?.tags) ? r.tags.slice(0, 5).map((x) => String(x || "")).filter(Boolean) : undefined,
 									})),
 								} : undefined,
 							};
@@ -1242,10 +1370,19 @@ function _compactUserMsgForLlm(userMsg) {
 				payload.summary = {
 					agentRisk: c?.agentRisk ?? null,
 					pnlNetPct: c?.pnlNetPct ?? null,
+					quoteTrust: c?.quoteTrust ?? null,
+					quoteTrustFlags: Array.isArray(c?.quoteTrustFlags) ? c.quoteTrustFlags.slice(0, 4) : undefined,
 					inMinHold: c?.inMinHold ?? null,
 					inSellGuard: c?.inSellGuard ?? null,
 					hasPending: c?.hasPending ?? null,
 					rugSev: c?.rugSev ?? null,
+					regime: c?.regime ?? null,
+					badge: c?.badge ?? null,
+					urgentKind: c?.urgent?.kind ?? c?.agentSignals?.urgent?.kind ?? null,
+					urgentHard: c?.urgent?.hard ?? c?.agentSignals?.urgent?.hard ?? null,
+					urgentCount: c?.urgent?.count ?? c?.agentSignals?.urgent?.count ?? null,
+					urgentNeedCount: c?.urgent?.needCount ?? c?.agentSignals?.urgent?.needCount ?? null,
+					urgentScore: c?.urgent?.evidence?.score ?? null,
 					heldSecs: (nowTs != null && acquiredAt != null) ? Math.max(0, Math.floor((nowTs - acquiredAt) / 1000)) : null,
 					cfgTpPct: cfg?.takeProfitPct ?? null,
 					cfgSlPct: cfg?.stopLossPct ?? null,
@@ -1403,6 +1540,10 @@ function _compactUserMsgForLlm(userMsg) {
 						decisionAction: last?.decisionAction ? String(last.decisionAction).slice(0, 20) : undefined,
 						pnlSol: pnl,
 						upDown: (typeof pnl === "number") ? (pnl > 0 ? "up" : pnl < 0 ? "down" : "flat") : undefined,
+						regime: last?.regime ? String(last.regime).slice(0, 24) : undefined,
+						quoteTrust: (typeof last?.quoteTrust === "number") ? last.quoteTrust : undefined,
+						urgentKind: last?.urgentKind ? String(last.urgentKind).slice(0, 24) : undefined,
+						tags: Array.isArray(last?.tags) ? last.tags.slice(0, 5).map((x) => String(x || "")).filter(Boolean) : undefined,
 					},
 				};
 			}
@@ -1662,7 +1803,7 @@ export function createAutoTraderAgentDriver({
 	}
 
 	function _decisionMemorySnapshot() {
-		try { return decisionMemory.snapshotForPrompt(); } catch { return { v: 2, startedAt: now() }; }
+		try { return decisionMemory.snapshotForPrompt(); } catch { return { v: 4, startedAt: now() }; }
 	}
 	function _ensureReasoningSessionKey() {
 		try {

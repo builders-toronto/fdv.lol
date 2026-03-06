@@ -119,13 +119,23 @@ export function createAgentDecisionPolicy({
           if (!u || typeof u !== "object") return null;
           const reason = String(u.reason || "");
           const sev = Number(u.sev || 0);
+          const explicitHard = u.hard === true;
+          const needCount = Math.max(1, Number(u.needCount || 1));
+          const count = Math.max(1, Number(u.count || 1));
+          const trustFloor = Number(u.quoteTrustFloor);
+          const quoteTrust = Number(ctx?.quoteTrust);
           // DEGEN bypass: allow rug severity urgents to be handled by the agent unless extremely severe.
           // Safe/Medium retain the existing hard-urgent behavior.
           const isRug = /rug/i.test(reason);
           const hardRugSev = 3.0;
           if (_riskLevel === "degen" && isRug && Number.isFinite(sev) && sev < hardRugSev) return null;
 
-          const hard = (isRug || (Number.isFinite(sev) && sev >= 0.75));
+          if (!explicitHard) {
+            if (Number.isFinite(trustFloor) && Number.isFinite(quoteTrust) && quoteTrust < trustFloor) return null;
+            if (count < needCount) return null;
+          }
+
+          const hard = explicitHard || isRug || (Number.isFinite(sev) && sev >= 0.9);
           return hard ? { reason, sev } : null;
         } catch {
           return null;
@@ -193,6 +203,8 @@ export function createAgentDecisionPolicy({
         // Current valuation
         curSol: Number(ctx?.curSol ?? 0),
         curSolNet: Number(ctx?.curSolNet ?? 0),
+        quoteTrust: Number(ctx?.quoteTrust ?? 1),
+        quoteTrustFlags: Array.isArray(ctx?.quoteTrustFlags) ? ctx.quoteTrustFlags : [],
         pnlPct: Number(ctx?.pnlPct ?? 0),
         pnlNetPct: Number(ctx?.pnlNetPct ?? 0),
 

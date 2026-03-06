@@ -615,6 +615,7 @@ svg.bars rect { fill: rgba(123,241,255,.8) }
 
 .extraFeat {
   grid-column: 3;
+  margin-right: 40px;
 }
 
 .profile__navigation .actions{

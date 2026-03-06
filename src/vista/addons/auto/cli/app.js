@@ -162,6 +162,7 @@ function usage() {
     "Dev / self-tests:",
     "  node cli.mjs --validate-sell-bypass",
     "  node cli.mjs --dry-run-sell --snapshot tools/snapshots/sample-sell.json",
+    "  node cli.mjs --replay-sell --snapshot tools/snapshots/sample-sell.json",
     "  node cli.mjs --sim-index",
     "  node cli.mjs --flame",
     "  node cli.mjs --help",
@@ -169,7 +170,9 @@ function usage() {
     "Options:",
     "  --validate-sell-bypass   Runs a local self-test that urgent/hard-exit sells bypass router cooldown gates.",
     "  --dry-run-sell           Runs sell evaluation (no swaps) using a JSON snapshot.",
+    "  --replay-sell            Runs multiple what-if sell evaluations for a JSON snapshot.",
     "  --snapshot <path>        Snapshot JSON file used by --dry-run-sell.",
+    "  --variants <csv>         Optional replay variants: baseline,no-urgent,no-soft-urgent,trust-low,trust-high.",
     "  --sim-index              Runs a deterministic simulation against the real auto-bot module (index.js) with RPC/wallet/quotes stubbed.",
     "    --steps <n>             Number of sim steps (default 40).",
     "    --dt-ms <n>             Milliseconds per sim step (default 1000).",
@@ -4161,10 +4164,7 @@ function shouldSellFromState(state, pos, curSol, nowTs) {
   return { action: "none" };
 }
 
-async function dryRunSell(snapshotPath) {
-  ensureWindowShim();
-  const snap = await loadSnapshot(snapshotPath);
-
+async function evaluateSellSnapshot(snap, { printLogs = true } = {}) {
   const state = { ...(snap.state || {}) };
   const mint = String(snap.mint || "");
   if (!mint) throw new Error("snapshot.mint is required");
@@ -4177,6 +4177,8 @@ async function dryRunSell(snapshotPath) {
   if (!Number.isFinite(pos.decimals)) pos.decimals = 6;
   if (!pos.acquiredAt && !pos.lastBuyAt) pos.acquiredAt = nowTs - 30_000;
 
+  try { window._fdvRouterHold?.delete?.(mint); } catch {}
+
   // Optional: simulate router hold in snapshot
   if (Number.isFinite(snap.routerHoldUntil) && snap.routerHoldUntil > 0) {
     window._fdvRouterHold.set(mint, Number(snap.routerHoldUntil));
@@ -4186,7 +4188,7 @@ async function dryRunSell(snapshotPath) {
   const log = (m) => {
     const s = String(m ?? "");
     logs.push(s);
-    console.log(s);
+    if (printLogs) console.log(s);
   };
 
   const now = () => Date.now();
@@ -4273,6 +4275,8 @@ async function dryRunSell(snapshotPath) {
     nowTs,
     pos,
     decision: { action: "none" },
+    quoteTrust: Number.isFinite(Number(snap?.ctx?.quoteTrust)) ? Number(snap.ctx.quoteTrust) : 1,
+    quoteTrustFlags: Array.isArray(snap?.ctx?.quoteTrustFlags) ? snap.ctx.quoteTrustFlags.slice() : [],
 
     forceRug: !!snap.forceRug,
     forcePumpDrop: !!snap.forcePumpDrop,
@@ -4282,8 +4286,8 @@ async function dryRunSell(snapshotPath) {
 
   const steps = [
     preflight,
-    urgentPolicy,
     quoteAndEdge,
+    urgentPolicy,
     fastExit,
     dynamicHardStop,
     profitLock,
@@ -4294,8 +4298,88 @@ async function dryRunSell(snapshotPath) {
 
   await runPipeline(ctx, steps);
 
+  return { ctx, logs };
+}
+
+async function dryRunSell(snapshotPath) {
+  ensureWindowShim();
+  const snap = await loadSnapshot(snapshotPath);
+  const { ctx } = await evaluateSellSnapshot(snap, { printLogs: true });
+
   console.log("\nFinal decision:");
   console.log(JSON.stringify(ctx.decision || { action: "none" }, null, 2));
+  return 0;
+}
+
+async function replaySell(snapshotPath, variantsCsv = "") {
+  ensureWindowShim();
+  const baseSnap = await loadSnapshot(snapshotPath);
+
+  const wanted = new Set(
+    String(variantsCsv || "")
+      .split(",")
+      .map((s) => String(s || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
+
+  const variants = [
+    {
+      name: "baseline",
+      mutate: () => {},
+    },
+    {
+      name: "no-urgent",
+      mutate: (snap) => {
+        snap.urgent = null;
+      },
+    },
+    {
+      name: "no-soft-urgent",
+      mutate: (snap) => {
+        const u = snap?.urgent;
+        if (!u) return;
+        const hard = u?.hard === true || /rug/i.test(String(u?.reason || "")) || Number(u?.sev || 0) >= 0.9;
+        if (!hard) snap.urgent = null;
+      },
+    },
+    {
+      name: "trust-low",
+      mutate: (snap) => {
+        if (!snap.ctx || typeof snap.ctx !== "object") snap.ctx = {};
+        snap.ctx.quoteTrust = 0.2;
+        snap.ctx.quoteTrustFlags = ["replay-low-trust"];
+      },
+    },
+    {
+      name: "trust-high",
+      mutate: (snap) => {
+        if (!snap.ctx || typeof snap.ctx !== "object") snap.ctx = {};
+        snap.ctx.quoteTrust = 0.95;
+        snap.ctx.quoteTrustFlags = [];
+      },
+    },
+  ].filter((v) => wanted.size === 0 || wanted.has(v.name));
+
+  const results = [];
+  for (const variant of variants) {
+    const snap = JSON.parse(JSON.stringify(baseSnap || {}));
+    variant.mutate(snap);
+    const { ctx, logs } = await evaluateSellSnapshot(snap, { printLogs: false });
+    results.push({
+      name: variant.name,
+      action: String(ctx?.decision?.action || "none"),
+      reason: String(ctx?.decision?.reason || ""),
+      quoteTrust: Number.isFinite(Number(ctx?.quoteTrust)) ? Number(ctx.quoteTrust) : null,
+      logs,
+    });
+  }
+
+  console.log("Replay variants:\n");
+  for (const r of results) {
+    const trustTxt = Number.isFinite(r.quoteTrust) ? ` trust=${r.quoteTrust.toFixed(2)}` : "";
+    console.log(`- ${r.name}: ${r.action}${trustTxt}${r.reason ? ` :: ${r.reason}` : ""}`);
+  }
+
   return 0;
 }
 
@@ -4466,6 +4550,15 @@ export async function runAutoTraderCli(argv = []) {
       return 2;
     }
     return await dryRunSell(snapshotPath);
+  }
+
+  if (flags.has("--replay-sell")) {
+    const snapshotPath = getValue("--snapshot");
+    if (!snapshotPath) {
+      console.error("Missing required --snapshot <path>");
+      return 2;
+    }
+    return await replaySell(snapshotPath, getValue("--variants") || "");
   }
 
   if (flags.has("--sim-index")) {

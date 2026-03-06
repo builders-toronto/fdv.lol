@@ -30,7 +30,7 @@ export function createPreflightSellPolicy({
     const urgent = (typeof peekUrgentSell === "function") ? peekUrgentSell(mint) : null;
     const urgentReason = String(urgent?.reason || "");
     const urgentSev = Number(urgent?.sev || 0);
-    const urgentHard = !!urgent && (/rug/i.test(urgentReason) || urgentSev >= 0.75);
+    const urgentHard = !!urgent && (urgent?.hard === true || /rug/i.test(urgentReason) || urgentSev >= 0.9);
 
     // Router cooldown gate (unless we're at forceExpire)
     try {

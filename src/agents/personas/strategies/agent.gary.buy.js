@@ -22,5 +22,5 @@ export const GARY_BUY_SYSTEM_PROMPT = [
 	"- Keep it compact (note <= 120 chars); if uncertain, omit it.",
 	"Optional runtime tuning:",
 	"- You MAY include tune keys only when confident (>0.60) and the change is materially helpful.",
-	"- Allowed tune keys: takeProfitPct, stopLossPct, trailPct, minProfitToTrailPct, minHoldSecs, maxHoldSecs, buyPct, entrySimMinWinProb, entrySimHorizonSecs.",
+	"- Allowed tune keys: takeProfitPct, stopLossPct, trailPct, minProfitToTrailPct, partialTpPct, minNetEdgePct, edgeSafetyBufferPct, maxEntryCostPct, minHoldSecs, maxHoldSecs, buyPct, entrySimMinWinProb, entrySimMinTerminalProb, entrySimHorizonSecs.",
 ].join("\n");
