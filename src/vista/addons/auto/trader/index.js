@@ -1044,8 +1044,16 @@ function _applyAgentTune(tune, { source = "", mint = "", confidence = 0, reason 
     // Buy sizing / gating
     setNum("buyPct", tune.buyPct, 0.01, 0.5, 0.005);
     // Entry simulation
-    setNum("entrySimMinWinProb", tune.entrySimMinWinProb, 0, 1, 0.01);
-    setNum("entrySimMinTerminalProb", tune.entrySimMinTerminalProb, 0, 1, 0.01);
+    setNum("entrySimMinWinProb", normalizeProbabilityThreshold(tune.entrySimMinWinProb, Number(state?.entrySimMinWinProb ?? 0.55), {
+      min: 0,
+      max: 1,
+      saneMax: ENTRY_SIM_MIN_WIN_PROB_SANE_MAX,
+    }), 0, ENTRY_SIM_MIN_WIN_PROB_SANE_MAX, 0.01);
+    setNum("entrySimMinTerminalProb", normalizeProbabilityThreshold(tune.entrySimMinTerminalProb, Number(state?.entrySimMinTerminalProb ?? 0.60), {
+      min: 0,
+      max: 1,
+      saneMax: ENTRY_SIM_MIN_TERM_PROB_SANE_MAX,
+    }), 0, ENTRY_SIM_MIN_TERM_PROB_SANE_MAX, 0.01);
     setNum("entrySimHorizonSecs", tune.entrySimHorizonSecs, 30, 600, "int");
 
     if (changed) {
@@ -2247,6 +2255,24 @@ function _agentConfigScanKeyHints(keys = AGENT_CONFIG_SCAN_KEYS) {
         };
         continue;
       }
+      if (k === "entrySimMinWinProb") {
+        out[k] = {
+          type: "number",
+          def: 0.55,
+          min: 0.40,
+          max: ENTRY_SIM_MIN_WIN_PROB_SANE_MAX,
+        };
+        continue;
+      }
+      if (k === "entrySimMinTerminalProb") {
+        out[k] = {
+          type: "number",
+          def: 0.60,
+          min: 0.45,
+          max: ENTRY_SIM_MIN_TERM_PROB_SANE_MAX,
+        };
+        continue;
+      }
       out[k] = {
         type: String(s.type || ""),
         def: s.def,
@@ -2481,6 +2507,44 @@ function _applyAgentConfigPatch(patch = {}, { source = "agent" } = {}) {
           log(`[AGENT GARY] config clamp (${source}) minSecsBetween ${raw.toFixed(0)}s→${clamped.toFixed(0)}s (target ${min}..${max}s)`, "warn");
         } else {
           picked.minSecsBetween = raw;
+        }
+      }
+    }
+
+    if ("entrySimMinWinProb" in picked) {
+      const raw = Number(picked.entrySimMinWinProb);
+      if (!Number.isFinite(raw)) {
+        _dropKey("entrySimMinWinProb");
+      } else {
+        const clamped = normalizeProbabilityThreshold(raw, 0.55, {
+          min: 0.40,
+          max: 1,
+          saneMax: ENTRY_SIM_MIN_WIN_PROB_SANE_MAX,
+        });
+        if (Math.abs(clamped - raw) > 1e-9) {
+          picked.entrySimMinWinProb = clamped;
+          log(`[AGENT GARY] config clamp (${source}) entrySimMinWinProb ${raw.toFixed(2)}→${clamped.toFixed(2)} (target 0.40..${ENTRY_SIM_MIN_WIN_PROB_SANE_MAX.toFixed(2)})`, "warn");
+        } else {
+          picked.entrySimMinWinProb = raw;
+        }
+      }
+    }
+
+    if ("entrySimMinTerminalProb" in picked) {
+      const raw = Number(picked.entrySimMinTerminalProb);
+      if (!Number.isFinite(raw)) {
+        _dropKey("entrySimMinTerminalProb");
+      } else {
+        const clamped = normalizeProbabilityThreshold(raw, 0.60, {
+          min: 0.45,
+          max: 1,
+          saneMax: ENTRY_SIM_MIN_TERM_PROB_SANE_MAX,
+        });
+        if (Math.abs(clamped - raw) > 1e-9) {
+          picked.entrySimMinTerminalProb = clamped;
+          log(`[AGENT GARY] config clamp (${source}) entrySimMinTerminalProb ${raw.toFixed(2)}→${clamped.toFixed(2)} (target 0.45..${ENTRY_SIM_MIN_TERM_PROB_SANE_MAX.toFixed(2)})`, "warn");
+        } else {
+          picked.entrySimMinTerminalProb = raw;
         }
       }
     }
@@ -2846,6 +2910,18 @@ function coerceNumber(v, def, opts = {}) {
   if (Number.isFinite(opts.max) && x > opts.max) return opts.max;
   return x;
 }
+const ENTRY_SIM_MIN_WIN_PROB_SANE_MAX = 0.75;
+const ENTRY_SIM_MIN_TERM_PROB_SANE_MAX = 0.80;
+
+function normalizeProbabilityThreshold(v, def, { min = 0, max = 1, saneMax = max } = {}) {
+  let next = Number(v);
+  if (!Number.isFinite(next)) next = def;
+  if (next > 1 && next <= 100) next = next / 100;
+  next = Math.max(min, Math.min(max, next));
+  if (Number.isFinite(saneMax)) next = Math.min(next, saneMax);
+  return next;
+}
+
 function coerceBoolean(v, def = false) { return typeof v === "boolean" ? v : (!!v ?? def); }
 function coerceString(v, def = "") { return typeof v === "string" ? v : String(v ?? def); }
 function coerceByType(v, s) {
@@ -2929,6 +3005,16 @@ function normalizeState(raw = {}) {
   } catch {
     out.entrySimMode = "enforce";
   }
+  out.entrySimMinWinProb = normalizeProbabilityThreshold(raw?.entrySimMinWinProb ?? out.entrySimMinWinProb, 0.55, {
+    min: 0,
+    max: 1,
+    saneMax: ENTRY_SIM_MIN_WIN_PROB_SANE_MAX,
+  });
+  out.entrySimMinTerminalProb = normalizeProbabilityThreshold(raw?.entrySimMinTerminalProb ?? out.entrySimMinTerminalProb, 0.60, {
+    min: 0,
+    max: 1,
+    saneMax: ENTRY_SIM_MIN_TERM_PROB_SANE_MAX,
+  });
 
   if (typeof out.warmingEdgeMinExclPct !== "number" || !Number.isFinite(out.warmingEdgeMinExclPct)) {
     delete out.warmingEdgeMinExclPct;
@@ -9158,8 +9244,16 @@ async function tick() {
         let simEnabled = simMode !== "off";
         const horizonSecsBase = Math.max(30, Math.min(600, Number(state.entrySimHorizonSecs || 120)));
         const horizonCapHold = Math.max(30, Math.min(600, Number(state.maxHoldSecs || HOLD_MAX_SECS)));
-        const minWinProb = Math.max(0, Math.min(1, Number(state.entrySimMinWinProb || 0.55)));
-        const minTerminalProb = Math.max(0, Math.min(1, Number(state.entrySimMinTerminalProb ?? 0.60)));
+        const minWinProb = normalizeProbabilityThreshold(state.entrySimMinWinProb, 0.55, {
+          min: 0,
+          max: 1,
+          saneMax: ENTRY_SIM_MIN_WIN_PROB_SANE_MAX,
+        });
+        const minTerminalProb = normalizeProbabilityThreshold(state.entrySimMinTerminalProb, 0.60, {
+          min: 0,
+          max: 1,
+          saneMax: ENTRY_SIM_MIN_TERM_PROB_SANE_MAX,
+        });
 
         entryRugSignal = (() => {
           try { return _summarizeRugSignal(getRugSignalForMint(mint)) || null; } catch { return null; }
