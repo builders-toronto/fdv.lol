@@ -444,7 +444,13 @@ function _applySentryAction(mint, decision, { stage = "scan" } = {}) {
         const hasPos = !!(state.positions && state.positions[mint]);
         if (hasPos) {
           const sev = Math.max(0, Math.min(1, Math.max(conf, risk / 100)));
-          flagUrgentSell(mint, `SENTRY: ${why || "high anomaly risk"}`.slice(0, 160), sev);
+          flagUrgentSell(mint, `SENTRY: ${why || "high anomaly risk"}`.slice(0, 160), sev, {
+            source: "sentry",
+            kind: "sentry",
+            hard: sev >= 0.9,
+            needCount: sev >= 0.9 ? 1 : 2,
+            evidence: { conf, risk },
+          });
         }
       } catch {}
     }
@@ -1019,6 +1025,10 @@ function _applyAgentTune(tune, { source = "", mint = "", confidence = 0, reason 
     setNum("stopLossPct", tune.stopLossPct, 0, 99, 0.25);
     setNum("trailPct", tune.trailPct, 0, 99, 0.25);
     setNum("minProfitToTrailPct", tune.minProfitToTrailPct, 0, 200, 0.25);
+    setNum("partialTpPct", tune.partialTpPct, 0, 100, "int");
+    setNum("minNetEdgePct", tune.minNetEdgePct, -10, 10, 0.1);
+    setNum("edgeSafetyBufferPct", tune.edgeSafetyBufferPct, 0, 2, 0.05);
+    setNum("maxEntryCostPct", tune.maxEntryCostPct, 0, 10, 0.05);
 
     // Holds
     setNum("minHoldSecs", tune.minHoldSecs, 0, 20_000, "int");
@@ -1035,6 +1045,7 @@ function _applyAgentTune(tune, { source = "", mint = "", confidence = 0, reason 
     setNum("buyPct", tune.buyPct, 0.01, 0.5, 0.005);
     // Entry simulation
     setNum("entrySimMinWinProb", tune.entrySimMinWinProb, 0, 1, 0.01);
+    setNum("entrySimMinTerminalProb", tune.entrySimMinTerminalProb, 0, 1, 0.01);
     setNum("entrySimHorizonSecs", tune.entrySimHorizonSecs, 30, 600, "int");
 
     if (changed) {
@@ -6996,7 +7007,7 @@ function startFastObserver() {
         try {
           const momStore = _getMomentumDropStore();
           const rec = momStore.get(mint) || { count: 0, lastAt: 0, lastCountAt: 0 };
-          const isMom = r.trigger && /momentum\s*drop/i.test(String(r.reason || ""));
+          const isMom = !!r?.momentum || /momentum\s*drop/i.test(String(r?.reason || ""));
           const nowTs = now();
           const minCountGapMs = Math.max(150, Number(LEADER_SAMPLE_MIN_MS || 0) || 0);
 
@@ -7022,7 +7033,17 @@ function startFastObserver() {
         } catch {}
 
         if (r.trigger && ageMs < EARLY_URGENT_WINDOW_MS && Number(r.sev || 0) >= 0.6) {
-          flagUrgentSell(mint, r.reason, r.sev);
+          flagUrgentSell(mint, r.reason, r.sev, {
+            source: "fastDropCheck",
+            kind: String(r.kind || ""),
+            hard: !!r.hard,
+            needCount: String(r.kind || "") === "cooling" ? 2 : 1,
+            quoteTrustFloor: String(r.kind || "") === "cooling" ? 0.45 : null,
+            evidence: {
+              score: Number(r.score || 0),
+              ...(r.evidence && typeof r.evidence === "object" ? r.evidence : {}),
+            },
+          });
           continue;
         }
 
@@ -7030,7 +7051,19 @@ function startFastObserver() {
         if (pos.awaitingSizeSync === true) continue;
         if (!inWarmingHold && ageMs < Math.max(URGENT_SELL_MIN_AGE_MS, postBuyCooldownMs)) continue;
 
-        if (r.trigger) flagUrgentSell(mint, r.reason, r.sev);
+        if (r.trigger) {
+          flagUrgentSell(mint, r.reason, r.sev, {
+            source: "fastDropCheck",
+            kind: String(r.kind || ""),
+            hard: !!r.hard,
+            needCount: String(r.kind || "") === "cooling" ? 2 : 1,
+            quoteTrustFloor: String(r.kind || "") === "cooling" ? 0.45 : null,
+            evidence: {
+              score: Number(r.score || 0),
+              ...(r.evidence && typeof r.evidence === "object" ? r.evidence : {}),
+            },
+          });
+        }
       }
     } catch {}
   }, FAST_OBS_INTERVAL_MS);
@@ -7267,6 +7300,9 @@ function _mkSellCtx({ kp, mint, pos, nowTs }) {
     obsPasses: null,
     curSol: 0,
     curSolNet: 0,
+    quoteTrust: 1,
+    quoteTrustFlags: [],
+    quoteMetrics: null,
     outLamports: 0,
     netEstimate: null,
     pxNow: 0,
@@ -7289,6 +7325,7 @@ function _mkSellCtx({ kp, mint, pos, nowTs }) {
     postGrace: 0,
     postWarmGraceActive: false,
     inWarmingHold: false,
+    urgentMeta: null,
 
     // Extra signals for agent consumption (populated by Trader when possible)
     agentSignals: null,
@@ -7437,6 +7474,7 @@ async function runSellPipelineForPosition(ctx) {
     ? [
         { name: "preflight", fn: (c) => preflightSellPolicy(c) },
         { name: "quoteAndEdge", fn: (c) => quoteAndEdgePolicy(c) },
+        { name: "urgent", fn: (c) => urgentSellPolicy(c) },
         // Run warming first so Agent Gary sees decay-delay/targets, but don't auto-release under Full AI.
         { name: "warmingHook", fn: (c) => warmingPolicyHook(c) },
         { name: "agentDecision", fn: (c) => agentDecisionPolicy(c) },
@@ -7449,12 +7487,12 @@ async function runSellPipelineForPosition(ctx) {
     : [
         { name: "preflight", fn: (c) => preflightSellPolicy(c) },
         { name: "leaderMode", fn: (c) => leaderModePolicy(c) },
-        { name: "urgent", fn: (c) => urgentSellPolicy(c) },
         { name: "rugPumpDrop", fn: (c) => rugPumpDropPolicy(c) },
         { name: "earlyFade", fn: (c) => earlyFadePolicy(c) },
         { name: "observer", fn: (c) => observerPolicy(c) },
         { name: "volatilityGuard", fn: (c) => volatilityGuardPolicy(c) },
         { name: "quoteAndEdge", fn: (c) => quoteAndEdgePolicy(c) },
+      { name: "urgent", fn: (c) => urgentSellPolicy(c) },
         { name: "fastExit", fn: (c) => fastExitPolicy(c) },
         { name: "warmingHook", fn: (c) => warmingPolicyHook(c) },
         { name: "profitLock", fn: (c) => profitLockPolicy(c) },
@@ -7654,7 +7692,16 @@ async function evalAndMaybeSellPositions() {
               try {
                 const u = typeof peekUrgentSell === "function" ? peekUrgentSell(mint) : null;
                 if (!u) return null;
-                return { reason: String(u.reason || ""), sev: Number(u.sev || 0) };
+                return {
+                  reason: String(u.reason || ""),
+                  sev: Number(u.sev || 0),
+                  kind: String(u.kind || ""),
+                  hard: !!u.hard,
+                  count: Number(u.count || 1),
+                  needCount: Number(u.needCount || 1),
+                  quoteTrustFloor: Number.isFinite(Number(u.quoteTrustFloor)) ? Number(u.quoteTrustFloor) : null,
+                  evidence: (u.evidence && typeof u.evidence === "object") ? _snapshotSafeClone(u.evidence, 10_000) : null,
+                };
               } catch { return null; }
             })(),
             outcomes: {
@@ -10582,7 +10629,16 @@ function _recordSellSnapshot(ctx, { stage = "post_pipeline", evalId = null } = {
     const urgent = (() => {
       try {
         const u = typeof peekUrgentSell === "function" ? peekUrgentSell(mint) : null;
-        return u ? { reason: String(u.reason || ""), sev: Number(u.sev || 0) } : null;
+        return u ? {
+          reason: String(u.reason || ""),
+          sev: Number(u.sev || 0),
+          kind: String(u.kind || ""),
+          hard: !!u.hard,
+          count: Number(u.count || 1),
+          needCount: Number(u.needCount || 1),
+          quoteTrustFloor: Number.isFinite(Number(u.quoteTrustFloor)) ? Number(u.quoteTrustFloor) : null,
+          evidence: (u.evidence && typeof u.evidence === "object") ? _snapshotSafeClone(u.evidence, 10_000) : null,
+        } : null;
       } catch { return null; }
     })();
 
@@ -10616,6 +10672,8 @@ function _recordSellSnapshot(ctx, { stage = "post_pipeline", evalId = null } = {
 
         curSol: Number(ctx?.curSol ?? 0),
         curSolNet: Number(ctx?.curSolNet ?? 0),
+        quoteTrust: Number(ctx?.quoteTrust ?? 1),
+        quoteTrustFlags: Array.isArray(ctx?.quoteTrustFlags) ? ctx.quoteTrustFlags : [],
         pnlPct: Number(ctx?.pnlPct ?? 0),
         pnlNetPct: Number(ctx?.pnlNetPct ?? 0),
         pxNow: Number(ctx?.pxNow ?? 0),
@@ -10681,7 +10739,16 @@ function _createManualSellSnapshot({ mint: preferredMint = null, stage = "manual
     const urgent = (() => {
       try {
         const u = typeof peekUrgentSell === "function" ? peekUrgentSell(mint) : null;
-        return u ? { reason: String(u.reason || ""), sev: Number(u.sev || 0) } : null;
+        return u ? {
+          reason: String(u.reason || ""),
+          sev: Number(u.sev || 0),
+          kind: String(u.kind || ""),
+          hard: !!u.hard,
+          count: Number(u.count || 1),
+          needCount: Number(u.needCount || 1),
+          quoteTrustFloor: Number.isFinite(Number(u.quoteTrustFloor)) ? Number(u.quoteTrustFloor) : null,
+          evidence: (u.evidence && typeof u.evidence === "object") ? _snapshotSafeClone(u.evidence, 10_000) : null,
+        } : null;
       } catch { return null; }
     })();
 
@@ -10705,6 +10772,8 @@ function _createManualSellSnapshot({ mint: preferredMint = null, stage = "manual
         sizeOk: Number(pos?.sizeUi || 0) > 0,
         curSol,
         curSolNet: null,
+        quoteTrust: Number(pos?._quoteTrust || 1),
+        quoteTrustFlags: [],
         pnlPct,
         pnlNetPct: null,
         pxNow: Number(pos?.lastQuotedPx || 0),

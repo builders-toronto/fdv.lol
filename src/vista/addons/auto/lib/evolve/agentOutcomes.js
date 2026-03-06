@@ -327,6 +327,8 @@ export function createAgentOutcomesStore({
           decisionSource: _safeStr(it.decisionSource, ""),
           decisionAction: _safeStr(it.decisionAction, ""),
           reason: String(it.reason || "").slice(0, 160),
+          tags: Array.isArray(it.tags) ? it.tags.slice(0, 8) : [],
+          regime: _safeStr(it.regime, ""),
         });
         if (out.length >= take) break;
       }
@@ -363,6 +365,23 @@ export function createAgentOutcomesStore({
       const decisionAction = _safeStr(d?.action, "");
       const reason = _safeStr(d?.reason, "");
       const decisionSource = /^agent-/i.test(reason) ? "agent" : "system";
+      const quoteTrust = _safeNum(evt?.quoteTrust, NaN);
+      const quoteTrustFlags = Array.isArray(evt?.quoteTrustFlags) ? evt.quoteTrustFlags.map((x) => _safeStr(x, "")).filter(Boolean) : [];
+      const urgentMeta = evt?.urgentMeta && typeof evt.urgentMeta === "object" ? evt.urgentMeta : null;
+      const urgentKind = _safeStr(urgentMeta?.kind, "");
+      const regime = _safeStr(evt?.regime, "");
+      const badge = _safeStr(evt?.badge, "");
+
+      const tags = [];
+      tags.push(kind === "sell_partial" ? "partial-exit" : "full-exit");
+      if (/URGENT/i.test(reason)) tags.push("urgent-exit");
+      if (/agent-/i.test(reason)) tags.push("agent-exit");
+      if (urgentKind) tags.push(`urgent:${urgentKind}`);
+      if (quoteTrustFlags.includes("quote-shock")) tags.push("quote-shock");
+      if (quoteTrustFlags.includes("pnl-clamped")) tags.push("pnl-clamped");
+      if (Number.isFinite(quoteTrust) && quoteTrust < 0.5) tags.push("low-quote-trust");
+      if (Number.isFinite(pnlSol) && pnlSol < 0 && /URGENT/i.test(reason) && !/rug/i.test(reason)) tags.push("false-stop-candidate");
+      if (Number.isFinite(pnlSol) && pnlSol > 0 && kind === "sell_partial") tags.push("profit-harvest");
 
       const entry = {
         ts: Date.now(),
@@ -377,6 +396,19 @@ export function createAgentOutcomesStore({
         decisionSource,
         decisionAction,
         reason,
+        tags: Array.from(new Set(tags)).slice(0, 12),
+        quoteTrust: Number.isFinite(quoteTrust) ? quoteTrust : null,
+        quoteTrustFlags,
+        urgentKind: urgentKind || null,
+        urgentMeta: urgentMeta ? {
+          kind: urgentKind || null,
+          sev: _safeNum(urgentMeta?.sev, 0),
+          count: _safeNum(urgentMeta?.count, 0),
+          needCount: _safeNum(urgentMeta?.needCount, 0),
+          hard: !!urgentMeta?.hard,
+        } : null,
+        regime: regime || null,
+        badge: badge || null,
         agentRisk: _normRisk(getAgentRisk()),
         selfCritique: null,
         lesson: null,

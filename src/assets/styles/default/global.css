@@ -1281,7 +1281,7 @@ body[data-home-collapsed="1"] #cards{
   font-weight:600; 
   letter-spacing:.2px;
   background: transparent;
-  border:1px solid rgba(122,222,255,.28); 
+  border:none; 
   color:var(--text); 
   text-decoration:none; 
   cursor: pointer;
@@ -1311,6 +1311,11 @@ body[data-home-collapsed="1"] #cards{
 }
 .holdCoin:hover{ box-shadow: var(--shadow-1) }
 .holdCoin:active{ transform: translateY(0) scale(.99) }
+
+.innerControls .btn {
+  background: black;
+  border: 1px solid color-mix(in srgb, var(--neon, #1affd5) 55%, rgba(255, 255, 255, 0));
+}
 
 .rec{margin-left:auto; font-weight:700; font-size:.9rem; padding:6px 10px; border-radius:10px; border:1px solid; }
 .rec.GOOD  { color: var(--good);   border-color: rgba(26,255,122,.45); background: rgba(26,255,122,.08)}
@@ -3091,7 +3096,7 @@ details.fdv-auto-wrap { overflow: hidden; }
 }
 
 .fdv-lib-btn {
-  display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px;
+  display: inline-flex; align-items: center; justify-content: flex-start; gap: 8px;
   height: 40px; padding: 0 10px; border-radius: 10px;
   background: transparent; border: none; color: var(--fdv-text, var(--text)); font-weight: 700;
   cursor: pointer; transition: filter .15s ease, border-color .15s ease, background .15s ease;

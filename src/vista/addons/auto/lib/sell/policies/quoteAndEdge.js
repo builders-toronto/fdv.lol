@@ -18,14 +18,23 @@ export function createQuoteAndEdgePolicy({
       ctx.pos.lastQuotedSol = curSol;
       ctx.pos.lastQuotedAt = ctx.nowTs;
     }
+    let quoteShockFrac = 0;
     try {
       const prevSol = Number(ctx.pos._lastShockSol || 0);
       const prevAt  = Number(ctx.pos._lastShockAt  || 0);
       if (prevSol > 0 && curSol > 0 && (ctx.nowTs - prevAt) <= RUG_QUOTE_SHOCK_WINDOW_MS) {
         const dropFrac = (prevSol - curSol) / Math.max(prevSol, 1e-12);
+        quoteShockFrac = Math.max(0, dropFrac);
         if (dropFrac >= RUG_QUOTE_SHOCK_FRAC) {
           log(`RUG quote-shock ${ctx.mint.slice(0,4)}… drop=${(dropFrac*100).toFixed(1)}% within ${(ctx.nowTs-prevAt)}ms`);
-          flagUrgentSell(ctx.mint, "rug_quote_shock", 1.0);
+          flagUrgentSell(ctx.mint, "rug_quote_shock", 1.0, {
+            source: "quoteAndEdge",
+            kind: "quote_shock",
+            hard: false,
+            needCount: 2,
+            quoteTrustFloor: 0.6,
+            evidence: { dropFrac, prevSol, curSol, dtMs: ctx.nowTs - prevAt },
+          });
         }
       }
       ctx.pos._lastShockSol = curSol;
@@ -56,6 +65,7 @@ export function createQuoteAndEdgePolicy({
     ctx.pxNowNet  = sz > 0 ? (ctx.curSolNet / sz) : 0;
     ctx.pnlNetPct = (ctx.pxNowNet > 0 && ctx.pxCost > 0) ? ((ctx.pxNowNet - ctx.pxCost) / ctx.pxCost) * 100 : 0;
 
+    let pnlClampApplied = false;
     try {
       const clampDropPct = Math.max(0, Number(state.pnlClampDropPct ?? 35));
       const clampWindowMs = Math.max(0, Number(state.pnlClampWindowMs ?? 6500));
@@ -74,6 +84,7 @@ export function createQuoteAndEdgePolicy({
           if (ctx.pnlPct < minAllowed) {
             log(`PnL clamp ${ctx.mint.slice(0,4)}… gross ${ctx.pnlPct.toFixed(2)}% → ${minAllowed.toFixed(2)}% (sz/cost unchanged)`);
             ctx.pnlPct = minAllowed;
+            pnlClampApplied = true;
           }
         }
         if (Number.isFinite(prevNetPct) && Number.isFinite(ctx.pnlNetPct)) {
@@ -81,6 +92,7 @@ export function createQuoteAndEdgePolicy({
           if (ctx.pnlNetPct < minAllowed) {
             log(`PnL clamp ${ctx.mint.slice(0,4)}… net ${ctx.pnlNetPct.toFixed(2)}% → ${minAllowed.toFixed(2)}% (sz/cost unchanged)`);
             ctx.pnlNetPct = minAllowed;
+            pnlClampApplied = true;
           }
         }
       }
@@ -91,6 +103,52 @@ export function createQuoteAndEdgePolicy({
       ctx.pos._pnlSanityPct = ctx.pnlPct;
       ctx.pos._pnlSanityNetPct = ctx.pnlNetPct;
     } catch {}
+
+    try {
+      const flags = [];
+      let trust = 1;
+      if (!(Number.isFinite(ctx.curSol) && ctx.curSol > 0)) {
+        flags.push("no-quote");
+        trust = 0;
+      }
+
+      if (quoteShockFrac >= Math.max(0.12, Number(RUG_QUOTE_SHOCK_FRAC || 0) * 0.6)) {
+        flags.push("quote-shock");
+        trust -= Math.min(0.45, quoteShockFrac * 0.9);
+      }
+
+      const feeDragPct = (Number.isFinite(ctx.curSol) && ctx.curSol > 0 && Number.isFinite(ctx.curSolNet))
+        ? Math.max(0, ((ctx.curSol - ctx.curSolNet) / Math.max(ctx.curSol, 1e-12)) * 100)
+        : 0;
+      if (feeDragPct >= 1.25) {
+        flags.push("heavy-fee-drag");
+        trust -= Math.min(0.2, feeDragPct / 12);
+      }
+
+      if (pnlClampApplied) {
+        flags.push("pnl-clamped");
+        trust -= 0.35;
+      }
+
+      const prevTrust = Number(ctx.pos._quoteTrust || 1);
+      if (Number.isFinite(prevTrust) && prevTrust > 0 && trust < prevTrust - 0.35) {
+        flags.push("trust-drop");
+      }
+
+      trust = Math.max(0, Math.min(1, trust));
+      ctx.quoteTrust = trust;
+      ctx.quoteTrustFlags = flags;
+      ctx.quoteMetrics = {
+        quoteShockFrac,
+        feeDragPct,
+        pnlClampApplied,
+      };
+      ctx.pos._quoteTrust = trust;
+      ctx.pos._quoteTrustAt = ctx.nowTs;
+    } catch {
+      ctx.quoteTrust = Number.isFinite(ctx?.quoteTrust) ? Number(ctx.quoteTrust) : 1;
+      ctx.quoteTrustFlags = Array.isArray(ctx?.quoteTrustFlags) ? ctx.quoteTrustFlags : [];
+    }
 
     // Maintain high-water marks from live valuation ticks.
     // - `hwmSol` is used as a peak value hint (prefer net for conservatism).

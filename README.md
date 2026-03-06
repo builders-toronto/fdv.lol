@@ -281,4 +281,17 @@ fdv.lol is open-source and community-driven. You can help by:
 
 ⚡ Together we can make fdv.lol the fastest, simplest, and most trusted memecoin radar on Solana.
 
-fix(trader): correct partial-sell cost basis to prevent inflated PnL after exits; unmount hold giscus on profile navigation and remount only on active user intent.
+0.0.8.1: harden trader exits and upgrade Gary decision quality
+
+- add quote-trust scoring and quote-shock handling so noisy quotes stop forcing weak exits
+- score fast-drop evidence and require better confirmation for soft cooling/observer-style urgents
+- enrich urgent arbitration with count, hardness, trust floors, and evidence-aware gating
+- bias softer risk events toward partial de-risking instead of immediate full liquidation
+- fix badge semantics so cooling represents real drop conditions while calm remains neutral/plateau
+- refactor fast-drop logic into a dedicated sell policy and keep sell pipeline ordering execution-aware
+- persist richer sell snapshots, realized outcomes, and replay context for tuning and false-stop analysis
+- add replay tooling for sell snapshots to compare baseline, trust, and urgent-arbitration variants
+- expand Gary tune schema to include real runtime knobs like partial TP, edge buffers, and entry-cost caps
+- feed Gary compact execution-quality context including quote trust, urgent evidence, regime, and badge
+- upgrade Gary memory to learn from repeated tags and regimes instead of only recent raw decisions
+- tighten Gary buy/sell prompts so exits respect quote quality, confirmation strength, and prior failure modes

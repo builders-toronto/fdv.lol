@@ -30,7 +30,7 @@ export function createFallbackSellPolicy({
         log(`Dust exit enabled for ${ctx.mint.slice(0,4)}… (est ${ctx.curSol.toFixed(6)} SOL >= ${dustMin})`);
       }
     } else if (ctx.curSol < ctx.minNotional && !ctx.forceExpire && (ctx.forceRug || ctx.forcePumpDrop || ctx.forceObserverDrop)) {
-      const why = ctx.forceRug ? "Rug" : (ctx.forcePumpDrop ? "Pump->Calm" : "Observer");
+      const why = ctx.forceRug ? "Rug" : (ctx.forcePumpDrop ? "Pump->Cooling" : "Observer");
       log(`${why} exit for ${ctx.mint.slice(0,4)}… ignoring min-notional (${ctx.curSol.toFixed(6)} SOL < ${ctx.minNotional}).`);
     }
 

@@ -221,6 +221,12 @@ export function createExecuteSellDecisionPolicy({
             label: "Partial sell PnL",
             decision: ctx?.decision || null,
             nowTs: Number(ctx?.nowTs || 0),
+            quoteTrust: Number(ctx?.quoteTrust ?? 1),
+            quoteTrustFlags: Array.isArray(ctx?.quoteTrustFlags) ? ctx.quoteTrustFlags : [],
+            quoteMetrics: ctx?.quoteMetrics || null,
+            urgentMeta: ctx?.urgentMeta || null,
+            badge: String(ctx?.agentSignals?.badge || ""),
+            regime: String(ctx?.agentSignals?.past?.regime || ctx?.agentSignals?.past?.label || ""),
           });
         }
       } catch {}
@@ -296,6 +302,12 @@ export function createExecuteSellDecisionPolicy({
                 label: "Full sell PnL",
                 decision: ctx?.decision || null,
                 nowTs: Number(ctx?.nowTs || 0),
+                quoteTrust: Number(ctx?.quoteTrust ?? 1),
+                quoteTrustFlags: Array.isArray(ctx?.quoteTrustFlags) ? ctx.quoteTrustFlags : [],
+                quoteMetrics: ctx?.quoteMetrics || null,
+                urgentMeta: ctx?.urgentMeta || null,
+                badge: String(ctx?.agentSignals?.badge || ""),
+                regime: String(ctx?.agentSignals?.past?.regime || ctx?.agentSignals?.past?.label || ""),
               });
             }
           } catch {}
