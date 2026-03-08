@@ -1925,6 +1925,7 @@ export function saveAutoTraderState() {
 let timer = null;
 let ledEl;
 let logEl, toggleEl, startBtn, stopBtn, mintEl;
+let openHoldingsEl;
 let depAddrEl, depBalEl, lifeEl, recvEl, buyPctEl, minBuyEl, maxBuyEl, minEdgeEl, multiEl, warmDecayEl;
 let tpEl, slEl, trailEl, slipEl, fricSnapEl;
 let advBoxEl, warmMinPEl, warmFloorEl, warmDelayEl, warmReleaseEl, warmMaxLossEl, warmMaxWindowEl, warmConsecEl, warmEdgeEl;
@@ -11303,6 +11304,462 @@ function _ensureStatsHeader() {
   } catch { return null; }
 }
 
+function _fmtTraderHoldAge(ageMs) {
+  const ms = Math.max(0, Number(ageMs || 0));
+  if (!ms) return "just now";
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m`;
+  const hrs = Math.floor(min / 60);
+  if (hrs < 24) return `${hrs}h ${min % 60}m`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ${hrs % 24}h`;
+}
+
+function _fmtTraderHoldNum(value, { maxFractionDigits = 4 } = {}) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return "-";
+  const abs = Math.abs(n);
+  const digits = abs >= 1000 ? 0 : abs >= 100 ? 2 : abs >= 1 ? Math.min(3, maxFractionDigits) : maxFractionDigits;
+  return n.toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: digits,
+  });
+}
+
+function _fmtTraderHoldPct(value, digits = 1) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "-";
+  return `${n > 0 ? "+" : ""}${n.toFixed(digits)}%`;
+}
+
+function _escTraderHold(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function _getTraderHoldSparklineValues(mint, pos) {
+  try {
+    let values = (_summarizePumpTickSeriesForMint(mint, 16) || [])
+      .map((item) => Number(item?.priceUsd || 0))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    if (values.length >= 2) return values.slice(-16);
+
+    values = (getLeaderSeries(mint, 12) || [])
+      .map((item) => Number(item?.pumpScore ?? item?.score ?? NaN))
+      .filter((value) => Number.isFinite(value));
+    if (values.length >= 2) return values.slice(-12);
+
+    const cur = Number(pos?.lastQuotedSol || 0);
+    const cost = Number(pos?.costSol || 0);
+    if (Number.isFinite(cur) && cur > 0 && Number.isFinite(cost) && cost > 0) return [cost, cur];
+  } catch {}
+  return [];
+}
+
+function _buildTraderHoldSparkline(values) {
+  const nums = Array.isArray(values) ? values.map((value) => Number(value)).filter((value) => Number.isFinite(value)) : [];
+  if (nums.length < 2) return { markup: "", trend: "flat", fingerprint: "" };
+
+  const width = 120;
+  const height = 40;
+  const padding = 3;
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  const range = Math.max(1e-9, max - min);
+  const step = nums.length > 1 ? (width - padding * 2) / (nums.length - 1) : 0;
+  const points = nums.map((value, index) => {
+    const x = padding + index * step;
+    const y = height - padding - ((value - min) / range) * (height - padding * 2);
+    return `${x.toFixed(2)},${y.toFixed(2)}`;
+  });
+  const area = `${padding},${height - padding} ${points.join(" ")} ${width - padding},${height - padding}`;
+  const delta = nums[nums.length - 1] - nums[0];
+  const trend = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
+  const stroke = trend === "up" ? "var(--fdv-ok)" : trend === "down" ? "var(--fdv-err)" : "color-mix(in srgb, var(--fdv-muted) 75%, #fff)";
+  const fill = trend === "up"
+    ? "color-mix(in srgb, var(--fdv-ok) 14%, transparent)"
+    : trend === "down"
+      ? "color-mix(in srgb, var(--fdv-err) 14%, transparent)"
+      : "color-mix(in srgb, var(--fdv-muted) 10%, transparent)";
+  return {
+    markup: `
+      <svg viewBox="0 0 ${width} ${height}" aria-hidden="true" focusable="false">
+        <polygon points="${area}" fill="${fill}"></polygon>
+        <polyline points="${points.join(" ")}" fill="none" stroke="${stroke}" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"></polyline>
+      </svg>
+    `,
+    trend,
+    fingerprint: nums.slice(-8).map((value) => Number(value).toPrecision(4)).join(","),
+  };
+}
+
+function _estimateTraderHoldValueSol(pos, solUsd) {
+  try {
+    const lastQuotedSol = Number(pos?.lastQuotedSol || 0);
+    if (Number.isFinite(lastQuotedSol) && lastQuotedSol > 0) return lastQuotedSol;
+
+    const sizeUi = Number(pos?.sizeUi || 0);
+    const lastQuotedPx = Number(pos?.lastQuotedPx || 0);
+    if (sizeUi > 0 && Number.isFinite(lastQuotedPx) && lastQuotedPx > 0) return sizeUi * lastQuotedPx;
+
+    const priceUsd = Number(pos?.tickNow?.priceUsd || 0);
+    if (sizeUi > 0 && Number.isFinite(priceUsd) && priceUsd > 0 && Number.isFinite(solUsd) && solUsd > 0) {
+      return sizeUi * (priceUsd / solUsd);
+    }
+  } catch {}
+  return 0;
+}
+
+function _getTraderHoldMeta(mint, { tickNow = null } = {}) {
+  try {
+    const m = String(mint || "").trim();
+    if (!m) return null;
+    const cache = _getTraderHoldMeta._cache || (_getTraderHoldMeta._cache = new Map());
+    const hit = cache.get(m);
+    const tsNow = Date.now();
+    if (hit && (tsNow - Number(hit.ts || 0)) < 15_000) return hit.meta;
+
+    let snap = null;
+    try { snap = getKpiMintBundle(m, { includeSnapshot: true, includeAddons: false })?.snapshot || null; } catch {}
+    if (!snap) {
+      try {
+        const latest = Array.isArray(getLatestSnapshot?.()) ? getLatestSnapshot() : [];
+        const raw = latest.find((it) => String(it?.mint ?? it?.id ?? "").trim() === m) || null;
+        if (raw) {
+          snap = {
+            symbol: String(raw?.symbol || "").trim(),
+            name: String(raw?.name || "").trim(),
+            pairUrl: String(raw?.pairUrl || "").trim(),
+            priceUsd: Number(raw?.priceUsd ?? 0),
+            chg1h: Number(raw?.chg1h ?? raw?.change1h ?? 0),
+            chg24: Number(raw?.chg24 ?? raw?.change24h ?? 0),
+            vol24: Number(raw?.vol24 ?? raw?.vol24hUsd ?? raw?.volume?.h24 ?? 0),
+            liqUsd: Number(raw?.liqUsd ?? raw?.liquidityUsd ?? 0),
+          };
+        }
+      } catch {}
+    }
+
+    const meta = {
+      symbol: String(snap?.symbol || "").trim(),
+      name: String(snap?.name || "").trim(),
+      pairUrl: String(snap?.pairUrl || "").trim(),
+      priceUsd: Number.isFinite(Number(snap?.priceUsd)) ? Number(snap.priceUsd) : Number(tickNow?.priceUsd || 0),
+      chg1h: Number.isFinite(Number(snap?.chg1h)) ? Number(snap.chg1h) : Number(tickNow?.change1h || 0),
+      chg24: Number.isFinite(Number(snap?.chg24)) ? Number(snap.chg24) : Number(tickNow?.change24h || 0),
+      vol24: Number.isFinite(Number(snap?.vol24)) ? Number(snap.vol24) : 0,
+      liqUsd: Number.isFinite(Number(snap?.liqUsd)) ? Number(snap.liqUsd) : Number(tickNow?.liqUsd || 0),
+    };
+    cache.set(m, { ts: tsNow, meta });
+    return meta;
+  } catch {
+    return null;
+  }
+}
+
+function _getManualExitBusyStore() {
+  try {
+    const g = (typeof window !== "undefined") ? window : globalThis;
+    if (!g._fdvManualExitBusy) g._fdvManualExitBusy = new Set();
+    return g._fdvManualExitBusy;
+  } catch {
+    return new Set();
+  }
+}
+
+async function exitHeldMint(mint, { blacklistMs = 15 * 60_000 } = {}) {
+  const m = String(mint || "").trim();
+  if (!m || m === SOL_MINT) return false;
+
+  const busy = _getManualExitBusyStore();
+  if (busy.has(m)) return false;
+
+  if (_buyInFlight || _inFlight || _sellEvalRunning || _switchingLeader) {
+    try { setMintBlacklist(m, blacklistMs); } catch {}
+    try {
+      flagUrgentSell(m, "Manual exit requested", 1, {
+        source: "manual",
+        kind: "manual_exit",
+        hard: true,
+        needCount: 1,
+        quoteTrustFloor: 0,
+        evidence: { requestedAt: now(), via: "open_table_exit" },
+      });
+    } catch {}
+    try { wakeSellEval(0); } catch {}
+    log(`Exit queued for ${m.slice(0,4)}…: trader is busy, forcing next sell cycle.`, "warn");
+    return true;
+  }
+
+  busy.add(m);
+  try { renderOpenHoldingsPanel(); } catch {}
+
+  _inFlight = true;
+  try {
+    const kp = await getAutoKeypair();
+    if (!kp) throw new Error("auto wallet not ready");
+
+    const owner = kp.publicKey.toBase58();
+    const pos = state.positions?.[m] || null;
+    if (!pos) throw new Error("position not found");
+
+    const bal = await getAtaBalanceUi(owner, m, pos?.decimals, "confirmed").catch(() => null);
+    const uiAmt = Math.max(0, Number(bal?.sizeUi || pos?.sizeUi || 0));
+    const dec = Number.isFinite(bal?.decimals) ? bal.decimals : (Number.isFinite(pos?.decimals) ? pos.decimals : 6);
+    if (!(uiAmt > 0)) {
+      if (state.positions?.[m]) { delete state.positions[m]; save(); }
+      try { removeFromPosCache(owner, m); } catch {}
+      try { updateStatsHeader(); } catch {}
+      log(`Removed empty holding ${m.slice(0,4)}… from the table.`, "help");
+      return true;
+    }
+
+    let estSol = 0;
+    try { estSol = await quoteOutSol(m, uiAmt, dec); } catch {}
+
+    const res = await _getDex().sellWithConfirm(
+      { signer: kp, mint: m, amountUi: uiAmt, slippageBps: state.slippageBps },
+      { retries: 2, confirmMs: 15000, closeWsolAta: false },
+    );
+    try { _noteDexTx("sell", m, res, { amountUi: uiAmt, slippageBps: state.slippageBps, source: "manual_exit" }); } catch {}
+    if (!res?.ok) throw new Error("route execution failed");
+
+    let remainUi = 0;
+    try {
+      const debit = await waitForTokenDebit(owner, m, uiAmt);
+      remainUi = Number(debit?.remainUi || 0);
+    } catch {
+      try {
+        const bb = await getAtaBalanceUi(owner, m, dec, "confirmed");
+        remainUi = Number(bb?.sizeUi || 0);
+      } catch {}
+    }
+
+    try { setMintBlacklist(m, blacklistMs); } catch {}
+    try { clearUrgentSell(m); } catch {}
+
+    if (remainUi > 1e-9) {
+      const frac = Math.min(1, Math.max(0, remainUi / Math.max(1e-9, uiAmt)));
+      if (state.positions?.[m]) {
+        state.positions[m].sizeUi = remainUi;
+        state.positions[m].costSol = Number(state.positions[m].costSol || 0) * frac;
+        state.positions[m].hwmSol = Number(state.positions[m].hwmSol || 0) * frac;
+        state.positions[m].lastSeenAt = now();
+        save();
+      }
+      try { updatePosCache(owner, m, remainUi, dec); } catch {}
+      log(`Exit partially sold ${m.slice(0,4)}…; remaining ${remainUi.toFixed(6)} is blacklisted briefly.`, "warn");
+      return true;
+    }
+
+    try { await closeEmptyTokenAtas(kp, m); } catch {}
+    const costSold = Number(state.positions?.[m]?.costSol || pos?.costSol || 0);
+    await _addRealizedPnl(estSol, costSold, "Manual exit PnL");
+    if (state.positions?.[m]) { delete state.positions[m]; save(); }
+    try { removeFromPosCache(owner, m); } catch {}
+    try { removeFromDustCache(owner, m); } catch {}
+    log(`Exited ${m.slice(0,4)}… -> ~${estSol.toFixed(6)} SOL. Re-entry blocked briefly.`, "help");
+    return true;
+  } catch (e) {
+    log(`Exit failed for ${m.slice(0,4)}…: ${e?.message || e}`, "err");
+    return false;
+  } finally {
+    _inFlight = false;
+    busy.delete(m);
+    try { renderOpenHoldingsPanel(); } catch {}
+    try { updateStatsHeader(); } catch {}
+  }
+}
+
+function renderOpenHoldingsPanel() {
+  try {
+    if (!openHoldingsEl) return;
+
+    const solUsd = Number((_solPxCache && _solPxCache.usd) || 0);
+    const entries = Object.entries(state.positions || {})
+      .filter(([mint, pos]) => mint && mint !== SOL_MINT && Number(pos?.sizeUi || 0) > 0)
+      .map(([mint, pos]) => {
+        const tickNow = pos?.tickNow || _summarizePumpTickNowForMint(mint) || null;
+        const meta = _getTraderHoldMeta(mint, { tickNow }) || null;
+        const valueSol = _estimateTraderHoldValueSol({ ...pos, tickNow }, solUsd);
+        const costSol = Math.max(0, Number(pos?.costSol || 0));
+        const pnlPct = (costSol > 0 && valueSol > 0) ? ((valueSol / costSol) - 1) * 100 : NaN;
+        const change5m = Number(tickNow?.change5m ?? NaN);
+        const ageMs = Math.max(0, now() - Number(pos?.lastBuyAt || pos?.acquiredAt || pos?.lastSeenAt || now()));
+        const sparkValues = _getTraderHoldSparklineValues(mint, pos);
+        const spark = _buildTraderHoldSparkline(sparkValues);
+        const awaitingSizeSync = !!pos?.awaitingSizeSync;
+        const warmingHold = !!pos?.warmingHold;
+        const lightEntry = !!pos?.lightEntry && Number(pos?.lightRemainingSol || 0) > 0;
+        const isLeader = String(state.currentLeaderMint || "") === mint;
+        const exitBusy = _getManualExitBusyStore().has(mint);
+        return {
+          mint,
+          pos,
+          meta,
+          tickNow,
+          valueSol,
+          costSol,
+          pnlPct,
+          change5m,
+          ageMs,
+          spark,
+          awaitingSizeSync,
+          warmingHold,
+          lightEntry,
+          isLeader,
+          exitBusy,
+        };
+      })
+      .sort((a, b) => {
+        const av = Math.max(0, Number(a.valueSol || 0));
+        const bv = Math.max(0, Number(b.valueSol || 0));
+        if (bv !== av) return bv - av;
+        return Number(b.pos?.lastBuyAt || b.pos?.acquiredAt || 0) - Number(a.pos?.lastBuyAt || a.pos?.acquiredAt || 0);
+      });
+
+    const sig = JSON.stringify(entries.map((item) => ([
+      item.mint,
+      Number(item.pos?.sizeUi || 0).toFixed(6),
+      Number(item.costSol || 0).toFixed(6),
+      Number(item.valueSol || 0).toFixed(6),
+      Number(item.tickNow?.ts || 0),
+      Number(item.tickNow?.priceUsd || 0).toFixed(8),
+      String(item.meta?.symbol || ""),
+      String(item.meta?.name || ""),
+      Number(item.meta?.liqUsd || 0).toFixed(2),
+      Number(item.meta?.vol24 || 0).toFixed(2),
+      item.awaitingSizeSync ? 1 : 0,
+      item.warmingHold ? 1 : 0,
+      item.lightEntry ? 1 : 0,
+      item.isLeader ? 1 : 0,
+      item.exitBusy ? 1 : 0,
+      item.spark.trend,
+      item.spark.fingerprint,
+    ])));
+    if (openHoldingsEl.dataset.sig === sig) return;
+    openHoldingsEl.dataset.sig = sig;
+
+    const countLabel = entries.length === 1 ? "1 held" : `${entries.length} held`;
+    if (!entries.length) {
+      openHoldingsEl.innerHTML = `
+        <div class="fdv-open-grid__header">
+          <div>
+            <strong>Open Coins</strong>
+            <span>Live positions currently held by the trader.</span>
+          </div>
+          <div class="fdv-open-grid__count">0 held</div>
+        </div>
+        <div class="fdv-open-table fdv-open-table--empty">
+          <div class="fdv-open-empty">No active holdings yet. Open positions will appear here as the trader accumulates them.</div>
+        </div>
+      `;
+      return;
+    }
+
+    openHoldingsEl.innerHTML = `
+      <div class="fdv-open-grid__header">
+        <div>
+          <strong>Open Coins</strong>
+          <span>Strict holdings table. Click a row to open the mint profile, or use Exit to sell that coin.</span>
+        </div>
+        <div class="fdv-open-grid__count">${countLabel}</div>
+      </div>
+      <div class="fdv-open-table-scroller">
+        <table class="fdv-open-table-strict" aria-label="Open holdings">
+          <colgroup>
+            <col class="fdv-open-col-coin">
+            <col class="fdv-open-col-status">
+            <col class="fdv-open-col-price">
+            <col class="fdv-open-col-liq">
+            <col class="fdv-open-col-vol">
+            <col class="fdv-open-col-pos">
+            <col class="fdv-open-col-value">
+            <col class="fdv-open-col-pnl">
+            <col class="fdv-open-col-trend">
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Coin</th>
+              <th>Status</th>
+              <th>Price</th>
+              <th>Liq</th>
+              <th>Vol24</th>
+              <th>Position</th>
+              <th>Value</th>
+              <th>PnL</th>
+              <th>Trend</th>
+            </tr>
+          </thead>
+          <tbody>
+        ${entries.map((item) => {
+          const meta = item.meta || {};
+          const shortMint = `${item.mint.slice(0, 4)}...${item.mint.slice(-4)}`;
+          const symbol = String(meta.symbol || "").trim() || shortMint;
+          const name = String(meta.name || "").trim();
+          const priceUsd = Number(meta.priceUsd || item.tickNow?.priceUsd || 0);
+          const liqUsd = Number(meta.liqUsd || item.tickNow?.liqUsd || 0);
+          const vol24 = Number(meta.vol24 || 0);
+          const chg1h = Number(meta.chg1h ?? item.tickNow?.change1h ?? NaN);
+          const pnlClass = Number.isFinite(item.pnlPct) ? (item.pnlPct > 0 ? "positive" : item.pnlPct < 0 ? "negative" : "flat") : "flat";
+          const changeClass = Number.isFinite(item.change5m) ? (item.change5m > 0 ? "positive" : item.change5m < 0 ? "negative" : "flat") : "flat";
+          const badges = [];
+          if (item.isLeader) badges.push('<span class="fdv-open-tag leader">Leader</span>');
+          if (item.awaitingSizeSync) badges.push('<span class="fdv-open-tag sync">Syncing</span>');
+          if (!item.awaitingSizeSync && item.warmingHold) badges.push('<span class="fdv-open-tag warm">Warming</span>');
+          if (item.lightEntry) badges.push('<span class="fdv-open-tag light">Light</span>');
+          if (!badges.length) badges.push('<span class="fdv-open-tag neutral">Held</span>');
+          return `
+            <tr class="fdv-open-table__row ${pnlClass}" data-auto-open-row data-mint="${item.mint}" title="Open ${shortMint} profile in a new tab">
+              <td>
+                <div class="fdv-open-coin">
+                  <div class="fdv-open-coin__symbol">${_escTraderHold(symbol)}</div>
+                </div>
+              </td>
+              <td>
+                <div class="fdv-open-subline">Age ${_fmtTraderHoldAge(item.ageMs)}</div>
+              </td>
+              <td>
+                <div class="fdv-open-subline">5m ${Number.isFinite(item.change5m) ? _fmtTraderHoldPct(item.change5m) : '-'}</div>
+              </td>
+              <td>
+                <div class="fdv-open-metric">${liqUsd > 0 ? fmtUsd(liqUsd) : '-'}</div>
+              </td>
+              <td>
+                <div class="fdv-open-metric">${vol24 > 0 ? fmtUsd(vol24) : '-'}</div>
+              </td>
+              <td>
+                <div class="fdv-open-metric">${_fmtTraderHoldNum(item.pos?.sizeUi || 0, { maxFractionDigits: 6 })}</div>
+              </td>
+              <td>
+                <div class="fdv-open-metric">${item.valueSol > 0 ? `${_fmtTraderHoldNum(item.valueSol)} SOL` : '-'}</div>
+              </td>
+              <td>
+                <div class="fdv-open-metric ${pnlClass}">${Number.isFinite(item.pnlPct) ? _fmtTraderHoldPct(item.pnlPct) : '-'}</div>
+              </td>
+              <td>
+                <div class="fdv-open-trend-cell">
+                  <div class="fdv-open-spark ${item.spark.trend}">
+                    ${item.spark.markup || '<div class="fdv-open-spark__empty">No sparkline</div>'}
+                  </div>
+                </div>
+              </td>
+            </tr>
+          `;
+        }).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } catch {}
+}
+
 let _hdrRaf = 0;
 function updateStatsHeader() {
   if (_hdrRaf) return; // throttle to next frame
@@ -11391,6 +11848,7 @@ function updateStatsHeader() {
       }
       if (leftEl) leftEl.textContent = left;
       if (lastEl) lastEl.textContent = lastTradeStr;
+      renderOpenHoldingsPanel();
     } catch {}
   });
 }
@@ -11643,6 +12101,18 @@ export function initTraderWidget(container = document.body) {
     <div class="fdv-log" data-auto-log>
     <button class="btn fdv-hidden" data-auto-log-expand title="Expand log">Expand</button>
     </div>
+    <section class="fdv-open-grid-wrap" data-auto-open-panel>
+      <div class="fdv-open-grid__header">
+        <div>
+          <strong>Open Coins</strong>
+          <span>Live positions currently held by the trader.</span>
+        </div>
+        <div class="fdv-open-grid__count">0 held</div>
+      </div>
+      <div class="fdv-open-table fdv-open-table--empty">
+        <div class="fdv-open-empty">No active holdings yet. Open positions will appear here as the trader accumulates them.</div>
+      </div>
+    </section>
     <div class="fdv-actions">
     <div class="fdv-actions-left">
         <button class="btn" data-auto-help title="How the bot works">Help</button>
@@ -11721,6 +12191,7 @@ export function initTraderWidget(container = document.body) {
   };
 
   logEl     = wrap.querySelector("[data-auto-log]");
+  openHoldingsEl = wrap.querySelector("[data-auto-open-panel]");
   toggleEl  = wrap.querySelector("[data-auto-toggle]");
   try {
     const outer = wrap.closest?.('.fdv-auto-wrap') || document;
@@ -11737,6 +12208,29 @@ export function initTraderWidget(container = document.body) {
   const stealthEl = wrap.querySelector("[data-auto-stealth]");
   const expandBtn = wrap.querySelector("[data-auto-log-expand]");
   const fullscreenLink = wrap.querySelector("[data-auto-fullscreen]");
+
+  if (openHoldingsEl && !openHoldingsEl.__fdvBound) {
+    openHoldingsEl.__fdvBound = true;
+    openHoldingsEl.addEventListener("click", async (e) => {
+      const exitBtn = e.target?.closest?.("[data-auto-open-exit]");
+      if (exitBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const mint = String(exitBtn.getAttribute("data-mint") || "").trim();
+        if (!mint) return;
+        await exitHeldMint(mint).catch(() => false);
+        return;
+      }
+
+      const row = e.target?.closest?.("[data-auto-open-row]");
+      if (!row) return;
+      const mint = String(row.getAttribute("data-mint") || "").trim();
+      if (!mint) return;
+      try { focusMintAndRecord(mint, { refresh: true, ttlMs: 250 }).catch(() => {}); } catch {}
+      try { window.open(`/token/${encodeURIComponent(mint)}`, "_blank", "noopener"); } catch {}
+    });
+  }
+  try { renderOpenHoldingsPanel(); } catch {}
 
   // Fullscreen UX: ensure a black background behind the app.
   // NOTE: requestFullscreen requires a user gesture; this link provides it.
