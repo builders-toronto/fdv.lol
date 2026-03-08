@@ -4,6 +4,7 @@ export function createAgentDecisionPolicy({
   log,
   getState,
   getAgent,
+  minSellNotionalSol,
 } = {}) {
   const _longHoldUntilByMint = new Map();
   const LONG_HOLD_RECHECK_MAX_SECS = 3;
@@ -30,6 +31,9 @@ export function createAgentDecisionPolicy({
   };
   const _getState = typeof getState === "function" ? getState : () => ({});
   const _getAgent = typeof getAgent === "function" ? getAgent : () => null;
+  const _getMinSellNotionalSol = typeof minSellNotionalSol === "function"
+    ? minSellNotionalSol
+    : () => 0;
 
   const _posForAgent = (pos, { nowTs } = {}) => {
     try {
@@ -436,6 +440,51 @@ export function createAgentDecisionPolicy({
       }
     };
 
+      const _mapAgentPartialDecision = ({
+        pct: requestedPct,
+        reason,
+        sourceLabel = "agent-partial",
+      } = {}) => {
+        const pct = Math.max(1, Math.min(100, Number(requestedPct || 50)));
+        const fullNotional = Math.max(
+          0,
+          Number.isFinite(Number(ctx?.curSol)) ? Number(ctx.curSol) : 0,
+          Number.isFinite(Number(ctx?.curSolNet)) ? Number(ctx.curSolNet) : 0,
+        );
+        const effectiveMinNotional = Math.max(
+          0,
+          Number(ctx?.minNotional || 0),
+          Number(_getMinSellNotionalSol() || 0),
+        );
+        const partialNotional = fullNotional * (pct / 100);
+        const safeReason = String(reason || sourceLabel).trim();
+
+        if (effectiveMinNotional > 0 && partialNotional < effectiveMinNotional) {
+          ctx.decision = {
+            action: "sell_all",
+            reason: `${safeReason} [mapped:partial<min-notional pct=${pct}]`,
+          };
+          try {
+            _log(
+              `${sourceLabel} remapped -> sell_all pct=${pct} partial≈${partialNotional.toFixed(6)} full≈${fullNotional.toFixed(6)} min=${effectiveMinNotional.toFixed(6)}`
+            );
+          } catch {}
+          return true;
+        }
+
+        ctx.decision = {
+          action: "sell_partial",
+          pct,
+          reason: safeReason,
+        };
+        try {
+          _log(
+            `${sourceLabel} mapped -> sell_partial pct=${pct} partial≈${partialNotional.toFixed(6)} min=${effectiveMinNotional.toFixed(6)}`
+          );
+        } catch {}
+        return true;
+      };
+
       const _isSellPartialAction = (a) => {
         const s = String(a || "").trim().toLowerCase();
         return (
@@ -462,8 +511,11 @@ export function createAgentDecisionPolicy({
           }
 
           // Otherwise harvest some profit rather than holding indefinitely.
-          ctx.decision = { action: "sell_partial", pct: 50, reason: `agent-profit-harvest pnl=${pnl.toFixed(2)}%` };
-          try { _log(`hold overridden -> sell_partial (profit harvest)`); } catch {}
+          _mapAgentPartialDecision({
+            pct: 50,
+            reason: `agent-profit-harvest pnl=${pnl.toFixed(2)}%`,
+            sourceLabel: "hold overridden",
+          });
           return;
         }
       }
@@ -596,13 +648,11 @@ export function createAgentDecisionPolicy({
 
       if (_isSellPartialAction(action)) {
         const pct = Math.max(1, Math.min(100, Number(d?.sell?.pct ?? d?.pct ?? 50)));
-        ctx.decision = {
-          action: "sell_partial",
+        _mapAgentPartialDecision({
           pct,
           reason: `agent-partial ${String(d.reason || "")}`.trim(),
-        };
-
-        try { _log(`sell mapped -> sell_partial pct=${pct}`); } catch {}
+          sourceLabel: "sell mapped",
+        });
       }
     } catch (e) {
       try { _log(`Agent sell policy failed: ${String(e?.message || e || "")}`, "warn"); } catch {}

@@ -1370,6 +1370,7 @@ const agentDecisionPolicy = createAgentDecisionPolicy({
   log,
   getState: () => state,
   getAgent: () => getAutoTraderAgent(),
+  minSellNotionalSol,
 });
 
 const reboundGatePolicy = createReboundGatePolicy({
