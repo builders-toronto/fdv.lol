@@ -64,8 +64,13 @@ export function createExecuteSellDecisionPolicy({
     const { kp, mint, pos } = ctx;
     const ownerStr = ctx.ownerStr;
     const isFastExit = !!ctx.isFastExit;
+    const effectiveMinNotional = Math.max(
+      0,
+      Number(ctx?.minNotional || 0),
+      Number(minSellNotionalSol?.() || 0),
+    );
 
-    if (ctx.decision.action === "sell_all" && ctx.curSol < ctx.minNotional && !isFastExit) {
+    if (ctx.decision.action === "sell_all" && ctx.curSol < effectiveMinNotional && !isFastExit) {
       try { addToDustCache(ownerStr, mint, pos.sizeUi, pos.decimals ?? 6); } catch {}
       try { removeFromPosCache(ownerStr, mint); } catch {}
       delete state.positions[mint];
@@ -116,121 +121,132 @@ export function createExecuteSellDecisionPolicy({
       const exitConfirmMs = isFastExit ? Math.max(6000, Number(state.fastExitConfirmMs || 9000)) : 15000;
 
       // PARTIAL
-      if (ctx.decision.action === "sell_partial") {
-      const pct = Math.min(100, Math.max(1, Number(ctx.decision.pct || 50)));
-      const preSizeUi = Math.max(0, Number(pos.sizeUi || 0));
-      const preCostSol = Math.max(0, Number(pos.costSol || 0));
-      const preHwmSol = Math.max(0, Number(pos.hwmSol || 0));
-      let sellUi = pos.sizeUi * (pct / 100);
-      try {
-        const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
-        if (Number(b.sizeUi || 0) > 0) sellUi = Math.min(sellUi, Number(b.sizeUi));
-      } catch {}
+      let runPartial = ctx.decision.action === "sell_partial";
+      if (runPartial) {
+        const pct = Math.min(100, Math.max(1, Number(ctx.decision.pct || 50)));
+        const preSizeUi = Math.max(0, Number(pos.sizeUi || 0));
+        const preCostSol = Math.max(0, Number(pos.costSol || 0));
+        const preHwmSol = Math.max(0, Number(pos.hwmSol || 0));
+        let sellUi = pos.sizeUi * (pct / 100);
+        try {
+          const b = await getAtaBalanceUi(kp.publicKey.toBase58(), mint, pos.decimals);
+          if (Number(b.sizeUi || 0) > 0) sellUi = Math.min(sellUi, Number(b.sizeUi));
+        } catch {}
 
-      const estSol = await quoteOutSol(mint, sellUi, pos.decimals).catch(() => 0);
-      if (estSol < ctx.minNotional && !isFastExit) {
-        if (ctx.curSol >= ctx.minNotional) {
-          log(`Skip partial ${pct}% ${mint.slice(0,4)}… (below min-notional: est ${estSol.toFixed(6)} SOL < ${ctx.minNotional}; no escalation)`);
-          setInFlight(false);
-          try { unlockMint(mint); } catch {}
-          // Not an action; allow the evaluator to consider other mints this tick.
-          return { done: false, returned: true };
-
-        } else {
-          log(`Skip partial ${pct}% ${mint.slice(0,4)}… (est ${estSol.toFixed(6)} SOL < ${ctx.minNotional})`);
-          setInFlight(false);
-          try { unlockMint(mint); } catch {}
-          // Not an action; allow the evaluator to consider other mints this tick.
-          return { done: false, returned: true };
-        }
-      }
-
-      const res = await executeSwapWithConfirm({
-        signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: exitSlip,
-      }, { retries: isFastExit ? 0 : 1, confirmMs: exitConfirmMs });
-
-      if (!res.ok) {
-        if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
-        log(`Sell not confirmed for ${mint.slice(0,4)}… (partial). Keeping position.`);
-        setInFlight(false);
-        unlockMint(mint);
-        return { done: true, returned: true };
-      }
-
-      log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… (${ctx.decision.reason})`);
-
-      // Optimistic local update; final accounting is corrected from on-chain debit result below.
-      pos.sizeUi = Math.max(0, preSizeUi - sellUi);
-      pos.hwmPx = Number(pos.hwmPx || 0);
-      pos.lastSellAt = now();
-      pos.allowRebuy = true;
-      pos.lastSplitSellAt = now();
-
-      let remainUiActual = Math.max(0, Number(pos.sizeUi || 0));
-      try {
-        const debit = await waitForTokenDebit(kp.publicKey.toBase58(), mint, sellUi, { timeoutMs: 20000, pollMs: 350 });
-        remainUiActual = Math.max(0, Number(debit.remainUi || remainUiActual || 0));
-        if (remainUiActual > 1e-9) {
-          const estRemainSol = await quoteOutSol(mint, remainUiActual, pos.decimals).catch(() => 0);
-          const minN = minSellNotionalSol();
-          if (estRemainSol >= minN) {
-            pos.sizeUi = remainUiActual;
-            if (Number.isFinite(debit.decimals)) pos.decimals = debit.decimals;
-            updatePosCache(kp.publicKey.toBase64 ? kp.publicKey.toBase64() : kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
-            updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+        const estSol = await quoteOutSol(mint, sellUi, pos.decimals).catch(() => 0);
+        if (estSol < effectiveMinNotional && !isFastExit) {
+          const fullEstSol = Math.max(0, Number(ctx.curSol || 0));
+          if (fullEstSol >= effectiveMinNotional) {
+            const prevReason = String(ctx?.decision?.reason || "partial-below-min-notional").trim();
+            ctx.decision = {
+              ...ctx.decision,
+              action: "sell_all",
+              reason: `${prevReason} [escalated:partial<min-notional]`,
+            };
+            runPartial = false;
+            log(
+              `Partial ${pct}% ${mint.slice(0,4)}… is below min-notional (${estSol.toFixed(6)} SOL < ${effectiveMinNotional.toFixed(6)}); escalating to full exit.`
+            );
           } else {
-            try { addToDustCache(kp.publicKey.toBase58(), mint, remainUiActual, pos.decimals ?? 6); } catch {}
-            try { removeFromPosCache(kp.publicKey.toBase58(), mint); } catch {}
-            try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
+            try { addToDustCache(ownerStr, mint, pos.sizeUi, pos.decimals ?? 6); } catch {}
+            try { removeFromPosCache(ownerStr, mint); } catch {}
             delete state.positions[mint];
             save();
-            log(`Leftover below notional for ${mint.slice(0,4)}… moved to dust cache.`);
+            log(`Below notional for ${mint.slice(0,4)}… moved to dust (partial and full size are both too small).`);
+            return { done: true, returned: true };
           }
-        } else {
-          delete state.positions[mint];
-          removeFromPosCache(kp.publicKey.toBase58(), mint);
-          try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
         }
-      } catch {
-        remainUiActual = Math.max(0, Number(pos.sizeUi || 0));
-        updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+
+        if (runPartial) {
+          const res = await executeSwapWithConfirm({
+            signer: kp, inputMint: mint, outputMint: SOL_MINT, amountUi: sellUi, slippageBps: exitSlip,
+          }, { retries: isFastExit ? 0 : 1, confirmMs: exitConfirmMs });
+
+          if (!res.ok) {
+            if (res.noRoute) setRouterHold(mint, ROUTER_COOLDOWN_MS);
+            log(`Sell not confirmed for ${mint.slice(0,4)}… (partial). Keeping position.`);
+            setInFlight(false);
+            unlockMint(mint);
+            return { done: true, returned: true };
+          }
+
+          log(`Sold ${sellUi.toFixed(6)} ${mint.slice(0,4)}… (${ctx.decision.reason})`);
+
+          // Optimistic local update; final accounting is corrected from on-chain debit result below.
+          pos.sizeUi = Math.max(0, preSizeUi - sellUi);
+          pos.hwmPx = Number(pos.hwmPx || 0);
+          pos.lastSellAt = now();
+          pos.allowRebuy = true;
+          pos.lastSplitSellAt = now();
+
+          let remainUiActual = Math.max(0, Number(pos.sizeUi || 0));
+          try {
+            const debit = await waitForTokenDebit(kp.publicKey.toBase58(), mint, sellUi, { timeoutMs: 20000, pollMs: 350 });
+            remainUiActual = Math.max(0, Number(debit.remainUi || remainUiActual || 0));
+            if (remainUiActual > 1e-9) {
+              const estRemainSol = await quoteOutSol(mint, remainUiActual, pos.decimals).catch(() => 0);
+              const minN = minSellNotionalSol();
+              if (estRemainSol >= minN) {
+                pos.sizeUi = remainUiActual;
+                if (Number.isFinite(debit.decimals)) pos.decimals = debit.decimals;
+                updatePosCache(kp.publicKey.toBase64 ? kp.publicKey.toBase64() : kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+                updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+              } else {
+                try { addToDustCache(kp.publicKey.toBase58(), mint, remainUiActual, pos.decimals ?? 6); } catch {}
+                try { removeFromPosCache(kp.publicKey.toBase58(), mint); } catch {}
+                try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
+                delete state.positions[mint];
+                save();
+                log(`Leftover below notional for ${mint.slice(0,4)}… moved to dust cache.`);
+              }
+            } else {
+              delete state.positions[mint];
+              removeFromPosCache(kp.publicKey.toBase58(), mint);
+              try { clearPendingCredit(kp.publicKey.toBase58(), mint); } catch {}
+            }
+          } catch {
+            remainUiActual = Math.max(0, Number(pos.sizeUi || 0));
+            updatePosCache(kp.publicKey.toBase58(), mint, pos.sizeUi, pos.decimals);
+          }
+
+          const safePreSize = Math.max(1e-12, preSizeUi);
+          const soldFrac = Math.min(1, Math.max(0, (preSizeUi - remainUiActual) / safePreSize));
+          const costSold = preCostSol * soldFrac;
+          const remainCostSol = Math.max(0, preCostSol - costSold);
+          const remainHwmSol = Math.max(0, preHwmSol * (1 - soldFrac));
+
+          if (state.positions[mint]) {
+            pos.sizeUi = remainUiActual;
+            pos.costSol = remainCostSol;
+            pos.hwmSol = remainHwmSol;
+          }
+          save();
+
+          await addRealizedPnl(estSol, costSold, "Partial sell PnL");
+          try {
+            if (typeof onRealizedPnl === "function") {
+              onRealizedPnl({
+                mint,
+                kind: "sell_partial",
+                proceedsSol: estSol,
+                costSold,
+                pnlSol: Number(estSol || 0) - Number(costSold || 0),
+                label: "Partial sell PnL",
+                decision: ctx?.decision || null,
+                nowTs: Number(ctx?.nowTs || 0),
+                quoteTrust: Number(ctx?.quoteTrust ?? 1),
+                quoteTrustFlags: Array.isArray(ctx?.quoteTrustFlags) ? ctx.quoteTrustFlags : [],
+                quoteMetrics: ctx?.quoteMetrics || null,
+                urgentMeta: ctx?.urgentMeta || null,
+                badge: String(ctx?.agentSignals?.badge || ""),
+                regime: String(ctx?.agentSignals?.past?.regime || ctx?.agentSignals?.past?.label || ""),
+              });
+            }
+          } catch {}
+        }
       }
 
-      const safePreSize = Math.max(1e-12, preSizeUi);
-      const soldFrac = Math.min(1, Math.max(0, (preSizeUi - remainUiActual) / safePreSize));
-      const costSold = preCostSol * soldFrac;
-      const remainCostSol = Math.max(0, preCostSol - costSold);
-      const remainHwmSol = Math.max(0, preHwmSol * (1 - soldFrac));
-
-      if (state.positions[mint]) {
-        pos.sizeUi = remainUiActual;
-        pos.costSol = remainCostSol;
-        pos.hwmSol = remainHwmSol;
-      }
-      save();
-
-      await addRealizedPnl(estSol, costSold, "Partial sell PnL");
-      try {
-        if (typeof onRealizedPnl === "function") {
-          onRealizedPnl({
-            mint,
-            kind: "sell_partial",
-            proceedsSol: estSol,
-            costSold,
-            pnlSol: Number(estSol || 0) - Number(costSold || 0),
-            label: "Partial sell PnL",
-            decision: ctx?.decision || null,
-            nowTs: Number(ctx?.nowTs || 0),
-            quoteTrust: Number(ctx?.quoteTrust ?? 1),
-            quoteTrustFlags: Array.isArray(ctx?.quoteTrustFlags) ? ctx.quoteTrustFlags : [],
-            quoteMetrics: ctx?.quoteMetrics || null,
-            urgentMeta: ctx?.urgentMeta || null,
-            badge: String(ctx?.agentSignals?.badge || ""),
-            regime: String(ctx?.agentSignals?.past?.regime || ctx?.agentSignals?.past?.label || ""),
-          });
-        }
-      } catch {}
-      } else {
+      if (!runPartial) {
         // FULL SELL (original block)
         let sellUi = pos.sizeUi;
         try {
