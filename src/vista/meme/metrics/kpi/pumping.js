@@ -326,7 +326,11 @@ export function computePumpingScoreForMint(records, nowTs) {
   const cur = _computeCoreScore(recent, nowTs);
   let { score } = cur;
 
-  if (recent.length >= 2 && score < prevScore && prevScore > 0) {
+  // Smooth per-tick drawdowns — but never during a rug: when severity is
+  // high we want the score to reflect the dump immediately, not be floored
+  // by inertia from the pre-rug score.
+  const rugSevNow = Number(cur.meta?.rug?.sev || 0);
+  if (recent.length >= 2 && score < prevScore && prevScore > 0 && rugSevNow < 1) {
     const maxDrop = prevScore * PUMP_MAX_DRAWDOWN_STEP;
     score = Math.max(score, prevScore - maxDrop);
   }
@@ -360,8 +364,11 @@ export function computePumpingScoreForMint(records, nowTs) {
 
     const warmingCandidate = score >= 0.6 && (change1h > 0 || change6h > 0 || change5m >= 0);
 
-    // Gate "Pumping" on a positive score slope (points per second)
-    if (pumpingCandidate && dps > PUMP_MIN_DPS) {
+    // Gate "Pumping" on a positive score slope (points per second).
+    // With a single snapshot there is no slope information yet — don't let
+    // dps=0 mask a clearly strong first sighting.
+    const slopeOk = recent.length < 2 ? true : dps > PUMP_MIN_DPS;
+    if (pumpingCandidate && slopeOk) {
       badge = '🔥 Pumping';
     } else if (warmingCandidate) {
       badge = '🌡 Warming';

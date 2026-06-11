@@ -22,7 +22,7 @@ const setNow = (d) => {
 
 async function loadPumping() {
   vi.resetModules();
-  const pumping = await import('../pumping.js');
+  const pumping = await import('../kpi/pumping.js');
   return pumping;
 }
 
@@ -186,7 +186,7 @@ describe('pumping scoring and leaders', () => {
     expect(sev).toBeGreaterThanOrEqual(1); 
     expect(rugged).toBe(true);
     expect(rugFactor).toBeLessThan(1);
-    expect(badge).toBe('Cooling');
+    expect(badge).toBe('🥶 Cooling');
     expect(score).toBeLessThan(1.5);
   });
 
@@ -219,7 +219,7 @@ describe('pumping scoring and leaders', () => {
 
     const scoreRes = computePumpingScoreForMint(recs, now);
     expect(scoreRes.score).toBe(0);
-    expect(scoreRes.badge).toBe('Calm');
+    expect(scoreRes.badge).toBe('📉 Calm');
   });
 
   it('enforces liquidity and 1h volume gates', async () => {
@@ -241,7 +241,7 @@ describe('pumping scoring and leaders', () => {
       now
     );
     expect(res.score).toBe(0);
-    expect(res.badge).toBe('Calm');
+    expect(res.badge).toBe('📉 Calm');
 
     res = computePumpingScoreForMint(
       [makeRec(now - 30_000, {
@@ -258,6 +258,6 @@ describe('pumping scoring and leaders', () => {
       now
     );
     expect(res.score).toBe(0);
-    expect(res.badge).toBe('Calm');
+    expect(res.badge).toBe('📉 Calm');
   });
 });

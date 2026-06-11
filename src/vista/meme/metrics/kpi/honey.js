@@ -1,5 +1,5 @@
 import { addKpiAddon, getLatestSnapshot } from '../ingest.js';
-import { createSolanaDepsLoader } from '../../../widgets/auto/lib/solana/deps.js';
+import { createSolanaDepsLoader } from '../../../addons/auto/lib/solana/deps.js';
 
 const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const TOKEN_2022_PROGRAM_ID = 'TokenzQdBNb1KzYrNU3G1bqbp1VZr1z7jWmzuXyaS6uJ';

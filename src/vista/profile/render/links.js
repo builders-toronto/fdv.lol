@@ -1,4 +1,4 @@
-import { normalizeSocial, iconFor } from "../../../data/socials.js";
+import { normalizeSocial, iconFor } from "../../../lib/socialBuilder.js";
 
 export default function renderLinks(targetEl, socials) {
   if (!targetEl) return;
