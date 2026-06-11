@@ -1373,6 +1373,7 @@ function _getEnvKeyForProvider(provider) {
     if (p === "gemini") return pick("GEMINI_API_KEY", "FDV_GEMINI_KEY");
     if (p === "grok") return pick("GROK_API_KEY", "XAI_API_KEY", "FDV_GROK_KEY");
     if (p === "deepseek") return pick("DEEPSEEK_API_KEY", "FDV_DEEPSEEK_KEY");
+    if (p === "anthropic") return pick("ANTHROPIC_API_KEY", "FDV_ANTHROPIC_KEY");
     return pick("OPENAI_API_KEY", "FDV_OPENAI_KEY");
   } catch {
     return "";
@@ -1384,6 +1385,7 @@ function _lsKeyForProvider(provider) {
   if (p === "gemini") return "fdv_gemini_key";
   if (p === "grok") return "fdv_grok_key";
   if (p === "deepseek") return "fdv_deepseek_key";
+  if (p === "anthropic") return "fdv_anthropic_key";
   return "fdv_openai_key";
 }
 
@@ -1391,7 +1393,7 @@ function applyAgentGaryFullAiToStorage({ provider, model, riskLevel, apiKey, ful
   try {
     if (typeof localStorage === "undefined") return false;
     const p = String(provider || "").trim().toLowerCase() || "openai";
-    const m = String(model || "").trim() || (p === "gemini" ? "gemini-1.5-flash" : (p === "deepseek" ? "deepseek-chat" : (p === "grok" ? "grok-beta" : "gpt-4o-mini")));
+    const m = String(model || "").trim() || (p === "gemini" ? "gemini-1.5-flash" : (p === "deepseek" ? "deepseek-chat" : (p === "grok" ? "grok-beta" : (p === "anthropic" ? "claude-haiku-4-5" : "gpt-4o-mini"))));
     const r = String(riskLevel || "safe").trim().toLowerCase();
     const rl = (r === "safe" || r === "medium" || r === "degen") ? r : "safe";
     const k = String(apiKey || "").trim();
@@ -1531,6 +1533,9 @@ async function configureAgentGaryFullAiWizard(existing = {}) {
     "gemini-2.5-flash-lite",
     "grok-3-mini",
     "deepseek-chat",
+    "claude-haiku-4-5",
+    "claude-sonnet-4-6",
+    "claude-fable-5",
   ];
 
   const modelDefault = String(ex.llmModel || ex.model || ex.openaiModel || "gpt-4o-mini").trim();
@@ -1549,6 +1554,7 @@ async function configureAgentGaryFullAiWizard(existing = {}) {
     if (mm.startsWith("gemini-")) return "gemini";
     if (mm.startsWith("grok-")) return "grok";
     if (mm.startsWith("deepseek-")) return "deepseek";
+    if (mm.startsWith("claude-")) return "anthropic";
     return "openai";
   };
   const provider = inferProvider(model);

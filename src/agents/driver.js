@@ -2493,6 +2493,7 @@ export function createAutoTraderAgentDriver({
 						if (s.startsWith("gemini-")) return "gemini";
 						if (s === "deepseek-chat" || s === "deepseek-reasoner" || s.startsWith("deepseek-")) return "deepseek";
 						if (s.startsWith("grok-")) return "grok";
+						if (s.startsWith("claude-")) return "anthropic";
 						return "openai";
 					} catch {
 						return "openai";
@@ -2509,7 +2510,7 @@ export function createAutoTraderAgentDriver({
 						: _readLs("fdv_llm_model", _readLs("fdv_openai_model", "gpt-4o-mini"))
 				).trim() || "gpt-4o-mini";
 
-				const provider = (llmProvider === "gemini" || llmProvider === "grok" || llmProvider === "deepseek" || llmProvider === "openai" || llmProvider === "gary")
+				const provider = (llmProvider === "gemini" || llmProvider === "grok" || llmProvider === "deepseek" || llmProvider === "openai" || llmProvider === "gary" || llmProvider === "anthropic")
 					? llmProvider
 					: _inferProviderForModel(llmModel);
 
@@ -2533,6 +2534,10 @@ export function createAutoTraderAgentDriver({
 					? String(o.garyApiKey || o.garyKey || o.apiKey || o.llmApiKey)
 					: _readLs("fdv_gary_key", "");
 
+				const anthropicKey = (o && (o.anthropicApiKey || o.anthropicKey || (provider === "anthropic" ? (o.apiKey || o.llmApiKey) : "")))
+					? String(o.anthropicApiKey || o.anthropicKey || o.apiKey || o.llmApiKey)
+					: _readLs("fdv_anthropic_key", "");
+
 				const llmApiKey = String(
 					(o && (o.llmApiKey || o.apiKey))
 						? (o.llmApiKey || o.apiKey)
@@ -2544,6 +2549,8 @@ export function createAutoTraderAgentDriver({
 								? grokKey
 								: (provider === "deepseek")
 									? deepseekKey
+									: (provider === "anthropic")
+										? anthropicKey
 								: openaiKey
 				).trim();
 
@@ -2564,6 +2571,10 @@ export function createAutoTraderAgentDriver({
 					? (o.garyBaseUrl || o.llmBaseUrl || o.baseUrl)
 					: _readLs("fdv_gary_base_url", "http://127.0.0.1:8088")
 				).trim() || "http://127.0.0.1:8088";
+				const anthropicBaseUrl = String((o && (o.anthropicBaseUrl || o.llmBaseUrl || o.baseUrl))
+					? (o.anthropicBaseUrl || o.llmBaseUrl || o.baseUrl)
+					: _readLs("fdv_anthropic_base_url", "https://api.anthropic.com")
+				).trim() || "https://api.anthropic.com";
 
 				const llmBaseUrl = String(
 					(o && (o.llmBaseUrl || o.baseUrl))
@@ -2576,6 +2587,8 @@ export function createAutoTraderAgentDriver({
 								? grokBaseUrl
 								: (provider === "deepseek")
 									? deepseekBaseUrl
+									: (provider === "anthropic")
+										? anthropicBaseUrl
 								: openaiBaseUrl
 				).trim();
 

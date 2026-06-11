@@ -11044,6 +11044,7 @@ function _ensureStatsHeader() {
             if (s.startsWith("gemini-")) return "gemini";
             if (s === "deepseek-chat" || s === "deepseek-reasoner" || s.startsWith("deepseek-")) return "deepseek";
             if (s.startsWith("grok-")) return "grok";
+            if (s.startsWith("claude-")) return "anthropic";
             return "openai";
           } catch {
             return "openai";
@@ -11056,6 +11057,7 @@ function _ensureStatsHeader() {
           if (p === "gemini") return "fdv_gemini_key";
           if (p === "grok") return "fdv_grok_key";
           if (p === "deepseek") return "fdv_deepseek_key";
+          if (p === "anthropic") return "fdv_anthropic_key";
           return "fdv_openai_key";
         };
 
@@ -11066,8 +11068,9 @@ function _ensureStatsHeader() {
             const isGemini = p === "gemini";
             const isGrok = p === "grok";
             const isDeepSeek = p === "deepseek";
-            if (keyLabelEl) keyLabelEl.textContent = isGary ? "Gary API key" : (isGemini ? "Gemini key" : (isGrok ? "xAI key" : (isDeepSeek ? "DeepSeek key" : "OpenAI key")));
-            if (keyEl) keyEl.placeholder = isGary ? "123456" : (isGemini ? "AIza…" : (isGrok ? "xai-…" : "sk-…"));
+            const isAnthropic = p === "anthropic";
+            if (keyLabelEl) keyLabelEl.textContent = isGary ? "Gary API key" : (isGemini ? "Gemini key" : (isGrok ? "xAI key" : (isDeepSeek ? "DeepSeek key" : (isAnthropic ? "Anthropic key" : "OpenAI key"))));
+            if (keyEl) keyEl.placeholder = isGary ? "123456" : (isGemini ? "AIza…" : (isGrok ? "xai-…" : (isAnthropic ? "sk-ant-…" : "sk-…")));
 
             try {
               if (garyUrlWrapEl) garyUrlWrapEl.classList.toggle("fdv-hidden", !isGary);
@@ -11099,7 +11102,7 @@ function _ensureStatsHeader() {
                 stateEl.textContent = "(active)";
                 stateEl.style.color = "#7ee787";
               } else if (enabledFlag && !keyPresent) {
-                const who = (String(provider) === "gary") ? "Gary" : ((String(provider) === "gemini") ? "Gemini" : ((String(provider) === "grok") ? "xAI" : ((String(provider) === "deepseek") ? "DeepSeek" : "OpenAI")));
+                const who = (String(provider) === "gary") ? "Gary" : ((String(provider) === "gemini") ? "Gemini" : ((String(provider) === "grok") ? "xAI" : ((String(provider) === "deepseek") ? "DeepSeek" : ((String(provider) === "anthropic") ? "Anthropic" : "OpenAI"))));
                 stateEl.textContent = `(missing ${who} key)`;
                 stateEl.style.color = "#ffb86c";
               } else {
@@ -11164,7 +11167,7 @@ function _ensureStatsHeader() {
               try {
                 const provider = _inferProviderForModel(modelEl && modelEl.value);
                 const keyPresent = !!String(keyEl && keyEl.value || "").trim();
-                const who = (String(provider) === "gemini") ? "Gemini" : ((String(provider) === "grok") ? "xAI" : ((String(provider) === "deepseek") ? "DeepSeek" : "OpenAI"));
+                const who = (String(provider) === "gemini") ? "Gemini" : ((String(provider) === "grok") ? "xAI" : ((String(provider) === "deepseek") ? "DeepSeek" : ((String(provider) === "anthropic") ? "Anthropic" : "OpenAI")));
                 if (on && !keyPresent) log(`Agent enabled, but inactive until ${who} key is set.`, "warn");
                 else log(`Agent ${on ? "enabled" : "disabled"}.`, "help");
               } catch {}
@@ -11290,7 +11293,7 @@ function _ensureStatsHeader() {
 
               try { updateAgentUi(); } catch {}
               try {
-                const who = (String(provider) === "gary") ? "Gary" : ((String(provider) === "gemini") ? "Gemini" : ((String(provider) === "grok") ? "xAI" : ((String(provider) === "deepseek") ? "DeepSeek" : "OpenAI")));
+                const who = (String(provider) === "gary") ? "Gary" : ((String(provider) === "gemini") ? "Gemini" : ((String(provider) === "grok") ? "xAI" : ((String(provider) === "deepseek") ? "DeepSeek" : ((String(provider) === "anthropic") ? "Anthropic" : "OpenAI"))));
                 log(`Agent model set to ${String(mv).trim()} (${who}).`, "help");
               } catch {}
             } catch {}
@@ -12053,6 +12056,9 @@ export function initTraderWidget(container = document.body) {
             <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
             <option value="grok-3-mini">grok-3-mini</option>
             <option value="deepseek-chat">deepseek-chat</option>
+            <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+            <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
+            <option value="claude-fable-5">claude-fable-5</option>
           </select>
         </label>
       </div>

@@ -18,6 +18,7 @@ Note: This project is for research/education. Nothing here is financial advice.
 
 ## What’s New
 
+- New: Agent Gary supports Anthropic Claude models (claude-haiku-4-5, claude-sonnet-4-6, claude-fable-5) alongside OpenAI/Gemini/Grok/DeepSeek — pick a Claude model and paste your Anthropic key (stored locally as `fdv_anthropic_key`; CLI reads `ANTHROPIC_API_KEY`)
 - New: headless CLI bootstrap for Auto Trader (Agent Gary + profiles) via `curl -fsSL https://fdv.lol/cli.mjs | node -`
 - Flamebar now prefers actively pumping leaders (recent momentum weighting)
 - 'Hot PnL' animation highlights outsized movers

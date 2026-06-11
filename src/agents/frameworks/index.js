@@ -2,6 +2,7 @@ import { createOpenAIChatClient } from "./open.js";
 import { createGeminiChatClient } from "./gemini.js";
 import { createGrokChatClient } from "./grok.js";
 import { createDeepSeekChatClient } from "./deepseek.js";
+import { createAnthropicChatClient } from "./anthropic.js";
 import { createGaryPredictionsChatClient } from "./gary.js";
 
 function _inferProvider({ provider, baseUrl, model } = {}) {
@@ -12,12 +13,14 @@ function _inferProvider({ provider, baseUrl, model } = {}) {
 		if (mn === "gary-predictions-v1" || mn.startsWith("gary-")) return "gary";
 		if (mn === "deepseek-chat" || mn === "deepseek-reasoner" || mn.startsWith("deepseek-")) return "deepseek";
 		if (mn.startsWith("grok-")) return "grok";
+		if (mn.startsWith("claude-")) return "anthropic";
 		const u = String(baseUrl || "").trim().toLowerCase();
 		if (!u) return "openai";
 		if (u.includes("127.0.0.1") && u.includes(":8088")) return "gary";
 		if (u.includes("generativelanguage.googleapis.com")) return "gemini";
 		if (u.includes("api.x.ai")) return "grok";
 		if (u.includes("api.deepseek.com")) return "deepseek";
+		if (u.includes("api.anthropic.com")) return "anthropic";
 		// Default: OpenAI-compatible chat/completions endpoint.
 		return "openai";
 	} catch {
@@ -42,6 +45,8 @@ export function normalizeLlmConfig(cfg = {}) {
 					? "https://api.deepseek.com"
 					: (provider === "gary")
 						? "http://127.0.0.1:8088"
+						: (provider === "anthropic")
+							? "https://api.anthropic.com"
 				: "https://api.openai.com/v1";
 		const defaultModel = (provider === "gemini")
 			? "gemini-2.5-flash-lite"
@@ -51,6 +56,8 @@ export function normalizeLlmConfig(cfg = {}) {
 					? "deepseek-chat"
 					: (provider === "gary")
 						? "gary-predictions-v1"
+						: (provider === "anthropic")
+							? "claude-haiku-4-5"
 				: "gpt-4o-mini";
 		return {
 			provider,
@@ -95,6 +102,9 @@ export function createChatClient({ provider, apiKey, baseUrl, model, timeoutMs, 
 	}
 	if (p === "deepseek") {
 		return createDeepSeekChatClient({ apiKey, baseUrl, model, timeoutMs, fetchFn });
+	}
+	if (p === "anthropic" || p === "claude") {
+		return createAnthropicChatClient({ apiKey, baseUrl, model, timeoutMs, fetchFn });
 	}
 	throw new Error(`Unsupported LLM provider: ${String(p)}`);
 }
