@@ -12,11 +12,11 @@
   },
   "agentGaryFullAi": {
     "enabled": true,
-    "model": "gpt-4o-mini",
-    "provider": "openai",
+    "provider": "claude",
+    "model": "claude-haiku-4-5",
     "riskLevel": "degen",
     "fullAiControl": true,
-    "apiKey": "<YOUR_OPENAI_API_KEY>"
+    "apiKey": "<YOUR_ANTHROPIC_API_KEY_FROM_https://console.anthropic.com/settings/keys>"
   },
  "auto": {
     "enabled": true,

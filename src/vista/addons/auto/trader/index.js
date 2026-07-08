@@ -11041,6 +11041,7 @@ function _ensureStatsHeader() {
             const s = String(modelName || "").trim().toLowerCase();
             if (!s) return "openai";
             if (s === "gary-predictions-v1" || s.startsWith("gary-")) return "gary";
+            if (s.startsWith("claude-")) return "claude";
             if (s.startsWith("gemini-")) return "gemini";
             if (s === "deepseek-chat" || s === "deepseek-reasoner" || s.startsWith("deepseek-")) return "deepseek";
             if (s.startsWith("grok-")) return "grok";
@@ -11056,6 +11057,7 @@ function _ensureStatsHeader() {
           if (p === "gemini") return "fdv_gemini_key";
           if (p === "grok") return "fdv_grok_key";
           if (p === "deepseek") return "fdv_deepseek_key";
+          if (p === "claude" || p === "anthropic") return "fdv_claude_key";
           return "fdv_openai_key";
         };
 
@@ -11066,8 +11068,18 @@ function _ensureStatsHeader() {
             const isGemini = p === "gemini";
             const isGrok = p === "grok";
             const isDeepSeek = p === "deepseek";
-            if (keyLabelEl) keyLabelEl.textContent = isGary ? "Gary API key" : (isGemini ? "Gemini key" : (isGrok ? "xAI key" : (isDeepSeek ? "DeepSeek key" : "OpenAI key")));
-            if (keyEl) keyEl.placeholder = isGary ? "123456" : (isGemini ? "AIza…" : (isGrok ? "xai-…" : "sk-…"));
+            const isClaude = p === "claude" || p === "anthropic";
+            if (keyLabelEl) keyLabelEl.textContent = isGary
+              ? "Gary API key"
+              : (isClaude ? "Anthropic key"
+                : (isGemini ? "Gemini key"
+                  : (isGrok ? "xAI key"
+                    : (isDeepSeek ? "DeepSeek key" : "OpenAI key"))));
+            if (keyEl) keyEl.placeholder = isGary
+              ? "123456"
+              : (isClaude ? "sk-ant-…"
+                : (isGemini ? "AIza…"
+                  : (isGrok ? "xai-…" : "sk-…")));
 
             try {
               if (garyUrlWrapEl) garyUrlWrapEl.classList.toggle("fdv-hidden", !isGary);
@@ -11099,7 +11111,11 @@ function _ensureStatsHeader() {
                 stateEl.textContent = "(active)";
                 stateEl.style.color = "#7ee787";
               } else if (enabledFlag && !keyPresent) {
-                const who = (String(provider) === "gary") ? "Gary" : ((String(provider) === "gemini") ? "Gemini" : ((String(provider) === "grok") ? "xAI" : ((String(provider) === "deepseek") ? "DeepSeek" : "OpenAI")));
+                const who = (String(provider) === "gary") ? "Gary"
+                  : (String(provider) === "claude") ? "Anthropic"
+                  : ((String(provider) === "gemini") ? "Gemini"
+                    : ((String(provider) === "grok") ? "xAI"
+                      : ((String(provider) === "deepseek") ? "DeepSeek" : "OpenAI")));
                 stateEl.textContent = `(missing ${who} key)`;
                 stateEl.style.color = "#ffb86c";
               } else {
@@ -11164,7 +11180,10 @@ function _ensureStatsHeader() {
               try {
                 const provider = _inferProviderForModel(modelEl && modelEl.value);
                 const keyPresent = !!String(keyEl && keyEl.value || "").trim();
-                const who = (String(provider) === "gemini") ? "Gemini" : ((String(provider) === "grok") ? "xAI" : ((String(provider) === "deepseek") ? "DeepSeek" : "OpenAI"));
+                const who = (String(provider) === "claude") ? "Anthropic"
+                  : ((String(provider) === "gemini") ? "Gemini"
+                    : ((String(provider) === "grok") ? "xAI"
+                      : ((String(provider) === "deepseek") ? "DeepSeek" : "OpenAI")));
                 if (on && !keyPresent) log(`Agent enabled, but inactive until ${who} key is set.`, "warn");
                 else log(`Agent ${on ? "enabled" : "disabled"}.`, "help");
               } catch {}
@@ -12044,6 +12063,9 @@ export function initTraderWidget(container = document.body) {
         <label class="fdv-agent-item fdv-agent-model">
           Model
           <select data-auto-openai-model>
+            <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+            <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
+            <option value="claude-opus-4-7">claude-opus-4-7</option>
             <option value="gary-predictions-v1">gary-predictions-v1</option>
             <option value="gpt-4o-mini">gpt-4o-mini</option>
             <option value="gpt-4.1-mini">gpt-4.1-mini</option>

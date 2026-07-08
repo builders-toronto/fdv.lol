@@ -709,6 +709,16 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 	let _lastPnlAt = 0;
 	let _lastPnlCostSol = 0;
 	let _lastPnlEstOutSol = 0;
+	// Lifetime accumulator + last-closed snapshot — preserved across cycle
+	// closure so external observers (bridge writer) can keep showing the
+	// finished position's metadata after status flips to "stopped".
+	let _lifetimeRealizedSol = 0;
+	let _peakPnlPctThisCycle = 0;
+	let _lastClosedCycle = null; // { mint, kind, costSol, exitEstOutSol, realizedSol, pnlPct, peakPnlPct, openedAtMs, closedAtMs }
+	// Subscribers for log lines — needed because internal callers invoke the
+	// closure's `log` directly, not `bot.log`, so patching the public method
+	// can't intercept anything.
+	const _logListeners = new Set();
 	let _dextoolsChart = null;
 	let _dextoolsJiggleTimer = null;
 	let _startJiggleTimer = null;
@@ -750,7 +760,11 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				const nodeLike = typeof process !== "undefined" && !!process?.stdout;
 				if ((wantConsole || (nodeLike && !logEl)) && line) {
 					const t = String(type || "").toLowerCase();
-					if (t.startsWith("err")) console.error(line);
+					// In Node, force everything through STDERR to bypass stdout buffering
+					// (stdout is block-buffered through WSL pipes; stderr is line-buffered).
+					if (nodeLike && !logEl) {
+						console.error(line);
+					} else if (t.startsWith("err")) console.error(line);
 					else if (t.startsWith("war")) console.warn(line);
 					else console.log(line);
 				}
@@ -762,6 +776,13 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				logEl.appendChild(div);
 				while (logEl.children.length > MAX_LOG_ENTRIES) logEl.removeChild(logEl.firstChild);
 				logEl.scrollTop = logEl.scrollHeight;
+			}
+			if (_logListeners.size) {
+				const raw = String(msg ?? "");
+				const t = String(type || "info");
+				for (const fn of _logListeners) {
+					try { fn(raw, t, !!force); } catch {}
+				}
 			}
 		} catch {}
 	}
@@ -814,10 +835,34 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		}
 	}
 
-	function _clearCycle(reason = "") {
+	function _clearCycle(reason = "", opts = {}) {
 		try {
+			if (_cycle) {
+				const sold = opts.kind === "sold";
+				const cost = Number(_cycle.costSol || 0);
+				const estOut = sold
+					? (Number.isFinite(Number(opts.exitEstOutSol)) ? Number(opts.exitEstOutSol) : Number(_lastPnlEstOutSol || 0))
+					: 0;
+				const pnlPct = sold
+					? (Number.isFinite(Number(opts.pnlPct)) ? Number(opts.pnlPct) : Number(_lastPnlPct))
+					: null;
+				const realized = (sold && cost > 0 && estOut > 0) ? (estOut - cost) : null;
+				_lastClosedCycle = {
+					mint: _cycle.mint,
+					kind: sold ? "sold" : "abandoned",
+					costSol: cost,
+					exitEstOutSol: sold ? estOut : null,
+					realizedSol: realized,
+					pnlPct: Number.isFinite(pnlPct) ? pnlPct : null,
+					peakPnlPct: Number(_peakPnlPctThisCycle || 0),
+					openedAtMs: Number(_cycle.enteredAt || 0),
+					closedAtMs: now(),
+				};
+				if (Number.isFinite(realized)) _lifetimeRealizedSol += realized;
+			}
 			_cycle = null;
 			_fadePos = null;
+			_peakPnlPctThisCycle = 0;
 			if (reason) log(String(reason), "help");
 		} catch {}
 	}
@@ -1751,6 +1796,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				_lastPnlAt = now();
 				_lastPnlCostSol = cost;
 				_lastPnlEstOutSol = estOut;
+				if (Number.isFinite(pnlPct) && pnlPct > _peakPnlPctThisCycle) _peakPnlPctThisCycle = pnlPct;
 			} catch {}
 			try {
 				const m = String(mint || "").trim();
@@ -1889,7 +1935,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 				_pendingEntry = null;
 				_pendingExit = null;
 				_clearAutoPosForMint(mint);
-				_clearCycle();
+				_clearCycle("", { kind: "sold", exitEstOutSol: estOut, pnlPct });
 				if (!state.repeatBuy) {
 					await stop({ liquidate: false });
 					return;
@@ -1939,7 +1985,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 							_pendingEntry = null;
 							_pendingExit = null;
 							_clearAutoPosForMint(mint);
-							_clearCycle();
+							_clearCycle("", { kind: "sold", exitEstOutSol: Number(_lastPnlEstOutSol), pnlPct: Number(pnl2) });
 							if (!state.repeatBuy) {
 								await stop({ liquidate: false });
 								return;
@@ -1985,7 +2031,10 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 
 	async function start({ resume = false } = {}) {
 		if (state.enabled && !resume) return;
-		_readUiToState();
+		// In Node (headless), there's no DOM to read from — state must come
+		// from initialState passed at construction time. Skip _readUiToState
+		// to avoid no-op work and potential null-ref edge cases.
+		if (!_isNodeLike()) _readUiToState();
 		state.enabled = true;
 		_acceptLogs = true;
 		_lastProbe = null;
@@ -2158,7 +2207,7 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 						_lastProbe = null;
 						_lastExitQuote = null;
 						_pendingEntry = null;
-						_clearCycle();
+						_clearCycle("", { kind: "sold", exitEstOutSol: Number(_lastPnlEstOutSol), pnlPct: Number(_lastPnlPct) });
 					} else if (res?.noBalance) {
 						log(`Stop-liquidation: no on-chain balance to sell for ${_shortMint(mint)}.`, "warn", true);
 						try {
@@ -2561,6 +2610,60 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 		tabTitle: () => (state.mint ? _shortMint(state.mint) : "Hold"),
 		markChatInteracted: _markChatInteracted,
 		onActiveChanged,
+		// Public snapshot of internal runtime state — used by headless
+		// runners (CLI bridge integration) to expose PnL + cycle data
+		// to outside observers without leaking the bot's internal closure.
+		getRuntimeSnapshot: () => ({
+			botId,
+			enabled: !!state.enabled,
+			lastPnlPct: Number.isFinite(_lastPnlPct) ? Number(_lastPnlPct) : null,
+			lastPnlAt: Number(_lastPnlAt || 0),
+			lastPnlCostSol: Number(_lastPnlCostSol || 0),
+			lastPnlEstOutSol: Number(_lastPnlEstOutSol || 0),
+			peakPnlPct: Number(_peakPnlPctThisCycle || 0),
+			lifetimeRealizedSol: Number(_lifetimeRealizedSol || 0),
+			lastClosedCycle: _lastClosedCycle ? { ..._lastClosedCycle } : null,
+			cycle: _cycle ? {
+				mint: _cycle.mint,
+				ownerStr: _cycle.ownerStr,
+				costSol: Number(_cycle.costSol || 0),
+				sizeUi: Number(_cycle.sizeUi || 0),
+				decimals: Number(_cycle.decimals || 6),
+				enteredAt: Number(_cycle.enteredAt || 0),
+			} : null,
+			pendingEntry: _pendingEntry ? {
+				mint: _pendingEntry.mint,
+				at: Number(_pendingEntry.at || 0),
+			} : null,
+			pendingExit: _pendingExit ? {
+				mint: _pendingExit.mint,
+				at: Number(_pendingExit.at || 0),
+			} : null,
+			tickInFlight: !!_tickInFlight,
+		}),
+		// Subscribe to log lines emitted by the closure's internal log()
+		// function. Returns an unsubscribe handle. Use this instead of
+		// patching bot.log — internal callers invoke the closure directly,
+		// so a public-method patch can't see anything.
+		addLogListener: (fn) => {
+			if (typeof fn !== "function") return () => {};
+			_logListeners.add(fn);
+			return () => _logListeners.delete(fn);
+		},
+		// On-demand owner SOL balance fetch (UI sol). Used by the bridge
+		// writer to refresh wallet snapshot after sells without needing
+		// its own RPC wiring. Accepts either a PublicKey instance or a
+		// base58 string — strings are coerced via the loaded Web3 module.
+		fetchOwnerSolBalance: async (ownerPubkeyOrStr) => {
+			try {
+				let owner = ownerPubkeyOrStr;
+				if (typeof owner === "string") {
+					const { PublicKey } = await loadWeb3();
+					owner = new PublicKey(owner.trim());
+				}
+				return await _getOwnerSolBalanceUi(owner);
+			} catch { return 0; }
+		},
 	};
 
 	function _updateLabelCache() {
@@ -2568,22 +2671,454 @@ function createHoldBotInstance({ id, initialState, onPersist, onAnyRunningChange
 	}
 }
 
-// Legacy CLI hooks kept for compatibility (no localStorage in node-like runs).
-let _cliState = { ...DEFAULTS };
-async function __fdvCli_startHold(cfg = {}) {
-	if (!_isNodeLike()) return 1;
-	_cliState = { ..._cliState, ...cfg, enabled: true };
+// ─── Headless CLI hooks (real implementation) ─────────────────────────
+//
+// __fdvCli_startHold(cfg) actually instantiates a Hold bot via
+// createHoldBotInstance, calls start(), and (optionally) wires the
+// agent-bridge so the standalone Claude Agent can observe + tune.
+//
+// Bridge integration is opt-in. Set cfg.bridge=true (or env
+// FDV_HOLD_BRIDGE=true) to:
+//   - publish trader-state.json every ~1.5s with hold snapshots + PnL
+//   - append lifecycle events to hold-events.jsonl
+//   - poll hold-requests.jsonl for update/stop requests from Claude
+// Without bridge, the bot runs purely from the initial cfg passed in.
+
+let _cliState = { ...DEFAULTS };  // retained for back-compat; not load-bearing
+let _cliBot = null;
+let _cliBridgeStop = null;
+let _cliBridgeReqTick = null;
+// Runner-lifetime accumulator: survives bot replacement so the bridge can
+// publish session-realized PnL even after a stopped bot is replaced by a
+// new one within the same runner process. Per-bot lifetimeRealizedSol
+// captures only the current bot; the bridge sums both.
+let _cliPriorBotsRealizedSol = 0;
+let _cliProcessedHoldReqIds = new Set();
+
+function _shouldEnableBridge(cfg) {
+	try {
+		if (cfg && typeof cfg.bridge === "boolean") return cfg.bridge;
+		const env = (typeof process !== "undefined" && process?.env) ? process.env : {};
+		const v = String(env.FDV_HOLD_BRIDGE || "").trim().toLowerCase();
+		return v === "true" || v === "1" || v === "yes" || v === "on";
+	} catch { return false; }
+}
+
+// Module-level helpers shared between the bridge writer and the request
+// poller. Both look up the current bot via the module-level `_cliBot` so a
+// bot created mid-life (via a bridge "start" request while idle) is picked
+// up automatically without restarting the bridge.
+let _cliBridgeAppendHoldEvent = null;
+
+function _classifyHoldLogKind(msg) {
+	const m = String(msg || "");
+	if (/Sell confirmed|Sell debited/i.test(m)) return "sell_executed";
+	if (/sell(ing)?|Profit target hit|Stop requested|liquidat/i.test(m)) return "sell_attempted";
+	if (/Hold started|Hold was enabled/i.test(m)) return "accepted";
+	if (/Buy executed|credited|Bought/i.test(m)) return "buy_executed";
+	if (/Buying/i.test(m)) return "buy_attempted";
+	if (/rug|crash|fade/i.test(m)) return "rug_detected";
+	return "pnl_tick";
+}
+
+function _attachLogListenerToBot(bot) {
+	if (!bot || typeof bot.addLogListener !== "function") return;
+	if (!_cliBridgeAppendHoldEvent) return;
+	bot.addLogListener((msg, type) => {
+		try {
+			const kind = _classifyHoldLogKind(msg);
+			_cliBridgeAppendHoldEvent({
+				holdId: bot.id || "cli",
+				kind,
+				payload: { msg: String(msg || "").slice(0, 300), type: String(type || "info") },
+			}).catch(() => {});
+		} catch {}
+	});
+}
+
+async function _setupBridgeForCliBot(initialBot = null) {
+	// Lazy-load the bridge writer (it imports node:fs etc., not safe in browser).
+	let bridgeMod;
+	try {
+		bridgeMod = await import("../../../../../tools/agent-bridge/cli-writer.mjs");
+	} catch (e) {
+		try { console.warn("[hold] bridge writer not available, skipping bridge integration:", String(e?.message || e)); } catch {}
+		return;
+	}
+	const { startBridgeWriter, appendHoldEvent, readPendingHoldRequests, markHoldRequestProcessed } = bridgeMod;
+	_cliBridgeAppendHoldEvent = appendHoldEvent;
+
+	// Cached on-chain SOL balance. Refreshed on a slow cadence inside the
+	// bridge tick so we don't hit RPC every 1.5s. TTL kept short enough that
+	// a post-sell credit shows up within ~8s. Works in both active mode
+	// (delegates to the bot's fetchOwnerSolBalance) and idle mode (uses the
+	// module-level loadWeb3 + getConn directly).
+	let _cachedSolBal = { ui: 0, at: 0, inFlight: false };
+	const SOL_BAL_TTL_MS = 8000;
+
+	async function _maybeRefreshSolBal(pubkey) {
+		if (!pubkey) return;
+		if (_cachedSolBal.inFlight) return;
+		if ((Date.now() - _cachedSolBal.at) < SOL_BAL_TTL_MS) return;
+		_cachedSolBal.inFlight = true;
+		try {
+			let ui = 0;
+			if (_cliBot && typeof _cliBot.fetchOwnerSolBalance === "function") {
+				ui = await _cliBot.fetchOwnerSolBalance(pubkey);
+			} else {
+				// Idle mode: no bot yet. Fetch directly via the loaded Web3 + conn.
+				const { PublicKey } = await loadWeb3();
+				const conn = await getConn();
+				const lamports = await conn.getBalance(new PublicKey(String(pubkey).trim()), "confirmed");
+				ui = Math.max(0, Number(lamports || 0) / 1e9);
+			}
+			if (Number.isFinite(Number(ui))) _cachedSolBal = { ui: Number(ui), at: Date.now(), inFlight: false };
+			else _cachedSolBal.inFlight = false;
+		} catch {
+			_cachedSolBal.inFlight = false;
+		}
+	}
+
+	// Attach the log listener to whichever bot is current. Re-callable when
+	// a new bot is created mid-life via a bridge "start" request.
+	if (initialBot) _attachLogListenerToBot(initialBot);
+
+	// State publisher — looks up `_cliBot` (module-level) on every tick so a
+	// bot created or destroyed mid-life flows through immediately.
+	// Helper used by both the success and exception paths of getState so the
+	// trader-state.json keeps publishing pubkey/solBalance/wallet even when
+	// a bot snapshot fails — otherwise downstream callers see a degraded
+	// state that looks like "runner down" and act incorrectly.
+	function _idleStateSnapshot(pubkey, opts = {}) {
+		const sessionFromPriorBots = Number(_cliPriorBotsRealizedSol || 0);
+		return {
+			pubkey,
+			solBalance: Number(_cachedSolBal.ui || 0),
+			positions: [],
+			holds: [],
+			wallet: {
+				realizedPnlSol: 0,
+				sessionPnlSol: sessionFromPriorBots,
+				unrealizedPnlSol: 0,
+				lastUpdatedAtMs: Date.now(),
+			},
+			config: { riskLevel: "hold", takeProfitPct: 0, stopLossPct: 0, trailPct: 0, slippageBps: 0, maxBuySol: 0 },
+			recentDecisions: [],
+			pauseTrading: false,
+			...(opts.errorNote ? { error: String(opts.errorNote).slice(0, 200) } : {}),
+		};
+	}
+
+	_cliBridgeStop = startBridgeWriter({
+		intervalMs: 1500,
+		getState: () => {
+			let pubkey = "";
+			try {
+				const auto = JSON.parse(globalThis.localStorage?.getItem("fdv_auto_bot_v1") || "{}");
+				pubkey = String(auto.autoWalletPub || "");
+			} catch {}
+			_maybeRefreshSolBal(pubkey);
+			try {
+
+				const bot = _cliBot;
+				if (!bot) {
+					// Idle mode: bridge is up but no Hold is active. Publish a
+					// recognizable empty snapshot so observers can tell we're
+					// alive and waiting for a start-hold request.
+					return _idleStateSnapshot(pubkey);
+				}
+
+				const s = bot.getState();
+				const snap = bot.getRuntimeSnapshot();
+				const cycle = snap.cycle;
+				const closed = snap.lastClosedCycle;
+
+				// Use the live cycle when present, fall back to the last closed
+				// cycle so observers don't see all-zero timestamps after a sell.
+				const usingClosed = !cycle && !!closed;
+				const mint = (cycle?.mint) || closed?.mint || s.mint || "";
+				const cost = Number(snap.lastPnlCostSol || cycle?.costSol || closed?.costSol || 0);
+				const estOut = usingClosed
+					? Number(closed?.exitEstOutSol || 0)
+					: Number(snap.lastPnlEstOutSol || 0);
+				const pnlPct = usingClosed
+					? Number(closed?.pnlPct || 0)
+					: (Number.isFinite(snap.lastPnlPct) ? Number(snap.lastPnlPct) : 0);
+				const unrealizedSol = usingClosed
+					? 0
+					: ((Number.isFinite(snap.lastPnlPct) && cost > 0) ? (estOut - cost) : 0);
+				const peakPnlPct = usingClosed
+					? Number(closed?.peakPnlPct || 0)
+					: Number(snap.peakPnlPct || 0);
+				const openedAtMs = Number(cycle?.enteredAt || closed?.openedAtMs || 0);
+				const lastSellAt = usingClosed ? Number(closed?.closedAtMs || 0) : 0;
+				const lastBuyAt = openedAtMs;
+				const ageSecs = openedAtMs ? Math.floor((Date.now() - openedAtMs) / 1000) : 0;
+				// Status semantics — be careful here, callers branch on this:
+				//   "stopped" : bot.enabled=false AND has cost OR closed-cycle history
+				//   "idle"    : bot.enabled=false, never traded (fresh process or just-cancelled)
+				//   "ready"   : bot.enabled=true but no cycle/pendingEntry yet (between entries
+				//               with repeatBuy on, OR stuck waiting for uptick/quote/balance)
+				//   "buying"  : pendingEntry present
+				//   "holding" : cycle has sizeUi > 0
+				// "ready" is critical to surface: without it, a bot that can't buy looks
+				// indistinguishable from no-bot, and callers may queue a duplicate start.
+				const status = !s.enabled
+					? (cost > 0 || closed ? "stopped" : "idle")
+					: (cycle && cycle.sizeUi > 0 ? "holding" : (snap.pendingEntry ? "buying" : "ready"));
+				const botLifetimeRealizedSol = Number(snap.lifetimeRealizedSol || 0);
+				const sessionRealizedSol = botLifetimeRealizedSol + Number(_cliPriorBotsRealizedSol || 0);
+
+				return {
+					pubkey,
+					solBalance: Number(_cachedSolBal.ui || 0),
+					positions: [],
+					holds: [{
+						holdId: snap.botId || "cli",
+						mint,
+						symbol: "",
+						status,
+						sizeUi: Number(cycle?.sizeUi || 0),
+						decimals: Number(cycle?.decimals || closed?.decimals || 6),
+						costSol: cost,
+						openedAtMs,
+						ageSecs,
+						currentPnlPct: pnlPct,
+						currentPnlSol: unrealizedSol,
+						estOutSol: estOut,
+						profitTargetPct: Number(s.profitPct || 0),
+						rugSevThreshold: Number(s.rugSevThreshold || 0),
+						pollMs: Number(s.pollMs || 0),
+						buyPct: Number(s.buyPct || 0),
+						repeatBuy: !!s.repeatBuy,
+						uptickEnabled: !!s.uptickEnabled,
+						peakPnlPct,
+						lastTickAt: Number(snap.lastPnlAt || 0),
+						lastBuyAt,
+						lastSellAt,
+					}],
+					wallet: {
+						// realizedPnlSol = current bot's lifetime only (what survived
+						// reset on bot replacement). sessionPnlSol = total across the
+						// runner process including prior bots that have already closed.
+						realizedPnlSol: botLifetimeRealizedSol,
+						sessionPnlSol: sessionRealizedSol,
+						unrealizedPnlSol: unrealizedSol,
+						lastUpdatedAtMs: Date.now(),
+					},
+					config: { riskLevel: "hold", takeProfitPct: Number(s.profitPct || 0), stopLossPct: 0, trailPct: 0, slippageBps: 0, maxBuySol: 0 },
+					recentDecisions: [],
+					pauseTrading: !s.enabled,
+				};
+			} catch (e) {
+				// Bot snapshot threw — return an idle-like state that still
+				// includes pubkey, solBalance, wallet from the runner-side
+				// data we computed before touching the bot. Without this,
+				// downstream callers (status, pnl, holds) would think the
+				// runner is gone the moment a single snapshot blip happens.
+				return _idleStateSnapshot(pubkey, { errorNote: `bot_snapshot_failed: ${e?.message || e}` });
+			}
+		},
+	});
+
+	// Poll hold-requests.jsonl every 1s for start / update / stop actions.
+	// Each branch reads _cliBot freshly so we follow bot creation/destruction
+	// without restarting the poller.
+	_cliBridgeReqTick = setInterval(async () => {
+		try {
+			const reqs = await readPendingHoldRequests();
+			for (const r of reqs) {
+				try {
+					if (r.action === "start") {
+						// Defense-in-depth: validate the mint format ourselves so a
+						// future caller (or a corrupted file) can't spawn a useless
+						// bot that polls forever on garbage.
+						const SOLANA_MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+						const mintOk = typeof r.mint === "string" && SOLANA_MINT_RE.test(r.mint.trim());
+						if (_cliBot && _cliBot.isRunning && _cliBot.isRunning()) {
+							await appendHoldEvent({
+								holdId: r.id,
+								kind: "buy_failed",
+								payload: { reason: "bot_already_running", existingMint: _cliBot.getState()?.mint || "" },
+							});
+						} else if (!r.mint) {
+							await appendHoldEvent({ holdId: r.id, kind: "buy_failed", payload: { reason: "no_mint" } });
+						} else if (!mintOk) {
+							await appendHoldEvent({
+								holdId: r.id,
+								kind: "buy_failed",
+								payload: { reason: "invalid_mint_format", mint: String(r.mint).slice(0, 60) },
+							});
+						} else {
+							const startCfg = { mint: r.mint, bridge: true };
+							for (const [reqKey, cfgKey] of [["buyPct", "buyPct"], ["profitPct", "profitPct"], ["rugSevThreshold", "rugSevThreshold"], ["pollMs", "pollMs"]]) {
+								if (r[reqKey] != null) startCfg[cfgKey] = r[reqKey];
+							}
+							if (typeof r.repeatBuy === "boolean") startCfg.repeatBuy = r.repeatBuy;
+							if (typeof r.uptickEnabled === "boolean") startCfg.uptickEnabled = r.uptickEnabled;
+							await appendHoldEvent({
+								holdId: r.id,
+								kind: "accepted",
+								payload: { mint: r.mint, reason: r.reason || "bridge_start_request" },
+							});
+							// Fire-and-forget — _createAndStartHoldBot handles its own errors.
+							_createAndStartHoldBot(startCfg).catch((e) => {
+								try { console.error("[hold-cli] bridge start FAILED:", String(e?.message || e)); } catch {}
+							});
+						}
+					} else if (r.action === "update" && _cliBot && r.holdId && (r.holdId === _cliBot.id || r.holdId === "cli")) {
+						const patch = {};
+						if (r.profitPct != null) patch.profitPct = Number(r.profitPct);
+						if (r.rugSevThreshold != null) patch.rugSevThreshold = Number(r.rugSevThreshold);
+						if (r.pollMs != null) patch.pollMs = Number(r.pollMs);
+						if (typeof r.repeatBuy === "boolean") patch.repeatBuy = r.repeatBuy;
+						if (Object.keys(patch).length) {
+							_cliBot.setState({ ..._cliBot.getState(), ...patch });
+							await appendHoldEvent({ holdId: _cliBot.id || "cli", kind: "pnl_tick", payload: { kind: "updated", patch, reason: r.reason || "" } });
+						}
+					} else if (r.action === "stop" && _cliBot && r.holdId && (r.holdId === _cliBot.id || r.holdId === "cli")) {
+						const liquidate = (r.stopKind || "liquidate") === "liquidate";
+						await appendHoldEvent({ holdId: _cliBot.id || "cli", kind: "sell_attempted", payload: { reason: r.reason || "claude_stop_request", stopKind: r.stopKind } });
+						_cliBot.stop({ liquidate }).catch(() => {});
+					}
+				} catch {}
+				markHoldRequestProcessed(r.id);
+			}
+		} catch {}
+	}, 1000);
+	try { _cliBridgeReqTick.unref?.(); } catch {}
+}
+
+// Sync the headless trader's state.autoWalletSecret from localStorage. The
+// AUTO trader module's load() only fires from initTraderWidget (the UI mount),
+// so without this sync getAutoKeypair() returns nothing in headless mode.
+function _syncTraderStateFromLocalStorage() {
+	try {
+		const persisted = JSON.parse(globalThis.localStorage?.getItem("fdv_auto_bot_v1") || "{}");
+		const traderState = getAutoTraderState();
+		if (persisted && typeof persisted === "object" && traderState) {
+			Object.assign(traderState, persisted);
+			console.error("[hold-cli] synced trader state from LS. autoWalletSecret present:", !!traderState.autoWalletSecret, "pub:", String(traderState.autoWalletPub || "").slice(0, 8) + "…");
+		}
+	} catch (e) {
+		console.error("[hold-cli] trader state sync FAILED:", String(e?.message || e));
+	}
+}
+
+// Internal: creates a Hold bot from cfg, registers it with the bridge if
+// the bridge is set up, and starts the lifecycle. Used both by the headless
+// CLI entry point and by the bridge "start" request handler (so Claude can
+// kick off a Hold on a fresh mint without restarting the process).
+async function _createAndStartHoldBot(cfg = {}) {
+	if (_cliBot && _cliBot.isRunning && _cliBot.isRunning()) {
+		try { console.warn("[hold-cli] _createAndStartHoldBot called while a bot is already running; ignoring."); } catch {}
+		return 0;
+	}
+
+	const initialState = _coerceState({
+		..._cliState,
+		...cfg,
+		enabled: true,
+	});
+	console.error("[hold-cli] coerced initialState mint:", initialState.mint, "uptick:", initialState.uptickEnabled, "buyPct:", initialState.buyPct);
+
+	if (!initialState.mint) {
+		try { console.error("[hold-cli] _createAndStartHoldBot: mint is empty."); } catch {}
+		return 4;
+	}
+
+	// Roll the prior bot's lifetime realized into the runner accumulator
+	// before replacing it. Otherwise that PnL disappears from bridge state
+	// the moment the new bot's snapshot replaces the old one.
+	if (_cliBot && typeof _cliBot.getRuntimeSnapshot === "function") {
+		try {
+			const prevSnap = _cliBot.getRuntimeSnapshot();
+			const prevLifetime = Number(prevSnap?.lifetimeRealizedSol || 0);
+			if (Number.isFinite(prevLifetime)) _cliPriorBotsRealizedSol += prevLifetime;
+		} catch {}
+	}
+
+	const bot = createHoldBotInstance({
+		id: `cli_${Date.now().toString(36)}`,
+		initialState,
+		onPersist: () => {},
+		onAnyRunningChanged: () => { console.error("[hold-cli] onAnyRunningChanged fired; isRunning=", bot && bot.isRunning && bot.isRunning()); },
+		onLabelChanged: () => {},
+	});
+	_cliBot = bot;
+	_cliState = { ...initialState };
+	console.error("[hold-cli] bot created, id present:", typeof bot.getRuntimeSnapshot === "function");
+
+	// If a bridge is already set up (idle mode brought it up at process
+	// start), wire the log listener onto the new bot now.
+	_attachLogListenerToBot(bot);
+
+	try {
+		console.error("[hold-cli] calling bot.start({resume:true})...");
+		// resume:true is REQUIRED — initialState has enabled:true, so start({})
+		// would short-circuit on the `if (state.enabled && !resume) return;`
+		// guard at the top of start().
+		await bot.start({ resume: true });
+		console.error("[hold-cli] bot.start() returned. isRunning=", bot.isRunning(), "snapshot=", JSON.stringify(bot.getRuntimeSnapshot()));
+	} catch (e) {
+		console.error("[hold-cli] start FAILED:", String(e?.stack || e?.message || e));
+		return 5;
+	}
 	return 0;
+}
+
+async function __fdvCli_startHold(cfg = {}) {
+	console.error("[hold-cli] __fdvCli_startHold ENTERED with cfg:", JSON.stringify({
+		mint: cfg?.mint, buyPct: cfg?.buyPct, profitPct: cfg?.profitPct, uptickEnabled: cfg?.uptickEnabled, bridge: cfg?.bridge, idle: cfg?.idle,
+	}));
+	if (!_isNodeLike()) { console.error("[hold-cli] not node-like, returning 1"); return 1; }
+
+	_syncTraderStateFromLocalStorage();
+
+	// Always set up the bridge when enabled — that way idle mode can still
+	// publish state and accept bridge "start" requests for new mints.
+	if (_shouldEnableBridge(cfg) && !_cliBridgeStop) {
+		try {
+			await _setupBridgeForCliBot(null);
+			console.error("[hold-cli] bridge setup OK (no bot yet)");
+		} catch (e) {
+			console.error("[hold-cli] bridge setup FAILED:", String(e?.message || e));
+		}
+	} else if (!_shouldEnableBridge(cfg)) {
+		console.error("[hold-cli] bridge integration NOT enabled (cfg.bridge=", cfg?.bridge, ", env=", process?.env?.FDV_HOLD_BRIDGE, ")");
+	}
+
+	// Idle mode: no mint supplied (or cfg.idle=true). Keep the process alive
+	// in bridge mode so Claude can drive new Holds via the bridge instead of
+	// us auto-entering one from profile config. The caller (cli/app.js) holds
+	// the process open via its own Promise.
+	if (cfg?.idle === true || !cfg?.mint) {
+		console.error("[hold-cli] starting in IDLE bridge mode (no auto-buy). Use the cowork-helper start-hold command to enter a position.");
+		return 0;
+	}
+
+	return await _createAndStartHoldBot(cfg);
 }
 
 async function __fdvCli_stopHold() {
 	if (!_isNodeLike()) return 1;
 	_cliState.enabled = false;
+	try { if (_cliBridgeReqTick) clearInterval(_cliBridgeReqTick); } catch {}
+	_cliBridgeReqTick = null;
+	if (_cliBot) {
+		try { await _cliBot.stop({ liquidate: true }); } catch (e) {
+			try { console.warn("[hold] stop encountered error:", String(e?.message || e)); } catch {}
+		}
+	}
+	try { if (_cliBridgeStop) _cliBridgeStop(); } catch {}
+	_cliBridgeStop = null;
+	_cliBot = null;
 	return 0;
 }
 
 export const __fdvCli_start = __fdvCli_startHold;
 export const __fdvCli_stop = __fdvCli_stopHold;
+export { createHoldBotInstance };
 
 export function initHoldWidget(container = document.body) {
 	const wrap = container;

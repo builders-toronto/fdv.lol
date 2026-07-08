@@ -15,6 +15,12 @@
 /gary-predictions-v1/*
 /tools/profiles/dev.json
 
+/tools/agent-bridge/*.json
+/tools/agent-bridge/*.jsonl
+!/tools/agent-bridge/README.md
+!/tools/agent-bridge/cli-writer.mjs
+!/tools/agent-bridge/contract.mjs
+
 !/sitemap.xml
 !/robots.txt
 

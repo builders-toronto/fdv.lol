@@ -3,18 +3,31 @@ import { createGeminiChatClient } from "./gemini.js";
 import { createGrokChatClient } from "./grok.js";
 import { createDeepSeekChatClient } from "./deepseek.js";
 import { createGaryPredictionsChatClient } from "./gary.js";
+import { createClaudeChatClient } from "./claude.js";
+
+function _normalizeProviderAlias(p) {
+	const s = String(p || "").trim().toLowerCase();
+	if (s === "anthropic" || s === "claude") return "claude";
+	if (s === "xai" || s === "x-ai") return "grok";
+	if (s === "openai_compat" || s === "compatible") return "openai";
+	if (s === "gary_predictions" || s === "gary-predictions" || s === "gary-predictions-v1") return "gary";
+	return s;
+}
 
 function _inferProvider({ provider, baseUrl, model } = {}) {
 	try {
-		const p = String(provider || "").trim().toLowerCase();
+		const p = _normalizeProviderAlias(provider);
 		if (p) return p;
 		const mn = String(model || "").trim().toLowerCase();
 		if (mn === "gary-predictions-v1" || mn.startsWith("gary-")) return "gary";
+		if (mn.startsWith("claude-")) return "claude";
 		if (mn === "deepseek-chat" || mn === "deepseek-reasoner" || mn.startsWith("deepseek-")) return "deepseek";
 		if (mn.startsWith("grok-")) return "grok";
+		if (mn.startsWith("gemini-")) return "gemini";
 		const u = String(baseUrl || "").trim().toLowerCase();
 		if (!u) return "openai";
 		if (u.includes("127.0.0.1") && u.includes(":8088")) return "gary";
+		if (u.includes("api.anthropic.com")) return "claude";
 		if (u.includes("generativelanguage.googleapis.com")) return "gemini";
 		if (u.includes("api.x.ai")) return "grok";
 		if (u.includes("api.deepseek.com")) return "deepseek";
@@ -40,6 +53,8 @@ export function normalizeLlmConfig(cfg = {}) {
 				? "https://api.x.ai/v1"
 				: (provider === "deepseek")
 					? "https://api.deepseek.com"
+					: (provider === "claude")
+						? "https://api.anthropic.com"
 					: (provider === "gary")
 						? "http://127.0.0.1:8088"
 				: "https://api.openai.com/v1";
@@ -49,6 +64,8 @@ export function normalizeLlmConfig(cfg = {}) {
 				? "grok-3-mini"
 				: (provider === "deepseek")
 					? "deepseek-chat"
+					: (provider === "claude")
+						? "claude-haiku-4-5"
 					: (provider === "gary")
 						? "gary-predictions-v1"
 				: "gpt-4o-mini";
@@ -95,6 +112,9 @@ export function createChatClient({ provider, apiKey, baseUrl, model, timeoutMs, 
 	}
 	if (p === "deepseek") {
 		return createDeepSeekChatClient({ apiKey, baseUrl, model, timeoutMs, fetchFn });
+	}
+	if (p === "claude" || p === "anthropic") {
+		return createClaudeChatClient({ apiKey, baseUrl, model, timeoutMs, fetchFn });
 	}
 	throw new Error(`Unsupported LLM provider: ${String(p)}`);
 }

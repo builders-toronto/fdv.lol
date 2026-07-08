@@ -12,8 +12,8 @@
   },
   "agentGaryFullAi": {
     "enabled": false,
-    "model": "gpt-4o-mini",
-    "provider": "openai",
+    "provider": "claude",
+    "model": "claude-haiku-4-5",
     "riskLevel": "degen",
     "fullAiControl": false,
     "apiKey": ""

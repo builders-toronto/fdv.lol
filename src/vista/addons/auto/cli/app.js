@@ -68,9 +68,17 @@ function _applyAgentGaryFromProfile(profile = {}) {
     }
 
     const model = String(a?.model || a?.llmModel || a?.openaiModel || "").trim();
-    const provider = String(a?.provider || "").trim();
+    let provider = String(a?.provider || "").trim().toLowerCase();
+    if (provider === "anthropic") provider = "claude";
     const riskLevel = String(a?.riskLevel || a?.risk || "safe").trim().toLowerCase();
-    const apiKey = String(a?.apiKey || a?.llmApiKey || a?.openaiApiKey || "").trim();
+    const apiKey = String(
+      a?.apiKey
+      || a?.llmApiKey
+      || a?.openaiApiKey
+      || a?.claudeApiKey
+      || a?.anthropicApiKey
+      || ""
+    ).trim();
     const fullAiControl = a?.fullAiControl != null ? !!a.fullAiControl : (a?.fullControl != null ? !!a.fullControl : false);
 
     applyAgentGaryFullAiToStorage({
@@ -1373,6 +1381,7 @@ function _getEnvKeyForProvider(provider) {
     if (p === "gemini") return pick("GEMINI_API_KEY", "FDV_GEMINI_KEY");
     if (p === "grok") return pick("GROK_API_KEY", "XAI_API_KEY", "FDV_GROK_KEY");
     if (p === "deepseek") return pick("DEEPSEEK_API_KEY", "FDV_DEEPSEEK_KEY");
+    if (p === "claude" || p === "anthropic") return pick("ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "FDV_ANTHROPIC_KEY", "FDV_CLAUDE_KEY");
     return pick("OPENAI_API_KEY", "FDV_OPENAI_KEY");
   } catch {
     return "";
@@ -1384,14 +1393,16 @@ function _lsKeyForProvider(provider) {
   if (p === "gemini") return "fdv_gemini_key";
   if (p === "grok") return "fdv_grok_key";
   if (p === "deepseek") return "fdv_deepseek_key";
+  if (p === "claude" || p === "anthropic") return "fdv_claude_key";
   return "fdv_openai_key";
 }
 
 function applyAgentGaryFullAiToStorage({ provider, model, riskLevel, apiKey, fullAiControl } = {}) {
   try {
     if (typeof localStorage === "undefined") return false;
-    const p = String(provider || "").trim().toLowerCase() || "openai";
-    const m = String(model || "").trim() || (p === "gemini" ? "gemini-1.5-flash" : (p === "deepseek" ? "deepseek-chat" : (p === "grok" ? "grok-beta" : "gpt-4o-mini")));
+    let p = String(provider || "").trim().toLowerCase() || "openai";
+    if (p === "anthropic") p = "claude";
+    const m = String(model || "").trim() || (p === "gemini" ? "gemini-1.5-flash" : (p === "deepseek" ? "deepseek-chat" : (p === "grok" ? "grok-beta" : (p === "claude" ? "claude-haiku-4-5" : "gpt-4o-mini"))));
     const r = String(riskLevel || "safe").trim().toLowerCase();
     const rl = (r === "safe" || r === "medium" || r === "degen") ? r : "safe";
     const k = String(apiKey || "").trim();
@@ -1411,7 +1422,8 @@ function applyAgentGaryFullAiToStorage({ provider, model, riskLevel, apiKey, ful
 
 function applyAgentGaryFullAiOverrides({ provider, model, riskLevel, apiKey, fullAiControl } = {}) {
   try {
-    const p = String(provider || "").trim().toLowerCase() || "openai";
+    let p = String(provider || "").trim().toLowerCase() || "openai";
+    if (p === "anthropic") p = "claude";
     const m = String(model || "").trim();
     const r = String(riskLevel || "safe").trim().toLowerCase();
     const rl = (r === "safe" || r === "medium" || r === "degen") ? r : "safe";
@@ -1432,6 +1444,8 @@ function applyAgentGaryFullAiOverrides({ provider, model, riskLevel, apiKey, ful
       llmApiKey: k,
       apiKey: k,
       openaiApiKey: p === "openai" ? k : "",
+      claudeApiKey: p === "claude" ? k : "",
+      anthropicApiKey: p === "claude" ? k : "",
       fullAiControl: full,
     };
     return true;
@@ -1523,6 +1537,9 @@ async function configureAgentGaryFullAiWizard(existing = {}) {
   console.log("You will pick: model, risk, Full AI toggle, Final gate toggle, and API key.\n");
 
   const supportedModels = [
+    "claude-haiku-4-5",
+    "claude-sonnet-4-6",
+    "claude-opus-4-7",
     "gary-predictions-v1",
     "gpt-4o-mini",
     "gpt-4.1-mini",
@@ -1533,7 +1550,7 @@ async function configureAgentGaryFullAiWizard(existing = {}) {
     "deepseek-chat",
   ];
 
-  const modelDefault = String(ex.llmModel || ex.model || ex.openaiModel || "gpt-4o-mini").trim();
+  const modelDefault = String(ex.llmModel || ex.model || ex.openaiModel || "claude-haiku-4-5").trim();
   const defaultIndex = Math.max(0, supportedModels.indexOf(modelDefault));
   const modelPick = await promptChoice(
     "Select model:",
@@ -1546,6 +1563,7 @@ async function configureAgentGaryFullAiWizard(existing = {}) {
   const inferProvider = (m) => {
     const mm = String(m || "").trim().toLowerCase();
     if (mm === "gary-predictions-v1" || mm.startsWith("gary-")) return "gary";
+    if (mm.startsWith("claude-")) return "claude";
     if (mm.startsWith("gemini-")) return "gemini";
     if (mm.startsWith("grok-")) return "grok";
     if (mm.startsWith("deepseek-")) return "deepseek";
@@ -3867,6 +3885,47 @@ async function runProfile(argv) {
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
+
+  // ─── Crash guardrails ────────────────────────────────────────────────
+  // Without these, ANY unhandled async rejection anywhere in the bot or its
+  // deps terminates the Node process immediately (Node ≥15 default) — no
+  // event-log entry, no flush, no forensic trace. That was the silent-death
+  // signature observed repeatedly (runner publishing healthy state one tick,
+  // gone the next). These handlers log the cause to a crash file + stderr so
+  // there's always a record, and KEEP THE PROCESS ALIVE rather than letting
+  // a single stray rejection kill an in-flight Hold.
+  const _crashLogPath = (() => {
+    try {
+      const base = (os && typeof os.tmpdir === "function") ? os.tmpdir() : ".";
+      return path.join(base, "fdv-runner-crash.log");
+    } catch { return "fdv-runner-crash.log"; }
+  })();
+
+  const _logCrash = (kind, err) => {
+    const ts = new Date().toISOString();
+    const detail = String(err?.stack || err?.message || err || "(no detail)");
+    const line = `[${ts}] ${kind}: ${detail}\n`;
+    // eslint-disable-next-line no-console
+    console.error(`\n[runner] ${kind} — process kept alive. ${detail}`);
+    // appendFile isn't in the top-level import set; pull it in lazily.
+    import("node:fs/promises")
+      .then((m) => m.appendFile(_crashLogPath, line, "utf8"))
+      .catch(() => {});
+  };
+
+  process.on("uncaughtException", (err) => {
+    _logCrash("uncaughtException", err);
+    // Deliberately do NOT exit — a stray throw should not kill an open Hold.
+    // SIGINT/SIGTERM remain the only intentional shutdown paths.
+  });
+  process.on("unhandledRejection", (reason) => {
+    _logCrash("unhandledRejection", reason);
+    // Same: swallow + log. The bot's own per-tick try/catch handles real
+    // trade-path errors; this is the last-resort net for everything else.
+  });
+
+  // eslint-disable-next-line no-console
+  console.log(`Crash guardrails active. Unhandled errors log to: ${_crashLogPath}`);
 
   // Keep process alive.
   await new Promise(() => {});

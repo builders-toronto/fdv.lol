@@ -1,0 +1,24 @@
+{
+  "name": "fdv-claude-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Claude-driven trading observer/cowork agent for fdv.lol. Safety-first by default: read-only + propose tools, no live swaps. Live trading is gated behind --enable-trading (not yet implemented).",
+  "main": "run.mjs",
+  "bin": {
+    "fdv-claude-agent": "./run.mjs"
+  },
+  "scripts": {
+    "start": "node run.mjs",
+    "start:dev": "node run.mjs --profile ../profiles/dev.json --log-to-console",
+    "smoke:bridge": "node ../agent-bridge/bridge-smoke.mjs",
+    "smoke:integration": "node integration-smoke.mjs",
+    "smoke": "npm run smoke:bridge && npm run smoke:integration"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.65.0"
+  }
+}

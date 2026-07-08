@@ -1,0 +1,18 @@
+{
+  "name": "fdv-skill-cowork",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Distributable skill bundle — chat-driven cowork with the fdv.lol auto-trader. No Anthropic API key required.",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "fdv-cowork": "./cowork-helper.mjs"
+  },
+  "scripts": {
+    "status": "node cowork-helper.mjs status",
+    "decisions": "node cowork-helper.mjs decisions",
+    "test": "bash test-cowork.sh"
+  }
+}

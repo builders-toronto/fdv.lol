@@ -2490,6 +2490,7 @@ export function createAutoTraderAgentDriver({
 						const s = String(modelName || "").trim().toLowerCase();
 						if (!s) return "openai";
 						if (s === "gary-predictions-v1" || s.startsWith("gary-")) return "gary";
+						if (s.startsWith("claude-")) return "claude";
 						if (s.startsWith("gemini-")) return "gemini";
 						if (s === "deepseek-chat" || s === "deepseek-reasoner" || s.startsWith("deepseek-")) return "deepseek";
 						if (s.startsWith("grok-")) return "grok";
@@ -2499,9 +2500,10 @@ export function createAutoTraderAgentDriver({
 					}
 				};
 
-				const llmProvider = String(
+				let llmProvider = String(
 					(o && (o.llmProvider || o.provider)) ? (o.llmProvider || o.provider) : _readLs("fdv_llm_provider", "")
 				).trim().toLowerCase();
+				if (llmProvider === "anthropic") llmProvider = "claude";
 
 				const llmModel = String(
 					(o && (o.llmModel || o.model || o.openaiModel))
@@ -2509,7 +2511,7 @@ export function createAutoTraderAgentDriver({
 						: _readLs("fdv_llm_model", _readLs("fdv_openai_model", "gpt-4o-mini"))
 				).trim() || "gpt-4o-mini";
 
-				const provider = (llmProvider === "gemini" || llmProvider === "grok" || llmProvider === "deepseek" || llmProvider === "openai" || llmProvider === "gary")
+				const provider = (llmProvider === "gemini" || llmProvider === "grok" || llmProvider === "deepseek" || llmProvider === "openai" || llmProvider === "gary" || llmProvider === "claude")
 					? llmProvider
 					: _inferProviderForModel(llmModel);
 
@@ -2533,11 +2535,17 @@ export function createAutoTraderAgentDriver({
 					? String(o.garyApiKey || o.garyKey || o.apiKey || o.llmApiKey)
 					: _readLs("fdv_gary_key", "");
 
+				const claudeKey = (o && (o.claudeApiKey || o.claudeKey || o.anthropicApiKey || o.anthropicKey || (provider === "claude" ? (o.apiKey || o.llmApiKey) : "")))
+					? String(o.claudeApiKey || o.claudeKey || o.anthropicApiKey || o.anthropicKey || o.apiKey || o.llmApiKey)
+					: _readLs("fdv_claude_key", _readLs("fdv_anthropic_key", ""));
+
 				const llmApiKey = String(
 					(o && (o.llmApiKey || o.apiKey))
 						? (o.llmApiKey || o.apiKey)
 						: (provider === "gary")
 							? garyKey
+						: (provider === "claude")
+							? claudeKey
 						: (provider === "gemini")
 							? geminiKey
 							: (provider === "grok")
@@ -2564,12 +2572,18 @@ export function createAutoTraderAgentDriver({
 					? (o.garyBaseUrl || o.llmBaseUrl || o.baseUrl)
 					: _readLs("fdv_gary_base_url", "http://127.0.0.1:8088")
 				).trim() || "http://127.0.0.1:8088";
+				const claudeBaseUrl = String((o && (o.claudeBaseUrl || o.anthropicBaseUrl || o.llmBaseUrl || o.baseUrl))
+					? (o.claudeBaseUrl || o.anthropicBaseUrl || o.llmBaseUrl || o.baseUrl)
+					: _readLs("fdv_claude_base_url", _readLs("fdv_anthropic_base_url", "https://api.anthropic.com"))
+				).trim() || "https://api.anthropic.com";
 
 				const llmBaseUrl = String(
 					(o && (o.llmBaseUrl || o.baseUrl))
 						? (o.llmBaseUrl || o.baseUrl)
 						: (provider === "gary")
 							? garyBaseUrl
+						: (provider === "claude")
+							? claudeBaseUrl
 						: (provider === "gemini")
 							? geminiBaseUrl
 							: (provider === "grok")
