@@ -1,6 +1,7 @@
 import { createSendFavoriteButton, createOpenLibraryButton } from "../../addons/library/index.js";
 import { wireNavigation, wireCopy } from "../render/interactions.js";
 import { FALLBACK_LOGO } from "../../../config/env.js";
+import { appPath } from "../../../config/base.js";
 import { buildSocialLinksHtml } from "../../../lib/socialBuilder.js";
 import { getTokenLogoPlaceholder, queueTokenLogoLoad } from "../../../core/ipfs.js";
 
@@ -132,7 +133,7 @@ export function initHero({ token, scored, mint, onBack }) {
     } catch {}
     try {
       // Ensure Auto panel is visible after navigation.
-      location.href = "/?automate=1";
+      location.href = `${appPath('')}?automate=1`;
     } catch {}
   };
   } catch {}

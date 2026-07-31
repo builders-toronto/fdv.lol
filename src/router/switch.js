@@ -1,5 +1,6 @@
 import { showHome, showProfile, showShill } from "./main/home.js";
 import { showLoading } from "../core/tools.js";
+import { BASE_PATH, appPath, stripBase } from "../config/base.js";
 
 let __fdvSwapLoaderPromise = null;
 function __parseJsonAttr__(str) {
@@ -49,9 +50,6 @@ function initRouter({
 } = {}) {
   const notFound = onNotFound || onHome;
 
-  const base = (document.querySelector('base')?.getAttribute('href') || '/').replace(/\/+$/, '/') ;
-  const stripBase = (p) => (p.startsWith(base) ? '/' + p.slice(base.length) : p).replace(/\/index\.html$/, '/');
-
   const routes = [
     { pattern: /^\/$/, handler: onHome },
     { pattern: /^\/leaderboard\/([1-9A-HJ-NP-Za-km-z]{32,44})\/?$/, handler: (mint) => onShill({ mint, leaderboard: true }) },
@@ -95,7 +93,13 @@ function initRouter({
   }
 
   function nav(url, { push = true, replace = false } = {}) {
-    const target = new URL(url, location.origin);
+    // A leading-slash href is an app route, not an origin path — re-anchor it on
+    // the mount point so "/token/x" lands on "/fdv.lol/token/x".
+    const raw = String(url ?? '');
+    const target = new URL(
+      raw.startsWith('/') && !raw.startsWith(BASE_PATH) ? appPath(raw) : raw,
+      location.origin
+    );
     const href = target.pathname + target.search + target.hash;
     if (replace) history.replaceState({}, '', href);
     else if (push) history.pushState({}, '', href);
@@ -162,10 +166,17 @@ function initRouter({
     dispatch({ withLoading: true, defer: true });
   });
 
-  const pending = sessionStorage.getItem('spa:path');
+  // Deep links arrive via 404.html, which hands the route over in sessionStorage
+  // and, as a fallback for when that's unavailable, on the hash.
+  let pending = null;
+  try {
+    pending = sessionStorage.getItem('spa:path');
+    if (pending) sessionStorage.removeItem('spa:path');
+  } catch {}
   if (pending) {
-    sessionStorage.removeItem('spa:path');
     history.replaceState({}, '', pending);
+  } else if (location.hash.startsWith('#/')) {
+    history.replaceState({}, '', appPath(location.hash.slice(1)));
   }
   // No auto-dispatch here; the entrypoint (main.js) calls router.dispatch().
 

@@ -159,7 +159,7 @@ const OUT_DIR     = path.join(PAGES_ROOT, 'token'); // /token/<mint>/index.html
 const STATIC_DIR  = path.join(process.cwd(), 'tools', 'static');
 const MINTS_FILE  = path.join(STATIC_DIR, 'mints.json');
 const BUILT_FILE  = path.join(STATIC_DIR, 'built.json');
-const SITE_ORIGIN = (process.env.SITE_ORIGIN || 'https://fdv.lol').replace(/\/+$/,'');
+const SITE_ORIGIN = (process.env.SITE_ORIGIN || 'https://build23w.github.io/fdv.lol').replace(/\/+$/,'');
 if (!SITE_ORIGIN) { console.error('SITE_ORIGIN env var is brokens'); process.exit(1); }
 
 const SITEMAP_FILE = path.join(PAGES_ROOT, 'sitemap.xml');
@@ -200,6 +200,10 @@ function profileHtml({ title, description, primaryImage, secondaryImage, canonic
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <!-- These pages live at <root>/token/<mint>/, so the mount point is two up.
+         Pinned absolute immediately so pushState can't re-resolve it. -->
+    <base href="../../" />
+    <script>try{document.querySelector('base').href=document.baseURI;}catch(e){}</script>
     <title>${esc(title)}</title>
     <meta name="description" content="${esc(description)}" />
     <meta name="author" content="builders-toronto" />
@@ -220,12 +224,13 @@ function profileHtml({ title, description, primaryImage, secondaryImage, canonic
     <meta name="twitter:description" content="${esc(description)}" />
     <meta name="twitter:image" content="${esc(primaryImage)}" />
 
-    <link rel="icon" type="image/png" href="/src/assets/images/icons/fdv.lol.ico" />
+    <link rel="canonical" href="${esc(canonical)}" />
+    <link rel="icon" type="image/png" href="src/assets/images/icons/fdv.lol.ico" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/src/assets/styles/default/global.css" />
-    <link rel="stylesheet" href="/src/assets/styles/profile/profile.css" />
-    <link rel="stylesheet" href="/src/assets/styles/shill/shill.css" />
+    <link rel="stylesheet" href="src/assets/styles/default/global.css" />
+    <link rel="stylesheet" href="src/assets/styles/profile/profile.css" />
+    <link rel="stylesheet" href="src/assets/styles/shill/shill.css" />
 
     <script type="application/ld+json">
     {
@@ -269,7 +274,7 @@ function profileHtml({ title, description, primaryImage, secondaryImage, canonic
         "url": "https://github.com/builders-toronto/fdv.lol",
         "logo": {
           "@type": "ImageObject",
-          "url": "https://fdv.lol/src/assets/images/fdv.lol.png"
+          "url": "${SITE_ORIGIN}/src/assets/images/fdv.lol.png"
         },
         "sameAs": [
           "https://t.me/fdvlol",
@@ -278,7 +283,7 @@ function profileHtml({ title, description, primaryImage, secondaryImage, canonic
       },
       "potentialAction": {
         "@type": "SearchAction",
-        "target": "https://fdv.lol/token/{search_term_string}",
+        "target": "${SITE_ORIGIN}/token/{search_term_string}",
         "query-input": "required name=search_term_string"
       }
     }
@@ -339,7 +344,7 @@ function profileHtml({ title, description, primaryImage, secondaryImage, canonic
       <p>Cached in your browser for 90s. Not financial advice.</p><p class="important"><a href="https://github.com/builders-toronto/fdv.lol" target="_blank" rel="noopener">Source</a></p><p><span class="joinCta">Join us</span> on <a href="https://t.me/fdvlol" target="_blank" rel="noopener">Telegram</a></p>
     </footer>
     <script>window.__BOOT_PROFILE_CANONICAL__=${JSON.stringify(canonical)};</script>
-    <script type="module" src="/main.js"></script>
+    <script type="module" src="main.js"></script>
   </body>
 </html>`;
 }

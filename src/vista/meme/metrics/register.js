@@ -1,5 +1,6 @@
 import { getTokenLogoPlaceholder, queueTokenLogoLoad } from '../../../core/ipfs.js';
 import { sparklineSVG } from '../render/sparkline.js';
+import { appPath } from '../../../config/base.js';
 
 const REGISTRY = [];
 const STATE = new Map(); 
@@ -519,7 +520,7 @@ function renderAddon(addon) {
 
     return `
       <li class="addon-item">
-        <a href="https://fdv.lol/token/${row.mint}" target="_blank" rel="noopener">
+        <a href="${appPath(`token/${row.mint}`)}" target="_blank" rel="noopener">
           ${holdBtnHtml}
           <div class="addon-avatar">
             <div class="addon-rank r${i+1}">${i+1}</div>

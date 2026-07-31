@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://fdv.lol/sitemap.xml
+Sitemap: https://build23w.github.io/fdv.lol/sitemap.xml

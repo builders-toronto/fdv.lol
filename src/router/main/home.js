@@ -1,4 +1,5 @@
 import { pipeline, stopPipelineStream } from '../../engine/pipeline.js';
+import { appPath } from '../../config/base.js';
 import { renderProfileView, closeProfileOverlay } from "../../vista/profile/page.js";
 import { renderHomeView } from '../../vista/meme/page.js';
 import { renderShillContestView } from "../../vista/shill/page.js"; 
@@ -238,11 +239,11 @@ export async function showProfile({ mint, force = false } = {}) {
     await renderProfileView(mint, { onBack: () => {
       try { closeProfileOverlay(); } catch {}
       try {
-        history.replaceState({}, '', '/');
+        history.replaceState({}, '', appPath(''));
         try { window.dispatchEvent(new PopStateEvent('popstate')); }
         catch { try { window.dispatchEvent(new Event('popstate')); } catch {} }
       } catch {
-        try { window.location.href = '/'; } catch {}
+        try { window.location.href = appPath(''); } catch {}
       }
     }});
   } finally {

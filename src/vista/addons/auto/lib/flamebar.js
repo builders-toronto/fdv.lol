@@ -1,4 +1,5 @@
 import { getTokenLogoPlaceholder, queueTokenLogoLoad } from '../../../../core/ipfs.js';
+import { appPath } from '../../../../config/base.js';
 import { focusMint, getRugSignalForMint } from '../../../meme/metrics/kpi/pumping.js';
 import { MINT_RUG_BLACKLIST_MS, RUG_FORCE_SELL_SEVERITY, RUG_QUOTE_SHOCK_FRAC } from './constants.js';
 
@@ -755,7 +756,7 @@ export function initFlamebar(mountEl, opts = {}) {
     if (els.name) els.name.textContent = rec.name || '';
     if (els.mint) {
       els.mint.textContent = _shortMint(mint);
-      try { els.mint.setAttribute('href', `/token/${encodeURIComponent(mint)}`); } catch {}
+      try { els.mint.setAttribute('href', appPath(`token/${encodeURIComponent(mint)}`)); } catch {}
     }
 
     try {

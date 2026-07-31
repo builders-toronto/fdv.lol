@@ -1,13 +1,15 @@
 const CACHE_VERSION = 'fdv-static-v1';
 const RUNTIME_CACHE = `${CACHE_VERSION}:runtime`;
 
+// Relative to this script, which sits at the mount point — so these resolve
+// under /<repo>/ on GitHub Pages and under / on a custom domain.
 const PRECACHE_URLS = [
-	'/src/assets/styles/default/global.css',
-	'/src/assets/styles/profile/profile.css',
-	'/src/assets/styles/shill/shill.css',
-	'/onboard/assets/styles/onboard.css',
-	'/onboard/assets/styles/policy.css',
-];
+	'./src/assets/styles/default/global.css',
+	'./src/assets/styles/profile/profile.css',
+	'./src/assets/styles/shill/shill.css',
+	'./onboard/assets/styles/onboard.css',
+	'./onboard/assets/styles/policy.css',
+].map((p) => new URL(p, self.location).href);
 
 self.addEventListener('install', (event) => {
 	event.waitUntil(

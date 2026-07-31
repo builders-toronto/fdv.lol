@@ -1,4 +1,5 @@
 import { isNodeLike as _isNodeLike } from "../lib/runtime.js";
+import { appPath } from "../../../../config/base.js";
 import { createSolanaDepsLoader } from "../lib/solana/deps.js";
 import { createConnectionGetter } from "../lib/solana/connection.js";
 import { createConfirmSig } from "../lib/solana/confirm.js";
@@ -12042,7 +12043,7 @@ export function initTraderWidget(container = document.body) {
         </label>
         <label class="fdv-agent-item fdv-agent-url fdv-hidden" data-auto-gary-url-wrap>
           URL
-          <input type="text" data-auto-gary-url placeholder="https://fdv.lol/bot?" autocomplete="off" spellcheck="false" />
+          <input type="text" data-auto-gary-url placeholder="https://build23w.github.io/fdv.lol/bot?" autocomplete="off" spellcheck="false" />
         </label>
         <label class="fdv-agent-item fdv-agent-model">
           Model
@@ -12234,7 +12235,7 @@ export function initTraderWidget(container = document.body) {
       const mint = String(row.getAttribute("data-mint") || "").trim();
       if (!mint) return;
       try { focusMintAndRecord(mint, { refresh: true, ttlMs: 250 }).catch(() => {}); } catch {}
-      try { window.open(`/token/${encodeURIComponent(mint)}`, "_blank", "noopener"); } catch {}
+      try { window.open(appPath(`token/${encodeURIComponent(mint)}`), "_blank", "noopener"); } catch {}
     });
   }
   try { renderOpenHoldingsPanel(); } catch {}

@@ -1,4 +1,5 @@
 import { BUY_RULES, FDV_LIQ_PENALTY, GISCUS } from "../../config/env.js";
+import { appPath } from "../../config/base.js";
 import { fetchTokenInfo, fetchTokenInfoLive } from "../../data/dexscreener.js";
 import { scoreAndRecommendOne } from "../../core/calculate.js";
 import sanitizeToken from "./sanitizeToken.js";
@@ -250,7 +251,7 @@ function wireSwipeBack(overlayEl, { onBack } = {}) {
       if (typeof fn === 'function') {
         try { fn(); } catch {}
       } else {
-        try { if (history.length > 1) history.back(); else window.location.href = '/'; } catch {}
+        try { if (history.length > 1) history.back(); else window.location.href = appPath(''); } catch {}
       }
     }
   };
@@ -284,11 +285,11 @@ export async function renderProfileView(input, { onBack } = {}) {
     : () => {
         try { closeProfileOverlay(); } catch {}
         try {
-          history.replaceState({}, '', '/');
+          history.replaceState({}, '', appPath(''));
           try { window.dispatchEvent(new PopStateEvent('popstate')); }
           catch { try { window.dispatchEvent(new Event('popstate')); } catch {} }
         } catch {
-          try { window.location.href = '/'; } catch {}
+          try { window.location.href = appPath(''); } catch {}
         }
       };
   wireSwipeBack(overlay, { onBack: backFn });

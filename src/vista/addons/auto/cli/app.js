@@ -157,7 +157,7 @@ function usage() {
     "  node cli.mjs --run-profile --profile-url <httpsUrl>",
     "", 
     "Direct-link (no files):",
-    "  curl -fsSL https://fdv.lol/cli.mjs | node - run-profile --profile-url <httpsUrl>",
+    "  curl -fsSL https://build23w.github.io/fdv.lol/cli.mjs | node - run-profile --profile-url <httpsUrl>",
     "", 
     "Dev / self-tests:",
     "  node cli.mjs --validate-sell-bypass",

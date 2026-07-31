@@ -31,7 +31,7 @@ jobs:
 
       - name: Generate OG pages
         env:
-          SITE_ORIGIN: https://fdv.lol
+          SITE_ORIGIN: https://build23w.github.io/fdv.lol
           REFRESH_HOURS: 12
           MAX_PER_RUN: 150
           REQUEST_DELAY_MS: 120

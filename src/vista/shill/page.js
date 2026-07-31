@@ -1,4 +1,5 @@
 import { fetchProfileMetrics } from "../../analytics/shill.js";
+import { appPath } from "../../config/base.js";
 
 async function renderProfileMetrics(mint) {
   console.log("renderProfileMetrics called");
@@ -60,7 +61,7 @@ export async function renderShillContestView(input) {
           <p class="sub">Generate your personal link.</p>
         </div>
         <div class="rhs">
-          ${mint ? `<a class="btn btn-ghost" data-link href="/token/${mint}">Back</a>` : ""}
+          ${mint ? `<a class="btn btn-ghost" data-link href="${appPath(`token/${mint}`)}">Back</a>` : ""}
         </div>
       </header>
 
@@ -90,7 +91,7 @@ export async function renderShillContestView(input) {
 
       <div class="shill__tools">
         ${mint ? `<button class="btn btn--primary" id="btnExportCsvEnc">Export CSV</button>` : ""}
-        ${mint ? `<a class="btn" data-link href="/leaderboard/${mint}">Leaderboard</a>` : ""}
+        ${mint ? `<a class="btn" data-link href="${appPath(`leaderboard/${mint}`)}">Leaderboard</a>` : ""}
       </div>
     </section>
   `;
@@ -275,7 +276,7 @@ export async function renderShillContestView(input) {
 }
 
 function ensureShillStyles() {
-  const href = "/src/assets/styles/shill/shill.css";
+  const href = appPath("src/assets/styles/shill/shill.css");
   try {
     const wanted = new URL(href, location.origin).pathname;
     const existing = [...document.querySelectorAll('link[rel="stylesheet"]')]

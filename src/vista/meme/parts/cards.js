@@ -2,6 +2,7 @@ import { sparklineSVG } from '../render/sparkline.js';
 import { pctChipsHTML } from '../render/chips.js';
 import { EXPLORER, FALLBACK_LOGO, JUP_SWAP, shortAddr } from '../../../config/env.js';
 import { buildSocialLinksHtml, iconFor } from '../../../lib/socialBuilder.js';
+import { appPath } from '../../../config/base.js';
 import { fmtUsd, normalizeWebsite } from '../../../core/tools.js';
 import { getTokenLogoPlaceholder, queueTokenLogoLoad } from '../../../core/ipfs.js';
 import { formatPriceParts, toDecimalString } from '../../../lib/formatPrice.js'; 
@@ -349,7 +350,7 @@ try {
         if (!card) return;
         if (card?.dataset?.fdvPlaceholder === '1') return;
 
-        const a = card.querySelector?.('a.t-profile[data-link], a[data-link][href^="/token/"]');
+        const a = card.querySelector?.(`a.t-profile[data-link], a[data-link][href^="${appPath('token/')}"]`);
         const href = a?.getAttribute?.('href');
         if (!a || !href) return;
 
@@ -605,7 +606,7 @@ export function coinCard(it) {
         title="Click to copy mint"
       >${escAttr(shortAddr(it.mint))}</span>
     </div>
-    <a class="t-profile" data-link href="/token/${escAttr(it.mint)}">Profile</a>
+    <a class="t-profile" data-link href="${appPath('token/')}${escAttr(it.mint)}">Profile</a>
   </div>
 
   <div class="metrics">

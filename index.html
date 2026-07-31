@@ -3,6 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <!-- Mount point. Relative so the same deploy works at / (custom domain) and
+         at /<repo>/ (GitHub Pages). Pinned to an absolute URL immediately so
+         pushState navigation can't re-resolve it. Must precede every asset. -->
+    <base href="./" />
+    <script>try{document.querySelector('base').href=document.baseURI;}catch(e){}</script>
     <meta http-equiv="Content-Security-Policy" content="frame-src 'self' https://www.dextools.io https://challenges.cloudflare.com https://giscus.app;" />
     <title>FDV Memecoin Radar - UltraLite</title>
     <meta name="description" content="BLAZING-FAST client-side SOL memecoin radar with explainable GOOD/WATCH/SHILL. Trader (Auto), Sentry (Sniper), Hold, Follow, and Volume bots.." />
@@ -12,25 +17,26 @@
     <meta name="twitter:site" content="@fdvlol" />
     <meta name="twitter:title" content="FDV Memecoin Radar - UltraLite" />
     <meta name="twitter:description" content="BLAZING-FAST client-side SOL memecoin radar with explainable GOOD/WATCH/SHILL. Trader (Auto), Sentry (Sniper), Hold, Follow, and Volume bots.." />
-    <meta name="twitter:image" content="/src/assets/images/fdv.lol.meta.png" />
+    <meta name="twitter:image" content="https://build23w.github.io/fdv.lol/src/assets/images/fdv.lol.meta.png" />
     <meta property="og:title" content="FDV Memecoin Radar - UltraLite" />
     <meta property="og:description" content="BLAZING-FAST client-side SOL memecoin radar with explainable GOOD/WATCH/SHILL. Trader (Auto), Sentry (Sniper), Hold, Follow, and Volume bots.." />
-    <meta property="og:image" content="/src/assets/images/fdv.lol.meta.png" />
+    <meta property="og:image" content="https://build23w.github.io/fdv.lol/src/assets/images/fdv.lol.meta.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta property="og:type" content="website" />
-    <link rel="icon" type="image/png" href="/src/assets/images/icons/fdv.lol.ico" />
+    <link rel="canonical" href="https://build23w.github.io/fdv.lol/" />
+    <link rel="icon" type="image/png" href="src/assets/images/icons/fdv.lol.ico" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/src/assets/styles/default/global.css" />
-    <link rel="stylesheet" href="/src/assets/styles/profile/profile.css" />
-    <link rel="stylesheet" href="/src/assets/styles/shill/shill.css" />
+    <link rel="stylesheet" href="src/assets/styles/default/global.css" />
+    <link rel="stylesheet" href="src/assets/styles/profile/profile.css" />
+    <link rel="stylesheet" href="src/assets/styles/shill/shill.css" />
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",
       "@type": "WebSite",
       "name": "FDV Memecoin Radar",
-      "url": "https://fdv.lol",
+      "url": "https://build23w.github.io/fdv.lol/",
       "description": "BLAZING-FAST client-side SOL memecoin radar with explainable GOOD/WATCH/SHILL ratings. Features Trader (Auto), Sentry (Sniper), Hold, Follow, and Volume bots.",
       "keywords": [
         "solana",
@@ -69,7 +75,7 @@
         "url": "https://github.com/builders-toronto/fdv.lol",
         "logo": {
           "@type": "ImageObject",
-          "url": "https://fdv.lol/src/assets/images/fdv.lol.meta.png"
+          "url": "https://build23w.github.io/fdv.lol/src/assets/images/fdv.lol.meta.png"
         },
         "sameAs": [
           "https://t.me/fdvlol",
@@ -78,7 +84,7 @@
       },
       "potentialAction": {
         "@type": "SearchAction",
-        "target": "https://fdv.lol/token/{search_term_string}",
+        "target": "https://build23w.github.io/fdv.lol/token/{search_term_string}",
         "query-input": "required name=search_term_string"
       }
     }
@@ -172,6 +178,6 @@
     <footer>
       <p><a href="https://github.com/builders-toronto/fdv.lol/wiki/Post-Your-Token-to-the-Static-List">Add Coin</a></p><p class="important"><a href="https://github.com/builders-toronto/fdv.lol" target="_blank" rel="noopener">Source</a></p><p><span class="joinCta">Join us</span> on <a href="https://t.me/fdvlol" target="_blank" rel="noopener">Telegram</a></p>
     </footer>
-    <script type="module" src="/main.js"></script>
+    <script type="module" src="main.js"></script>
     </body>
 </html>

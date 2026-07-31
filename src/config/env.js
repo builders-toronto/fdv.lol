@@ -1,3 +1,5 @@
+import { appPath } from "./base.js";
+
 export const developer = true;
 
 
@@ -224,7 +226,7 @@ export const PRIVACY = `
   <h3>Third parties</h3>
   <p>Depending on features used, you may interact with Solana RPC providers, Jupiter, market data providers (e.g., DEXScreener), Cloudflare Turnstile, and embedded content (e.g., YouTube/Giscus). These services may collect data under their own policies.</p>
 
-  <p>Full policy: <a href="https://fdv.lol/onboard/policy.html" target="_blank" rel="noreferrer">fdv.lol/onboard/policy.html</a></p>
+  <p>Full policy: <a href="${appPath('onboard/policy.html')}" target="_blank" rel="noreferrer">onboard/policy.html</a></p>
 `;
 
 
@@ -246,7 +248,7 @@ export const TOS = `
   <h3>Warranty / liability</h3>
   <p>Provided “as is” and “as available” without warranty. Crypto is risky and automation amplifies mistakes; we do not guarantee accuracy, uptime, or outcomes.</p>
 
-  <p>Full policy: <a href="https://fdv.lol/onboard/policy.html" target="_blank" rel="noreferrer">fdv.lol/onboard/policy.html</a></p>
+  <p>Full policy: <a href="${appPath('onboard/policy.html')}" target="_blank" rel="noreferrer">onboard/policy.html</a></p>
 `;
 
 export const AGREEMENT = `
@@ -259,5 +261,5 @@ export const AGREEMENT = `
   <h3>Limitations</h3>
   <p>You accept the risks of using crypto software and automation. We are not responsible for trading outcomes, lost funds, or third-party actions/services.</p>
 
-  <p>Full policy: <a href="https://fdv.lol/onboard/policy.html" target="_blank" rel="noreferrer">fdv.lol/onboard/policy.html</a></p>
+  <p>Full policy: <a href="${appPath('onboard/policy.html')}" target="_blank" rel="noreferrer">onboard/policy.html</a></p>
 `;

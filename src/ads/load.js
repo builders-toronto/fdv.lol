@@ -1,6 +1,7 @@
 import { ADS_CACHE_KEY, ADS_CACHE_MS, JUP_SWAP, EXPLORER, FALLBACK_LOGO, shortAddr } from "../config/env.js";
 import { getJSON, normalizeWebsite } from "../core/tools.js";
 import { normalizeSocial, iconFor } from "../lib/socialBuilder.js";
+import { appPath } from "../config/base.js";
 
 export function initAdBanners(root = document){
   const cards = [...root.querySelectorAll('.adcard[data-interactive]')];
@@ -81,7 +82,7 @@ export async function loadAds(){
 
   let ads = null;
   try{
-    ads = await getJSON('/ads.json', {timeout: 6000});
+    ads = await getJSON(appPath('ads.json'), {timeout: 6000});
   }catch{
     ads = readInlineAds();
   }
@@ -151,7 +152,7 @@ export function adCard(ad){
       <div class="adactions">
         ${icons}
         <a class="adbtn primary" href="${buyUrl}" target="_blank" rel="noopener">${cta}</a>
-        <a class="adbtn" href="https://fdv.lol/token/${ad.mint}" target="_blank" rel="noopener nofollow">Profile</a>
+        <a class="adbtn" href="${appPath(`token/${ad.mint}`)}" target="_blank" rel="noopener nofollow">Profile</a>
       </div>
     </div>
   </section>`;

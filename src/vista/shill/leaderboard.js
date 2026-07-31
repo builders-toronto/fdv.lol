@@ -1,7 +1,8 @@
 import { FDV_METRICS_BASE } from "../../config/env.js";
+import { appPath, appUrl } from "../../config/base.js";
 
 function ensureShillStyles() {
-  const href = "/src/assets/styles/shill/shill.css";
+  const href = appPath("src/assets/styles/shill/shill.css");
   try {
     const wanted = new URL(href, location.origin).pathname;
     const existing = [...document.querySelectorAll('link[rel="stylesheet"]')]
@@ -55,7 +56,7 @@ export async function renderShillLeaderboardView({ mint } = {}) {
           <p class="sub">Live stats for this tokens shill links (weekly).</p>
         </div>
         <div class="rhs">
-          <a class="btn btn-ghost" data-link href="/token/${mint}">Back</a>
+          <a class="btn btn-ghost" data-link href="${appPath(`token/${mint}`)}">Back</a>
         </div>
       </header>
 
@@ -199,10 +200,11 @@ export async function renderShillLeaderboardView({ mint } = {}) {
     setTimeout(() => { t.classList.remove("show"); setTimeout(() => t.remove(), 250); }, 1800);
   }
   function makeEmbedHtml() {
-    const origin = (window.location && window.location.origin) ? window.location.origin : "https://fdv.lol";
-    const params = new URLSearchParams({ mint });
+    // The mint belongs in the path (that's what the /leaderboard/:mint route
+    // matches); everything else is query string.
+    const params = new URLSearchParams({ embed: "1" });
     if (useCsv) params.set("source", "csv");
-    const src = `${origin}/leaderboard/${params.toString()}?embed=1`;
+    const src = `${appUrl(`leaderboard/${encodeURIComponent(mint)}`)}?${params.toString()}`;
     return `<iframe src="${src}" loading="lazy" style="width:100%;max-width:100%;border:0;background:transparent;" height="520" title="FDV Leaderboard"></iframe>`;
   }
 
@@ -591,7 +593,7 @@ function renderTable({ list, mint, sort, filterWallet = "", page = 1, pageSize =
       <td>${r.swapStarts}</td>
       <td>${r.walletConnects}</td>
       <td>${t(r.timeMs)}</td>
-      <td><a class="btn btn-ghost" href="/token/${mint}?ref=${r.slug}" target="_blank" rel="noopener">Open</a></td>
+      <td><a class="btn btn-ghost" href="${appPath(`token/${mint}`)}?ref=${r.slug}" target="_blank" rel="noopener">Open</a></td>
     </tr>
   `).join("") : "";
 
@@ -716,7 +718,7 @@ async function openMetricsModal({ mint, slug, owner = "" }) {
   const openToken = el.querySelector("#lbm-open-token");
   title.textContent = `Metrics: ${slug}`;
   sub.textContent = `Token: ${mint}`;
-  openToken.href = `/token/${mint}?ref=${slug}`;
+  openToken.href = `${appPath(`token/${mint}`)}?ref=${slug}`;
   openToken.style.cssFloat = "right";
   openToken.style.styleFloat = "right";
   content.innerHTML = `<div class="lbm-empty">Loading…</div>`;

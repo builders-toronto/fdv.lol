@@ -1,5 +1,6 @@
 import { fetchTokenInfo } from "../../../data/dexscreener.js";
 import { getTokenLogoPlaceholder, queueTokenLogoLoad } from "../../../core/ipfs.js";
+import { appPath } from "../../../config/base.js";
 
 const LS_KEY = "fdv_library_v1";
 const EVT = { CHANGE: "library:change" };
@@ -215,7 +216,7 @@ async function renderModalPanels(modal) {
                 <div class="fdv-lib-name">${it.name || ""}</div>
               </div>
               <div class="fdv-lib-actions">
-                <a class="fdv-pill link" href="/token/${encodeURIComponent(it.mint)}">Open</a>
+                <a class="fdv-pill link" href="${appPath('token/')}${encodeURIComponent(it.mint)}">Open</a>
                 <button class="fdv-pill" data-lib-remove="${it.mint}">Remove</button>
               </div>
             </div>
@@ -309,7 +310,7 @@ async function renderModalPanels(modal) {
                 <td>
                   <div style="display:flex;align-items:center;gap:8px;">
                     <img src="${getTokenLogoPlaceholder(r.imageUrl||"", r.symbol || r.name || "")}" data-logo-raw="${r.imageUrl||""}" data-sym="${r.symbol || r.name || ""}" alt="" width="20" height="20" style="border-radius:6px;object-fit:cover;background:#0b111d">
-                    <a href="/token/${encodeURIComponent(r.mint)}">${r.symbol || "—"}</a>
+                    <a href="${appPath('token/')}${encodeURIComponent(r.mint)}">${r.symbol || "—"}</a>
                   </div>
                 </td>
                 <td>${formatPrice(r.price)}</td>

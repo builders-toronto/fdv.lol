@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const DEFAULT_BASE_URL = "https://fdv.lol";
+const DEFAULT_BASE_URL = "https://build23w.github.io/fdv.lol";
 const DEFAULT_ENTRY = "/src/vista/addons/auto/cli/app.js";
 
 let _os = null;

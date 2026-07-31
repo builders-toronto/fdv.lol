@@ -1,3 +1,5 @@
+import { appPath } from '../../../config/base.js';
+
 export function initHeader(createOpenLibraryButton, createOpenSearchButton, createOpenFavboardButton) {
   let strip = document.getElementById('hdrTools');
   if (!strip) {
@@ -82,7 +84,7 @@ export function ensureCoachingHeaderLink() {
   const a = document.createElement('a');
   a.id = 'btnCoaching';
   a.className = 'fdv-lib-btn fdv-coaching-btn';
-  a.href = 'https://fdv.lol/onboard/';
+  a.href = appPath('onboard/');
   a.textContent = 'Coaching';
   a.setAttribute('role', 'button');
   a.setAttribute('aria-label', 'Open 1:1 coaching');

@@ -1,4 +1,5 @@
 import { formatPriceParts, toDecimalString } from "../../../lib/formatPrice.js";
+import { appPath } from "../../../config/base.js";
 
 function mqItemHTML(t, tokenHref) {
   const mint = t.mint || '';
@@ -120,7 +121,7 @@ export function renderMarquee(marquee) {
   });
 
   if (_marqueeRenderedKey == null) {
-    const tokenHref = mint => `/token/${encodeURIComponent(mint)}`;
+    const tokenHref = mint => appPath(`token/${encodeURIComponent(mint)}`);
     const tRow = marqueeRowHTML(marquee.trending || [], 'Trending', tokenHref);
     const nRow = marqueeRowHTML(marquee.new || [], 'New', tokenHref);
     elMarqueeWrap.innerHTML = `${tRow}${nRow}`;
@@ -145,7 +146,7 @@ export function renderMarquee(marquee) {
     return;
   }
 
-  const tokenHref = mint => `/token/${encodeURIComponent(mint)}`;
+  const tokenHref = mint => appPath(`token/${encodeURIComponent(mint)}`);
   const tRowEl = elMarqueeWrap.querySelector('.mq-row[data-label="Trending"]');
   const nRowEl = elMarqueeWrap.querySelector('.mq-row[data-label="New"]');
 

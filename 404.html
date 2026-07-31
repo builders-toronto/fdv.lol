@@ -8,15 +8,15 @@
   <meta property="og:type" content="website" />
   <meta property="og:title" content="FDV.lol - Token Profile" />
   <meta property="og:description" content="View token price, liquidity, momentum, pairs and more on Solana." />
-  <meta property="og:image" content="https://fdv.lol/src/assets/fdv.lol.meta.png" />
+  <meta property="og:image" content="https://build23w.github.io/fdv.lol/src/assets/images/fdv.lol.meta.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="FDV.lol — Token Profile" />
   <meta name="twitter:description" content="View token price, liquidity, momentum, pairs and more on Solana." />
-  <meta name="twitter:image" content="https://fdv.lol/src/assets/fdv.lol.meta.png" />
-  <link rel="icon" type="image/png" href="https://fdv.lol/src/assets/images/icons/fdv.lol.ico" />
-  <link id="canonical-link" rel="canonical" href="/" />
+  <meta name="twitter:image" content="https://build23w.github.io/fdv.lol/src/assets/images/fdv.lol.meta.png" />
+  <link rel="icon" type="image/png" href="https://build23w.github.io/fdv.lol/src/assets/images/icons/fdv.lol.ico" />
+  <link id="canonical-link" rel="canonical" href="https://build23w.github.io/fdv.lol/" />
 
   <style>
     :root { color-scheme: dark light; }
@@ -37,24 +37,49 @@
 
   <noscript>
     <div class="wrap">
-      <p>JavaScript is required. Open the <a href="/">home page</a> and navigate to the token again.</p>
+      <p>JavaScript is required. Open the <a id="noscriptLink" href="/">home page</a> and navigate to the token again.</p>
     </div>
   </noscript>
 
   <script>
     (function () {
+      // GitHub Pages serves this file for any unmatched path, at any depth, so
+      // the mount point has to be derived rather than assumed.
+      var ROUTES = ['token', 'shill', 'leaderboard'];
+      function deployBase(segs) {
+        // Exact: whatever precedes the first app-route segment is the mount.
+        for (var i = 0; i < segs.length; i++) {
+          if (ROUTES.indexOf(segs[i]) >= 0) return i ? '/' + segs.slice(0, i).join('/') + '/' : '/';
+        }
+        // No recognizable route. On a project site the first segment is the repo;
+        // anywhere else we're already at the root.
+        if (/\.github\.io$/i.test(location.hostname) && segs.length) return '/' + segs[0] + '/';
+        return '/';
+      }
+
       var p = location.pathname;
-      if (p.startsWith('/assets/') || /\.[a-z0-9]+$/i.test(p)) return;
-      var hashRoute = '#' + p + (location.search || '') + (location.hash || '');
-      var canonical = '/' + (hashRoute || '');
-      document.getElementById('canonical-link').setAttribute('href', canonical);
-      document.getElementById('fallbackLink').setAttribute('href', canonical);
+      var base = deployBase(p.split('/').filter(Boolean));
+      var route = p.indexOf(base) === 0 ? '/' + p.slice(base.length) : p;
+
+      // Genuine missing files stay a 404 — only app routes get handed to the SPA.
+      if (route.indexOf('/assets/') === 0 || /\.[a-z0-9]+$/i.test(route)) return;
+
+      var hashRoute = '#' + route + (location.search || '') + (location.hash || '');
+      var target = base + hashRoute;
+
+      document.getElementById('canonical-link').setAttribute('href', base);
+      document.getElementById('fallbackLink').setAttribute('href', target);
+      var ns = document.getElementById('noscriptLink');
+      if (ns) ns.setAttribute('href', base);
+
+      // Primary handoff. The hash above is the fallback for when this is blocked.
       try { sessionStorage.setItem('spa:path', p + location.search + location.hash); } catch (_) {}
+
       var ua = (navigator.userAgent || '').toLowerCase();
       var isBot = /(bot|crawl|spider|slackbot|discord|twitterbot|facebookexternalhit|linkedinbot|embedly|whatsapp|telegram|vkshare|pinterest|redditbot|preview)/i.test(ua);
 
       if (!isBot) {
-        location.replace('/' + hashRoute);
+        location.replace(target);
       }
     })();
   </script>

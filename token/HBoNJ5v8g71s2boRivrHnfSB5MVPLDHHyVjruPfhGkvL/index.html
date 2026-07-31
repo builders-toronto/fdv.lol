@@ -3,6 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <!-- These pages live at <root>/token/<mint>/, so the mount point is two up.
+         Pinned absolute immediately so pushState can't re-resolve it. -->
+    <base href="../../" />
+    <script>try{document.querySelector('base').href=document.baseURI;}catch(e){}</script>
     <title>PURPE on Solana</title>
     <meta name="description" content="Purple Pepe • Price: $0.000012 • Liquidity: $362.31K" />
     <meta name="author" content="builders-toronto" />
@@ -12,8 +16,8 @@
     <meta property="og:type" content="website" />
     <meta property="og:title" content="PURPE on Solana" />
     <meta property="og:description" content="Purple Pepe • Price: $0.000012 • Liquidity: $362.31K" />
-    <meta property="og:url" content="https://fdv.lol/token/HBoNJ5v8g71s2boRivrHnfSB5MVPLDHHyVjruPfhGkvL" />
-    <meta property="og:image" content="https://fdv.lol/token/HBoNJ5v8g71s2boRivrHnfSB5MVPLDHHyVjruPfhGkvL/og.jpg" />
+    <meta property="og:url" content="https://build23w.github.io/fdv.lol/token/HBoNJ5v8g71s2boRivrHnfSB5MVPLDHHyVjruPfhGkvL" />
+    <meta property="og:image" content="https://build23w.github.io/fdv.lol/token/HBoNJ5v8g71s2boRivrHnfSB5MVPLDHHyVjruPfhGkvL/og.jpg" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta property="og:image" content="https://cdn.dexscreener.com/cms/images/015aa1aa85be3ba818d89cc5cc200db976beda650822ed7314512d6d7edce874?width=800&amp;height=800&amp;quality=95&amp;format=auto" />
@@ -22,21 +26,22 @@
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="PURPE on Solana" />
     <meta name="twitter:description" content="Purple Pepe • Price: $0.000012 • Liquidity: $362.31K" />
-    <meta name="twitter:image" content="https://fdv.lol/token/HBoNJ5v8g71s2boRivrHnfSB5MVPLDHHyVjruPfhGkvL/og.jpg" />
+    <meta name="twitter:image" content="https://build23w.github.io/fdv.lol/token/HBoNJ5v8g71s2boRivrHnfSB5MVPLDHHyVjruPfhGkvL/og.jpg" />
 
-    <link rel="icon" type="image/png" href="/src/assets/images/icons/fdv.lol.ico" />
+    <link rel="canonical" href="https://build23w.github.io/fdv.lol/token/HBoNJ5v8g71s2boRivrHnfSB5MVPLDHHyVjruPfhGkvL" />
+    <link rel="icon" type="image/png" href="src/assets/images/icons/fdv.lol.ico" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/src/assets/styles/default/global.css" />
-    <link rel="stylesheet" href="/src/assets/styles/profile/profile.css" />
-    <link rel="stylesheet" href="/src/assets/styles/shill/shill.css" />
+    <link rel="stylesheet" href="src/assets/styles/default/global.css" />
+    <link rel="stylesheet" href="src/assets/styles/profile/profile.css" />
+    <link rel="stylesheet" href="src/assets/styles/shill/shill.css" />
 
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",
       "@type": "WebSite",
       "name": "PURPE on Solana",
-      "url": "https://fdv.lol/token/HBoNJ5v8g71s2boRivrHnfSB5MVPLDHHyVjruPfhGkvL",
+      "url": "https://build23w.github.io/fdv.lol/token/HBoNJ5v8g71s2boRivrHnfSB5MVPLDHHyVjruPfhGkvL",
       "description": "Purple Pepe • Price: $0.000012 • Liquidity: $362.31K",
       "keywords": [
         "solana",
@@ -73,7 +78,7 @@
         "url": "https://github.com/builders-toronto/fdv.lol",
         "logo": {
           "@type": "ImageObject",
-          "url": "https://fdv.lol/src/assets/images/fdv.lol.png"
+          "url": "https://build23w.github.io/fdv.lol/src/assets/images/fdv.lol.png"
         },
         "sameAs": [
           "https://t.me/fdvlol",
@@ -82,7 +87,7 @@
       },
       "potentialAction": {
         "@type": "SearchAction",
-        "target": "https://fdv.lol/token/{search_term_string}",
+        "target": "https://build23w.github.io/fdv.lol/token/{search_term_string}",
         "query-input": "required name=search_term_string"
       }
     }
@@ -142,7 +147,7 @@
     <footer>
       <p>Cached in your browser for 90s. Not financial advice.</p><p class="important"><a href="https://github.com/builders-toronto/fdv.lol" target="_blank" rel="noopener">Source</a></p><p><span class="joinCta">Join us</span> on <a href="https://t.me/fdvlol" target="_blank" rel="noopener">Telegram</a></p>
     </footer>
-    <script>window.__BOOT_PROFILE_CANONICAL__="https://fdv.lol/token/HBoNJ5v8g71s2boRivrHnfSB5MVPLDHHyVjruPfhGkvL";</script>
-    <script type="module" src="/main.js"></script>
+    <script>window.__BOOT_PROFILE_CANONICAL__="https://build23w.github.io/fdv.lol/token/HBoNJ5v8g71s2boRivrHnfSB5MVPLDHHyVjruPfhGkvL";</script>
+    <script type="module" src="main.js"></script>
   </body>
 </html>

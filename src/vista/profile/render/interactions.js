@@ -1,3 +1,5 @@
+import { appPath, appUrl } from "../../../config/base.js";
+
 export function wireNavigation({ onBack }) {
   const btn = document.getElementById("btnBack");
   if (!btn) return;
@@ -13,16 +15,16 @@ export function wireNavigation({ onBack }) {
     // Fallback: go back if we can, otherwise go Home.
     try {
       if (history.length > 1) history.back();
-      else window.location.href = "/";
+      else window.location.href = appPath('');
     } catch {
-      try { window.location.href = "/"; } catch {}
+      try { window.location.href = appPath(''); } catch {}
     }
   };
 }
 
 export function wireCopy(mint) {
   document.getElementById("btnCopyMint")?.addEventListener("click", () =>
-    navigator.clipboard.writeText("https://fdv.lol/token/" + mint).catch(()=>{})
+    navigator.clipboard.writeText(appUrl("token/" + mint)).catch(()=>{})
     .then(() => {
       const btn = document.getElementById("btnCopyMint");
       if (!btn) return;

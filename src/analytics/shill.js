@@ -1,4 +1,5 @@
 import { FDV_METRICS_BASE } from "../config/env.js";
+import { appPath } from "../config/base.js";
  
 const LINKS_KEY = "fdv.shill.links";   
 const STATS_KEY = "fdv.shill.stats";   
@@ -222,7 +223,7 @@ export async function makeShillShortlink({ mint, wallet_id, owner }) {
   _save(LINKS_KEY, links);
 
   const url = new URL(location.origin);
-  url.pathname = `/token/${mint}`;
+  url.pathname = appPath(`token/${mint}`);
   url.searchParams.set("ref", slug);
   return { slug, url: url.toString() };
 }

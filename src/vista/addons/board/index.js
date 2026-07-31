@@ -1,5 +1,6 @@
 import { FDV_FAV_ENDPOINT } from "../../../config/env.js";
 import { fetchTokenInfo } from "../../../data/dexscreener.js";
+import { appPath } from "../../../config/base.js";
 
 const CACHE_KEY = "favboard_cache_v1";
 const META_STORE_PREFIX = "favboard_meta_v1:";
@@ -313,7 +314,7 @@ function favRow(item, rank) {
   const fdvUsd = Number.isFinite(item.fdvUsd) ? formatMoney(item.fdvUsd) : "-";
   const change5m = Number.isFinite(item.change5m) ? item.change5m : null;
   const change1h = Number.isFinite(item.change1h) ? item.change1h : null;
-  const fdvUrl = `/token/${encodeURIComponent(mint)}`;
+  const fdvUrl = appPath(`token/${encodeURIComponent(mint)}`);
 
   return `
     <tr>

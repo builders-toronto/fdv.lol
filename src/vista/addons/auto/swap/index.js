@@ -1,6 +1,7 @@
 //TODO: build swap into auto widget and use local interface for transactions
 
 import { getTokenLogoPlaceholder, queueTokenLogoLoad } from "../../../../core/ipfs.js";
+import { appPath } from "../../../../config/base.js";
 import { FDV_FEE_RECEIVER, FDV_TURNSTILE_BASE } from "../../../../config/env.js";
 import { fetchTokenInfo } from "../../../../data/dexscreener.js";
 import { throttleGlobalStream, releaseGlobalStreamThrottle, isGlobalStreamThrottled } from "../../../../engine/pipeline.js";
@@ -1336,7 +1337,7 @@ function _refreshModalChrome(){
   const btnLearn = _el("[data-swap-learn]");
   if (btnLearn) {
     const validMint = typeof outMint === "string" && outMint.length > 0;
-    btnLearn.href = validMint ? `/token/${encodeURIComponent(outMint)}` : "#";
+    btnLearn.href = validMint ? appPath(`token/${encodeURIComponent(outMint)}`) : "#";
     btnLearn.setAttribute("aria-disabled", validMint ? "false" : "true");
     btnLearn.classList.toggle("disabled", !validMint);
 

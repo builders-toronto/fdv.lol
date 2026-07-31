@@ -1,4 +1,5 @@
 import { searchTokensGlobal } from "../../../data/dexscreener.js";
+import { appPath } from "../../../config/base.js";
 
 let abortCtl = null;
 let cache = new Map();          // query -> results[]
@@ -143,7 +144,7 @@ function looksLikeMint(s) {
 }
 
 function tokenHref(mint) {
-  return `/token/${encodeURIComponent(mint)}`;
+  return appPath(`token/${encodeURIComponent(mint)}`);
 }
 
 async function runQuery(raw) {
