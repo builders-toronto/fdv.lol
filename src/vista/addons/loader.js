@@ -359,7 +359,7 @@ export function discoverAndRegisterWidgets(params = {}) {
           'init',
           'bootstrap',
           'setup',
-          'initLibrary', 'initFavboard', 'initSearch', 'initAutoWidget',
+          'initLibrary', 'initSearch', 'initAutoWidget',
         ]);
         return fn ? fn({ mod, ...ctx }) : undefined;
       },
@@ -377,7 +377,7 @@ export function discoverAndRegisterWidgets(params = {}) {
         return fn ? fn({ mod, ...ctx }) : undefined;
       },
       button: (mod, opts) => {
-        const fn = __resolveFirstFn__(mod, ['button', 'createButton', 'createOpenLibraryButton', 'createOpenFavboardButton']);
+        const fn = __resolveFirstFn__(mod, ['button', 'createButton', 'createOpenLibraryButton']);
         return fn ? fn(opts) : (() => { throw new Error(`Widget "${name}" has no button()`) })();
       },
       hostSelector: overrides.hostSelector ?? defaults.hostSelector ?? undefined,
@@ -463,14 +463,6 @@ export function registerCoreWidgets() {
     once: true,
   });
 
-  widgets.register('favboard', {
-    importer: () => import('./board/index.js'),
-    init: ({ mod }) => mod.initFavboard(),
-    button: (mod, opts) => mod.createOpenFavboardButton(opts),
-    eager: true,
-    once: true,
-  });
-
   widgets.register('search', {
     importer: () => import('./search/index.js'),
     mount: ({ mod, props }) => {
@@ -529,6 +521,5 @@ export async function prewarmDefaults() {
   try { registerCoreWidgets(); } catch {}
   await Promise.allSettled([
     widgets.prewarm('library'),
-    widgets.prewarm('favboard'),
   ]);
 }

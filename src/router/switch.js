@@ -1,4 +1,4 @@
-import { showHome, showProfile, showShill } from "./main/home.js";
+import { showHome, showProfile } from "./main/home.js";
 import { showLoading } from "../core/tools.js";
 import { BASE_PATH, appPath, stripBase } from "../config/base.js";
 
@@ -45,19 +45,12 @@ async function __ensureSwapSystem__() {
 function initRouter({
   onHome = () => {},
   onProfile = () => {},
-  onShill = () => {},
-  onNotFound       
+  onNotFound
 } = {}) {
   const notFound = onNotFound || onHome;
 
   const routes = [
     { pattern: /^\/$/, handler: onHome },
-    { pattern: /^\/leaderboard\/([1-9A-HJ-NP-Za-km-z]{32,44})\/?$/, handler: (mint) => onShill({ mint, leaderboard: true }) },
-    { pattern: /^\/shill\/?$/, handler: () => {
-      const mint = new URLSearchParams(location.search).get("mint") || "";
-      onShill({ mint });
-    }},
-    { pattern: /^\/shill\/([1-9A-HJ-NP-Za-km-z]{32,44})\/?$/, handler: (mint) => onShill({ mint }) },
     { pattern: /^\/token\/([1-9A-HJ-NP-Za-km-z]{32,44})\/?$/, handler: (mint) => onProfile({ mint }) },
   ];
 
@@ -195,12 +188,6 @@ export const router = initRouter({
     onProfile: ({ mint }) => {
         document.title = `${mint.slice(0, 6)}… • FDV.lol`;
         showProfile({ mint });
-    },
-    onShill: ({ mint, leaderboard } = {}) => {
-        document.title = leaderboard
-          ? `Leaderboard ${mint.slice(0, 6)}… • FDV.lol`
-          : `Shill ${mint.slice(0, 6)}… • FDV.lol`;
-        showShill({ mint, leaderboard });
     },
     onNotFound: () => {
         document.title = '404 Not Found • FDV.lol';

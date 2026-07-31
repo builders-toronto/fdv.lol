@@ -4,8 +4,6 @@ import { router } from './src/router/switch.js';
 
 // Eager-load route modules so SPA transitions can't leave them "offline".
 import './src/vista/profile/page.js';
-import './src/vista/shill/page.js';
-import './src/vista/shill/leaderboard.js';
 
 import { captureReferralFromUrl } from './src/vista/addons/auto/lib/referral.js';
 

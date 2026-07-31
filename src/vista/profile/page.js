@@ -11,7 +11,6 @@ import { widgets, registerCoreWidgets, prewarmDefaults } from "../addons/loader.
 import { initHero } from "./parts/hero.js";
 import { initStatsAndCharts } from "./parts/stats.js";
 import { startProfileFeed, stopProfileFeed } from "./parts/feed.js";
-import { autoStartProfileMetrics } from "../../analytics/shill.js";
 import { mountProfileKpiMetrics } from "./render/kpiMetrics.js";
 import { mountGiscusDirect, unmountGiscusDirect } from "../addons/chat/chat.js";
 
@@ -404,7 +403,6 @@ export async function renderProfileView(input, { onBack } = {}) {
 
   runIdle(() => {
     try { widgets.mount('favorites-bind', { root: overlayMount }).catch(() => {}); } catch {}
-    try { autoStartProfileMetrics({ mint }); } catch {}
   });
 
   setTimeout(() => {

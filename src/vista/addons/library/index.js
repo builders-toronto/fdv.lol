@@ -4,11 +4,6 @@ import { appPath } from "../../../config/base.js";
 
 const LS_KEY = "fdv_library_v1";
 const EVT = { CHANGE: "library:change" };
-const pendingFav = new Map(); // mint -> true while in-flight
-
-let CFG = {
-  metricsBase: "https://fdv-lol-metrics.fdvlol.workers.dev/api/shill",
-};
 
 function load() {
   try {
@@ -80,14 +75,6 @@ function lockScroll(on) {
       b.style.paddingRight = "";
     }
   } catch {}
-}
-
-function setFavCount(mint, count) {
-  document.querySelectorAll(`[data-fav-send][data-mint="${CSS.escape(mint)}"] .fdv-lib-count`)
-    .forEach(el => { el.textContent = String(count); });
-  // legacy buttons, if any
-  document.querySelectorAll(`[data-fav-btn][data-mint="${CSS.escape(mint)}"] .fdv-lib-count`)
-    .forEach(el => { el.textContent = String(count); });
 }
 
 function btnSvgHeart() {
@@ -209,7 +196,7 @@ async function renderModalPanels(modal) {
       <div class="fdv-lib-grid">
         ${list.map(it => `
           <div class="fdv-lib-card" data-mint="${it.mint}">
-            <img class="fdv-lib-logo" src="${getTokenLogoPlaceholder(it.imageUrl || CFG.fallbackLogo || "", it.symbol || it.name || "")}" data-logo-raw="${it.imageUrl || ""}" data-sym="${it.symbol || it.name || ""}" alt="">
+            <img class="fdv-lib-logo" src="${getTokenLogoPlaceholder(it.imageUrl || "", it.symbol || it.name || "")}" data-logo-raw="${it.imageUrl || ""}" data-sym="${it.symbol || it.name || ""}" alt="">
             <div class="fdv-lib-main">
               <div class="fdv-lib-line1">
                 <div class="fdv-lib-sym">${it.symbol || "—"}</div>
@@ -335,42 +322,12 @@ async function renderModalPanels(modal) {
   }
 }
 
-async function sendFavorite(mint, action) {
-  try {
-    const r = await fetch(CFG.metricsBase + "/favorite", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        mint, action,
-        path: location.pathname, href: location.href, referrer: document.referrer,
-      }),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (typeof j?.favorites === "number") return j.favorites;
-  } catch {}
-  return null;
-}
-async function fetchFavCount(mint) {
-  try {
-    const u = new URL(CFG.metricsBase + "/favcount");
-    u.searchParams.set("mint", mint);
-    const r = await fetch(u.toString(), { method: "GET" });
-    if (!r.ok) return 0;
-    const j = await r.json().catch(() => null);
-    return Number(j?.favorites || 0);
-  } catch { return 0; }
-}
-
 export function initLibrary() {
   if (!window.__fdvLibWired) {
     window.__fdvLibWired = true;
     document.addEventListener(EVT.CHANGE, () => {
-      document.querySelectorAll("[data-fav-send],[data-fav-btn]").forEach(async (btn) => {
-        const mint = btn.getAttribute("data-mint");
-        syncButtonState(btn, mint);
-        const c = await fetchFavCount(mint);
-        const countEl = btn.querySelector(".fdv-lib-count");
-        if (countEl) countEl.textContent = String(c);
+      document.querySelectorAll("[data-fav-send],[data-fav-btn]").forEach((btn) => {
+        syncButtonState(btn, btn.getAttribute("data-mint"));
       });
     });
   }
@@ -398,7 +355,6 @@ export function favoriteButtonHTML({ mint, symbol = "", name = "", imageUrl = ""
 export function sendFavoriteButtonHTML({ mint, symbol = "", name = "", imageUrl = "", className = "fdv-lib-btn" }) {
   return `<button type="button" class="${className}" data-fav-send data-mint="${mint}" data-token-symbol="${symbol}" data-token-name="${name}" data-token-image="${imageUrl}">
     <span class="fdv-lib-heart" aria-hidden="true">❤️</span>
-    <span class="fdv-lib-count">0</span>
   </button>`;
 }
 
@@ -436,38 +392,23 @@ function wireSendFavoriteButton(btn) {
   if (!btn.querySelector(".fdv-lib-heart")) {
     btn.prepend(btnSvgHeart());
   }
-  let count = btn.querySelector(".fdv-lib-count");
-  if (!count) {
-    count = document.createElement("span");
-    count.className = "fdv-lib-count";
-    count.textContent = "0";
-    btn.appendChild(count);
-  }
   const mint = btn.dataset.mint;
   syncButtonState(btn, mint);
-  fetchFavCount(mint).then(c => { count.textContent = String(c); }).catch(()=>{});
-  btn.addEventListener("click", async (e) => {
+  btn.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (!mint || pendingFav.get(mint)) return;
-    pendingFav.set(mint, true);
-    btn.disabled = true;
-    // ensure token saved locally
-    if (!isFavorite(mint)) {
-      const symbol = btn.dataset.tokenSymbol || "";
-      const name = btn.dataset.tokenName || "";
-      const imageUrl = btn.dataset.tokenImage || "";
-      const s = load();
-      s.items[mint] = { mint, symbol, name, imageUrl, addedAt: Date.now() };
-      if (!s.order.includes(mint)) s.order.unshift(mint);
-      save(s);
-      emitChange();
-      syncButtonState(btn, mint);
-    }
-    const favs = await sendFavorite(mint, "add");
-    if (favs != null) setFavCount(mint, favs);
-    else setFavCount(mint, await fetchFavCount(mint));
-    pendingFav.delete(mint);
-    btn.disabled = false;
+    if (!mint || isFavorite(mint)) return;
+    const s = load();
+    s.items[mint] = {
+      mint,
+      symbol: btn.dataset.tokenSymbol || "",
+      name: btn.dataset.tokenName || "",
+      imageUrl: btn.dataset.tokenImage || "",
+      addedAt: Date.now(),
+    };
+    if (!s.order.includes(mint)) s.order.unshift(mint);
+    save(s);
+    emitChange();
+    syncButtonState(btn, mint);
   }, { once: false });
 }
 
@@ -520,7 +461,6 @@ export function bindFavoriteButtons(root = document) {
   } catch {}
 
   // Wire modern send buttons (self-contained) and hydrate legacy buttons.
-  const legacyMints = new Set();
   root.querySelectorAll("[data-fav-send],[data-fav-btn]").forEach((btn) => {
     const mint = btn.getAttribute("data-mint");
     if (!mint) return;
@@ -532,22 +472,6 @@ export function bindFavoriteButtons(root = document) {
 
     // legacy buttons
     syncButtonState(btn, mint);
-    legacyMints.add(mint);
-    let el = btn.querySelector(".fdv-lib-count");
-    if (!el) {
-      el = document.createElement("span");
-      el.className = "fdv-lib-count";
-      el.textContent = "0";
-      btn.appendChild(el);
-    }
-  });
-
-  // hydrate counts once per mint (legacy only)
-  legacyMints.forEach(async (mint) => {
-    const c = await fetchFavCount(mint);
-    document
-      .querySelectorAll(`[data-fav-btn][data-mint="${CSS.escape(mint)}"]`)
-      .forEach((b) => { b.querySelector(".fdv-lib-count").textContent = String(c); });
   });
 }
 
@@ -581,14 +505,5 @@ function toggleFavorite(mint, { force } = {}) {
   document.querySelectorAll(`[data-fav-send][data-mint="${CSS.escape(mint)}"],[data-fav-btn][data-mint="${CSS.escape(mint)}"]`).forEach((btn) => {
     syncButtonState(btn, mint);
   });
-  (async () => {
-    const action = nextOn ? "add" : "remove";
-    const favs = await sendFavorite(mint, action);
-    if (favs != null) {
-      setFavCount(mint, favs);
-    } else {
-      setFavCount(mint, await fetchFavCount(mint));
-    }
-    emitChange();
-  })();
+  emitChange();
 }

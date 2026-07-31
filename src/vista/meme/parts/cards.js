@@ -546,7 +546,7 @@ export function coinCard(it) {
         data-token-image="${escAttr(rawlogo)}"
         aria-label="Like"
         data-tooltip="Like"
-      ><span class="fdv-lib-heart" aria-hidden="true">❤️</span><span class="fdv-lib-count">0</span></button>
+      ><span class="fdv-lib-heart" aria-hidden="true">❤️</span></button>
     </div>`;
 
   const swapBtn = `

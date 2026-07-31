@@ -2,8 +2,6 @@ import { pipeline, stopPipelineStream } from '../../engine/pipeline.js';
 import { appPath } from '../../config/base.js';
 import { renderProfileView, closeProfileOverlay } from "../../vista/profile/page.js";
 import { renderHomeView } from '../../vista/meme/page.js';
-import { renderShillContestView } from "../../vista/shill/page.js"; 
-import { renderShillLeaderboardView } from "../../vista/shill/leaderboard.js"; 
 import { hideLoading } from '../../core/tools.js';
 
 let HOME_INTERVAL = null;
@@ -246,25 +244,6 @@ export async function showProfile({ mint, force = false } = {}) {
         try { window.location.href = appPath(''); } catch {}
       }
     }});
-  } finally {
-    hideLoading();
-  }
-}
-
-export async function showShill({ mint, leaderboard = false, force = false } = {}) {
-  setRoute('shill');
-  try { closeProfileOverlay(); } catch {}
-  wireHomeExitButton({ visible: false });
-  if (dedupeView(`shill:${leaderboard ? 'lb' : 'contest'}:${mint || ''}`, { force })) {
-    hideLoading();
-    return;
-  }
-  try {
-    if (leaderboard) {
-      await renderShillLeaderboardView({ mint });
-    } else {
-      await renderShillContestView(mint);
-    }
   } finally {
     hideLoading();
   }

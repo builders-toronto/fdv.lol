@@ -1,6 +1,6 @@
 import { appPath } from '../../../config/base.js';
 
-export function initHeader(createOpenLibraryButton, createOpenSearchButton, createOpenFavboardButton) {
+export function initHeader(createOpenLibraryButton, createOpenSearchButton) {
   let strip = document.getElementById('hdrTools');
   if (!strip) {
     const header =
@@ -100,34 +100,3 @@ export function ensureCoachingHeaderLink() {
   }
 }
 
-export function ensureFavboardHeaderBtn(createOpenFavboardButton) {
-  const header = document.querySelector('.header .container .superFeat');
-  if (!header) return;
-  if (document.getElementById('btnOpenFavboard')) return;
-
-  const factory = typeof createOpenFavboardButton === 'function'
-    ? createOpenFavboardButton
-    : ({ label = '❤️ Favorites', className = 'fdv-lib-btn' } = {}) => {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.className = className;
-        b.id = 'btnOpenFavboard';
-        b.textContent = label;
-        b.setAttribute('data-fav-open', '');
-        return b;
-      };
-
-  const btn = factory({ label: '❤️ Favorites', className: 'fdv-lib-btn fdv-fav-btn' });
-  btn.id = 'btnOpenFavboard';
-  btn.style.marginLeft = "8px";
-  btn.style.marginBottom = "15px";
-  btn.setAttribute('data-fav-open', '');
-  btn.setAttribute('aria-label', 'Open favorites leaderboard');
-
-  const searchBtn = document.getElementById('btnOpenSearch');
-  if (searchBtn?.parentElement === header) {
-    header.insertBefore(btn, searchBtn);
-  } else {
-    header.appendChild(btn);
-  }
-}

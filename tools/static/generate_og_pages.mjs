@@ -230,7 +230,6 @@ function profileHtml({ title, description, primaryImage, secondaryImage, canonic
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="src/assets/styles/default/global.css" />
     <link rel="stylesheet" href="src/assets/styles/profile/profile.css" />
-    <link rel="stylesheet" href="src/assets/styles/shill/shill.css" />
 
     <script type="application/ld+json">
     {

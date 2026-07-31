@@ -6,7 +6,6 @@ const RUNTIME_CACHE = `${CACHE_VERSION}:runtime`;
 const PRECACHE_URLS = [
 	'./src/assets/styles/default/global.css',
 	'./src/assets/styles/profile/profile.css',
-	'./src/assets/styles/shill/shill.css',
 	'./onboard/assets/styles/onboard.css',
 	'./onboard/assets/styles/policy.css',
 ].map((p) => new URL(p, self.location).href);
