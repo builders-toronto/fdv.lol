@@ -296,3 +296,4 @@ fdv.lol is open-source and community-driven. You can help by:
 - feed Gary compact execution-quality context including quote trust, urgent evidence, regime, and badge
 - upgrade Gary memory to learn from repeated tags and regimes instead of only recent raw decisions
 - tighten Gary buy/sell prompts so exits respect quote quality, confirmation strength, and prior failure modes
+- [SolSniper](https://github.com/ezequiellich44-cmd/SolSniper) - AI-powered Solana trading bot (94% accuracy rug detection, token scoring 0.0-1.0, 0% fees, auto trading, Jito bundles). https://ezequiellich44-cmd.github.io/SolSniper/
